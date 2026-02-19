@@ -1,0 +1,5 @@
+{
+  "client_id": "X6K7F6FDEN-100",
+  "secret_key": "2QZA07O0Y6",
+  "redirect_uri": "http://127.0.0.1:8000/broker/fyers"
+}
