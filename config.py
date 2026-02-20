@@ -13,7 +13,7 @@ class Config:
         self.bb_exit = True
         self.bb_entry = False
         self.use_short_st = False
-        self.use_short_st_entry =  False
+        self.use_short_st_entry = False
         self.use_short_st_exit = False
         self.use_long_st = False
         self.use_long_st_entry = False
@@ -24,10 +24,12 @@ class Config:
         self.use_rsi = False
         self.use_rsi_entry = False
         self.use_rsi_exit = False
-        self.use_long_st = True
-        self.use_short_st = True
-        self.use_macd = True
-        self.use_rsi = False
+        # FIX: Removed duplicate assignments that were overriding the values above
+        # The following lines were redundant and have been removed:
+        # self.use_long_st = True
+        # self.use_short_st = True
+        # self.use_macd = True
+        # self.use_rsi = False
         self.rsi_length = 14
         self.bb_length = 14
         self.bb_std = 3.0
@@ -90,7 +92,6 @@ class Config:
         self.use_macd_exit = d.get("use_macd_exit", self.use_macd_exit)
         self.use_rsi_entry = d.get("use_rsi_entry", self.use_rsi_entry)
         self.use_rsi_exit = d.get("use_rsi_exit", self.use_rsi_exit)
-
 
     def save(self):
         os.makedirs(os.path.dirname(self.config_file), exist_ok=True)

@@ -1,4 +1,5 @@
 import logging
+import concurrent.futures
 from typing import Optional, Any
 
 import BaseEnums
@@ -41,6 +42,11 @@ class TradingApp:
             on_message_callback=self.on_message
         )
         self.trading_mode_var = trading_mode_var
+
+        # FIX: Thread pool for non-blocking history fetches
+        self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="HistoryFetch"
+        )
 
         # Ensure confirmed_orders is always a list
         if not hasattr(self.state, "confirmed_orders"):
@@ -130,33 +136,46 @@ class TradingApp:
         try:
             if not Utils.is_history_updated(last_updated=self.state.last_index_updated, interval=self.state.interval):
                 if not self.state.order_pending:
+                    # FIX: Submit blocking history fetch to thread pool; don't block WS thread
                     self.state.order_pending = True
-                    self.state.derivative_history_df = self.broker.get_history(symbol=self.state.derivative,
-                                                                               interval=self.state.interval)
-                    if self.state.derivative_history_df is not None and not self.state.derivative_history_df.empty:
-                        self.state.last_index_updated = self.state.derivative_history_df["Time"].iloc[-1]
-                        self.state.derivative_trend = self.detector.detect(
-                            self.state.derivative_history_df, self.state, self.state.derivative)
-                        if getattr(self.config, "use_long_st", False):
-                            trend_data = self.state.derivative_trend.get('super_trend_long', {})
-                        else:
-                            trend_data = self.state.derivative_trend.get('super_trend_short', {})
-                        trend = int(safe_last(trend_data.get('direction'))) \
-                            if safe_last(trend_data.get('direction')) is not None else None
-
-                        symbol = self.state.call_option if trend == 1 else self.state.put_option
-                        self.state.option_history_df = self.broker.get_history(symbol=symbol,
-                                                                               interval=self.state.interval)
-                        if self.state.option_history_df is not None and not self.state.option_history_df.empty:
-                            self.state.option_trend = self.detector.detect(self.state.option_history_df, self.state,
-                                                                           symbol)
-                    self.state.order_pending = False
-                # print(self.state.derivative_trend)
+                    self._fetch_executor.submit(self._fetch_history_and_detect)
             if self.get_trading_mode() == "algo":
                 self.state.trend = self.determine_trend_logic()
                 self.execute_based_on_trend()
         except Exception as trend_error:
             logger.info(f"Trend detection or decision logic error: {trend_error!r}", exc_info=True)
+
+    # FIX: New method to run blocking history fetch in thread pool
+    def _fetch_history_and_detect(self) -> None:
+        """Runs on thread pool — fetches history and updates trend state."""
+        try:
+            self.state.derivative_history_df = self.broker.get_history(
+                symbol=self.state.derivative, interval=self.state.interval)
+            if self.state.derivative_history_df is not None and \
+                    not self.state.derivative_history_df.empty:
+                self.state.last_index_updated = \
+                    self.state.derivative_history_df["Time"].iloc[-1]
+                self.state.derivative_trend = self.detector.detect(
+                    self.state.derivative_history_df, self.state, self.state.derivative)
+                if getattr(self.config, "use_long_st", False):
+                    trend_data = self.state.derivative_trend.get("super_trend_long", {})
+                else:
+                    trend_data = self.state.derivative_trend.get("super_trend_short", {})
+                trend = int(safe_last(trend_data.get("direction"))) \
+                    if safe_last(trend_data.get("direction")) is not None else None
+
+                symbol = self.state.call_option if trend == 1 else self.state.put_option
+                self.state.option_history_df = self.broker.get_history(
+                    symbol=symbol, interval=self.state.interval)
+                if self.state.option_history_df is not None and \
+                        not self.state.option_history_df.empty:
+                    self.state.option_trend = self.detector.detect(
+                        self.state.option_history_df, self.state, symbol)
+        except Exception as e:
+            logger.error(f"Error in _fetch_history_and_detect: {e!r}", exc_info=True)
+        finally:
+            # FIX: Always release the flag so next candle can trigger a fetch
+            self.state.order_pending = False
 
     def monitor_active_trade_status(self) -> None:
         try:
@@ -448,7 +467,14 @@ class TradingApp:
 
     def apply_settings_to_state(self) -> None:
         self.state.capital_reserve = getattr(self.trade_config, "capital_reserve", 0)
-        self.state.account_balance = self.broker.get_balance(getattr(self.state, "capital_reserve", 0))
+        # FIX: Only update balance if a valid non-zero value was returned
+        balance = self.broker.get_balance(getattr(self.state, "capital_reserve", 0))
+        if balance and balance > 0:
+            self.state.account_balance = balance
+        else:
+            logger.warning(
+                f"Balance returned {balance}. Keeping existing value: {self.state.account_balance}"
+            )
         self.state.derivative = getattr(self.trade_config, "derivative", "")
         self.state.expiry = getattr(self.trade_config, "week", "")
         self.state.lot_size = getattr(self.trade_config, "lot_size", 0)

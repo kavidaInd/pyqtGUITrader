@@ -54,7 +54,8 @@ class TradingGUI:
         # ── Chart state ────────────────────────────────────────────────────────
         self.fig = plt.Figure(figsize=(10, 6))
         self.canvas = None
-        self._last_chart_data = None  # cache — skip render if unchanged
+        # FIX: Initialize fingerprint as empty string (was None)
+        self._last_chart_data = ""
         self._chart_render_pending = False  # guard — prevent concurrent renders
 
         # ── Widget references (populated during layout) ────────────────────────
@@ -627,6 +628,7 @@ class TradingGUI:
                 self.exit_button.config(state=tk.DISABLED)
         except Exception as e:
             logger.error(f"update_button_states error: {e}", exc_info=True)
+
     # ══════════════════════════════════════════════════════════════════════════
     # Chart — non-blocking periodic render
     # ══════════════════════════════════════════════════════════════════════════
@@ -650,6 +652,16 @@ class TradingGUI:
                 self._chart_update_pending = True
                 self.root.after(10000, self._chart_update_tick)
 
+    # FIX: Added fingerprint method to avoid numpy comparison errors
+    def _chart_fingerprint(self, trend_data: dict) -> str:
+        """Create a lightweight fingerprint of trend data to detect changes."""
+        # FIX: Use a cheap fingerprint instead of full dict equality (avoids numpy ValueError)
+        try:
+            close = trend_data.get("close") or []
+            return f"{len(close)}:{close[-1] if close else None}"
+        except Exception:
+            return ""
+
     def update_chart(self):
         """Render the chart in a background thread; draw result on main thread."""
         if self._chart_render_pending or self._closing:
@@ -659,12 +671,14 @@ class TradingGUI:
 
         trend_data = getattr(self.app.state, "derivative_trend", {}) or {}
 
-        # Skip render if nothing changed
-        if trend_data == self._last_chart_data:
+        # FIX: Compare fingerprint, not the full dict (which may contain numpy arrays)
+        fp = self._chart_fingerprint(trend_data)
+        if fp == self._last_chart_data:
             return
+        # FIX: Store fingerprint, not the full dict
+        self._last_chart_data = fp
 
         self._chart_render_pending = True
-        self._last_chart_data = trend_data
 
         threading.Thread(
             target=self._render_chart_background,
@@ -674,91 +688,76 @@ class TradingGUI:
         ).start()
 
     def _render_chart_background(self, trend_data):
-        """Render matplotlib figure off the main thread, then post draw() back."""
+        """Prepare chart data off the main thread, then post drawing to main thread."""
+        # FIX: Only prepare data here — no matplotlib calls on background thread
         try:
-            self.plot_full_charts(trend_data)
+            prepared = self._prepare_plot_data(trend_data)
             if not self._closing:
-                self.root.after(0, self._safe_canvas_draw)
+                self.root.after(0, lambda: self._draw_chart_main_thread(prepared))
         except Exception as e:
             logger.error(f"Background chart render error: {e}", exc_info=True)
         finally:
             self._chart_render_pending = False
 
-    def _safe_canvas_draw(self):
-        """Draw the canvas on the main thread; ignore errors if widget is gone."""
-        try:
-            if self.canvas and not self._closing:
-                self.canvas.draw()
-        except Exception as e:
-            logger.warning(f"Canvas draw error: {e}")
+    # FIX: New method to prepare data safely off main thread
+    def _prepare_plot_data(self, trend_data):
+        """Extract and clean all series from trend_data — safe to run off main thread."""
 
-    def plot_full_charts(self, trend_data):
-        """Render Close/SuperTrend, MACD and RSI subplots into self.fig."""
-
-        def clean_list(raw):
+        def clean(raw):
             if not raw:
                 return []
             try:
                 return [
                     float(x) if x is not None and str(x).lower() not in ("nan", "none")
-                    else np.nan
+                    else float('nan')
                     for x in raw
                 ]
-            except Exception as e:
-                logger.warning(f"clean_list error: {e}")
+            except Exception:
                 return []
 
+        td = trend_data or {}
+        return {
+            "close": clean(td.get("close")),
+            "st_short": clean((td.get("super_trend_short") or {}).get("trend")),
+            "st_long": clean((td.get("super_trend_long") or {}).get("trend")),
+            "bb_upper": clean((td.get("bb") or {}).get("upper")),
+            "bb_mid": clean((td.get("bb") or {}).get("middle")),
+            "bb_lower": clean((td.get("bb") or {}).get("lower")),
+            "macd": clean((td.get("macd") or {}).get("macd")),
+            "signal": clean((td.get("macd") or {}).get("signal")),
+            "hist": clean((td.get("macd") or {}).get("histogram")),
+            "rsi": clean(td.get("rsi_series")),
+        }
+
+    # FIX: All matplotlib operations now on main thread
+    def _draw_chart_main_thread(self, p):
+        """All matplotlib operations — called on main thread via root.after()."""
+        # FIX: All fig/axes operations are now on the main thread
         try:
             self.fig.clear()
             axs = self.fig.subplots(
                 3, 1, sharex=True, gridspec_kw={"height_ratios": [2, 1, 1]}
             )
 
-            td = trend_data or {}
-
-            close = clean_list(td.get("close"))
-            st_short = clean_list((td.get("super_trend_short") or {}).get("trend"))
-            st_long = clean_list((td.get("super_trend_long") or {}).get("trend"))
-            bb = td.get("bb") or {}
-            bb_mid = clean_list(bb.get("middle"))
-            bb_upper = clean_list(bb.get("upper"))
-            bb_lower = clean_list(bb.get("lower"))
-            n = len(close)
+            n = len(p["close"])
             x = range(n)
 
             # ── Subplot 0: Price + SuperTrend ─────────────────────────────────
             has_plot0_artists = False
 
-            if close:
-                axs[0].plot(x, close, label="Close", color="royalblue", linewidth=2)
+            if p["close"]:
+                axs[0].plot(x, p["close"], label="Close", color="royalblue", linewidth=2)
                 has_plot0_artists = True
 
-            if st_short and len(st_short) == n:
-                axs[0].plot(x, st_short, label="Short ST", color="orange",
+            if p["st_short"] and len(p["st_short"]) == n:
+                axs[0].plot(x, p["st_short"], label="Short ST", color="orange",
                             linestyle="--", linewidth=1.7)
                 has_plot0_artists = True
-            elif st_short:
-                logger.warning("Short ST length mismatch — skipping plot.")
 
-            if st_long and len(st_long) == n:
-                axs[0].plot(x, st_long, label="Long ST", color="purple",
+            if p["st_long"] and len(p["st_long"]) == n:
+                axs[0].plot(x, p["st_long"], label="Long ST", color="purple",
                             linestyle="--", linewidth=1.7)
                 has_plot0_artists = True
-            elif st_long:
-                logger.warning("Long ST length mismatch — skipping plot.")
-
-            # Bollinger Bands (commented out but included for completeness)
-            if bb_upper and bb_mid and bb_lower and all(
-                    len(b) == n for b in [bb_upper, bb_mid, bb_lower]
-            ):
-                # Uncomment these if you want to show Bollinger Bands
-                # axs[0].plot(x, bb_upper, label="BB Upper", color="green", linestyle=":")
-                # axs[0].plot(x, bb_mid, label="BB Middle", color="gray", linestyle="-")
-                # axs[0].plot(x, bb_lower, label="BB Lower", color="red", linestyle=":")
-                # has_plot0_artists = True
-                pass
-            elif any([bb_upper, bb_mid, bb_lower]):
-                logger.warning("BB bands length mismatch — skipping BB plots.")
 
             axs[0].set_title("Close and SuperTrend")
             axs[0].set_ylabel("Price")
@@ -767,22 +766,17 @@ class TradingGUI:
             axs[0].grid(True)
 
             # ── Subplot 1: MACD ───────────────────────────────────────────────
-            macd_d = td.get("macd") or {}
-            macd = clean_list(macd_d.get("macd"))
-            macd_sig = clean_list(macd_d.get("signal"))
-            macd_his = clean_list(macd_d.get("histogram"))
-
             has_plot1_artists = False
 
-            if macd and macd_sig and macd_his and all(
-                    len(m) == n for m in [macd, macd_sig, macd_his]
-            ):
-                axs[1].plot(x, macd, label="MACD", color="black")
-                axs[1].plot(x, macd_sig, label="MACD Signal", color="red")
-                axs[1].bar(x, macd_his, label="MACD Histogram", color="gray", alpha=0.4)
+            if p["macd"] and len(p["macd"]) == n:
+                axs[1].plot(x, p["macd"], label="MACD", color="black")
                 has_plot1_artists = True
-            elif any([macd, macd_sig, macd_his]):
-                logger.warning("MACD data length mismatch — skipping MACD plot.")
+            if p["signal"] and len(p["signal"]) == n:
+                axs[1].plot(x, p["signal"], label="MACD Signal", color="red")
+                has_plot1_artists = True
+            if p["hist"] and len(p["hist"]) == n:
+                axs[1].bar(x, p["hist"], label="MACD Histogram", color="gray", alpha=0.4)
+                has_plot1_artists = True
 
             axs[1].set_title("MACD")
             if has_plot1_artists:
@@ -790,17 +784,13 @@ class TradingGUI:
             axs[1].grid(True)
 
             # ── Subplot 2: RSI ────────────────────────────────────────────────
-            rsi = clean_list(td.get("rsi_series"))
-
             has_plot2_artists = False
 
-            if rsi and len(rsi) == n:
-                axs[2].plot(x, rsi, label="RSI", color="magenta")
+            if p["rsi"] and len(p["rsi"]) == n:
+                axs[2].plot(x, p["rsi"], label="RSI", color="magenta")
                 axs[2].axhline(60, linestyle="--", color="red", alpha=0.5, label="Overbought (60)")
                 axs[2].axhline(40, linestyle="--", color="green", alpha=0.5, label="Oversold (40)")
                 has_plot2_artists = True
-            elif rsi:
-                logger.warning("RSI length mismatch — skipping RSI plot.")
 
             axs[2].set_ylim(0, 100)
             axs[2].set_title("RSI")
@@ -809,9 +799,25 @@ class TradingGUI:
             axs[2].grid(True)
 
             self.fig.tight_layout()
+            self._safe_canvas_draw()
 
         except Exception as e:
-            logger.error(f"plot_full_charts error: {e}", exc_info=True)
+            logger.error(f"_draw_chart_main_thread error: {e}", exc_info=True)
+
+    # Keep method name for backward compatibility, but redirect
+    def plot_full_charts(self, trend_data):
+        """Legacy method kept for backward compatibility."""
+        # FIX: Redirect to new thread-safe implementation
+        prepared = self._prepare_plot_data(trend_data)
+        self._draw_chart_main_thread(prepared)
+
+    def _safe_canvas_draw(self):
+        """Draw the canvas on the main thread; ignore errors if widget is gone."""
+        try:
+            if self.canvas and not self._closing:
+                self.canvas.draw()
+        except Exception as e:
+            logger.warning(f"Canvas draw error: {e}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Settings popups
@@ -927,6 +933,7 @@ class TradingGUI:
         """Ctrl+S handler — placeholder for quick-save logic."""
         logger.info("Quick save triggered (not yet implemented).")
 
+    # FIX: Poll until engine stops before destroying window
     def _on_closing(self, event=None):
         """Handle window close / Ctrl+Q — stop the engine then destroy."""
         try:
@@ -935,14 +942,30 @@ class TradingGUI:
                 threading.Thread(
                     target=self._threaded_stop_app, daemon=True, name="CloseStopThread"
                 ).start()
+                # FIX: Poll until stopped, then destroy — don't destroy immediately
+                self.root.after(200, self._poll_until_stopped_then_destroy)
+            else:
+                self._destroy_root()
         except Exception as e:
             logger.error(f"_on_closing stop error: {e}", exc_info=True)
-        finally:
-            try:
-                self.root.quit()
-                self.root.destroy()
-            except Exception:
-                pass
+            self._destroy_root()
+
+    # FIX: New polling method
+    def _poll_until_stopped_then_destroy(self):
+        """Keep polling every 200 ms until engine stops, then destroy safely."""
+        if self.app_running:
+            self.root.after(200, self._poll_until_stopped_then_destroy)
+        else:
+            self._destroy_root()
+
+    # FIX: New destroy method
+    def _destroy_root(self):
+        """Safely destroy the root window."""
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
 
     def _bind_events(self):
         """Bind keyboard shortcuts and window-close protocol."""
