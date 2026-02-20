@@ -1,3 +1,4 @@
+# Utils.py - Cleaned up version with option methods removed
 import asyncio
 import calendar
 import csv
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 class Utils:
+    """# REFACTORED: All option-related methods moved to OptionUtils.py"""
+
     DATE_FORMAT = "%Y-%m-%d"
     TIME_FORMAT = "%H:%M:%S"
     DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -171,6 +174,15 @@ class Utils:
         return dt_obj.strftime(Utils.DATE_FORMAT)
 
     @staticmethod
+    def to_datetime(date_str: str, time_str: str = "00:00:00") -> datetime:
+        """Convert date string and optional time string to datetime."""
+        try:
+            return datetime.strptime(f"{date_str} {time_str}", f"{Utils.DATE_FORMAT} {Utils.TIME_FORMAT}")
+        except Exception as e:
+            logger.error(f"Error converting to datetime: {e}")
+            return datetime.now()
+
+    @staticmethod
     def is_debug() -> bool:
         return os.getenv('DEBUG', '').lower() in {'1', 'true', 'yes'}
 
@@ -298,14 +310,14 @@ class Utils:
             unit = interval[-1]
             measurement = int(interval[:-1])
 
-            if unit not in {'S','s', 'M','m', 'H','h', 'D','d'}:
+            if unit not in {'S', 's', 'M', 'm', 'H', 'h', 'D', 'd'}:
                 raise ValueError(f"Unsupported interval unit: '{unit}'")
 
             return unit, measurement
 
         except Exception as e:
             logger.error(f"Error parsing interval '{interval}': {e}", exc_info=True)
-            raise  # Re-raise to let caller decide whether to catch or exit
+            raise
 
     @staticmethod
     def get_interval_minutes(interval_unit: str, interval_measurement: int) -> int:

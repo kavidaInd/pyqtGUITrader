@@ -1,128 +1,240 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, StringVar
-from gui import ProfitStoplossSetting
+# PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
+from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
+                             QPushButton, QMessageBox, QVBoxLayout,
+                             QComboBox, QHBoxLayout, QLabel, QGroupBox)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QFont
+from gui.ProfitStoplossSetting import ProfitStoplossSetting
 from BaseEnums import STOP, TRAILING
 import threading
 
 
-class ProfitStoplossSettingGUI(tk.Toplevel):
-    def __init__(self, master, profit_stoploss_setting: ProfitStoplossSetting, app=None):
-        super().__init__(master)
-        self.profit_type_var = None
-        self.title("Profit/Stoploss Setting")
+class ProfitStoplossSettingGUI(QDialog):
+    def __init__(self, parent, profit_stoploss_setting: ProfitStoplossSetting, app=None):
+        super().__init__(parent)
         self.profit_stoploss_setting = profit_stoploss_setting
         self.app = app
+        self.setWindowTitle("Profit & Stoploss Settings")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        self.setStyleSheet("""
+            QDialog { background:#161b22; color:#e6edf3; }
+            QGroupBox { color:#e6edf3; border:2px solid #30363d; border-radius:6px;
+                        margin-top:1em; padding-top:15px; font-weight:bold; }
+            QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 10px; }
+            QLabel { color:#8b949e; }
+            QLineEdit, QComboBox { background:#21262d; color:#e6edf3;
+                                   border:1px solid #30363d; border-radius:4px; padding:8px;
+                                   font-size:10pt; }
+            QLineEdit:focus, QComboBox:focus { border:2px solid #58a6ff; }
+            QPushButton { background:#238636; color:#fff; border-radius:4px; padding:12px;
+                         font-weight:bold; font-size:10pt; }
+            QPushButton:hover { background:#2ea043; }
+            QPushButton:pressed { background:#1e7a2f; }
+            QPushButton:disabled { background:#21262d; color:#484f58; }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+
+        # Header
+        header = QLabel("💹 Profit & Stoploss Configuration")
+        header.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        header.setStyleSheet("color: #e6edf3; padding: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+
+        # Main settings group
+        main_group = QGroupBox("Main Settings")
+        main_layout = QFormLayout()
+        main_layout.setSpacing(12)
+        main_layout.setLabelAlignment(Qt.AlignRight)
+
+        # Profit Type ComboBox
+        self.profit_type_combo = QComboBox()
+        self.profit_type_combo.addItem("STOP (Fixed Target)", STOP)
+        self.profit_type_combo.addItem("TRAILING (Dynamic)", TRAILING)
+        current = STOP if profit_stoploss_setting.profit_type == STOP else TRAILING
+        self.profit_type_combo.setCurrentIndex(0 if current == STOP else 1)
+        self.profit_type_combo.currentIndexChanged.connect(self._on_profit_type_change)
+        main_layout.addRow("💰 Profit Type:", self.profit_type_combo)
+
+        main_group.setLayout(main_layout)
+        layout.addWidget(main_group)
+
+        # Values group
+        values_group = QGroupBox("Threshold Values")
+        values_layout = QFormLayout()
+        values_layout.setSpacing(12)
+        values_layout.setLabelAlignment(Qt.AlignRight)
+
         self.vars = {}
         self.entries = {}
-        self.configure(bg="#f4f6fa")
-        self.resizable(False, False)
-        self.grab_set()
-        self._setup_styles()
-        self.fields = [
-            ("Take Profit", "tp_percentage", float, "💰"),
-            ("Stoploss", "stoploss_percentage", float, "🛑"),
-            ("Trailing First Profit", "trailing_first_profit", float, "📈"),
-            ("Max Profit", "max_profit", float, "🏆"),
-            ("Profit Step", "profit_step", float, "➕"),
-            ("Loss Step", "loss_step", float, "➖"),
+
+        fields = [
+            ("Take Profit (%)", "tp_percentage", float, "💰"),
+            ("Stoploss (%)", "stoploss_percentage", float, "🛑"),
+            ("Trailing First Profit (%)", "trailing_first_profit", float, "📈"),
+            ("Max Profit (%)", "max_profit", float, "🏆"),
+            ("Profit Step (%)", "profit_step", float, "➕"),
+            ("Loss Step (%)", "loss_step", float, "➖"),
         ]
-        self.create_widgets()
-        self.bind("<Return>", lambda e: self.save_settings())
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
-    def _setup_styles(self):
-        style = ttk.Style(self)
-        style.theme_use('clam')
-        style.configure("Light.TFrame", background="#f4f6fa")
-        style.configure("Light.TLabel", background="#f4f6fa", foreground="#333333")
-        style.configure("Header.TLabel", font=("Segoe UI", 15, "bold"), background="#f4f6fa", foreground="#222831")
+        for label, key, typ, icon in fields:
+            edit = QLineEdit()
+            edit.setPlaceholderText(f"Enter {label.lower()}")
+            val = getattr(profit_stoploss_setting, key, 0)
+            edit.setText(str(val))
+            values_layout.addRow(f"{icon} {label}:", edit)
+            self.vars[key] = (edit, typ)
+            self.entries[key] = edit
 
-    def create_widgets(self):
-        frame = ttk.Frame(self, padding="24 18 24 18", style="Light.TFrame")
-        frame.grid(row=0, column=0, sticky="nsew")
+        values_group.setLayout(values_layout)
+        layout.addWidget(values_group)
 
-        header = ttk.Label(frame, text="💹 Profit/Stoploss Settings", style="Header.TLabel")
-        header.grid(row=0, column=0, columnspan=2, pady=(0, 18))
+        # Status label for feedback
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color: #3fb950; font-size: 9pt; font-weight: bold; padding: 5px;")
+        layout.addWidget(self.status_label)
 
-        ttk.Label(frame, text="💰 Profit Type:", style="Light.TLabel", font=("Segoe UI", 10)).grid(
-            row=1, column=0, sticky="e", padx=(0, 12), pady=6
-        )
-        profit_type_value = STOP if self.profit_stoploss_setting.profit_type == STOP else TRAILING
-        profit_type_str = "STOP" if profit_type_value == STOP else "TRAILING"
-        self.profit_type_var = StringVar(value=profit_type_str)
-        profit_type_combo = ttk.Combobox(
-            frame, textvariable=self.profit_type_var,
-            values=["STOP", "TRAILING"], state="readonly", width=25
-        )
-        profit_type_combo.grid(row=1, column=1, sticky="w", pady=6)
-        profit_type_combo.bind("<<ComboboxSelected>>", self._on_profit_type_change)
-        self.vars["profit_type"] = self.profit_type_var
+        # Button layout
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
 
-        first_entry = None
-        for idx, (label, key, typ, icon) in enumerate(self.fields, start=2):
-            ttk.Label(frame, text=f"{icon} {label}:", style="Light.TLabel", font=("Segoe UI", 10)).grid(
-                row=idx, column=0, sticky="e", padx=(0, 12), pady=6
-            )
-            val = getattr(self.profit_stoploss_setting, key, 0)
-            var = tk.DoubleVar(value=val if val is not None else 0)
-            entry = ttk.Entry(frame, textvariable=var, width=28)
-            entry.grid(row=idx, column=1, sticky="w", pady=6)
-            self.vars[key] = var
-            self.entries[key] = entry
-            if first_entry is None:
-                first_entry = entry
-        if first_entry:
-            first_entry.focus_set()
+        self.save_btn = QPushButton("💾 Save Settings")
+        self.save_btn.clicked.connect(self.save)
 
-        sep = ttk.Separator(frame, orient="horizontal")
-        sep.grid(row=len(self.fields) + 2, column=0, columnspan=2, sticky="ew", pady=(12, 6))
+        self.cancel_btn = QPushButton("❌ Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton { background:#da3633; color:#fff; border-radius:4px; padding:12px; }
+            QPushButton:hover { background:#f85149; }
+        """)
 
-        btn_frame = ttk.Frame(frame, style="Light.TFrame")
-        btn_frame.grid(row=len(self.fields) + 3, column=0, columnspan=2, pady=(6, 0), sticky="ew")
+        btn_layout.addWidget(self.save_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
 
-        save_btn = ttk.Button(btn_frame, text="💾 Save", command=self.save_settings)
-        save_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
-
-        cancel_btn = ttk.Button(btn_frame, text="❌ Cancel", command=self.destroy)
-        cancel_btn.pack(side="left", fill="x", expand=True)
-
-        # Set initial state of entries based on current profit_type
         self._on_profit_type_change()
 
-    def _on_profit_type_change(self, event=None):
-        selected = self.profit_type_var.get()
-        # Only enable trailing fields in TRAILING mode, always enable TP/SL
+    def _on_profit_type_change(self):
+        selected = self.profit_type_combo.currentData()
         trailing_keys = {"trailing_first_profit", "max_profit", "profit_step", "loss_step"}
-        for key, entry in self.entries.items():
+        for key, edit in self.entries.items():
             if key in trailing_keys:
-                entry.config(state="normal" if selected == "TRAILING" else "disabled")
-            else:
-                entry.config(state="normal")
-
-    def save_settings(self):
-        # Run the save logic in a background thread for responsiveness
-        threading.Thread(target=self._threaded_save_settings, daemon=True).start()
-
-    def _threaded_save_settings(self):
-        try:
-            # Validate numeric input
-            for key, var in self.vars.items():
-                value = var.get()
-                if key == "profit_type":
-                    self.profit_stoploss_setting.profit_type = STOP if value == "STOP" else TRAILING
+                edit.setEnabled(selected == TRAILING)
+                if selected == TRAILING:
+                    edit.setPlaceholderText(f"Enter value (required for trailing)")
                 else:
-                    try:
-                        value = float(value)
-                    except Exception:
-                        self.after(0, lambda k=key: messagebox.showerror(
-                            "Error", f"{k.replace('_', ' ').title()} must be a number.", parent=self))
-                        return
-                    self.profit_stoploss_setting.__setattr__(key, value)
-            self.profit_stoploss_setting.save()
-            if self.app and hasattr(self.app, "refresh_settings_live"):
-                self.after(0, self.app.refresh_settings_live)
-            self.after(0, lambda: messagebox.showinfo("Saved", "Profit/Stoploss settings saved!", parent=self))
-            self.after(0, self.destroy)
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to save settings: {e}", parent=self))
+                    edit.setPlaceholderText("Disabled in STOP mode")
+            else:
+                edit.setEnabled(True)
+
+    def show_success_feedback(self):
+        """# PYQT: Show success with visual feedback"""
+        self.status_label.setText("✓ Settings saved successfully!")
+        self.status_label.setStyleSheet("color: #3fb950; font-size: 10pt; font-weight: bold; padding: 5px;")
+
+        # Animate button
+        original_text = self.save_btn.text()
+        self.save_btn.setText("✓ Saved!")
+        self.save_btn.setStyleSheet("""
+            QPushButton { background:#2ea043; color:#fff; border-radius:4px; padding:12px; }
+        """)
+
+        # Flash all input fields briefly
+        for entry in self.entries.values():
+            if entry.isEnabled():
+                entry.setStyleSheet("""
+                    QLineEdit { background:#2d4a2d; color:#e6edf3; border:2px solid #3fb950;
+                               border-radius:4px; padding:8px; }
+                """)
+
+        # Reset after delay
+        QTimer.singleShot(1500, self.reset_styles)
+
+    def reset_styles(self):
+        """# PYQT: Reset all styles to normal"""
+        for entry in self.entries.values():
+            entry.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
+
+        self.save_btn.setText("💾 Save Settings")
+        self.save_btn.setStyleSheet("""
+            QPushButton { background:#238636; color:#fff; border-radius:4px; padding:12px; }
+            QPushButton:hover { background:#2ea043; }
+        """)
+
+    def show_error_feedback(self, error_msg):
+        """# PYQT: Show error with visual feedback"""
+        self.status_label.setText(f"✗ {error_msg}")
+        self.status_label.setStyleSheet("color: #f85149; font-size: 10pt; font-weight: bold; padding: 5px;")
+
+        # Flash button red
+        self.save_btn.setStyleSheet("""
+            QPushButton { background:#f85149; color:#fff; border-radius:4px; padding:12px; }
+        """)
+
+        QTimer.singleShot(2000, self.reset_styles)
+
+    def save(self):
+        """# PYQT: Save with visual feedback"""
+        # Disable button during save
+        self.save_btn.setEnabled(False)
+        self.save_btn.setText("⏳ Validating...")
+        self.status_label.setText("")  # Clear any previous status
+
+        def _save():
+            try:
+                # Validate all fields
+                for key, (edit, typ) in self.vars.items():
+                    text = edit.text().strip()
+                    if not text and edit.isEnabled():
+                        raise ValueError(f"{key.replace('_', ' ').title()} is required")
+                    if edit.isEnabled():
+                        try:
+                            float(text)
+                        except ValueError:
+                            raise ValueError(f"{key.replace('_', ' ').title()} must be a number")
+
+                # Set profit type
+                profit_type_val = self.profit_type_combo.currentData()
+                self.profit_stoploss_setting.profit_type = profit_type_val
+
+                # Set numeric fields
+                for key, (edit, typ) in self.vars.items():
+                    if edit.isEnabled():
+                        text = edit.text().strip()
+                        value = float(text)
+                        setattr(self.profit_stoploss_setting, key, value)
+
+                self.profit_stoploss_setting.save()
+
+                if self.app and hasattr(self.app, "refresh_settings_live"):
+                    self.app.refresh_settings_live()
+
+                # Show success and close
+                QTimer.singleShot(0, self.save_success)
+
+            except ValueError as e:
+                QTimer.singleShot(0, lambda: self.save_error(str(e)))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self.save_error(str(e)))
+
+        threading.Thread(target=_save, daemon=True).start()
+
+    def save_success(self):
+        """# PYQT: Handle successful save"""
+        self.show_success_feedback()
+        self.save_btn.setEnabled(True)
+        # Close after showing success
+        QTimer.singleShot(2000, self.accept)
+
+    def save_error(self, error_msg):
+        """# PYQT: Handle save error"""
+        self.show_error_feedback(error_msg)
+        self.save_btn.setEnabled(True)

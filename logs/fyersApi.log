@@ -1,1 +1,8 @@
 {"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/funds","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-02-19 22:11:41,595+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:16:59,906+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:22:09,932+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:22:10,922+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:28:06,209+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:30:34,490+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:37:31,568+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2026-02-20 19:37:32,724+0530","service":"FyersAPI"}
