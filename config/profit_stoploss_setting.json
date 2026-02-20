@@ -1,9 +1,9 @@
 {
-  "profit_type": 2,
-  "tp_percentage": 15.0,
+  "profit_type": 1,
+  "tp_percentage": 6.0,
   "stoploss_percentage": 8.0,
   "trailing_first_profit": 5.0,
-  "max_profit": 20.0,
+  "max_profit": 30.0,
   "profit_step": 2.0,
   "loss_step": 1.5
 }

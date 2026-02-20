@@ -5,10 +5,10 @@
   "lot_size": 65,
   "call_lookback": 0,
   "put_lookback": 0,
-  "history_interval": "2m",
+  "history_interval": "30S",
   "max_num_of_option": 1800,
-  "lower_percentage": 0.1,
-  "cancel_after": 2,
+  "lower_percentage": 0.5,
+  "cancel_after": 5,
   "capital_reserve": 0,
-  "sideway_zone_trade": false
+  "sideway_zone_trade": true
 }

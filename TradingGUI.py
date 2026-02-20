@@ -300,9 +300,13 @@ class TradingGUI:
                 if self.notebook.tab(i, "text") == _TAB_STATS:
                     self.notebook.forget(i)
                     break
+
             self.stats_tab = StatsTab(self.notebook, self.app.state)
-            self.notebook.add(self.stats_tab, text=_TAB_STATS)
+
+            # Add the stats tab's frame to the notebook
+            self.notebook.add(self.stats_tab.frame, text=_TAB_STATS)
             self.stats_tab_idx = self.notebook.index("end") - 1
+
         except Exception as e:
             logger.error(f"add_stats_tab error: {e}", exc_info=True)
 
@@ -689,6 +693,7 @@ class TradingGUI:
 
     def plot_full_charts(self, trend_data):
         """Render Close/SuperTrend, MACD and RSI subplots into self.fig."""
+
         def clean_list(raw):
             if not raw:
                 return []
@@ -710,73 +715,96 @@ class TradingGUI:
 
             td = trend_data or {}
 
-            close    = clean_list(td.get("close"))
+            close = clean_list(td.get("close"))
             st_short = clean_list((td.get("super_trend_short") or {}).get("trend"))
-            st_long  = clean_list((td.get("super_trend_long")  or {}).get("trend"))
-            bb       = td.get("bb") or {}
-            bb_mid   = clean_list(bb.get("middle"))
+            st_long = clean_list((td.get("super_trend_long") or {}).get("trend"))
+            bb = td.get("bb") or {}
+            bb_mid = clean_list(bb.get("middle"))
             bb_upper = clean_list(bb.get("upper"))
             bb_lower = clean_list(bb.get("lower"))
             n = len(close)
             x = range(n)
 
             # ── Subplot 0: Price + SuperTrend ─────────────────────────────────
+            has_plot0_artists = False
+
             if close:
                 axs[0].plot(x, close, label="Close", color="royalblue", linewidth=2)
+                has_plot0_artists = True
+
             if st_short and len(st_short) == n:
                 axs[0].plot(x, st_short, label="Short ST", color="orange",
                             linestyle="--", linewidth=1.7)
+                has_plot0_artists = True
             elif st_short:
                 logger.warning("Short ST length mismatch — skipping plot.")
+
             if st_long and len(st_long) == n:
                 axs[0].plot(x, st_long, label="Long ST", color="purple",
                             linestyle="--", linewidth=1.7)
+                has_plot0_artists = True
             elif st_long:
                 logger.warning("Long ST length mismatch — skipping plot.")
+
+            # Bollinger Bands (commented out but included for completeness)
             if bb_upper and bb_mid and bb_lower and all(
-                len(b) == n for b in [bb_upper, bb_mid, bb_lower]
+                    len(b) == n for b in [bb_upper, bb_mid, bb_lower]
             ):
-                # Bollinger Bands (uncomment to enable)
-                # axs[0].plot(x, bb_upper, label="BB Upper", color="green",  linestyle=":")
-                # axs[0].plot(x, bb_mid,   label="BB Middle", color="gray",  linestyle="-")
-                # axs[0].plot(x, bb_lower, label="BB Lower",  color="red",   linestyle=":")
+                # Uncomment these if you want to show Bollinger Bands
+                # axs[0].plot(x, bb_upper, label="BB Upper", color="green", linestyle=":")
+                # axs[0].plot(x, bb_mid, label="BB Middle", color="gray", linestyle="-")
+                # axs[0].plot(x, bb_lower, label="BB Lower", color="red", linestyle=":")
+                # has_plot0_artists = True
                 pass
             elif any([bb_upper, bb_mid, bb_lower]):
                 logger.warning("BB bands length mismatch — skipping BB plots.")
 
             axs[0].set_title("Close and SuperTrend")
             axs[0].set_ylabel("Price")
-            axs[0].legend(loc="upper left", fontsize=8)
+            if has_plot0_artists:
+                axs[0].legend(loc="upper left", fontsize=8)
             axs[0].grid(True)
 
             # ── Subplot 1: MACD ───────────────────────────────────────────────
-            macd_d   = td.get("macd") or {}
-            macd     = clean_list(macd_d.get("macd"))
+            macd_d = td.get("macd") or {}
+            macd = clean_list(macd_d.get("macd"))
             macd_sig = clean_list(macd_d.get("signal"))
             macd_his = clean_list(macd_d.get("histogram"))
+
+            has_plot1_artists = False
+
             if macd and macd_sig and macd_his and all(
-                len(m) == n for m in [macd, macd_sig, macd_his]
+                    len(m) == n for m in [macd, macd_sig, macd_his]
             ):
-                axs[1].plot(x, macd,     label="MACD",           color="black")
-                axs[1].plot(x, macd_sig, label="MACD Signal",    color="red")
-                axs[1].bar( x, macd_his, label="MACD Histogram", color="gray", alpha=0.4)
+                axs[1].plot(x, macd, label="MACD", color="black")
+                axs[1].plot(x, macd_sig, label="MACD Signal", color="red")
+                axs[1].bar(x, macd_his, label="MACD Histogram", color="gray", alpha=0.4)
+                has_plot1_artists = True
             elif any([macd, macd_sig, macd_his]):
                 logger.warning("MACD data length mismatch — skipping MACD plot.")
+
             axs[1].set_title("MACD")
-            axs[1].legend(loc="upper left", fontsize=8)
+            if has_plot1_artists:
+                axs[1].legend(loc="upper left", fontsize=8)
             axs[1].grid(True)
 
             # ── Subplot 2: RSI ────────────────────────────────────────────────
             rsi = clean_list(td.get("rsi_series"))
+
+            has_plot2_artists = False
+
             if rsi and len(rsi) == n:
                 axs[2].plot(x, rsi, label="RSI", color="magenta")
-                axs[2].axhline(60, linestyle="--", color="red",   alpha=0.5, label="Overbought (60)")
+                axs[2].axhline(60, linestyle="--", color="red", alpha=0.5, label="Overbought (60)")
                 axs[2].axhline(40, linestyle="--", color="green", alpha=0.5, label="Oversold (40)")
+                has_plot2_artists = True
             elif rsi:
                 logger.warning("RSI length mismatch — skipping RSI plot.")
+
             axs[2].set_ylim(0, 100)
             axs[2].set_title("RSI")
-            axs[2].legend(loc="upper left", fontsize=8)
+            if has_plot2_artists:
+                axs[2].legend(loc="upper left", fontsize=8)
             axs[2].grid(True)
 
             self.fig.tight_layout()
