@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 import matplotlib
+
 matplotlib.use("Agg")  # Use non-interactive backend for thread-safe rendering
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,9 +29,9 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # ── Tab title constants ────────────────────────────────────────────────────────
-_TAB_LOGS    = "📝 Logs"
+_TAB_LOGS = "📝 Logs"
 _TAB_HISTORY = "Trade History"
-_TAB_STATS   = "📊 Stats"
+_TAB_STATS = "📊 Stats"
 
 
 class TradingGUI:
@@ -43,32 +44,32 @@ class TradingGUI:
         self.root.minsize(1100, 700)
 
         # ── Settings objects ───────────────────────────────────────────────────
-        self.config                 = Config()
-        self.daily_settings         = DailyTradeSetting()
-        self.brokerage_setting      = BrokerageSetting()
-        self.strategy_setting       = StrategySetting()
+        self.config = Config()
+        self.daily_settings = DailyTradeSetting()
+        self.brokerage_setting = BrokerageSetting()
+        self.strategy_setting = StrategySetting()
         self.profit_stoploss_setting = ProfitStoplossSetting()
-        self.trading_mode           = tk.StringVar(value="algo")
+        self.trading_mode = tk.StringVar(value="algo")
 
         # ── Chart state ────────────────────────────────────────────────────────
-        self.fig    = plt.Figure(figsize=(10, 6))
+        self.fig = plt.Figure(figsize=(10, 6))
         self.canvas = None
-        self._last_chart_data      = None   # cache — skip render if unchanged
+        self._last_chart_data = None  # cache — skip render if unchanged
         self._chart_render_pending = False  # guard — prevent concurrent renders
 
         # ── Widget references (populated during layout) ────────────────────────
-        self.stats_tab          = None
-        self.stats_tab_idx      = None
-        self.status_labels      = None
-        self.status_frame       = None
-        self.trade_history_tab  = None
-        self.notebook           = None
+        self.stats_tab = None
+        self.stats_tab_idx = None
+        self.status_labels = None
+        self.status_frame = None
+        self.trade_history_tab = None
+        self.notebook = None
 
         # ── Runtime flags ──────────────────────────────────────────────────────
-        self.app_running              = False
-        self._status_update_pending   = False   # guard for update_status_labels loop
-        self._chart_update_pending    = False   # guard for update_chart loop
-        self._closing                 = False   # set True when window is closing
+        self.app_running = False
+        self._status_update_pending = False  # guard for update_status_labels loop
+        self._chart_update_pending = False  # guard for update_chart loop
+        self._closing = False  # set True when window is closing
 
         # ── Trading app ────────────────────────────────────────────────────────
         self.app = self._create_trading_app()
@@ -117,25 +118,25 @@ class TradingGUI:
         """Configure ttk styles for the dashboard."""
         s = ttk.Style()
         s.theme_use("clam")
-        s.configure("Light.TFrame",      background="#f4f6fa")
-        s.configure("Light.TLabel",      background="#f4f6fa", foreground="#333333")
+        s.configure("Light.TFrame", background="#f4f6fa")
+        s.configure("Light.TLabel", background="#f4f6fa", foreground="#333333")
         s.configure("StatusBold.TLabel", font=("Segoe UI", 10, "bold"),
                     background="#f4f6fa", foreground="#333333")
         s.configure("StatusValue.TLabel", font=("Segoe UI", 9),
                     background="#f4f6fa", foreground="#333333")
-        s.configure("TButton",       font=("Segoe UI", 9), padding=4)
-        s.configure("Green.TButton",  background="#61e786", foreground="#222", borderwidth=1)
+        s.configure("TButton", font=("Segoe UI", 9), padding=4)
+        s.configure("Green.TButton", background="#61e786", foreground="#222", borderwidth=1)
         s.map("Green.TButton",
               background=[("active", "#38cc6c"), ("disabled", "#b2f5c0")],
               foreground=[("disabled", "#888")])
-        s.configure("Red.TButton",    background="#ff6f61", foreground="#fff", borderwidth=1)
+        s.configure("Red.TButton", background="#ff6f61", foreground="#fff", borderwidth=1)
         s.map("Red.TButton",
               background=[("active", "#e53935"), ("disabled", "#ffb3b0")],
               foreground=[("disabled", "#fff")])
         s.configure("Purple.TButton", background="#b39ddb", foreground="#222", borderwidth=1)
-        s.configure("Blue.TButton",   background="#64b5f6", foreground="#222", borderwidth=1)
+        s.configure("Blue.TButton", background="#64b5f6", foreground="#222", borderwidth=1)
         s.configure("Orange.TButton", background="#ffb74d", foreground="#222", borderwidth=1)
-        s.configure("Treeview",       font=("Consolas", 9), background="#ffffff",
+        s.configure("Treeview", font=("Consolas", 9), background="#ffffff",
                     foreground="#222831", fieldbackground="#ffffff")
         s.map("Treeview", background=[("selected", "#00adb5")])
 
@@ -219,19 +220,19 @@ class TradingGUI:
         """Create the grid of status labels; return dict keyed by field name."""
         labels = {}
         fields = [
-            ("Position",          "🟢"),
+            ("Position", "🟢"),
             ("Previous Position", "🟢"),
-            ("Symbol",            "💹"),
-            ("Buy Price",         "🛒"),
-            ("Current Price",     "💰"),
-            ("Target Price",      "💰"),
-            ("Stoploss Price",    "💰"),
-            ("PnL",               "💵"),
-            ("Balance",           "💵"),
-            ("Derivative",        "📈"),
-            ("Supertrend",        "✨"),
-            ("Long Supertrend",   "✨"),
-            ("MACD",              "📊"),
+            ("Symbol", "💹"),
+            ("Buy Price", "🛒"),
+            ("Current Price", "💰"),
+            ("Target Price", "💰"),
+            ("Stoploss Price", "💰"),
+            ("PnL", "💵"),
+            ("Balance", "💵"),
+            ("Derivative", "📈"),
+            ("Supertrend", "✨"),
+            ("Long Supertrend", "✨"),
+            ("MACD", "📊"),
         ]
         for i, (field, icon) in enumerate(fields):
             ttk.Label(
@@ -248,18 +249,18 @@ class TradingGUI:
         self.start_button = ttk.Button(parent, text="▶ Start App",
                                        command=self.start_app,
                                        style="Green.TButton", width=18)
-        self.stop_button  = ttk.Button(parent, text="■ Stop App",
-                                       command=self.stop_app,
-                                       style="Red.TButton", width=18)
-        self.call_button  = ttk.Button(parent, text="📈 Buy Call",
-                                       command=self.buy_call,
-                                       style="Blue.TButton", width=18)
-        self.put_button   = ttk.Button(parent, text="📉 Buy Put",
-                                       command=self.buy_put,
-                                       style="Purple.TButton", width=18)
-        self.exit_button  = ttk.Button(parent, text="🚪 Exit Position",
-                                       command=self.exit_position,
-                                       style="Orange.TButton", width=18)
+        self.stop_button = ttk.Button(parent, text="■ Stop App",
+                                      command=self.stop_app,
+                                      style="Red.TButton", width=18)
+        self.call_button = ttk.Button(parent, text="📈 Buy Call",
+                                      command=self.buy_call,
+                                      style="Blue.TButton", width=18)
+        self.put_button = ttk.Button(parent, text="📉 Buy Put",
+                                     command=self.buy_put,
+                                     style="Purple.TButton", width=18)
+        self.exit_button = ttk.Button(parent, text="🚪 Exit Position",
+                                      command=self.exit_position,
+                                      style="Orange.TButton", width=18)
 
         for btn in [self.start_button, self.stop_button,
                     self.call_button, self.put_button, self.exit_button]:
@@ -533,13 +534,13 @@ class TradingGUI:
         if self.app is None or self.status_labels is None:
             return
 
-        s      = self.app.state
-        trend  = getattr(s, "derivative_trend", {}) or {}
+        s = self.app.state
+        trend = getattr(s, "derivative_trend", {}) or {}
         config = self.config
 
-        short_st_dir  = trend.get("super_trend_short", {}).get("direction") or []
-        long_st_dir   = trend.get("super_trend_long",  {}).get("direction") or []
-        macd_hist     = trend.get("macd", {}).get("histogram") or []
+        short_st_dir = trend.get("super_trend_short", {}).get("direction") or []
+        long_st_dir = trend.get("super_trend_long", {}).get("direction") or []
+        macd_hist = trend.get("macd", {}).get("histogram") or []
 
         def _last(lst):
             return lst[-1] if isinstance(lst, (list, tuple)) and lst else None
@@ -553,19 +554,20 @@ class TradingGUI:
                 return str(val)
 
         data = {
-            "Position":          getattr(s, "current_position",       None) or "None",
-            "Previous Position": getattr(s, "previous_position",      None) or "None",
-            "Symbol":            getattr(s, "current_trading_symbol", None) or "No Position",
-            "Buy Price":         _fmt(getattr(s, "current_buy_price",       None), ".2f"),
-            "Current Price":     _fmt(getattr(s, "current_price",           None), ".2f"),
-            "Derivative":        _fmt(getattr(s, "derivative_current_price",None), ".2f"),
-            "Supertrend":        _fmt(_last(short_st_dir)),
-            "Long Supertrend":   _fmt(_last(long_st_dir)) if getattr(config, "use_long_st", False) else "-",
-            "MACD":              _fmt(_last(macd_hist), ".4f") if _last(macd_hist) is not None else "-",
-            "PnL":               _fmt(getattr(s, "percentage_change", None), ".2f") + "%" if getattr(s, "percentage_change", None) is not None else "-",
-            "Balance":           _fmt(getattr(s, "account_balance",   None), ".2f"),
-            "Target Price":      _fmt(getattr(s, "tp_point",          None), ".2f"),
-            "Stoploss Price":    _fmt(getattr(s, "stop_loss",         None), ".2f"),
+            "Position": getattr(s, "current_position", None) or "None",
+            "Previous Position": getattr(s, "previous_position", None) or "None",
+            "Symbol": getattr(s, "current_trading_symbol", None) or "No Position",
+            "Buy Price": _fmt(getattr(s, "current_buy_price", None), ".2f"),
+            "Current Price": _fmt(getattr(s, "current_price", None), ".2f"),
+            "Derivative": _fmt(getattr(s, "derivative_current_price", None), ".2f"),
+            "Supertrend": _fmt(_last(short_st_dir)),
+            "Long Supertrend": _fmt(_last(long_st_dir)) if getattr(config, "use_long_st", False) else "-",
+            "MACD": _fmt(_last(macd_hist), ".4f") if _last(macd_hist) is not None else "-",
+            "PnL": _fmt(getattr(s, "percentage_change", None), ".2f") + "%" if getattr(s, "percentage_change",
+                                                                                       None) is not None else "-",
+            "Balance": _fmt(getattr(s, "account_balance", None), ".2f"),
+            "Target Price": _fmt(getattr(s, "tp_point", None), ".2f"),
+            "Stoploss Price": _fmt(getattr(s, "stop_loss", None), ".2f"),
         }
 
         for key, label in self.status_labels.items():
@@ -573,7 +575,7 @@ class TradingGUI:
                 text = str(data.get(key, "-"))
                 if key == "PnL":
                     pnl = getattr(s, "percentage_change", 0) or 0
-                    fg  = "#43a047" if pnl > 0 else "#e53935" if pnl < 0 else "#bdbdbd"
+                    fg = "#43a047" if pnl > 0 else "#e53935" if pnl < 0 else "#bdbdbd"
                     label.config(text=text, foreground=fg)
                 elif key == "Position":
                     fg = "#43a047" if getattr(s, "current_position", None) else "#bdbdbd"
@@ -601,8 +603,8 @@ class TradingGUI:
         """Set every button's enabled/disabled state from current app state."""
         try:
             has_position = (
-                self.app is not None
-                and getattr(self.app.state, "current_position", None) is not None
+                    self.app is not None
+                    and getattr(self.app.state, "current_position", None) is not None
             )
             mode = self.trading_mode.get()
 
@@ -611,21 +613,20 @@ class TradingGUI:
                 self.stop_button.config(state=tk.NORMAL)
                 if mode == "manual":
                     self.call_button.config(state=tk.DISABLED if has_position else tk.NORMAL)
-                    self.put_button.config( state=tk.DISABLED if has_position else tk.NORMAL)
-                    self.exit_button.config(state=tk.NORMAL  if has_position else tk.DISABLED)
-                else:
+                    self.put_button.config(state=tk.DISABLED if has_position else tk.NORMAL)
+                    self.exit_button.config(state=tk.NORMAL if has_position else tk.DISABLED)
+                else:  # algo mode
                     self.call_button.config(state=tk.DISABLED)
-                    self.put_button.config( state=tk.DISABLED)
-                    self.exit_button.config(state=tk.DISABLED)
+                    self.put_button.config(state=tk.DISABLED)
+                    self.exit_button.config(state=tk.NORMAL if has_position else tk.DISABLED)
             else:
                 self.start_button.config(state=tk.NORMAL)
-                self.stop_button.config( state=tk.DISABLED)
-                self.call_button.config( state=tk.DISABLED)
-                self.put_button.config(  state=tk.DISABLED)
-                self.exit_button.config( state=tk.DISABLED)
+                self.stop_button.config(state=tk.DISABLED)
+                self.call_button.config(state=tk.DISABLED)
+                self.put_button.config(state=tk.DISABLED)
+                self.exit_button.config(state=tk.DISABLED)
         except Exception as e:
             logger.error(f"update_button_states error: {e}", exc_info=True)
-
     # ══════════════════════════════════════════════════════════════════════════
     # Chart — non-blocking periodic render
     # ══════════════════════════════════════════════════════════════════════════
@@ -905,8 +906,8 @@ class TradingGUI:
         """Refresh the trade-history tab if it exists and supports refresh()."""
         try:
             if (
-                self.trade_history_tab is not None
-                and hasattr(self.trade_history_tab, "refresh")
+                    self.trade_history_tab is not None
+                    and hasattr(self.trade_history_tab, "refresh")
             ):
                 self.trade_history_tab.refresh()
         except Exception as e:
@@ -947,7 +948,7 @@ class TradingGUI:
         """Bind keyboard shortcuts and window-close protocol."""
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.root.bind("<Control-q>", self._on_closing)
-        self.root.bind("<F5>",        self._refresh_all)
+        self.root.bind("<F5>", self._refresh_all)
         self.root.bind("<Control-s>", self._quick_save_settings)
 
     @staticmethod
@@ -968,5 +969,5 @@ class TradingGUI:
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     root = tk.Tk()
-    app  = TradingGUI(root)
+    app = TradingGUI(root)
     root.mainloop()
