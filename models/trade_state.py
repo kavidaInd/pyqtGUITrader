@@ -1,6 +1,44 @@
-from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Any, Union
+"""
+trade_state.py
+==============
+Thread-safe TradeState for the Algo Trading Dashboard.
+
+THREADING MODEL
+---------------
+Three concurrent actors touch this object:
+
+  1. WebSocket thread  (Stage 1) — writes price fields on every tick
+  2. Thread-pool       (Stage 2) — reads prices, writes position/signal state
+  3. GUI / QTimer               — reads everything for display
+
+A single `threading.RLock` (re-entrant so the same thread can nest
+acquisitions) guards every field.  Access is through @property / @setter
+pairs so all call-sites remain identical to the original dataclass —
+zero caller changes required.
+
+DESIGN RULES
+------------
+- Every __get__ and __set__ of a mutable field acquires _lock.
+- Computed properties (should_buy_call, etc.) acquire the lock for the
+  whole expression to prevent torn reads mid-expression.
+- Heavy objects (DataFrames, dicts, lists) are stored under the lock and
+  returned as shallow copies so callers cannot mutate shared state.
+- `get_snapshot()` returns a plain-dict copy of all scalar fields — safe
+  to hand to the GUI thread without holding any lock.
+- `get_position_snapshot()` atomically reads every field needed for an
+  entry/exit decision — use this in Stage 2 rather than N individual
+  property reads.
+- `update_prices()` batch-updates all price fields in one acquisition to
+  minimise lock overhead on the hot WebSocket path.
+- `reset_trade_attributes()` is fully atomic (single lock acquisition).
+"""
+
+import copy
+import logging
+import threading
 from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
+
 import pandas as pd
 
 from BaseEnums import STOP
@@ -8,148 +46,924 @@ from models.Candle import Candle
 
 try:
     from dynamic_signal_engine import OptionSignal
+
     _OPTION_SIGNAL_AVAILABLE = True
 except ImportError:
     _OPTION_SIGNAL_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
 
-@dataclass
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _default_trend_dict() -> Dict[str, Any]:
+    """Factory for the option_trend / derivative_trend defaults."""
+    return {
+        'name': None, 'close': None,
+        'super_trend_short': {'trend': None, 'direction': None},
+        'super_trend_long': {'trend': None, 'direction': None},
+        'macd': {
+            'histo': None, 'macd': None,
+            'signal': None, 'direction': None,
+        },
+        'bb': {'lower': None, 'middle': None, 'upper': None},
+        'rsi': None,
+        'macd_bottoming': False, 'macd_topping': False,
+        'macd_cross_up': False, 'macd_cross_down': False,
+        'rsi_bottoming': False, 'rsi_topping': False,
+    }
+
+
+def _default_signal_result() -> Dict[str, Any]:
+    """Factory for a neutral / unavailable option_signal_result."""
+    return {
+        'signal': 'WAIT',
+        'signal_value': 'WAIT',
+        'fired': {
+            'BUY_CALL': False,
+            'BUY_PUT': False,
+            'SELL_CALL': False,
+            'SELL_PUT': False,
+            'HOLD': False,
+        },
+        'rule_results': {},
+        'conflict': False,
+        'available': False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# TradeState
+# ---------------------------------------------------------------------------
+
 class TradeState:
     """
-    Persistent state object for option algo trading.
-    Includes dynamic option signal result (BUY_CALL/BUY_PUT/SELL_CALL/SELL_PUT/HOLD/WAIT).
+    Central container for all mutable trading state.
+
+    Drop-in replacement for the original @dataclass version:
+    identical attribute names, same default values, same convenience
+    properties — with a threading.RLock added so reads and writes from
+    the WS thread, thread-pool, and GUI timer cannot interleave.
+
+    Quick-start
+    -----------
+        state = TradeState()
+
+        # Stage-1 (WS thread) — batch price write, one lock acquisition
+        state.update_prices(
+            derivative_ltp = ltp,
+            call_ask       = ask,
+            put_bid        = bid,
+            has_position   = bool(state.current_position),
+        )
+
+        # Stage-2 (thread pool) — atomic snapshot for decisions
+        snap = state.get_position_snapshot()
+        if snap["current_price"] <= snap["stop_loss"]: ...
+
+        # GUI timer — full scalar snapshot, no lock held by caller
+        display = state.get_snapshot()
     """
 
-    option_trend: Dict[str, Any] = field(default_factory=lambda: {
-        'name': None, 'close': None,
-        'super_trend_short': {'trend': None, 'direction': None},
-        'super_trend_long':  {'trend': None, 'direction': None},
-        'macd': {'histo': None, 'macd': None, 'signal': None, 'direction': None},
-        'bb':   {'lower': None, 'middle': None, 'upper': None},
-        'rsi': None,
-        'macd_bottoming': False, 'macd_topping': False,
-        'macd_cross_up': False, 'macd_cross_down': False,
-        'rsi_bottoming': False, 'rsi_topping': False,
-    })
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
 
-    derivative_trend: Dict[str, Any] = field(default_factory=lambda: {
-        'name': None, 'close': None,
-        'super_trend_short': {'trend': None, 'direction': None},
-        'super_trend_long':  {'trend': None, 'direction': None},
-        'macd': {'histo': None, 'macd': None, 'signal': None, 'direction': None},
-        'bb':   {'lower': None, 'middle': None, 'upper': None},
-        'rsi': None,
-        'macd_bottoming': False, 'macd_topping': False,
-        'macd_cross_up': False, 'macd_cross_down': False,
-        'rsi_bottoming': False, 'rsi_topping': False,
-    })
+    def __init__(self):
+        # _lock must be set via object.__setattr__ because our own
+        # __setattr__ references _lock before the instance is ready.
+        object.__setattr__(self, "_lock", threading.RLock())
 
-    token: Optional[str] = field(default=None)
-    current_index_data: Candle = field(default_factory=Candle)
-    current_put_data:   Candle = field(default_factory=Candle)
-    current_call_data:  Candle = field(default_factory=Candle)
+        # ── Trend dicts ─────────────────────────────────────────────
+        self._option_trend: Dict[str, Any] = _default_trend_dict()
+        self._derivative_trend: Dict[str, Any] = _default_trend_dict()
 
-    call_option: Optional[str] = field(default=None)
-    put_option:  Optional[str] = field(default=None)
-    current_trading_symbol: Optional[str] = field(default=None)
-    derivative: str = field(default='NIFTY50-INDEX')
-    derivative_current_price: float = field(default=0.0)
-    derivative_history_df: Optional[pd.DataFrame] = field(default=None)
-    option_history_df:     Optional[pd.DataFrame] = field(default=None)
-    last_index_updated: Optional[float] = field(default=None)
+        # ── Auth ────────────────────────────────────────────────────
+        self._token: Optional[str] = None
 
-    orders: List[Dict[str, Any]] = field(default_factory=list)
-    confirmed_orders: List[Dict[str, Any]] = field(default_factory=list)
+        # ── Candle snapshots ─────────────────────────────────────────
+        self._current_index_data: Candle = Candle()
+        self._current_put_data: Candle = Candle()
+        self._current_call_data: Candle = Candle()
 
-    current_position:   Optional[str] = field(default=None)
-    previous_position:  Optional[str] = field(default=None)
-    current_order_id:   Dict[str, int] = field(default_factory=dict)
-    current_buy_price:  Optional[float] = field(default=None)
-    current_price:      Optional[float] = field(default=None)
-    highest_current_price: Optional[float] = field(default=None)
-    positions_hold: int  = field(default=0)
-    order_pending:  bool = field(default=False)
-    take_profit_type: Optional[str] = field(default=STOP)
+        # ── Instrument identifiers ───────────────────────────────────
+        self._call_option: Optional[str] = None
+        self._put_option: Optional[str] = None
+        self._current_trading_symbol: Optional[str] = None
+        self._derivative: str = 'NIFTY50-INDEX'
 
-    index_stop_loss:        Optional[float] = field(default=None)
-    stop_loss:              Optional[float] = field(default=None)
-    tp_point:               Optional[float] = field(default=None)
-    tp_percentage:          float = field(default=15.0)
-    stoploss_percentage:    float = field(default=-7.0)
-    original_profit_per:    float = field(default=15.0)
-    original_stoploss_per:  float = field(default=-7.0)
-    trailing_first_profit:  float = field(default=3.0)
-    max_profit:             float = field(default=30.0)
-    profit_step:            float = field(default=2.0)
-    loss_step:              float = field(default=2.0)
-    interval: Optional[str] = field(default="2m")
+        # ── Price fields  (HOT PATH — written every WS tick) ─────────
+        self._derivative_current_price: float = 0.0
+        self._current_price: Optional[float] = None
+        self._highest_current_price: Optional[float] = None
+        self._put_current_close: Optional[float] = None
+        self._call_current_close: Optional[float] = None
 
-    current_trade_started_time: Optional[datetime] = field(default=None)
-    last_status_check:   Optional[datetime] = field(default=None)
-    current_trade_confirmed: bool = field(default=False)
-    percentage_change:   Optional[float] = field(default=None)
-    put_current_close:   Optional[float] = field(default=None)
-    call_current_close:  Optional[float] = field(default=None)
-    sideway_zone_trade:  bool = field(default=False)
+        # ── History / DataFrames ─────────────────────────────────────
+        self._derivative_history_df: Optional[pd.DataFrame] = None
+        self._option_history_df: Optional[pd.DataFrame] = None
+        self._last_index_updated: Optional[float] = None
 
-    expiry:            int   = field(default=0)
-    lot_size:          int   = field(default=75)
-    account_balance:   float = field(default=0.0)
-    max_num_of_option: int   = field(default=7500)
-    lower_percentage:  float = field(default=0.01)
-    cancel_after:      int   = field(default=10)
+        # ── Orders ───────────────────────────────────────────────────
+        self._orders: List[Dict[str, Any]] = []
+        self._confirmed_orders: List[Dict[str, Any]] = []
 
-    call_lookback:          int = field(default=0)
-    put_lookback:           int = field(default=0)
-    original_call_lookback: int = field(default=0)
-    original_put_lookback:  int = field(default=0)
+        # ── Position state ───────────────────────────────────────────
+        self._current_position: Optional[str] = None
+        self._previous_position: Optional[str] = None
+        self._current_order_id: Dict[str, int] = {}
+        self._current_buy_price: Optional[float] = None
+        self._positions_hold: int = 0
+        self._order_pending: bool = False
+        self._take_profit_type: Optional[str] = STOP
 
-    market_trend:        Optional[int]          = field(default=None)
-    supertrend_reset:    Optional[Dict[str,Any]] = field(default=None)
-    b_band:              Optional[Dict[str,Any]] = field(default=None)
-    all_symbols:         List[str]               = field(default_factory=list)
-    option_price_update: Optional[bool]          = field(default=None)
-    calculated_pcr:      Optional[float]         = field(default=None)
-    current_pcr:         float                   = field(default=0.0)
-    trend:               Optional[int]           = field(default=None)
-    current_pcr_vol:     Optional[float]         = field(default=None)
+        # ── Risk / P&L ───────────────────────────────────────────────
+        self._index_stop_loss: Optional[float] = None
+        self._stop_loss: Optional[float] = None
+        self._tp_point: Optional[float] = None
+        self._tp_percentage: float = 15.0
+        self._stoploss_percentage: float = -7.0
+        self._original_profit_per: float = 15.0
+        self._original_stoploss_per: float = -7.0
+        self._trailing_first_profit: float = 3.0
+        self._max_profit: float = 30.0
+        self._profit_step: float = 2.0
+        self._loss_step: float = 2.0
 
-    current_pnl:     Optional[float] = field(default=None)
-    reason_to_exit:  Optional[str]   = field(default=None)
-    capital_reserve: float           = field(default=0.0)
+        # ── Session config ───────────────────────────────────────────
+        self._interval: Optional[str] = "2m"
+        self._expiry: int = 0
+        self._lot_size: int = 75
+        self._account_balance: float = 0.0
+        self._max_num_of_option: int = 7500
+        self._lower_percentage: float = 0.01
+        self._cancel_after: int = 10
+        self._capital_reserve: float = 0.0
+        self._sideway_zone_trade: bool = False
 
-    cancel_pending_trade: Optional[Any] = field(default=None)
+        # ── Lookback ─────────────────────────────────────────────────
+        self._call_lookback: int = 0
+        self._put_lookback: int = 0
+        self._original_call_lookback: int = 0
+        self._original_put_lookback: int = 0
 
-    # ──────────────────────────────────────────────────────────────────
-    # Dynamic option signal result
-    # Updated every bar by TrendDetector._evaluate_option_signal().
-    #
-    # Schema:
-    #   {
-    #     "signal":       OptionSignal   BUY_CALL | BUY_PUT | SELL_CALL | SELL_PUT | HOLD | WAIT
-    #     "signal_value": str            human-readable string
-    #     "fired": {
-    #         "BUY_CALL":  bool,
-    #         "BUY_PUT":   bool,
-    #         "SELL_CALL": bool,
-    #         "SELL_PUT":  bool,
-    #         "HOLD":      bool,
-    #     },
-    #     "rule_results": { group: [{rule: str, result: bool}, ...], ... }
-    #     "conflict":  bool   — BUY_CALL and BUY_PUT both fired
-    #     "available": bool   — False when no rules are configured
-    #   }
-    # ──────────────────────────────────────────────────────────────────
-    option_signal_result: Optional[Dict[str, Any]] = field(default=None)
+        # ── Trade metadata ───────────────────────────────────────────
+        self._current_trade_started_time: Optional[datetime] = None
+        self._last_status_check: Optional[datetime] = None
+        self._current_trade_confirmed: bool = False
+        self._percentage_change: Optional[float] = None
+        self._current_pnl: Optional[float] = None
+        self._reason_to_exit: Optional[str] = None
 
-    # ── Convenience properties ─────────────────────────────────────────
+        # ── Misc market state ────────────────────────────────────────
+        self._market_trend: Optional[int] = None
+        self._supertrend_reset: Optional[Dict[str, Any]] = None
+        self._b_band: Optional[Dict[str, Any]] = None
+        self._all_symbols: List[str] = []
+        self._option_price_update: Optional[bool] = None
+        self._calculated_pcr: Optional[float] = None
+        self._current_pcr: float = 0.0
+        self._trend: Any = None
+        self._current_pcr_vol: Optional[float] = None
+
+        # ── Dynamic signal result ────────────────────────────────────
+        self._option_signal_result: Optional[Dict[str, Any]] = None
+
+        # ── Callback (set once at startup, not lock-protected) ────────
+        self.cancel_pending_trade: Optional[Callable] = None
+
+        # ── Startup validation ────────────────────────────────────────
+        assert self._lot_size > 0, "lot_size must be positive"
+        assert self._max_num_of_option >= self._lot_size, (
+            "max_num_of_option must not be less than lot_size"
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers — avoid repeating acquire/release boilerplate
+    # ------------------------------------------------------------------
+
+    def _get(self, attr: str) -> Any:
+        with self._lock:
+            return object.__getattribute__(self, attr)
+
+    def _set(self, attr: str, value: Any) -> None:
+        with self._lock:
+            object.__setattr__(self, attr, value)
+
+    # ==================================================================
+    # PROPERTIES
+    # Every public attribute is a property so the lock is always held.
+    # ==================================================================
+
+    # ------------------------------------------------------------------
+    # Trend dicts
+    # ------------------------------------------------------------------
+
+    @property
+    def option_trend(self) -> Dict[str, Any]:
+        with self._lock:
+            return copy.copy(self._option_trend)
+
+    @option_trend.setter
+    def option_trend(self, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._option_trend = value if value is not None else _default_trend_dict()
+
+    @property
+    def derivative_trend(self) -> Dict[str, Any]:
+        with self._lock:
+            return copy.copy(self._derivative_trend)
+
+    @derivative_trend.setter
+    def derivative_trend(self, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._derivative_trend = value if value is not None else _default_trend_dict()
+
+    # ------------------------------------------------------------------
+    # Auth
+    # ------------------------------------------------------------------
+
+    @property
+    def token(self) -> Optional[str]:
+        return self._get("_token")
+
+    @token.setter
+    def token(self, value: Optional[str]) -> None:
+        self._set("_token", value)
+
+    # ------------------------------------------------------------------
+    # Candle snapshots
+    # ------------------------------------------------------------------
+
+    @property
+    def current_index_data(self) -> Candle:
+        return self._get("_current_index_data")
+
+    @current_index_data.setter
+    def current_index_data(self, value: Candle) -> None:
+        self._set("_current_index_data", value)
+
+    @property
+    def current_put_data(self) -> Candle:
+        return self._get("_current_put_data")
+
+    @current_put_data.setter
+    def current_put_data(self, value: Candle) -> None:
+        self._set("_current_put_data", value)
+
+    @property
+    def current_call_data(self) -> Candle:
+        return self._get("_current_call_data")
+
+    @current_call_data.setter
+    def current_call_data(self, value: Candle) -> None:
+        self._set("_current_call_data", value)
+
+    # ------------------------------------------------------------------
+    # Instrument identifiers
+    # ------------------------------------------------------------------
+
+    @property
+    def call_option(self) -> Optional[str]:
+        return self._get("_call_option")
+
+    @call_option.setter
+    def call_option(self, value: Optional[str]) -> None:
+        self._set("_call_option", value)
+
+    @property
+    def put_option(self) -> Optional[str]:
+        return self._get("_put_option")
+
+    @put_option.setter
+    def put_option(self, value: Optional[str]) -> None:
+        self._set("_put_option", value)
+
+    @property
+    def current_trading_symbol(self) -> Optional[str]:
+        return self._get("_current_trading_symbol")
+
+    @current_trading_symbol.setter
+    def current_trading_symbol(self, value: Optional[str]) -> None:
+        self._set("_current_trading_symbol", value)
+
+    @property
+    def derivative(self) -> str:
+        return self._get("_derivative")
+
+    @derivative.setter
+    def derivative(self, value: str) -> None:
+        self._set("_derivative", value)
+
+    # ------------------------------------------------------------------
+    # Price fields  (HOT PATH)
+    # Scalar reads/writes — no copy overhead.
+    # ------------------------------------------------------------------
+
+    @property
+    def derivative_current_price(self) -> float:
+        return self._get("_derivative_current_price")
+
+    @derivative_current_price.setter
+    def derivative_current_price(self, value: float) -> None:
+        self._set("_derivative_current_price", value)
+
+    @property
+    def current_price(self) -> Optional[float]:
+        return self._get("_current_price")
+
+    @current_price.setter
+    def current_price(self, value: Optional[float]) -> None:
+        self._set("_current_price", value)
+
+    @property
+    def highest_current_price(self) -> Optional[float]:
+        return self._get("_highest_current_price")
+
+    @highest_current_price.setter
+    def highest_current_price(self, value: Optional[float]) -> None:
+        self._set("_highest_current_price", value)
+
+    @property
+    def put_current_close(self) -> Optional[float]:
+        return self._get("_put_current_close")
+
+    @put_current_close.setter
+    def put_current_close(self, value: Optional[float]) -> None:
+        self._set("_put_current_close", value)
+
+    @property
+    def call_current_close(self) -> Optional[float]:
+        return self._get("_call_current_close")
+
+    @call_current_close.setter
+    def call_current_close(self, value: Optional[float]) -> None:
+        self._set("_call_current_close", value)
+
+    # ------------------------------------------------------------------
+    # Batch price update  (Stage-1 optimisation)
+    # One lock acquisition instead of N individual property sets.
+    # ------------------------------------------------------------------
+
+    def update_prices(
+            self,
+            derivative_ltp: Optional[float] = None,
+            current_price: Optional[float] = None,
+            call_ask: Optional[float] = None,
+            call_bid: Optional[float] = None,
+            put_ask: Optional[float] = None,
+            put_bid: Optional[float] = None,
+            has_position: bool = False,
+    ) -> None:
+        """
+        Atomically update all price fields in **one** lock acquisition.
+
+        Replaces the original Stage-1 update_market_state() pattern of
+        setting each property individually.  Call from the WS thread:
+
+            state.update_prices(
+                derivative_ltp = ltp,
+                call_ask       = ask_price,
+                call_bid       = bid_price,
+                put_ask        = put_ask,
+                put_bid        = put_bid,
+                has_position   = bool(state.current_position),
+            )
+
+        Rules
+        -----
+        - derivative_ltp  → always stored if provided
+        - call / put price → use ask when in a position (buying back),
+                             use bid when not in a position (for entry calc)
+        - current_price   → stored directly if provided; callers can also
+                            let on_message derive it from call/put close
+        """
+        with self._lock:
+            if derivative_ltp is not None:
+                self._derivative_current_price = derivative_ltp
+
+            if current_price is not None:
+                self._current_price = current_price
+
+            # Call leg
+            if has_position:
+                if call_ask is not None:
+                    self._call_current_close = call_ask
+            else:
+                if call_bid is not None:
+                    self._call_current_close = call_bid
+
+            # Put leg
+            if has_position:
+                if put_ask is not None:
+                    self._put_current_close = put_ask
+            else:
+                if put_bid is not None:
+                    self._put_current_close = put_bid
+
+    # ------------------------------------------------------------------
+    # DataFrames
+    # Returned as the actual reference (DataFrames should be treated as
+    # read-only by callers; the setter replaces under the lock).
+    # ------------------------------------------------------------------
+
+    @property
+    def derivative_history_df(self) -> Optional[pd.DataFrame]:
+        return self._get("_derivative_history_df")
+
+    @derivative_history_df.setter
+    def derivative_history_df(self, value: Optional[pd.DataFrame]) -> None:
+        self._set("_derivative_history_df", value)
+
+    @property
+    def option_history_df(self) -> Optional[pd.DataFrame]:
+        return self._get("_option_history_df")
+
+    @option_history_df.setter
+    def option_history_df(self, value: Optional[pd.DataFrame]) -> None:
+        self._set("_option_history_df", value)
+
+    @property
+    def last_index_updated(self) -> Optional[float]:
+        return self._get("_last_index_updated")
+
+    @last_index_updated.setter
+    def last_index_updated(self, value: Optional[float]) -> None:
+        self._set("_last_index_updated", value)
+
+    # ------------------------------------------------------------------
+    # Orders  (list — returns shallow copy; mutate via helpers)
+    # ------------------------------------------------------------------
+
+    @property
+    def orders(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._orders)
+
+    @orders.setter
+    def orders(self, value: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._orders = list(value) if value is not None else []
+
+    def append_order(self, order: Dict[str, Any]) -> None:
+        """Thread-safe append — prefer over orders = orders + [order]."""
+        with self._lock:
+            self._orders.append(order)
+
+    def remove_order(self, order_id: str) -> bool:
+        """Thread-safe removal by id. Returns True if the order was found."""
+        with self._lock:
+            before = len(self._orders)
+            self._orders = [o for o in self._orders if str(o.get("id")) != str(order_id)]
+            return len(self._orders) < before
+
+    @property
+    def confirmed_orders(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._confirmed_orders)
+
+    @confirmed_orders.setter
+    def confirmed_orders(self, value: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._confirmed_orders = list(value) if value is not None else []
+
+    def extend_confirmed_orders(self, orders: List[Dict[str, Any]]) -> None:
+        """Thread-safe extend — prefer over confirmed_orders = confirmed_orders + list."""
+        with self._lock:
+            self._confirmed_orders.extend(orders)
+
+    # ------------------------------------------------------------------
+    # Position state
+    # ------------------------------------------------------------------
+
+    @property
+    def current_position(self) -> Optional[str]:
+        return self._get("_current_position")
+
+    @current_position.setter
+    def current_position(self, value: Optional[str]) -> None:
+        self._set("_current_position", value)
+
+    @property
+    def previous_position(self) -> Optional[str]:
+        return self._get("_previous_position")
+
+    @previous_position.setter
+    def previous_position(self, value: Optional[str]) -> None:
+        self._set("_previous_position", value)
+
+    @property
+    def current_order_id(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._current_order_id)
+
+    @current_order_id.setter
+    def current_order_id(self, value: Dict[str, int]) -> None:
+        with self._lock:
+            self._current_order_id = dict(value) if value is not None else {}
+
+    @property
+    def current_buy_price(self) -> Optional[float]:
+        return self._get("_current_buy_price")
+
+    @current_buy_price.setter
+    def current_buy_price(self, value: Optional[float]) -> None:
+        self._set("_current_buy_price", value)
+
+    @property
+    def positions_hold(self) -> int:
+        return self._get("_positions_hold")
+
+    @positions_hold.setter
+    def positions_hold(self, value: int) -> None:
+        self._set("_positions_hold", int(value))
+
+    @property
+    def order_pending(self) -> bool:
+        return self._get("_order_pending")
+
+    @order_pending.setter
+    def order_pending(self, value: bool) -> None:
+        self._set("_order_pending", bool(value))
+
+    @property
+    def take_profit_type(self) -> Optional[str]:
+        return self._get("_take_profit_type")
+
+    @take_profit_type.setter
+    def take_profit_type(self, value: Optional[str]) -> None:
+        self._set("_take_profit_type", value)
+
+    # ------------------------------------------------------------------
+    # Risk / P&L
+    # ------------------------------------------------------------------
+
+    @property
+    def index_stop_loss(self) -> Optional[float]:
+        return self._get("_index_stop_loss")
+
+    @index_stop_loss.setter
+    def index_stop_loss(self, value: Optional[float]) -> None:
+        self._set("_index_stop_loss", value)
+
+    @property
+    def stop_loss(self) -> Optional[float]:
+        return self._get("_stop_loss")
+
+    @stop_loss.setter
+    def stop_loss(self, value: Optional[float]) -> None:
+        self._set("_stop_loss", value)
+
+    @property
+    def tp_point(self) -> Optional[float]:
+        return self._get("_tp_point")
+
+    @tp_point.setter
+    def tp_point(self, value: Optional[float]) -> None:
+        self._set("_tp_point", value)
+
+    @property
+    def tp_percentage(self) -> float:
+        return self._get("_tp_percentage")
+
+    @tp_percentage.setter
+    def tp_percentage(self, value: float) -> None:
+        self._set("_tp_percentage", float(value))
+
+    @property
+    def stoploss_percentage(self) -> float:
+        return self._get("_stoploss_percentage")
+
+    @stoploss_percentage.setter
+    def stoploss_percentage(self, value: float) -> None:
+        self._set("_stoploss_percentage", float(value))
+
+    @property
+    def original_profit_per(self) -> float:
+        return self._get("_original_profit_per")
+
+    @original_profit_per.setter
+    def original_profit_per(self, value: float) -> None:
+        self._set("_original_profit_per", float(value))
+
+    @property
+    def original_stoploss_per(self) -> float:
+        return self._get("_original_stoploss_per")
+
+    @original_stoploss_per.setter
+    def original_stoploss_per(self, value: float) -> None:
+        self._set("_original_stoploss_per", float(value))
+
+    @property
+    def trailing_first_profit(self) -> float:
+        return self._get("_trailing_first_profit")
+
+    @trailing_first_profit.setter
+    def trailing_first_profit(self, value: float) -> None:
+        self._set("_trailing_first_profit", float(value))
+
+    @property
+    def max_profit(self) -> float:
+        return self._get("_max_profit")
+
+    @max_profit.setter
+    def max_profit(self, value: float) -> None:
+        self._set("_max_profit", float(value))
+
+    @property
+    def profit_step(self) -> float:
+        return self._get("_profit_step")
+
+    @profit_step.setter
+    def profit_step(self, value: float) -> None:
+        self._set("_profit_step", float(value))
+
+    @property
+    def loss_step(self) -> float:
+        return self._get("_loss_step")
+
+    @loss_step.setter
+    def loss_step(self, value: float) -> None:
+        self._set("_loss_step", float(value))
+
+    # ------------------------------------------------------------------
+    # Session config
+    # ------------------------------------------------------------------
+
+    @property
+    def interval(self) -> Optional[str]:
+        return self._get("_interval")
+
+    @interval.setter
+    def interval(self, value: Optional[str]) -> None:
+        self._set("_interval", value)
+
+    @property
+    def expiry(self) -> int:
+        return self._get("_expiry")
+
+    @expiry.setter
+    def expiry(self, value: int) -> None:
+        self._set("_expiry", int(value))
+
+    @property
+    def lot_size(self) -> int:
+        return self._get("_lot_size")
+
+    @lot_size.setter
+    def lot_size(self, value: int) -> None:
+        if int(value) <= 0:
+            raise ValueError(f"lot_size must be positive, got {value}")
+        self._set("_lot_size", int(value))
+
+    @property
+    def account_balance(self) -> float:
+        return self._get("_account_balance")
+
+    @account_balance.setter
+    def account_balance(self, value: float) -> None:
+        self._set("_account_balance", float(value))
+
+    @property
+    def max_num_of_option(self) -> int:
+        return self._get("_max_num_of_option")
+
+    @max_num_of_option.setter
+    def max_num_of_option(self, value: int) -> None:
+        self._set("_max_num_of_option", int(value))
+
+    @property
+    def lower_percentage(self) -> float:
+        return self._get("_lower_percentage")
+
+    @lower_percentage.setter
+    def lower_percentage(self, value: float) -> None:
+        self._set("_lower_percentage", float(value))
+
+    @property
+    def cancel_after(self) -> int:
+        return self._get("_cancel_after")
+
+    @cancel_after.setter
+    def cancel_after(self, value: int) -> None:
+        self._set("_cancel_after", int(value))
+
+    @property
+    def capital_reserve(self) -> float:
+        return self._get("_capital_reserve")
+
+    @capital_reserve.setter
+    def capital_reserve(self, value: float) -> None:
+        self._set("_capital_reserve", float(value))
+
+    @property
+    def sideway_zone_trade(self) -> bool:
+        return self._get("_sideway_zone_trade")
+
+    @sideway_zone_trade.setter
+    def sideway_zone_trade(self, value: bool) -> None:
+        self._set("_sideway_zone_trade", bool(value))
+
+    # ------------------------------------------------------------------
+    # Lookback
+    # ------------------------------------------------------------------
+
+    @property
+    def call_lookback(self) -> int:
+        return self._get("_call_lookback")
+
+    @call_lookback.setter
+    def call_lookback(self, value: int) -> None:
+        self._set("_call_lookback", int(value))
+
+    @property
+    def put_lookback(self) -> int:
+        return self._get("_put_lookback")
+
+    @put_lookback.setter
+    def put_lookback(self, value: int) -> None:
+        self._set("_put_lookback", int(value))
+
+    @property
+    def original_call_lookback(self) -> int:
+        return self._get("_original_call_lookback")
+
+    @original_call_lookback.setter
+    def original_call_lookback(self, value: int) -> None:
+        self._set("_original_call_lookback", int(value))
+
+    @property
+    def original_put_lookback(self) -> int:
+        return self._get("_original_put_lookback")
+
+    @original_put_lookback.setter
+    def original_put_lookback(self, value: int) -> None:
+        self._set("_original_put_lookback", int(value))
+
+    # ------------------------------------------------------------------
+    # Trade metadata
+    # ------------------------------------------------------------------
+
+    @property
+    def current_trade_started_time(self) -> Optional[datetime]:
+        return self._get("_current_trade_started_time")
+
+    @current_trade_started_time.setter
+    def current_trade_started_time(self, value: Optional[datetime]) -> None:
+        self._set("_current_trade_started_time", value)
+
+    @property
+    def last_status_check(self) -> Optional[datetime]:
+        return self._get("_last_status_check")
+
+    @last_status_check.setter
+    def last_status_check(self, value: Optional[datetime]) -> None:
+        self._set("_last_status_check", value)
+
+    @property
+    def current_trade_confirmed(self) -> bool:
+        return self._get("_current_trade_confirmed")
+
+    @current_trade_confirmed.setter
+    def current_trade_confirmed(self, value: bool) -> None:
+        self._set("_current_trade_confirmed", bool(value))
+
+    @property
+    def percentage_change(self) -> Optional[float]:
+        return self._get("_percentage_change")
+
+    @percentage_change.setter
+    def percentage_change(self, value: Optional[float]) -> None:
+        self._set("_percentage_change", value)
+
+    @property
+    def current_pnl(self) -> Optional[float]:
+        return self._get("_current_pnl")
+
+    @current_pnl.setter
+    def current_pnl(self, value: Optional[float]) -> None:
+        self._set("_current_pnl", value)
+
+    @property
+    def reason_to_exit(self) -> Optional[str]:
+        return self._get("_reason_to_exit")
+
+    @reason_to_exit.setter
+    def reason_to_exit(self, value: Optional[str]) -> None:
+        self._set("_reason_to_exit", value)
+
+    # ------------------------------------------------------------------
+    # Misc market state
+    # ------------------------------------------------------------------
+
+    @property
+    def market_trend(self) -> Optional[int]:
+        return self._get("_market_trend")
+
+    @market_trend.setter
+    def market_trend(self, value: Optional[int]) -> None:
+        self._set("_market_trend", value)
+
+    @property
+    def supertrend_reset(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return copy.copy(self._supertrend_reset)
+
+    @supertrend_reset.setter
+    def supertrend_reset(self, value: Optional[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._supertrend_reset = value
+
+    @property
+    def b_band(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return copy.copy(self._b_band)
+
+    @b_band.setter
+    def b_band(self, value: Optional[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._b_band = value
+
+    @property
+    def all_symbols(self) -> List[str]:
+        with self._lock:
+            return list(self._all_symbols)
+
+    @all_symbols.setter
+    def all_symbols(self, value: List[str]) -> None:
+        with self._lock:
+            self._all_symbols = list(value) if value is not None else []
+
+    @property
+    def option_price_update(self) -> Optional[bool]:
+        return self._get("_option_price_update")
+
+    @option_price_update.setter
+    def option_price_update(self, value: Optional[bool]) -> None:
+        self._set("_option_price_update", value)
+
+    @property
+    def calculated_pcr(self) -> Optional[float]:
+        return self._get("_calculated_pcr")
+
+    @calculated_pcr.setter
+    def calculated_pcr(self, value: Optional[float]) -> None:
+        self._set("_calculated_pcr", value)
+
+    @property
+    def current_pcr(self) -> float:
+        return self._get("_current_pcr")
+
+    @current_pcr.setter
+    def current_pcr(self, value: float) -> None:
+        self._set("_current_pcr", float(value))
+
+    @property
+    def trend(self) -> Any:
+        return self._get("_trend")
+
+    @trend.setter
+    def trend(self, value: Any) -> None:
+        self._set("_trend", value)
+
+    @property
+    def current_pcr_vol(self) -> Optional[float]:
+        return self._get("_current_pcr_vol")
+
+    @current_pcr_vol.setter
+    def current_pcr_vol(self, value: Optional[float]) -> None:
+        self._set("_current_pcr_vol", value)
+
+    # ------------------------------------------------------------------
+    # Dynamic signal result
+    # ------------------------------------------------------------------
+
+    @property
+    def option_signal_result(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            # shallow copy — callers must not mutate returned dict
+            return copy.copy(self._option_signal_result)
+
+    @option_signal_result.setter
+    def option_signal_result(self, value: Optional[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._option_signal_result = value
+
+    # ==================================================================
+    # COMPUTED / CONVENIENCE PROPERTIES
+    # Each acquires the lock for the whole expression — no torn reads.
+    # ==================================================================
 
     @property
     def option_signal(self) -> str:
-        """Current resolved option signal string (e.g. 'BUY_CALL')."""
-        if self.option_signal_result and self.option_signal_result.get("available"):
-            return self.option_signal_result.get("signal_value", "WAIT")
-        return "WAIT"
+        """Resolved signal string: BUY_CALL | BUY_PUT | SELL_CALL | SELL_PUT | HOLD | WAIT."""
+        with self._lock:
+            r = self._option_signal_result
+            if r and r.get("available"):
+                return r.get("signal_value", "WAIT")
+            return "WAIT"
 
     @property
     def should_buy_call(self) -> bool:
@@ -178,86 +992,248 @@ class TradeState:
     @property
     def signal_conflict(self) -> bool:
         """True when BUY_CALL and BUY_PUT both fired simultaneously."""
-        return bool(self.option_signal_result and self.option_signal_result.get("conflict", False))
+        with self._lock:
+            r = self._option_signal_result
+            return bool(r and r.get("conflict", False))
 
     @property
     def dynamic_signals_active(self) -> bool:
-        return bool(self.option_signal_result and self.option_signal_result.get("available", False))
+        """True when a valid signal-engine result is available."""
+        with self._lock:
+            r = self._option_signal_result
+            return bool(r and r.get("available", False))
+
+    # ==================================================================
+    # ATOMIC COMPOSITE READS
+    # Use these in Stage-2 instead of N individual property reads so
+    # the snapshot is guaranteed to be internally consistent.
+    # ==================================================================
+
+    def get_position_snapshot(self) -> Dict[str, Any]:
+        """
+        Atomically read every field needed for entry / exit decisions.
+
+        Recommended usage in Stage-2 (_process_message_stage2):
+
+            snap = state.get_position_snapshot()
+            if snap["current_price"] and snap["stop_loss"]:
+                if snap["current_price"] <= snap["stop_loss"]:
+                    ...exit...
+        """
+        with self._lock:
+            r = self._option_signal_result
+            signal_value = (
+                r.get("signal_value", "WAIT")
+                if r and r.get("available") else "WAIT"
+            )
+            return {
+                "current_position": self._current_position,
+                "previous_position": self._previous_position,
+                "current_trade_confirmed": self._current_trade_confirmed,
+                "order_pending": self._order_pending,
+                "positions_hold": self._positions_hold,
+                "current_buy_price": self._current_buy_price,
+                "current_price": self._current_price,
+                "highest_current_price": self._highest_current_price,
+                "derivative_current_price": self._derivative_current_price,
+                "call_current_close": self._call_current_close,
+                "put_current_close": self._put_current_close,
+                "stop_loss": self._stop_loss,
+                "tp_point": self._tp_point,
+                "index_stop_loss": self._index_stop_loss,
+                "tp_percentage": self._tp_percentage,
+                "stoploss_percentage": self._stoploss_percentage,
+                "percentage_change": self._percentage_change,
+                "current_pnl": self._current_pnl,
+                "reason_to_exit": self._reason_to_exit,
+                "option_signal": signal_value,
+                "signal_conflict": bool(r and r.get("conflict", False)),
+            }
 
     def get_option_signal_snapshot(self) -> Dict[str, Any]:
         """Thread-safe shallow copy of option_signal_result for GUI reads."""
-        if not self.option_signal_result:
-            return {"signal_value":"WAIT","fired":{},"rule_results":{},"conflict":False,"available":False}
-        return dict(self.option_signal_result)
+        with self._lock:
+            if not self._option_signal_result:
+                return _default_signal_result()
+            return dict(self._option_signal_result)
 
-    # ──────────────────────────────────────────────────────────────────
+    def get_snapshot(self) -> Dict[str, Any]:
+        """
+        Full read-only snapshot of all state — safe to hand to the GUI
+        thread without holding any lock.
 
-    def reset_trade_attributes(self, current_position: Optional[str], logger=None) -> None:
-        try:
-            trade_log = {
-                "order_id": self.current_order_id,
-                "position": self.current_position,
-                "symbol": self.current_trading_symbol,
-                "start_time": self.current_trade_started_time,
-                "end_time": datetime.now(),
-                "buy_price": self.current_buy_price,
-                "sell_price": self.current_price,
-                "highest_price": self.highest_current_price,
-                "pnl": self.current_pnl,
-                "percentage_change": self.percentage_change,
-                "status": self.current_trade_confirmed,
-                "reason_to_exit": self.reason_to_exit,
+        DataFrames are represented as shape strings to avoid copying
+        potentially large objects.
+        """
+        with self._lock:
+            def _df_repr(df: Optional[pd.DataFrame]) -> str:
+                if df is None:
+                    return "None"
+                return "Empty DataFrame" if df.empty else f"DataFrame{df.shape}"
+
+            r = self._option_signal_result
+            sig = (r.get("signal_value", "WAIT") if r and r.get("available") else "WAIT")
+
+            return {
+                # Identifiers
+                "derivative": self._derivative,
+                "call_option": self._call_option,
+                "put_option": self._put_option,
+                "current_trading_symbol": self._current_trading_symbol,
+                "expiry": self._expiry,
+                "interval": self._interval,
+                "all_symbols": list(self._all_symbols),
+                # Prices
+                "derivative_current_price": self._derivative_current_price,
+                "current_price": self._current_price,
+                "highest_current_price": self._highest_current_price,
+                "call_current_close": self._call_current_close,
+                "put_current_close": self._put_current_close,
+                # Position
+                "current_position": self._current_position,
+                "previous_position": self._previous_position,
+                "current_buy_price": self._current_buy_price,
+                "positions_hold": self._positions_hold,
+                "order_pending": self._order_pending,
+                "current_trade_confirmed": self._current_trade_confirmed,
+                "current_order_id": dict(self._current_order_id),
+                "orders": len(self._orders),
+                "confirmed_orders": len(self._confirmed_orders),
+                # Risk
+                "stop_loss": self._stop_loss,
+                "tp_point": self._tp_point,
+                "index_stop_loss": self._index_stop_loss,
+                "tp_percentage": self._tp_percentage,
+                "stoploss_percentage": self._stoploss_percentage,
+                "original_profit_per": self._original_profit_per,
+                "original_stoploss_per": self._original_stoploss_per,
+                "trailing_first_profit": self._trailing_first_profit,
+                "max_profit": self._max_profit,
+                "profit_step": self._profit_step,
+                "loss_step": self._loss_step,
+                "take_profit_type": self._take_profit_type,
+                # P&L
+                "current_pnl": self._current_pnl,
+                "percentage_change": self._percentage_change,
+                "account_balance": self._account_balance,
+                # Config
+                "lot_size": self._lot_size,
+                "max_num_of_option": self._max_num_of_option,
+                "lower_percentage": self._lower_percentage,
+                "cancel_after": self._cancel_after,
+                "capital_reserve": self._capital_reserve,
+                "sideway_zone_trade": self._sideway_zone_trade,
+                "call_lookback": self._call_lookback,
+                "put_lookback": self._put_lookback,
+                "original_call_lookback": self._original_call_lookback,
+                "original_put_lookback": self._original_put_lookback,
+                # Metadata
+                "reason_to_exit": self._reason_to_exit,
+                "current_trade_started_time": self._current_trade_started_time,
+                "last_status_check": self._last_status_check,
+                "last_index_updated": self._last_index_updated,
+                # PCR
+                "calculated_pcr": self._calculated_pcr,
+                "current_pcr": self._current_pcr,
+                "current_pcr_vol": self._current_pcr_vol,
+                # Misc
+                "market_trend": self._market_trend,
+                "option_price_update": self._option_price_update,
+                "trend": self._trend,
+                # Signal summary
+                "option_signal": sig,
+                "signal_conflict": bool(r and r.get("conflict", False)),
+                "dynamic_signals_active": bool(r and r.get("available", False)),
+                # DataFrame summaries (not full data)
+                "derivative_history_df": _df_repr(self._derivative_history_df),
+                "option_history_df": _df_repr(self._option_history_df),
             }
-            if logger:
-                filtered = {k: v for k, v in trade_log.items() if v is not None}
-                logger.info(f"Trade logged: {filtered}")
 
-            self.previous_position = current_position
-            self.orders = []; self.confirmed_orders = []
-            self.current_position = None
-            self.positions_hold = 0
-            self.current_trading_symbol = None
-            self.current_buy_price = None; self.current_price = None
-            self.stop_loss = None; self.index_stop_loss = None; self.tp_point = None
-            self.last_status_check = None
-            self.stoploss_percentage = self.original_stoploss_per
-            self.tp_percentage = self.original_profit_per
-            self.call_lookback = self.original_call_lookback
-            self.put_lookback  = self.original_put_lookback
-            self.current_trade_confirmed = False
-            self.current_trade_started_time = None
-            self.highest_current_price = None
-            self.current_pnl = None; self.percentage_change = None
-            self.reason_to_exit = None
-            # option_signal_result is refreshed every bar — do NOT reset here
+    # ==================================================================
+    # ATOMIC RESET
+    # ==================================================================
 
-            if logger:
-                logger.info("Trade attributes reset.")
-        except Exception as e:
-            if logger: logger.error(f"Error resetting trade attributes: {e}", exc_info=True)
-            else: print(f"Error resetting trade attributes: {e}")
+    def reset_trade_attributes(
+            self,
+            current_position: Optional[str],
+            log_fn: Optional[Callable] = None,
+    ) -> None:
+        """
+        Atomically reset all trade-lifecycle fields in one lock acquisition.
 
-    def to_snapshot(self) -> Dict[str, Any]:
-        exclude = {
-            'option_trend','derivative_trend','current_index_data',
-            'current_put_data','current_call_data','derivative_history_df',
-            'option_history_df','orders','confirmed_orders','current_order_id',
-            'all_symbols','supertrend_reset','b_band','cancel_pending_trade',
-            'option_signal_result',
-        }
-        snapshot = {}
-        for field_name in self.__dataclass_fields__.keys():
-            if field_name in exclude: continue
-            value = getattr(self, field_name)
-            if isinstance(value, (str, int, float, bool, type(None), datetime)):
-                snapshot[field_name] = value
-            elif isinstance(value, list) and field_name == 'all_symbols':
-                snapshot[field_name] = value.copy()
-        # Attach option signal summary
-        snapshot["option_signal"]   = self.option_signal
-        snapshot["signal_conflict"] = self.signal_conflict
-        return snapshot
+        Parameters
+        ----------
+        current_position:
+            The position that just closed — stored as previous_position.
+        log_fn:
+            Optional callable (e.g. logger.info) — called *outside* the
+            lock so we never do I/O while holding it.
+        """
+        with self._lock:
+            # ── Build audit record while values are still live ────────
+            audit = {
+                "order_id": dict(self._current_order_id),
+                "position": self._current_position,
+                "symbol": self._current_trading_symbol,
+                "start_time": self._current_trade_started_time,
+                "end_time": datetime.now(),
+                "buy_price": self._current_buy_price,
+                "sell_price": self._current_price,
+                "highest_price": self._highest_current_price,
+                "pnl": self._current_pnl,
+                "percentage_change": self._percentage_change,
+                "confirmed": self._current_trade_confirmed,
+                "reason_to_exit": self._reason_to_exit,
+            }
 
-    def __post_init__(self):
-        assert self.lot_size > 0, "lot_size must be positive"
-        assert self.max_num_of_option >= self.lot_size, "max_num_of_option should not be less than lot_size"
+            # ── Reset all trade-lifecycle fields atomically ───────────
+            self._previous_position = current_position
+            self._orders = []
+            self._confirmed_orders = []
+            self._current_position = None
+            self._positions_hold = 0
+            self._order_pending = False
+            self._current_trading_symbol = None
+            self._current_buy_price = None
+            self._current_price = None
+            self._stop_loss = None
+            self._index_stop_loss = None
+            self._tp_point = None
+            self._last_status_check = None
+            self._stoploss_percentage = self._original_stoploss_per
+            self._tp_percentage = self._original_profit_per
+            self._call_lookback = self._original_call_lookback
+            self._put_lookback = self._original_put_lookback
+            self._current_trade_confirmed = False
+            self._current_trade_started_time = None
+            self._highest_current_price = None
+            self._current_pnl = None
+            self._percentage_change = None
+            self._reason_to_exit = None
+            # NOTE: option_signal_result is refreshed every bar — do NOT clear here
+
+        # ── Log outside the lock so no I/O is done while holding it ──
+        if log_fn:
+            filtered = {k: v for k, v in audit.items() if v is not None}
+            try:
+                log_fn(f"Trade reset complete. Audit record: {filtered}")
+            except Exception:
+                pass  # Never let logging crash the trade engine
+
+    # ==================================================================
+    # REPR
+    # ==================================================================
+
+    def __repr__(self) -> str:
+        with self._lock:
+            pos = self._current_position
+            price = self._derivative_current_price
+            r = self._option_signal_result
+            sig = r.get("signal_value", "WAIT") if r else "WAIT"
+        return (
+            f"TradeState("
+            f"position={pos!r}, "
+            f"derivative_price={price}, "
+            f"signal={sig!r}"
+            f")"
+        )

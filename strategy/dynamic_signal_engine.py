@@ -66,41 +66,102 @@ INDICATOR_COLUMN_HINTS: Dict[str, str] = {
 
 
 def _compute_indicator(df, indicator, params):
-    if ta is None: return None
-    ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
-    try:
-        method = getattr(ta, ind_name, None)
-        if not method: return None
-        result = method(high=df.get("high"), low=df.get("low"), close=df.get("close"),
-                        open=df.get("open"), volume=df.get("volume"), **params)
-        if result is None: return None
-        if isinstance(result, pd.DataFrame):
-            hint = INDICATOR_COLUMN_HINTS.get(indicator.lower())
-            if hint and hint in result.columns: return result[hint]
-            for col in result.columns:
-                if ind_name.upper() in col.upper() or indicator.upper() in col.upper(): return result[col]
-            return result.iloc[:, 0]
-        if isinstance(result, pd.Series): return result
+    """
+    Compute indicator using pandas_ta
+    """
+    if ta is None:
+        logger.error("pandas_ta not installed")
         return None
+
+    ind_name = indicator.lower()
+
+    try:
+        # Get the indicator function from pandas_ta
+        method = getattr(ta, ind_name, None)
+        if not method:
+            logger.error(f"Indicator '{indicator}' not found in pandas_ta")
+            return None
+
+        # Prepare arguments based on what's available in df
+        kwargs = {}
+
+        # Common price columns
+        if 'close' in df.columns:
+            kwargs['close'] = df['close']
+        if 'open' in df.columns:
+            kwargs['open'] = df['open']
+        if 'high' in df.columns:
+            kwargs['high'] = df['high']
+        if 'low' in df.columns:
+            kwargs['low'] = df['low']
+        if 'volume' in df.columns:
+            kwargs['volume'] = df['volume']
+
+        # Add all parameters from the rule
+        kwargs.update(params)
+
+        # Call the indicator
+        result = method(**kwargs)
+
+        if result is None:
+            logger.warning(f"Indicator {indicator} returned None")
+            return None
+
+        # Handle different return types
+        if isinstance(result, pd.DataFrame):
+            # For indicators that return multiple columns, try to get the main one
+            # Common patterns: first column, or column with indicator name
+            for col in result.columns:
+                if ind_name.upper() in col.upper():
+                    return result[col]
+            return result.iloc[:, 0]  # fallback to first column
+
+        elif isinstance(result, pd.Series):
+            return result
+
+        elif isinstance(result, tuple):
+            # Some indicators return multiple series
+            return result[0]  # take first one
+
+        else:
+            logger.warning(f"Unexpected return type from {indicator}: {type(result)}")
+            return None
+
     except Exception as e:
-        logger.error(f"Error computing '{indicator}': {e}", exc_info=True)
+        logger.error(f"Error computing '{indicator}' with params {params}: {e}", exc_info=True)
         return None
 
 
 def _resolve_side(df, side_def, cache):
+    """
+    Resolve a side definition (LHS or RHS) to a pandas Series
+    """
     t = side_def.get("type", "indicator")
+
     if t == "scalar":
-        return pd.Series([float(side_def.get("value", 0))] * len(df), index=df.index)
+        # Create a constant series
+        value = float(side_def.get("value", 0))
+        return pd.Series([value] * len(df), index=df.index)
+
     if t == "column":
         col = side_def.get("column", "close")
-        return df[col].astype(float) if col in df.columns else None
+        if col in df.columns:
+            return df[col].astype(float)
+        else:
+            logger.error(f"Column '{col}' not found in DataFrame")
+            return None
+
+    # Indicator
     indicator = side_def.get("indicator", "").lower()
-    params = side_def.get("params", INDICATOR_DEFAULTS.get(indicator, {}))
+    params = side_def.get("params", {})
+
+    # Create cache key
     cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}"
+
     if cache_key not in cache:
         cache[cache_key] = _compute_indicator(df, indicator, params)
-    return cache[cache_key]
 
+    return cache.get(cache_key)
 
 def _apply_operator(lhs, op, rhs):
     try:
@@ -141,6 +202,7 @@ class DynamicSignalEngine:
     }
 
     def __init__(self, config_file="config/dynamic_signals.json", conflict_resolution="WAIT"):
+        self._last_cache = None
         self.config_file = config_file
         self.conflict_resolution = conflict_resolution.upper()
         self.config = {k: {"logic": v["logic"], "rules": list(v["rules"]), "enabled": v["enabled"]}
@@ -284,6 +346,7 @@ class DynamicSignalEngine:
         if df is None or df.empty or len(df) < 2:
             return neutral
         cache = {}
+        self._last_cache = cache
         fired = {}
         rule_results = {}
         has_any_rules = False

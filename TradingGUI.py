@@ -1,352 +1,41 @@
 # PYQT: Complete replacement for Tkinter TradingGUI.py
-import sys
-import threading
 import logging
 import os
+import threading
 from datetime import datetime
-import csv
+
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QPushButton, QRadioButton, QPlainTextEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMenuBar, QAction,
-    QMessageBox, QApplication, QLabel, QSizePolicy, QDialog,
-    QDialogButtonBox, QVBoxLayout, QDateEdit
+    QMainWindow, QWidget, QSplitter, QHBoxLayout,
+    QPushButton, QRadioButton, QAction,
+    QMessageBox, QLabel, QVBoxLayout, QFrame, QDialog, QDialogButtonBox, QPlainTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QDate
-from PyQt5.QtGui import QFont, QColor
 
 # PYQT: Import existing trading engine (unchanged)
 import BaseEnums
+from config import Config
+from gui.BrokerageSetting import BrokerageSetting
+from gui.BrokerageSettingGUI import BrokerageSettingGUI
+from gui.DailyTradeSetting import DailyTradeSetting
+from gui.DailyTradeSettingGUI import DailyTradeSettingGUI
+from gui.FyersManualLoginPopup import FyersManualLoginPopup
+from gui.ProfitStoplossSetting import ProfitStoplossSetting
+from gui.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
+from gui.StrategySetting import StrategySetting
+from gui.app_status_bar import AppStatusBar
 from gui.chart_widget import ChartWidget
 from gui.indicator_builder_dialog import IndicatorRuleBuilderDialog
 from gui.log_handler import QtLogHandler
-from gui.stats_tab import StatsTab
+from gui.popups.logs_popup import LogPopup
+from gui.popups.stats_popup import StatsPopup
+from gui.popups.trade_history_popup import TradeHistoryPopup
 from gui.status_panel import StatusPanel
 from new_main import TradingApp
-from config import Config
-from gui.BrokerageSetting import BrokerageSetting
-from gui.DailyTradeSetting import DailyTradeSetting
-from gui.ProfitStoplossSetting import ProfitStoplossSetting
-from gui.StrategySetting import StrategySetting
-
-# PYQT: Import new PyQt5 components
+from strategy.strategy_editor_window import StrategyEditorWindow
+from strategy.strategy_picker_sidebar import StrategyPickerSidebar
 from trading_thread import TradingThread
-
-# PYQT: Import converted dialog classes
-from gui.BrokerageSettingGUI import BrokerageSettingGUI
-from gui.DailyTradeSettingGUI import DailyTradeSettingGUI
-from gui.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
-from gui.StrategySettingGUI import StrategySettingGUI
-from gui.FyersManualLoginPopup import FyersManualLoginPopup
-
-
-# FIX: New popup windows for log, history, and stats
-class LogPopup(QDialog):
-    """Popup window for displaying logs"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Log Viewer")
-        self.resize(1000, 700)
-        self.setMinimumSize(800, 500)
-
-        # Set window flags to make it a proper popup
-        self.setWindowFlags(Qt.Window)
-
-        # Apply dark theme
-        self.setStyleSheet("""
-            QDialog { background: #0d1117; color: #e6edf3; }
-            QPlainTextEdit { 
-                background: #0d1117; 
-                color: #58a6ff; 
-                border: 1px solid #30363d;
-                font-family: Consolas;
-                font-size: 10pt;
-            }
-            QPushButton {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover { background: #30363d; }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        # Log widget
-        self.log_widget = QPlainTextEdit()
-        self.log_widget.setReadOnly(True)
-        self.log_widget.setMaximumBlockCount(5000)
-        layout.addWidget(self.log_widget)
-
-        # Button row
-        button_box = QDialogButtonBox()
-        clear_btn = QPushButton("Clear Logs")
-        clear_btn.clicked.connect(self.clear_logs)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-
-        button_box.addButton(clear_btn, QDialogButtonBox.ActionRole)
-        button_box.addButton(close_btn, QDialogButtonBox.AcceptRole)
-        layout.addWidget(button_box)
-
-    def append_log(self, message: str):
-        """Append a log message to the widget"""
-        self.log_widget.appendPlainText(message)
-        # Auto-scroll to bottom
-        sb = self.log_widget.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-    def clear_logs(self):
-        """Clear all logs"""
-        self.log_widget.clear()
-
-
-class TradeHistoryPopup(QDialog):
-    """Popup window for displaying trade history"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Trade History")
-        self.resize(1200, 700)
-        self.setMinimumSize(900, 500)
-
-        # Set window flags to make it a proper popup
-        self.setWindowFlags(Qt.Window)
-
-        # Apply dark theme
-        self.setStyleSheet("""
-            QDialog { background: #0d1117; color: #e6edf3; }
-            QTableWidget { 
-                background: #0d1117; 
-                color: #e6edf3;
-                gridline-color: #30363d; 
-                border: 1px solid #30363d; 
-                font-size: 9pt; 
-            }
-            QHeaderView::section { 
-                background: #161b22; 
-                color: #8b949e;
-                border: 1px solid #30363d; 
-                padding: 4px; 
-            }
-            QPushButton {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover { background: #30363d; }
-            QComboBox {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 3px;
-                padding: 5px;
-            }
-            QDateEdit {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 3px;
-                padding: 5px;
-            }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        # Controls row
-        controls_layout = QHBoxLayout()
-
-        # Date filter
-        controls_layout.addWidget(QLabel("Date:"))
-        self.date_picker = QDateEdit()
-        self.date_picker.setDate(QDate.currentDate())
-        self.date_picker.setCalendarPopup(True)
-        self.date_picker.dateChanged.connect(self.load_trades_for_date)
-        controls_layout.addWidget(self.date_picker)
-
-        controls_layout.addStretch()
-
-        # Refresh button
-        refresh_btn = QPushButton("⟳ Refresh")
-        refresh_btn.clicked.connect(self.load_trades_for_date)
-        controls_layout.addWidget(refresh_btn)
-
-        # Export button
-        export_btn = QPushButton("📥 Export CSV")
-        export_btn.clicked.connect(self.export_trades)
-        controls_layout.addWidget(export_btn)
-
-        layout.addLayout(controls_layout)
-
-        # Trade history table
-        cols = ["order_id", "symbol", "side", "qty", "buy_price", "sell_price",
-                "pnl", "net_pnl", "percentage_change", "start_time", "end_time", "reason"]
-        self.table = QTableWidget(0, len(cols))
-        self.table.setHorizontalHeaderLabels(cols)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        layout.addWidget(self.table)
-
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
-
-    def load_trades_for_date(self):
-        """Load trades for selected date"""
-        date_obj = self.date_picker.date().toPyDate()
-        date_str = date_obj.strftime('%Y-%m-%d')
-        trade_file = f"logs/trades_{date_str}.csv"
-
-        self.table.setRowCount(0)
-
-        if not os.path.exists(trade_file):
-            return
-
-        try:
-            with open(trade_file, newline="") as file:
-                reader = csv.DictReader(file)
-                for row in reader:
-                    row_pos = self.table.rowCount()
-                    self.table.insertRow(row_pos)
-
-                    for col_idx, col_name in enumerate([
-                        "order_id", "symbol", "side", "qty", "buy_price", "sell_price",
-                        "pnl", "net_pnl", "percentage_change", "start_time", "end_time", "reason"
-                    ]):
-                        val = row.get(col_name, "")
-                        item = QTableWidgetItem(str(val))
-
-                        # Color PnL cells
-                        if col_name in ["pnl", "net_pnl"]:
-                            try:
-                                pnl_val = float(val) if val else 0
-                                if pnl_val > 0:
-                                    item.setForeground(QColor("#3fb950"))
-                                elif pnl_val < 0:
-                                    item.setForeground(QColor("#f85149"))
-                            except:
-                                pass
-
-                        self.table.setItem(row_pos, col_idx, item)
-        except Exception as e:
-            logging.error(f"Failed to load trade history: {e}")
-
-    def export_trades(self):
-        """Export current view to CSV"""
-        from PyQt5.QtWidgets import QFileDialog
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Trades", "", "CSV Files (*.csv)"
-        )
-
-        if file_path:
-            try:
-                with open(file_path, 'w', newline='') as file:
-                    writer = csv.writer(file)
-                    # Write headers
-                    headers = []
-                    for col in range(self.table.columnCount()):
-                        headers.append(self.table.horizontalHeaderItem(col).text())
-                    writer.writerow(headers)
-
-                    # Write data
-                    for row in range(self.table.rowCount()):
-                        row_data = []
-                        for col in range(self.table.columnCount()):
-                            item = self.table.item(row, col)
-                            row_data.append(item.text() if item else "")
-                        writer.writerow(row_data)
-
-                QMessageBox.information(self, "Export Successful",
-                                        f"Trades exported to {file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Export Failed", str(e))
-
-
-class StatsPopup(QDialog):
-    """Popup window for displaying statistics"""
-
-    def __init__(self, state, parent=None):
-        super().__init__(parent)
-        self.state = state
-        self.setWindowTitle("Trading Statistics")
-        self.resize(900, 700)
-        self.setMinimumSize(700, 500)
-
-        # Set window flags to make it a proper popup
-        self.setWindowFlags(Qt.Window)
-
-        # Apply dark theme
-        self.setStyleSheet("""
-            QDialog { background: #0d1117; color: #e6edf3; }
-            QTabWidget::pane { border: 1px solid #30363d; }
-            QTabBar::tab { background: #161b22; color: #8b949e;
-                          padding: 8px 16px; border: 1px solid #30363d; }
-            QTabBar::tab:selected { background: #21262d; color: #e6edf3;
-                                    border-bottom: 2px solid #58a6ff; }
-            QLabel { color: #e6edf3; font-size: 10pt; }
-            QLabel[cssClass="value"] { color: #58a6ff; font-weight: bold; }
-            QLabel[cssClass="positive"] { color: #3fb950; }
-            QLabel[cssClass="negative"] { color: #f85149; }
-            QGroupBox {
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                margin-top: 10px;
-                font-weight: bold;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }
-            QPushButton {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover { background: #30363d; }
-        """)
-
-        layout = QVBoxLayout(self)
-
-        # Import StatsTab and add it
-        from gui.stats_tab import StatsTab
-        self.stats_tab = StatsTab(self.state)
-        layout.addWidget(self.stats_tab)
-
-        # Refresh timer
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh)
-        self.refresh_timer.start(2000)  # Refresh every 2 seconds
-
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
-
-    def refresh(self):
-        """Refresh statistics"""
-        if hasattr(self.stats_tab, 'refresh'):
-            self.stats_tab.refresh()
-
-    def closeEvent(self, event):
-        """Stop timer when closing"""
-        self.refresh_timer.stop()
-        event.accept()
-
+from gui.popups.dynamic_signal_debug_popup import DynamicSignalDebugPopup
+from strategy.strategy_manager import StrategyManager
 
 class TradingGUI(QMainWindow):
     """# PYQT: Main window - replaces Tkinter TradingGUI class"""
@@ -382,10 +71,17 @@ class TradingGUI(QMainWindow):
         self.log_popup = None
         self.history_popup = None
         self.stats_popup = None
+        self.signal_debug_popup = None
 
         # FIX: Cache for trade history file modification time
         self._trade_file_mtime = 0
         self._last_loaded_trade_data = None  # Optional: cache the actual data if needed
+        self.strategy_manager = StrategyManager()
+        self.strategy_editor = None
+        self.strategy_picker = None
+
+        # Apply the active strategy immediately
+        self._apply_active_strategy()
 
         # Build UI
         self._setup_log_handler()
@@ -401,105 +97,194 @@ class TradingGUI(QMainWindow):
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )
         self._log_handler.signaller.log_message.connect(self._append_log)
+
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
+
+        # Print existing handlers
+        print(f"Existing handlers before cleanup: {root_logger.handlers}")
+
         # Remove stale handlers from previous runs
         for h in list(root_logger.handlers):
             if isinstance(h, QtLogHandler):
+                print(f"Removing stale handler: {h}")
                 root_logger.removeHandler(h)
+
         root_logger.addHandler(self._log_handler)
+        print(f"Handlers after adding: {root_logger.handlers}")
+
+        # Test log immediately
+        logging.info("🟡 TEST LOG FROM SETUP - This should appear in popup")
+
+        # Schedule another test after UI is built
+        QTimer.singleShot(2000, self._test_logging)
+
+    def _test_logging(self):
+        """Test logging at different levels"""
+        print("🧪 Running logging test...")
+        logging.debug("DEBUG test message")
+        logging.info("INFO test message")
+        logging.warning("WARNING test message")
+        logging.error("ERROR test message")
+
+        # Also try from different modules
+        logger = logging.getLogger(__name__)
+        logger.info(f"Logger for {__name__} test")
+
+        logger2 = logging.getLogger("new_main")
+        logger2.info("Test from new_main logger")
 
     def _build_layout(self):
-        """# PYQT: Build main window layout - now only with chart and controls"""
+        """# PYQT: Build main window layout - chart on left, status on right, buttons below chart"""
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(5, 5, 5, 5)
+        root_layout.setSpacing(5)
 
-        # ── Top splitter: chart (left) + controls (right) ─────────────────────
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(2)
-        splitter.setStyleSheet("QSplitter::handle { background: #30363d; }")
+        # ── Top section: Chart (left) + Status Panel (right) ─────────────────────
+        top_splitter = QSplitter(Qt.Horizontal)
+        top_splitter.setHandleWidth(2)
+        top_splitter.setStyleSheet("QSplitter::handle { background: #30363d; }")
 
-        # Left: chart - now taking more space
+        # Left side container for chart and buttons
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(5)
+
+        # Chart widget
         self.chart_widget = ChartWidget()
         self.chart_widget.setMinimumWidth(800)
-        splitter.addWidget(self.chart_widget)
+        left_layout.addWidget(self.chart_widget, 1)  # Give it stretch factor
 
-        # Right: mode toggle + status + buttons
-        right_panel = self._build_right_panel()
-        right_panel.setFixedWidth(340)
-        splitter.addWidget(right_panel)
+        # Button panel (now below chart)
+        button_panel = self._build_button_panel()
+        left_layout.addWidget(button_panel)
 
-        splitter.setSizes([1060, 340])
-        root_layout.addWidget(splitter)
+        # Add left container to splitter
+        top_splitter.addWidget(left_container)
 
-    def _build_right_panel(self) -> QWidget:
-        """# PYQT: Build right panel with status and controls"""
+        # Right side: Status panel
+        self.status_panel = StatusPanel()
+        self.status_panel.setFixedWidth(340)
+        top_splitter.addWidget(self.status_panel)
+
+        # Set initial sizes (chart gets 75%, status gets 25%)
+        top_splitter.setSizes([1060, 340])
+        root_layout.addWidget(top_splitter, 1)  # Give top splitter stretch factor
+
+        # ── Bottom section: App Status Bar ─────────────────────────────
+        self.app_status_bar = AppStatusBar()
+        root_layout.addWidget(self.app_status_bar)
+
+    def _build_button_panel(self) -> QWidget:
+        """# PYQT: Build horizontal button panel below chart"""
         panel = QWidget()
-        panel.setStyleSheet("background: #0d1117;")
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
+        panel.setFixedHeight(60)
+        panel.setStyleSheet("""
+            QWidget {
+                background: #161b22;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+            }
+        """)
+
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(15, 8, 15, 8)
         layout.setSpacing(10)
 
-        # Mode toggle
-        mode_row = QHBoxLayout()
+        # Mode toggle group
+        mode_frame = QFrame()
+        mode_frame.setStyleSheet("QFrame { border: none; }")
+        mode_layout = QHBoxLayout(mode_frame)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+
         lbl = QLabel("Mode:")
-        lbl.setStyleSheet("color: #8b949e; font-size: 9pt;")
+        lbl.setStyleSheet("color: #8b949e; font-size: 9pt; font-weight: bold;")
+        mode_layout.addWidget(lbl)
+
         self.radio_algo = QRadioButton("⚡ Algo")
         self.radio_manual = QRadioButton("🖐 Manual")
         self.radio_algo.setChecked(True)
         self.radio_algo.toggled.connect(self._on_mode_change)
+
         for rb in [self.radio_algo, self.radio_manual]:
-            rb.setStyleSheet("color: #e6edf3; font-size: 9pt;")
-        mode_row.addWidget(lbl)
-        mode_row.addWidget(self.radio_algo)
-        mode_row.addWidget(self.radio_manual)
-        layout.addLayout(mode_row)
-
-        # Status panel
-        self.status_panel = StatusPanel()
-        layout.addWidget(self.status_panel)
-
-        # Buttons
-        btn_layout = QVBoxLayout()
-        btn_layout.setSpacing(6)
-
-        def make_btn(text, color, hover):
-            b = QPushButton(text)
-            b.setStyleSheet(f"""
-                QPushButton {{
-                    background: {color}; color: #fff;
-                    border-radius: 5px; padding: 9px;
-                }}
-                QPushButton:hover {{ background: {hover}; }}
-                QPushButton:disabled {{ background: #21262d; color: #484f58; }}
+            rb.setStyleSheet("""
+                QRadioButton {
+                    color: #e6edf3;
+                    font-size: 9pt;
+                    spacing: 5px;
+                }
+                QRadioButton::indicator {
+                    width: 12px;
+                    height: 12px;
+                }
             """)
-            return b
+            mode_layout.addWidget(rb)
 
-        self.btn_start = make_btn("▶  Start App", "#238636", "#2ea043")
-        self.btn_stop = make_btn("■  Stop App", "#da3633", "#f85149")
+        layout.addWidget(mode_frame)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setStyleSheet("QFrame { border: 1px solid #30363d; }")
+        layout.addWidget(separator)
+
+        # Button styling helper
+        def make_btn(text, color, hover, icon=None):
+            btn = QPushButton(text)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {color};
+                    color: #fff;
+                    border-radius: 5px;
+                    padding: 8px 20px;
+                    font-weight: bold;
+                    min-width: 100px;
+                }}
+                QPushButton:hover {{
+                    background: {hover};
+                }}
+                QPushButton:disabled {{
+                    background: #21262d;
+                    color: #484f58;
+                }}
+            """)
+            return btn
+
+        self.btn_strategy = make_btn("⚡ Strategy", "#1f6feb", "#388bfd")
+        self.btn_strategy.clicked.connect(self._show_strategy_picker)
+        layout.addWidget(self.btn_strategy)  # add before btn_start
+
+        # Control buttons
+        self.btn_start = make_btn("▶  Start", "#238636", "#2ea043")
+        self.btn_stop = make_btn("■  Stop", "#da3633", "#f85149")
         self.btn_call = make_btn("📈  Buy Call", "#1f6feb", "#388bfd")
         self.btn_put = make_btn("📉  Buy Put", "#6e40c9", "#8957e5")
-        self.btn_exit = make_btn("🚪  Exit Position", "#9e6a03", "#d29922")
+        self.btn_exit = make_btn("🚪  Exit", "#9e6a03", "#d29922")
 
+        # Initial button states
         self.btn_stop.setDisabled(True)
         self.btn_call.setDisabled(True)
         self.btn_put.setDisabled(True)
         self.btn_exit.setDisabled(True)
 
+        # Connect signals
         self.btn_start.clicked.connect(self._start_app)
         self.btn_stop.clicked.connect(self._stop_app)
         self.btn_call.clicked.connect(lambda: self._manual_buy(BaseEnums.CALL))
         self.btn_put.clicked.connect(lambda: self._manual_buy(BaseEnums.PUT))
         self.btn_exit.clicked.connect(self._manual_exit)
 
-        for b in [self.btn_start, self.btn_stop, self.btn_call, self.btn_put, self.btn_exit]:
-            btn_layout.addWidget(b)
+        # Add buttons in order
+        layout.addWidget(self.btn_start)
+        layout.addWidget(self.btn_stop)
+        layout.addStretch()  # Push remaining buttons to the right
+        layout.addWidget(self.btn_call)
+        layout.addWidget(self.btn_put)
+        layout.addWidget(self.btn_exit)
 
-        layout.addLayout(btn_layout)
-        layout.addStretch()
         return panel
 
     def _setup_timers(self):
@@ -515,6 +300,11 @@ class TradingGUI(QMainWindow):
         self._last_chart_fp = ""  # Track last fingerprint
         self._chart_update_pending = False  # Prevent overlapping updates
 
+        # App status update timer (more frequent for operation feedback)
+        self.timer_app_status = QTimer(self)
+        self.timer_app_status.timeout.connect(self._update_app_status)
+        self.timer_app_status.start(500)  # 500ms for more responsive status updates
+
     @pyqtSlot()
     def _tick_fast(self):
         """# PYQT: Runs on main thread — safe to update all widgets"""
@@ -526,6 +316,9 @@ class TradingGUI(QMainWindow):
         # Update popups if they're open
         if self.stats_popup and self.stats_popup.isVisible():
             self.stats_popup.refresh()
+
+        if self.signal_debug_popup and self.signal_debug_popup.isVisible():
+            self.signal_debug_popup.refresh()
 
         self._update_button_states()
 
@@ -540,6 +333,42 @@ class TradingGUI(QMainWindow):
 
         # FIX: Update trade history on 5-second timer instead of 1-second
         self._update_trade_history()
+
+    @pyqtSlot()
+    def _update_app_status(self):
+        """Update application status from trading app"""
+        if self.trading_app is None:
+            return
+
+        # Get status information from trading app
+        status_info = {}
+
+        # Check history fetch status
+        if hasattr(self.trading_app, '_history_fetch_in_progress'):
+            status_info['fetching_history'] = self.trading_app._history_fetch_in_progress.is_set()
+
+        # Check processing status
+        if hasattr(self.trading_app, '_processing_in_progress'):
+            status_info['processing'] = self.trading_app._processing_in_progress.is_set()
+
+        # Check order pending status
+        if hasattr(self.trading_app.state, 'order_pending'):
+            status_info['order_pending'] = self.trading_app.state.order_pending
+
+        # Check if position is active
+        if hasattr(self.trading_app.state, 'current_position'):
+            status_info['has_position'] = self.trading_app.state.current_position is not None
+
+        # Check if trade is confirmed
+        if hasattr(self.trading_app.state, 'current_trade_confirmed'):
+            status_info['trade_confirmed'] = self.trading_app.state.current_trade_confirmed
+
+        # Get last reason to exit if any
+        if hasattr(self.trading_app.state, 'reason_to_exit'):
+            status_info['last_exit_reason'] = self.trading_app.state.reason_to_exit
+
+        # Update the status bar
+        self.app_status_bar.update_status(status_info, self.trading_mode, self.app_running)
 
     def _update_chart_if_needed(self):
         """Update chart only if data has changed"""
@@ -601,6 +430,11 @@ class TradingGUI(QMainWindow):
                 config=self.config,
                 broker_setting=self.brokerage_setting,
             )
+            # Connect to app status updates
+            self.app_status_bar.update_status({
+                'initialized': True,
+                'status': 'App initialized'
+            }, self.trading_mode, False)
         except Exception as e:
             logging.critical(f"Failed to create TradingApp: {e}", exc_info=True)
             QMessageBox.critical(self, "Init Error",
@@ -619,12 +453,14 @@ class TradingGUI(QMainWindow):
         self.trading_thread.finished.connect(self._on_engine_finished)
         self.trading_thread.start()
         self.app_running = True
+        self.app_status_bar.update_status({'status': 'Starting...'}, self.trading_mode, True)
         self._update_button_states()
 
     @pyqtSlot()
     def _stop_app(self):
         """# PYQT: Stop the trading engine"""
         self.btn_stop.setDisabled(True)
+        self.app_status_bar.update_status({'status': 'Stopping...'}, self.trading_mode, True)
         # PYQT: Stop is blocking — run on a plain daemon thread, not main thread
         threading.Thread(target=self._threaded_stop, daemon=True, name="StopThread").start()
 
@@ -640,12 +476,14 @@ class TradingGUI(QMainWindow):
     def _on_engine_finished(self):
         """# PYQT: Slot — always called on main thread"""
         self.app_running = False
+        self.app_status_bar.update_status({'status': 'Stopped'}, self.trading_mode, False)
         self._update_button_states()
 
     @pyqtSlot(str)
     def _on_engine_error(self, message: str):
         """# PYQT: Slot — always called on main thread"""
         self.app_running = False
+        self.app_status_bar.update_status({'status': f'Error: {message[:50]}...'}, self.trading_mode, False)
         self._update_button_states()
 
         # FIX: Show specific message for token expiration
@@ -665,11 +503,23 @@ class TradingGUI(QMainWindow):
             return
         if not self.trading_app:
             return
+        self.app_status_bar.update_status({'status': f'Placing {option_type} order...'}, self.trading_mode, True)
         threading.Thread(
-            target=lambda: self.trading_app.executor.buy_option(
-                self.trading_app.state, option_type=option_type),
+            target=self._threaded_manual_buy,
+            args=(option_type,),
             daemon=True
         ).start()
+
+    def _threaded_manual_buy(self, option_type):
+        """Execute manual buy in background"""
+        try:
+            self.trading_app.executor.buy_option(
+                self.trading_app.state, option_type=option_type)
+            QTimer.singleShot(0, lambda: self.app_status_bar.update_status(
+                {'status': f'{option_type} order placed'}, self.trading_mode, True))
+        except Exception as e:
+            QTimer.singleShot(0, lambda: self.app_status_bar.update_status(
+                {'status': f'Order failed: {str(e)[:50]}'}, self.trading_mode, True))
 
     def _manual_exit(self):
         """# PYQT: Manual exit in background thread"""
@@ -678,16 +528,28 @@ class TradingGUI(QMainWindow):
             return
         if not self.trading_app:
             return
+        self.app_status_bar.update_status({'status': 'Exiting position...'}, self.trading_mode, True)
         threading.Thread(
-            target=lambda: self.trading_app.executor.exit_position(
-                self.trading_app.state, reason="Manual Exit"),
+            target=self._threaded_manual_exit,
             daemon=True
         ).start()
+
+    def _threaded_manual_exit(self):
+        """Execute manual exit in background"""
+        try:
+            self.trading_app.executor.exit_position(
+                self.trading_app.state, reason="Manual Exit")
+            QTimer.singleShot(0, lambda: self.app_status_bar.update_status(
+                {'status': 'Position exited'}, self.trading_mode, True))
+        except Exception as e:
+            QTimer.singleShot(0, lambda: self.app_status_bar.update_status(
+                {'status': f'Exit failed: {str(e)[:50]}'}, self.trading_mode, True))
 
     @pyqtSlot()
     def _on_mode_change(self):
         """# PYQT: Handle mode switch"""
         self.trading_mode = "algo" if self.radio_algo.isChecked() else "manual"
+        self.app_status_bar.update_status({}, self.trading_mode, self.app_running)
         self._update_button_states()
 
     @pyqtSlot(str)
@@ -728,8 +590,20 @@ class TradingGUI(QMainWindow):
         stats_act.triggered.connect(self._show_stats_popup)
         view_menu.addAction(stats_act)
 
-        view_menu.addSeparator()
+        sig_debug_act = QAction("🔬 Dynamic Signal Debug", self)
+        sig_debug_act.triggered.connect(self._show_signal_debug_popup)
+        view_menu.addAction(sig_debug_act)
 
+        view_menu.addSeparator()
+        picker_act = QAction("⚡ Strategy Picker", self)
+        picker_act.triggered.connect(self._show_strategy_picker)
+        view_menu.addAction(picker_act)
+
+        editor_act = QAction("📋 Strategy Editor", self)
+        editor_act.triggered.connect(self._open_strategy_editor)
+        view_menu.addAction(editor_act)
+
+        view_menu.addSeparator()
         close_all_act = QAction("Close All Popups", self)
         close_all_act.triggered.connect(self._close_all_popups)
         view_menu.addAction(close_all_act)
@@ -791,6 +665,12 @@ class TradingGUI(QMainWindow):
             self.history_popup.close()
         if self.stats_popup:
             self.stats_popup.close()
+        if self.signal_debug_popup:
+            self.signal_debug_popup.close()
+        if self.strategy_picker:
+            self.strategy_picker.close()
+        if self.strategy_editor:
+            self.strategy_editor.close()
 
     # Settings dialog openers
     def _open_strategy(self):
@@ -799,7 +679,6 @@ class TradingGUI(QMainWindow):
         dlg.exec_()
         # dlg = StrategySettingGUI(self, self.strategy_setting)
         # dlg.exec_()
-
 
     def _open_daily(self):
         dlg = DailyTradeSettingGUI(self, daily_setting=self.daily_setting,
@@ -819,6 +698,16 @@ class TradingGUI(QMainWindow):
         dlg = FyersManualLoginPopup(self, self.brokerage_setting)
         dlg.exec_()
         self._reload_broker()
+
+    def _show_signal_debug_popup(self):
+        if not self.trading_app:
+            QMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
+            return
+        if not self.signal_debug_popup:
+            self.signal_debug_popup = DynamicSignalDebugPopup(self.trading_app, self)
+        self.signal_debug_popup.show()
+        self.signal_debug_popup.raise_()
+        self.signal_debug_popup.activateWindow()
 
     def _reload_broker(self):
         """# PYQT: Reload after login"""
@@ -865,6 +754,7 @@ class TradingGUI(QMainWindow):
         """# PYQT: Stop timers, close popups, and stop engine before closing"""
         self.timer_fast.stop()
         self.timer_chart.stop()
+        self.timer_app_status.stop()
 
         # Close all popups
         self._close_all_popups()
@@ -873,3 +763,73 @@ class TradingGUI(QMainWindow):
             threading.Thread(target=self.trading_thread.stop,
                              daemon=True, name="CloseStop").start()
         event.accept()
+
+    def _show_strategy_picker(self):
+        if not self.strategy_picker:
+            self.strategy_picker = StrategyPickerSidebar(
+                manager=self.strategy_manager,
+                trading_app=self.trading_app,
+                parent=self,
+            )
+            self.strategy_picker.strategy_activated.connect(self._on_strategy_changed)
+            self.strategy_picker.open_editor_requested.connect(self._open_strategy_editor)
+        self.strategy_picker.refresh()
+        self.strategy_picker.show()
+        self.strategy_picker.raise_()
+        self.strategy_picker.activateWindow()
+
+    # In TradingGUI.py, add/replace these methods:
+
+    def _open_strategy_editor(self):
+        """Open strategy editor as a full-page window"""
+        if not self.strategy_editor:
+            self.strategy_editor = StrategyEditorWindow(self.strategy_manager, parent=self)
+            self.strategy_editor.strategy_activated.connect(self._on_strategy_changed)
+            # Make it a full window
+            self.strategy_editor.setWindowState(Qt.WindowMaximized)
+            self.strategy_editor.setWindowFlags(Qt.Window)  # Ensure it's a top-level window
+        self.strategy_editor.show()
+        self.strategy_editor.raise_()
+        self.strategy_editor.activateWindow()
+        # Ensure it's maximized
+        if not self.strategy_editor.isMaximized():
+            self.strategy_editor.showMaximized()
+
+    def _on_strategy_editor_closed(self):
+        """Clean up reference when editor is closed"""
+        self.strategy_editor = None
+
+
+    def _on_strategy_changed(self, slug: str):
+        self._apply_active_strategy()
+        # Refresh picker if open
+        if self.strategy_picker and self.strategy_picker.isVisible():
+            self.strategy_picker.refresh()
+
+    def _apply_active_strategy(self):
+
+        try:
+            indicator_params = self.strategy_manager.get_active_indicator_params()
+            engine_config = self.strategy_manager.get_active_engine_config()
+
+            # 1. Update the config object that TrendDetector reads
+            for key, value in indicator_params.items():
+                if hasattr(self.config, key):
+                    setattr(self.config, key, value)
+
+            # 2. Update DynamicSignalEngine rules live
+            if (self.trading_app and
+                    hasattr(self.trading_app, "detector") and
+                    hasattr(self.trading_app.detector, "signal_engine") and
+                    self.trading_app.detector.signal_engine is not None):
+                self.trading_app.detector.signal_engine.from_dict(engine_config)
+
+            # 3. Update toolbar label
+            name = self.strategy_manager.get_active_name()
+            if hasattr(self, "_active_strategy_lbl"):
+                self._active_strategy_lbl.setText(f"⚡  {name}")
+
+            logging.info(f"Applied strategy: {name}")
+
+        except Exception as e:
+            logging.error(f"Failed to apply strategy: {e}", exc_info=True)
