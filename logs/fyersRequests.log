@@ -338,3 +338,7 @@
 {"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":200,"API":"/quotes"},"timestamp":"2026-02-21 06:46:45,747+0530","service":"FyersAPIRequest"}
 {"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":200,"API":"/history"},"timestamp":"2026-02-21 06:46:50,302+0530","service":"FyersAPIRequest"}
 {"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":422,"API":"/history"},"timestamp":"2026-02-21 06:46:50,972+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":200,"API":"/funds"},"timestamp":"2026-02-21 06:50:02,933+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":200,"API":"/quotes"},"timestamp":"2026-02-21 06:50:03,509+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":200,"API":"/history"},"timestamp":"2026-02-21 06:50:07,571+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":422,"API":"/history"},"timestamp":"2026-02-21 06:50:08,187+0530","service":"FyersAPIRequest"}

@@ -18,6 +18,7 @@ from PyQt5.QtGui import QFont, QColor
 # PYQT: Import existing trading engine (unchanged)
 import BaseEnums
 from gui.chart_widget import ChartWidget
+from gui.indicator_builder_dialog import IndicatorRuleBuilderDialog
 from gui.log_handler import QtLogHandler
 from gui.stats_tab import StatsTab
 from gui.status_panel import StatusPanel
@@ -793,8 +794,12 @@ class TradingGUI(QMainWindow):
 
     # Settings dialog openers
     def _open_strategy(self):
-        dlg = StrategySettingGUI(self, self.strategy_setting)
+        dlg = IndicatorRuleBuilderDialog()
+        # dlg.signals_updated.connect(self.trend_detector.reload_signal_engine)
         dlg.exec_()
+        # dlg = StrategySettingGUI(self, self.strategy_setting)
+        # dlg.exec_()
+
 
     def _open_daily(self):
         dlg = DailyTradeSettingGUI(self, daily_setting=self.daily_setting,
