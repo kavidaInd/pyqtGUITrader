@@ -1,7 +1,7 @@
 # PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QMessageBox, QVBoxLayout, QLabel)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 import threading
 
@@ -11,6 +11,8 @@ class BrokerageSettingGUI(QDialog):
     # PYQT: Replaces Tkinter Toplevel with QDialog.
     Class name preserved — all callers use BrokerageSettingGUI(parent, setting).
     """
+    # Add signals for thread-safe communication
+    save_completed = pyqtSignal(bool, str)
 
     def __init__(self, parent, brokerage_setting):
         super().__init__(parent)
@@ -69,6 +71,9 @@ class BrokerageSettingGUI(QDialog):
         self.save_btn.clicked.connect(self.save)
         layout.addWidget(self.save_btn)
 
+        # Connect signals
+        self.save_completed.connect(self.on_save_completed)
+
     def show_success_feedback(self, message="✓ Settings saved successfully!"):
         """# PYQT: Show success message and auto-hide after 2 seconds"""
         self.status_label.setText(message)
@@ -119,30 +124,31 @@ class BrokerageSettingGUI(QDialog):
 
         def _save():
             try:
-                # Simulate small delay to show saving state (remove in production)
-                import time
-                time.sleep(0.5)
-
+                # Update the settings object
                 self.brokerage_setting.client_id = client_id
                 self.brokerage_setting.secret_key = secret_key
                 self.brokerage_setting.redirect_uri = redirect_uri
-                self.brokerage_setting.save()
 
-                # Show success and close after delay
-                QTimer.singleShot(0, lambda: self.save_success())
+                # Save to file
+                success = self.brokerage_setting.save()
+
+                if success:
+                    self.save_completed.emit(True, "Settings saved successfully!")
+                else:
+                    self.save_completed.emit(False, "Failed to save settings to file")
+
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.save_error(str(e)))
+                self.save_completed.emit(False, str(e))
 
         threading.Thread(target=_save, daemon=True).start()
 
-    def save_success(self):
-        """# PYQT: Handle successful save"""
-        self.show_success_feedback()
-        self.save_btn.setEnabled(True)
-        # Close after showing success
-        QTimer.singleShot(1500, self.accept)
-
-    def save_error(self, error_msg):
-        """# PYQT: Handle save error"""
-        self.show_error_feedback(f"Failed to save: {error_msg}")
-        self.save_btn.setEnabled(True)
+    def on_save_completed(self, success, message):
+        """Handle save completion in main thread"""
+        if success:
+            self.show_success_feedback()
+            self.save_btn.setEnabled(True)
+            # Close after showing success
+            QTimer.singleShot(1500, self.accept)
+        else:
+            self.show_error_feedback(f"Failed to save: {message}")
+            self.save_btn.setEnabled(True)

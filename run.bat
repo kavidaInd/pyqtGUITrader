@@ -162,7 +162,7 @@ if defined MISSING_PKG (
 :: ============================================================================
 :: Check if main script exists
 :: ============================================================================
-set "MAIN_SCRIPT=%SCRIPT_DIR%\TradingGUI.py"
+set "MAIN_SCRIPT=%SCRIPT_DIR%\main.py"
 if not exist "%MAIN_SCRIPT%" (
     call :error "Main script not found: %MAIN_SCRIPT%"
 )

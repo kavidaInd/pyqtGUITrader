@@ -2,14 +2,28 @@
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QMessageBox, QVBoxLayout,
                              QComboBox, QHBoxLayout, QLabel, QGroupBox)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
-from gui.ProfitStoplossSetting import ProfitStoplossSetting
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QLocale
+from PyQt5.QtGui import QFont, QDoubleValidator
 from BaseEnums import STOP, TRAILING
 import threading
 
+from gui import ProfitStoplossSetting
+
 
 class ProfitStoplossSettingGUI(QDialog):
+    # Add signals for thread-safe communication
+    save_completed = pyqtSignal(bool, str)
+
+    # Validation ranges
+    VALIDATION_RANGES = {
+        "tp_percentage": (0.1, 100.0, "Take Profit"),
+        "stoploss_percentage": (0.1, 50.0, "Stoploss"),
+        "trailing_first_profit": (0.1, 50.0, "Trailing First Profit"),
+        "max_profit": (0.1, 200.0, "Max Profit"),
+        "profit_step": (0.1, 20.0, "Profit Step"),
+        "loss_step": (0.1, 20.0, "Loss Step")
+    }
+
     def __init__(self, parent, profit_stoploss_setting: ProfitStoplossSetting, app=None):
         super().__init__(parent)
         self.profit_stoploss_setting = profit_stoploss_setting
@@ -27,6 +41,7 @@ class ProfitStoplossSettingGUI(QDialog):
                                    border:1px solid #30363d; border-radius:4px; padding:8px;
                                    font-size:10pt; }
             QLineEdit:focus, QComboBox:focus { border:2px solid #58a6ff; }
+            QLineEdit:disabled { background:#1a1f26; color:#6e7681; }
             QPushButton { background:#238636; color:#fff; border-radius:4px; padding:12px;
                          font-weight:bold; font-size:10pt; }
             QPushButton:hover { background:#2ea043; }
@@ -54,7 +69,7 @@ class ProfitStoplossSettingGUI(QDialog):
         self.profit_type_combo = QComboBox()
         self.profit_type_combo.addItem("STOP (Fixed Target)", STOP)
         self.profit_type_combo.addItem("TRAILING (Dynamic)", TRAILING)
-        current = STOP if profit_stoploss_setting.profit_type == STOP else TRAILING
+        current = profit_stoploss_setting.profit_type
         self.profit_type_combo.setCurrentIndex(0 if current == STOP else 1)
         self.profit_type_combo.currentIndexChanged.connect(self._on_profit_type_change)
         main_layout.addRow("💰 Profit Type:", self.profit_type_combo)
@@ -72,21 +87,32 @@ class ProfitStoplossSettingGUI(QDialog):
         self.entries = {}
 
         fields = [
-            ("Take Profit (%)", "tp_percentage", float, "💰"),
-            ("Stoploss (%)", "stoploss_percentage", float, "🛑"),
-            ("Trailing First Profit (%)", "trailing_first_profit", float, "📈"),
-            ("Max Profit (%)", "max_profit", float, "🏆"),
-            ("Profit Step (%)", "profit_step", float, "➕"),
-            ("Loss Step (%)", "loss_step", float, "➖"),
+            ("Take Profit (%)", "tp_percentage", "💰"),
+            ("Stoploss (%)", "stoploss_percentage", "🛑"),
+            ("Trailing First Profit (%)", "trailing_first_profit", "📈"),
+            ("Max Profit (%)", "max_profit", "🏆"),
+            ("Profit Step (%)", "profit_step", "➕"),
+            ("Loss Step (%)", "loss_step", "➖"),
         ]
 
-        for label, key, typ, icon in fields:
+        # Set up double validator for all numeric fields
+        validator = QDoubleValidator()
+        validator.setLocale(QLocale.c())  # Use C locale for consistent decimal point
+
+        for label, key, icon in fields:
             edit = QLineEdit()
+            edit.setValidator(validator)
             edit.setPlaceholderText(f"Enter {label.lower()}")
-            val = getattr(profit_stoploss_setting, key, 0)
-            edit.setText(str(val))
+
+            # Get value and handle stoploss sign conversion
+            if key == "stoploss_percentage":
+                val = abs(getattr(profit_stoploss_setting, key, 0))
+            else:
+                val = getattr(profit_stoploss_setting, key, 0)
+
+            edit.setText(f"{val:.1f}")
             values_layout.addRow(f"{icon} {label}:", edit)
-            self.vars[key] = (edit, typ)
+            self.vars[key] = edit
             self.entries[key] = edit
 
         values_group.setLayout(values_layout)
@@ -116,20 +142,57 @@ class ProfitStoplossSettingGUI(QDialog):
         btn_layout.addWidget(self.cancel_btn)
         layout.addLayout(btn_layout)
 
+        # Connect signals
+        self.save_completed.connect(self.on_save_completed)
+
         self._on_profit_type_change()
 
     def _on_profit_type_change(self):
         selected = self.profit_type_combo.currentData()
         trailing_keys = {"trailing_first_profit", "max_profit", "profit_step", "loss_step"}
+
         for key, edit in self.entries.items():
             if key in trailing_keys:
                 edit.setEnabled(selected == TRAILING)
                 if selected == TRAILING:
-                    edit.setPlaceholderText(f"Enter value (required for trailing)")
+                    edit.setPlaceholderText("Enter value (required)")
+                    # Restore original style
+                    edit.setStyleSheet("""
+                        QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                                   border-radius:4px; padding:8px; }
+                        QLineEdit:focus { border:2px solid #58a6ff; }
+                    """)
                 else:
                     edit.setPlaceholderText("Disabled in STOP mode")
+                    # Dim the text
+                    edit.setStyleSheet("""
+                        QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                                   border-radius:4px; padding:8px; }
+                    """)
             else:
                 edit.setEnabled(True)
+
+    def validate_field(self, key: str, value: str) -> tuple:
+        """Validate field value and return (is_valid, converted_value, error_message)"""
+        if not value.strip():
+            return False, None, f"{self.VALIDATION_RANGES[key][2]} is required"
+
+        try:
+            val = float(value)
+            min_val, max_val, name = self.VALIDATION_RANGES[key]
+
+            if val < min_val or val > max_val:
+                return False, None, f"{name} must be between {min_val} and {max_val}"
+
+            # Additional logical validations
+            if key == "max_profit":
+                trailing_first = float(self.entries["trailing_first_profit"].text() or "0")
+                if val <= trailing_first:
+                    return False, None, "Max Profit must be greater than Trailing First Profit"
+
+            return True, val, None
+        except ValueError:
+            return False, None, f"{self.VALIDATION_RANGES[key][2]} must be a valid number"
 
     def show_success_feedback(self):
         """# PYQT: Show success with visual feedback"""
@@ -137,7 +200,6 @@ class ProfitStoplossSettingGUI(QDialog):
         self.status_label.setStyleSheet("color: #3fb950; font-size: 10pt; font-weight: bold; padding: 5px;")
 
         # Animate button
-        original_text = self.save_btn.text()
         self.save_btn.setText("✓ Saved!")
         self.save_btn.setStyleSheet("""
             QPushButton { background:#2ea043; color:#fff; border-radius:4px; padding:12px; }
@@ -156,12 +218,18 @@ class ProfitStoplossSettingGUI(QDialog):
 
     def reset_styles(self):
         """# PYQT: Reset all styles to normal"""
-        for entry in self.entries.values():
-            entry.setStyleSheet("""
-                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
-                           border-radius:4px; padding:8px; }
-                QLineEdit:focus { border:2px solid #58a6ff; }
-            """)
+        for key, entry in self.entries.items():
+            if entry.isEnabled():
+                entry.setStyleSheet("""
+                    QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                               border-radius:4px; padding:8px; }
+                    QLineEdit:focus { border:2px solid #58a6ff; }
+                """)
+            else:
+                entry.setStyleSheet("""
+                    QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                               border-radius:4px; padding:8px; }
+                """)
 
         self.save_btn.setText("💾 Save Settings")
         self.save_btn.setStyleSheet("""
@@ -188,53 +256,74 @@ class ProfitStoplossSettingGUI(QDialog):
         self.save_btn.setText("⏳ Validating...")
         self.status_label.setText("")  # Clear any previous status
 
+        # Validate all fields in main thread
+        data_to_save = {}
+        validation_errors = []
+
+        # Determine which fields are required based on profit type
+        profit_type = self.profit_type_combo.currentData()
+        required_fields = ["tp_percentage", "stoploss_percentage"]
+        if profit_type == TRAILING:
+            required_fields.extend(["trailing_first_profit", "max_profit", "profit_step", "loss_step"])
+
+        # Validate all required fields
+        for key in required_fields:
+            edit = self.entries[key]
+            text = edit.text().strip()
+            is_valid, value, error = self.validate_field(key, text)
+
+            if is_valid:
+                data_to_save[key] = value
+            else:
+                validation_errors.append(error)
+                # Highlight the problematic field
+                edit.setStyleSheet("""
+                    QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149;
+                               border-radius:4px; padding:8px; }
+                """)
+
+        if validation_errors:
+            self.show_error_feedback("\n".join(validation_errors))
+            self.save_btn.setEnabled(True)
+            return
+
+        # Add profit type to data
+        data_to_save['profit_type'] = profit_type
+
         def _save():
             try:
-                # Validate all fields
-                for key, (edit, typ) in self.vars.items():
-                    text = edit.text().strip()
-                    if not text and edit.isEnabled():
-                        raise ValueError(f"{key.replace('_', ' ').title()} is required")
-                    if edit.isEnabled():
-                        try:
-                            float(text)
-                        except ValueError:
-                            raise ValueError(f"{key.replace('_', ' ').title()} must be a number")
+                # Update settings object
+                for key, value in data_to_save.items():
+                    setattr(self.profit_stoploss_setting, key, value)
 
-                # Set profit type
-                profit_type_val = self.profit_type_combo.currentData()
-                self.profit_stoploss_setting.profit_type = profit_type_val
+                # Save to file
+                success = self.profit_stoploss_setting.save()
 
-                # Set numeric fields
-                for key, (edit, typ) in self.vars.items():
-                    if edit.isEnabled():
-                        text = edit.text().strip()
-                        value = float(text)
-                        setattr(self.profit_stoploss_setting, key, value)
+                if success:
+                    self.save_completed.emit(True, "Settings saved successfully!")
+                else:
+                    self.save_completed.emit(False, "Failed to save settings to file")
 
-                self.profit_stoploss_setting.save()
-
-                if self.app and hasattr(self.app, "refresh_settings_live"):
-                    self.app.refresh_settings_live()
-
-                # Show success and close
-                QTimer.singleShot(0, self.save_success)
-
-            except ValueError as e:
-                QTimer.singleShot(0, lambda: self.save_error(str(e)))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.save_error(str(e)))
+                self.save_completed.emit(False, str(e))
 
         threading.Thread(target=_save, daemon=True).start()
 
-    def save_success(self):
-        """# PYQT: Handle successful save"""
-        self.show_success_feedback()
-        self.save_btn.setEnabled(True)
-        # Close after showing success
-        QTimer.singleShot(2000, self.accept)
+    def on_save_completed(self, success, message):
+        """Handle save completion in main thread"""
+        if success:
+            self.show_success_feedback()
+            self.save_btn.setEnabled(True)
 
-    def save_error(self, error_msg):
-        """# PYQT: Handle save error"""
-        self.show_error_feedback(error_msg)
-        self.save_btn.setEnabled(True)
+            # Refresh app if needed
+            if self.app and hasattr(self.app, "refresh_settings_live"):
+                try:
+                    self.app.refresh_settings_live()
+                except Exception as e:
+                    print(f"Failed to refresh app: {e}")
+
+            # Close after showing success
+            QTimer.singleShot(2000, self.accept)
+        else:
+            self.show_error_feedback(message)
+            self.save_btn.setEnabled(True)

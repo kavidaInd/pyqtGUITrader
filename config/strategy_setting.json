@@ -17,7 +17,7 @@
   "use_rsi": true,
   "use_rsi_entry": true,
   "use_rsi_exit": true,
-  "rsi_length": 7,
+  "rsi_length": 9,
   "bb_length": 10,
   "bb_std": 3.0,
   "macd_fast": 7,

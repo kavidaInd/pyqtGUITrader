@@ -1,5 +1,6 @@
 import logging
 import concurrent.futures
+import threading
 from typing import Optional, Any
 
 import BaseEnums
@@ -43,10 +44,16 @@ class TradingApp:
         )
         self.trading_mode_var = trading_mode_var
 
-        # FIX: Thread pool for non-blocking history fetches
+        # Thread pool for non-blocking history fetches
         self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="HistoryFetch"
         )
+
+        # Event to track history fetch state separately from order_pending
+        self._history_fetch_in_progress = threading.Event()
+
+        # FIX: Event to track message processing state
+        self._processing_in_progress = threading.Event()
 
         # Ensure confirmed_orders is always a list
         if not hasattr(self.state, "confirmed_orders"):
@@ -98,26 +105,53 @@ class TradingApp:
             logger.error(f"WebSocket connection/subscription failed: {ws_error!r}", exc_info=True)
 
     def on_message(self, message: dict) -> None:
+        """
+        Two-stage message processing:
+        Stage 1 (fast): Update market state immediately on WS thread
+        Stage 2 (slow): Submit remaining processing to thread pool
+        """
         try:
-            if message and isinstance(message, dict) and message.get("symbol"):
-                symbol = message.get("symbol")
-                ltp = message.get("ltp")
-                ask_price = message.get("ask_price")
-                bid_price = message.get("bid_price")
-                if ltp is None:
-                    logger.warning(f"LTP missing for symbol {symbol}. Message: {message}")
-                    return
-
-                self.update_market_state(symbol, ltp, ask_price, bid_price)
-                self.monitor.update_trailing_sl_tp(self.broker, self.state)
-                self.evaluate_trend_and_decision()
-                self.monitor_active_trade_status()
-                self.monitor_profit_loss_status()
-            else:
+            if not (message and isinstance(message, dict) and message.get("symbol")):
                 logger.warning(f"Malformed or empty message received: {message}")
+                return
+
+            symbol = message.get("symbol")
+            ltp = message.get("ltp")
+            ask_price = message.get("ask_price")
+            bid_price = message.get("bid_price")
+
+            if ltp is None:
+                logger.warning(f"LTP missing for symbol {symbol}. Message: {message}")
+                return
+
+            # Stage 1: Fast update - write LTP to state immediately
+            self.update_market_state(symbol, ltp, ask_price, bid_price)
+
+            # Stage 2: Slow processing - submit to thread pool if not already processing
+            if not self._processing_in_progress.is_set():
+                self._processing_in_progress.set()
+                self._fetch_executor.submit(self._process_message_stage2)
 
         except Exception as e:
-            logger.error(f"Exception in on_message: {e!r}, Message: {message}", exc_info=True)
+            logger.error(f"Exception in on_message stage 1: {e!r}, Message: {message}", exc_info=True)
+
+    def _process_message_stage2(self) -> None:
+        """
+        Stage 2 message processing - runs in thread pool.
+        Contains all slower operations that shouldn't block the WebSocket thread.
+        """
+        try:
+            # Run all monitoring and decision logic
+            self.monitor.update_trailing_sl_tp(self.broker, self.state)
+            self.evaluate_trend_and_decision()
+            self.monitor_active_trade_status()
+            self.monitor_profit_loss_status()
+
+        except Exception as e:
+            logger.error(f"Exception in message stage 2 processing: {e!r}", exc_info=True)
+        finally:
+            # Always clear the processing flag
+            self._processing_in_progress.clear()
 
     def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float) -> None:
         if symbol == self.symbol_full(self.state.derivative):
@@ -135,17 +169,18 @@ class TradingApp:
     def evaluate_trend_and_decision(self) -> None:
         try:
             if not Utils.is_history_updated(last_updated=self.state.last_index_updated, interval=self.state.interval):
-                if not self.state.order_pending:
-                    # FIX: Submit blocking history fetch to thread pool; don't block WS thread
-                    self.state.order_pending = True
+                # Use separate Event for history fetch, not order_pending
+                if not self._history_fetch_in_progress.is_set():
+                    self._history_fetch_in_progress.set()
                     self._fetch_executor.submit(self._fetch_history_and_detect)
+
             if self.get_trading_mode() == "algo":
                 self.state.trend = self.determine_trend_logic()
                 self.execute_based_on_trend()
         except Exception as trend_error:
             logger.info(f"Trend detection or decision logic error: {trend_error!r}", exc_info=True)
 
-    # FIX: New method to run blocking history fetch in thread pool
+    # Method to run blocking history fetch in thread pool
     def _fetch_history_and_detect(self) -> None:
         """Runs on thread pool — fetches history and updates trend state."""
         try:
@@ -174,8 +209,8 @@ class TradingApp:
         except Exception as e:
             logger.error(f"Error in _fetch_history_and_detect: {e!r}", exc_info=True)
         finally:
-            # FIX: Always release the flag so next candle can trigger a fetch
-            self.state.order_pending = False
+            # Clear the history fetch flag, NOT order_pending
+            self._history_fetch_in_progress.clear()
 
     def monitor_active_trade_status(self) -> None:
         try:
@@ -190,20 +225,38 @@ class TradingApp:
                     if self.state.current_position:
                         logger.info("Market close approaching. Exiting active position.")
                         self.state.reason_to_exit = "Auto-exit before market close."
-                        self.executor.exit_position(self.state)
+                        # Check return value
+                        success = self.executor.exit_position(self.state)
+                        if not success:
+                            logger.error(
+                                "Exit failed near market close — position may still be open. Manual intervention required.")
                         return
                 if self.state.current_position == BaseEnums.PUT:
                     if index_stop_loss is not None and current_derivative_price >= index_stop_loss:
                         self.state.reason_to_exit = "PUT exit: Derivative crossed above supertrend."
-                        self.executor.exit_position(self.state)
+                        # Check return value
+                        success = self.executor.exit_position(self.state)
+                        if not success:
+                            logger.error(
+                                "Exit failed for PUT (index stop loss) — position may still be open. Manual intervention required.")
                     elif trend in {BaseEnums.BULLISH, BaseEnums.ENTER_CALL, BaseEnums.EXIT_PUT}:
-                        self.executor.exit_position(self.state)
+                        success = self.executor.exit_position(self.state)
+                        if not success:
+                            logger.error(
+                                "Exit failed for PUT (trend change) — position may still be open. Manual intervention required.")
                 elif self.state.current_position == BaseEnums.CALL:
                     if index_stop_loss is not None and current_derivative_price <= index_stop_loss:
                         self.state.reason_to_exit = "CALL exit: Derivative dropped below ST."
-                        self.executor.exit_position(self.state)
+                        # Check return value
+                        success = self.executor.exit_position(self.state)
+                        if not success:
+                            logger.error(
+                                "Exit failed for CALL (index stop loss) — position may still be open. Manual intervention required.")
                     elif trend in {BaseEnums.BEARISH, BaseEnums.ENTER_PUT, BaseEnums.EXIT_CALL}:
-                        self.executor.exit_position(self.state)
+                        success = self.executor.exit_position(self.state)
+                        if not success:
+                            logger.error(
+                                "Exit failed for CALL (trend change) — position may still be open. Manual intervention required.")
             else:
                 if Utils.is_near_market_close(buffer_minutes=5):
                     if self.state.current_position:
@@ -231,10 +284,18 @@ class TradingApp:
 
             if stop_loss is not None and current_price is not None and current_price <= stop_loss:
                 self.state.reason_to_exit = f"{self.state.current_position} exit: Option price is below the stop loss."
-                self.executor.exit_position(self.state)
+                # Check return value
+                success = self.executor.exit_position(self.state)
+                if not success:
+                    logger.error(
+                        f"Exit failed for stop loss at {stop_loss} — position may still be open. Manual intervention required.")
             elif tp_point is not None and current_price is not None and current_price >= tp_point:
                 self.state.reason_to_exit = f"{self.state.current_position} exit: Target profit hit."
-                self.executor.exit_position(self.state)
+                # Check return value
+                success = self.executor.exit_position(self.state)
+                if not success:
+                    logger.error(
+                        f"Exit failed for take profit at {tp_point} — position may still be open. Manual intervention required.")
         except Exception as e:
             logger.error(f"Error monitoring profit/loss status: {e!r}", exc_info=True)
 
@@ -252,7 +313,6 @@ class TradingApp:
             rsi = dt.get("rsi", {})
 
             # Configuration flags
-            # logger.info(self.config)
             entry_use_short_st = getattr(self.config, "use_short_st_entry", False)
             entry_use_long_st = getattr(self.config, "use_long_st_entry", False)
             entry_use_macd = getattr(self.config, "use_macd_entry", False)
@@ -265,7 +325,6 @@ class TradingApp:
             exit_use_rsi = getattr(self.config, "use_rsi_exit", False)
             exit_use_bb_exit = getattr(self.config, "bb_exit", False)
 
-            # logger.info(f"{entry_use_macd},{entry_use_rsi},{entry_use_short_st},{exit_use_long_st}")
             # === Extract and cast indicators safely ===
             short_st_d = safe_last(short_st.get("direction")) if entry_use_short_st else None
             short_st_t = safe_last(short_st.get("trend")) if entry_use_short_st else None
@@ -286,6 +345,7 @@ class TradingApp:
                 rsi_data = float(rsi_data) if rsi_data is not None else None
             except (ValueError, TypeError) as e:
                 logger.warning(f"Type casting error: {e}")
+
             # === EXIT Conditions ===
             if self.state.current_position == BaseEnums.CALL:
                 if exit_use_short_st and short_st_d == -1:
@@ -341,9 +401,6 @@ class TradingApp:
                 if entry_use_rsi:
                     bullish_signals.append(rsi_data >= 60)
                     bearish_signals.append(rsi_data <= 40)
-
-                # logger.info(f"[DEBUG] Bullish: {bullish_signals}")
-                # logger.info(f"[DEBUG] Bearish: {bearish_signals}")
 
                 # Filter None values and evaluate
                 bullish_signals = [bool(val) for val in bullish_signals if val is not None]
@@ -467,7 +524,7 @@ class TradingApp:
 
     def apply_settings_to_state(self) -> None:
         self.state.capital_reserve = getattr(self.trade_config, "capital_reserve", 0)
-        # FIX: Only update balance if a valid non-zero value was returned
+        # Only update balance if a valid non-zero value was returned
         balance = self.broker.get_balance(getattr(self.state, "capital_reserve", 0))
         if balance and balance > 0:
             self.state.account_balance = balance

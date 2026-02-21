@@ -41,13 +41,15 @@ class PositionMonitor:
             if getattr(state, "highest_current_price", None) is None:
                 state.highest_current_price = buy_price
 
-            # Defensive: check derivative_trend
+            # FIX: Safely extract supertrend trend list
             supertrend_data = getattr(state, "derivative_trend", {}).get("super_trend_short", {})
-            supertrend = supertrend_data.get("trend")
-            supertrend_sl = supertrend[-1]
-            if supertrend_sl is None:
-                logger.warning("Supertrend SL not available.")
+            trend_list = supertrend_data.get("trend") or []
+
+            if not trend_list:
+                logger.warning("Supertrend SL not available — skipping SL update.")
                 return
+
+            supertrend_sl = float(trend_list[-1])
 
             if state.current_position == CALL:
                 if state.index_stop_loss is None or supertrend_sl > state.index_stop_loss:

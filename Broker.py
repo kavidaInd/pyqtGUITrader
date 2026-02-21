@@ -6,6 +6,7 @@ import json
 import pandas as pd
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
+from typing import Optional, Dict, Any, Union, Callable
 
 from fyers_apiv3 import fyersModel
 
@@ -18,6 +19,12 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = os.getenv("CONFIG_PATH", "Config")
 
 
+# FIX: Define custom exception for token expiration
+class TokenExpiredError(RuntimeError):
+    """Exception raised when Fyers token has expired or is invalid."""
+    pass
+
+
 class Broker:
     OK = 'ok'
     SIDE_BUY = 1
@@ -26,6 +33,10 @@ class Broker:
     MARKET_ORDER_TYPE = 2
     STOPLOSS_MARKET_ORDER_TYPE = 3
     PRODUCT_TYPE_MARGIN = 'MARGIN'
+
+    # FIX: Define error code sets
+    RETRYABLE_CODES = {-429, 500}  # Rate limit, internal server error
+    FATAL_CODES = {-8, -15, -16, -17}  # Token expired/invalid
 
     def __init__(self, state, broker_setting: BrokerageSetting = None):
         self.state = state
@@ -62,6 +73,14 @@ class Broker:
     @staticmethod
     def _format_symbol(symbol: str) -> str:
         return symbol if symbol.startswith("NSE:") else f"NSE:{symbol}"
+
+    # FIX: Helper to extract error code from response
+    @staticmethod
+    def _get_error_code(response: Any) -> int:
+        """Extract error code from Fyers response."""
+        if isinstance(response, dict):
+            return int(response.get("code", 0))
+        return 0
 
     def get_profile(self):
         try:
@@ -362,40 +381,7 @@ class Broker:
             logger.error(f"Exception in calculate_pnl: {e!r}", exc_info=True)
             return None
 
-    @staticmethod
-    def handle_fyers_error(error, context=""):
-        """Centralized error handler for Fyers API exceptions"""
-        logger.error(f"[{context}] ❌ Fyers Error: {error}", exc_info=True)
-        error_str = str(error)
-        known_errors = {
-            -8: "Token expired or invalid",
-            -15: "Token expired",
-            -16: "Invalid Access Token",
-            -17: "Access Token missing",
-            -429: "Rate limit exceeded",
-            500: "Internal Server Error",
-        }
-        for code, description in known_errors.items():
-            if str(code) in error_str:
-                logger.error(f"[{context}] ❌ {description} (code {code})")
-                if code == -429:
-                    time.sleep(2)
-                    return "retry"
-                elif code in {-8, -15, -16, -17}:
-                    raise SystemExit("🔐 Token expired or invalid. Exiting.")
-                return None
-        if "Market is in closed state" in error_str:
-            logger.warning(f"[{context}] ⏳ Market is closed. Skipping action.")
-            return None
-        if "No data found" in error_str or "Invalid symbol" in error_str:
-            logger.warning(f"[{context}] ⚠️ Symbol issue or no data.")
-            return None
-        if "Invalid order" in error_str:
-            logger.warning(f"[{context}] ⛔ Invalid order. Skipping.")
-            return None
-        return None
-
-    def retry_on_failure(self, func, context="", max_retries=3, base_delay=1):
+    def retry_on_failure(self, func: Callable, context: str = "", max_retries: int = 3, base_delay: int = 1):
         """
         Retry wrapper for Fyers API calls. Accepts a callable (use lambda).
         Handles all types of errors: network, HTTP, Fyers API, token, and unknown.
@@ -405,70 +391,98 @@ class Broker:
         for attempt in range(max_retries):
             try:
                 response = func()
-                # Fyers 'ok' status
+
+                # Fyers 'ok' status - success
                 if isinstance(response, dict) and response.get('s') == 'ok':
                     return response
-                # Rate limit (429) in response
-                if isinstance(response, dict) and response.get('code') == -429:
+
+                # Extract error code from response
+                error_code = self._get_error_code(response)
+
+                # FIX: Check fatal token errors
+                if error_code in self.FATAL_CODES:
+                    error_desc = {
+                        -8: "Token expired or invalid",
+                        -15: "Token expired",
+                        -16: "Invalid Access Token",
+                        -17: "Access Token missing"
+                    }.get(error_code, f"Token error (code {error_code})")
+                    logger.critical(f"[{context}] 🔐 {error_desc}")
+                    raise TokenExpiredError(f"{error_desc}")
+
+                # FIX: Check retryable errors
+                if error_code in self.RETRYABLE_CODES:
                     delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    logger.warning(f"[{context}] 🔁 Rate limited (Fyers code -429). Retrying after {delay:.2f}s...")
+                    error_type = "Rate limited" if error_code == -429 else "Internal Server Error"
+                    logger.warning(f"[{context}] 🔁 {error_type}. Retrying after {delay:.2f}s...")
                     time.sleep(delay)
                     continue
-                # HTTP 429 (in string, fallback)
-                if str(response).find("-429") != -1 or str(response).find("429") != -1:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    logger.warning(f"[{context}] 🔁 HTTP 429 Too Many Requests. Retrying after {delay:.2f}s...")
-                    time.sleep(delay)
-                    continue
-                # Token expired or authentication errors
+
+                # Check for token errors in string response (fallback)
+                if isinstance(response, str):
+                    response_str = response
+                else:
+                    response_str = str(response)
+
+                # Token expired or authentication errors in string
                 for token_err in ["-8", "-15", "-16", "-17", "Token expired", "Invalid Access Token",
                                   "Access Token missing"]:
-                    if token_err in str(response):
-                        logger.critical(f"[{context}] 🔐 Token/authentication error: {token_err}. Exiting.")
-                        raise SystemExit("🔐 Token expired or invalid. Exiting.")
+                    if token_err in response_str:
+                        logger.critical(f"[{context}] 🔐 Token/authentication error: {token_err}")
+                        raise TokenExpiredError(f"Token expired or invalid: {token_err}")
+
                 # Market closed
-                if "Market is in closed state" in str(response):
+                if "Market is in closed state" in response_str:
                     logger.warning(f"[{context}] ⏳ Market is closed. Skipping action.")
                     return None
+
                 # No data or invalid symbol
-                if "No data found" in str(response) or "Invalid symbol" in str(response):
+                if "No data found" in response_str or "Invalid symbol" in response_str:
                     logger.warning(f"[{context}] ⚠️ Symbol issue or no data.")
                     return None
+
                 # Invalid order
-                if "Invalid order" in str(response):
+                if "Invalid order" in response_str:
                     logger.warning(f"[{context}] ⛔ Invalid order. Skipping.")
                     return None
-                # Internal server error
-                if "Internal Server Error" in str(response) or (
-                        isinstance(response, dict) and response.get('code') == 500):
-                    delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    logger.warning(f"[{context}] 🛑 Internal Server Error. Retrying after {delay:.2f}s...")
-                    time.sleep(delay)
-                    continue
+
                 # Any other error response, log and return
                 if isinstance(response, dict) and response.get('s', '') != 'ok':
                     logger.error(f"[{context}] ❌ Fyers API Error: {response}")
                     return response
+
                 # Non-dict or unexpected valid response, just return
                 return response
+
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
                 logger.warning(f"[{context}] 🌐 Network error: {e!r}. Retrying after {delay:.2f}s...")
                 time.sleep(delay)
+
+            except TokenExpiredError:
+                # Re-raise token errors immediately
+                raise
+
             except Exception as e:
-                action = self.handle_fyers_error(e, context=context)
-                # If handler says retry, do so
-                if action == "retry":
-                    delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    logger.info(f"[{context}] 🔁 Exception, retrying after {delay:.1f}s... {e!r}")
-                    time.sleep(delay)
-                # Token problems: exit the app
-                elif action == "exit":
-                    logger.critical(f"[{context}] 🔐 Fatal token/auth error. Exiting.")
-                    raise SystemExit("🔐 Token expired or invalid. Exiting.")
-                # Unhandled: log and abort
+                # Check for token errors in exception string
+                error_str = str(e)
+                for code in self.FATAL_CODES:
+                    if str(code) in error_str:
+                        logger.critical(f"[{context}] 🔐 Token error in exception: {e}")
+                        raise TokenExpiredError(f"Token expired or invalid (code {code})")
+
+                # Check for rate limit in exception
+                for code in self.RETRYABLE_CODES:
+                    if str(code) in error_str:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
+                        logger.warning(
+                            f"[{context}] 🔁 Rate limit/Server error in exception. Retrying after {delay:.2f}s...")
+                        time.sleep(delay)
+                        break
                 else:
-                    logger.error(f"[{context}] ❌ Exception in Fyers call: {e!r}", exc_info=True)
+                    # Unknown exception, log and return None
+                    logger.error(f"[{context}] ❌ Unexpected exception: {e!r}", exc_info=True)
                     return None
+
         logger.critical(f"[{context}] ❌ Max retries reached. Giving up.")
         return None

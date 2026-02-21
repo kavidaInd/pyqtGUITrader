@@ -1,6 +1,6 @@
 {
   "exchange": "NSE",
-  "week": 1,
+  "week": 0,
   "derivative": "NIFTY50-INDEX",
   "lot_size": 65,
   "call_lookback": 0,

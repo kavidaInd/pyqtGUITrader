@@ -3,13 +3,29 @@ from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QMessageBox, QVBoxLayout,
                              QCheckBox, QGroupBox, QHBoxLayout, QGridLayout,
                              QLabel, QScrollArea, QWidget)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
-from gui.StrategySetting import StrategySetting
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont, QIntValidator, QDoubleValidator
 import threading
 
 
 class StrategySettingGUI(QDialog):
+    # Add signals for thread-safe communication
+    save_completed = pyqtSignal(bool, str)
+
+    # Validation ranges
+    VALIDATION_RANGES = {
+        "long_st_length": (1, 100, "Long ST Length"),
+        "long_st_multi": (0.1, 10.0, "Long ST Multiplier"),
+        "short_st_length": (1, 100, "Short ST Length"),
+        "short_st_multi": (0.1, 10.0, "Short ST Multiplier"),
+        "bb_length": (2, 100, "BB Length"),
+        "bb_std": (0.1, 5.0, "BB Std Dev"),
+        "macd_fast": (1, 50, "MACD Fast"),
+        "macd_slow": (2, 100, "MACD Slow"),
+        "macd_signal": (1, 50, "MACD Signal"),
+        "rsi_length": (2, 50, "RSI Length")
+    }
+
     def __init__(self, parent, strategy_setting):
         super().__init__(parent)
         self.strategy_setting = strategy_setting
@@ -27,6 +43,7 @@ class StrategySettingGUI(QDialog):
                        border:1px solid #30363d; border-radius:4px; padding:8px;
                        font-size:10pt; }
             QLineEdit:focus { border:2px solid #58a6ff; }
+            QLineEdit:disabled { background:#1a1f26; color:#6e7681; }
             QCheckBox { color:#e6edf3; spacing:8px; font-size:10pt; }
             QCheckBox::indicator { width:20px; height:20px; }
             QCheckBox::indicator:unchecked { border:2px solid #30363d; background:#21262d; }
@@ -62,6 +79,14 @@ class StrategySettingGUI(QDialog):
         grid = QGridLayout()
         grid.setSpacing(15)
 
+        # Set up validators
+        int_validator = QIntValidator()
+        int_validator.setBottom(1)
+
+        double_validator = QDoubleValidator()
+        double_validator.setBottom(0.1)
+        double_validator.setDecimals(2)
+
         # Long Supertrend Group
         long_st_group = QGroupBox("✨ Long Supertrend")
         long_st_layout = QVBoxLayout()
@@ -84,8 +109,10 @@ class StrategySettingGUI(QDialog):
         form = QFormLayout()
         form.setSpacing(8)
         self.long_st_length = QLineEdit(str(strategy_setting.long_st_length))
+        self.long_st_length.setValidator(int_validator)
         self.long_st_length.setPlaceholderText("e.g., 10")
         self.long_st_multi = QLineEdit(str(strategy_setting.long_st_multi))
+        self.long_st_multi.setValidator(double_validator)
         self.long_st_multi.setPlaceholderText("e.g., 1.5")
         form.addRow("Length:", self.long_st_length)
         form.addRow("Multiplier:", self.long_st_multi)
@@ -116,8 +143,10 @@ class StrategySettingGUI(QDialog):
         form2 = QFormLayout()
         form2.setSpacing(8)
         self.short_st_length = QLineEdit(str(strategy_setting.short_st_length))
+        self.short_st_length.setValidator(int_validator)
         self.short_st_length.setPlaceholderText("e.g., 7")
         self.short_st_multi = QLineEdit(str(strategy_setting.short_st_multi))
+        self.short_st_multi.setValidator(double_validator)
         self.short_st_multi.setPlaceholderText("e.g., 1.2")
         form2.addRow("Length:", self.short_st_length)
         form2.addRow("Multiplier:", self.short_st_multi)
@@ -147,8 +176,10 @@ class StrategySettingGUI(QDialog):
         form3 = QFormLayout()
         form3.setSpacing(8)
         self.bb_length = QLineEdit(str(strategy_setting.bb_length))
+        self.bb_length.setValidator(int_validator)
         self.bb_length.setPlaceholderText("e.g., 20")
         self.bb_std = QLineEdit(str(strategy_setting.bb_std))
+        self.bb_std.setValidator(double_validator)
         self.bb_std.setPlaceholderText("e.g., 2.0")
         form3.addRow("Length:", self.bb_length)
         form3.addRow("Std Dev:", self.bb_std)
@@ -178,10 +209,13 @@ class StrategySettingGUI(QDialog):
         form4 = QFormLayout()
         form4.setSpacing(8)
         self.macd_fast = QLineEdit(str(strategy_setting.macd_fast))
+        self.macd_fast.setValidator(int_validator)
         self.macd_fast.setPlaceholderText("e.g., 10")
         self.macd_slow = QLineEdit(str(strategy_setting.macd_slow))
+        self.macd_slow.setValidator(int_validator)
         self.macd_slow.setPlaceholderText("e.g., 20")
         self.macd_signal = QLineEdit(str(strategy_setting.macd_signal))
+        self.macd_signal.setValidator(int_validator)
         self.macd_signal.setPlaceholderText("e.g., 7")
         form4.addRow("Fast Period:", self.macd_fast)
         form4.addRow("Slow Period:", self.macd_slow)
@@ -212,6 +246,7 @@ class StrategySettingGUI(QDialog):
         form5 = QFormLayout()
         form5.setSpacing(8)
         self.rsi_length = QLineEdit(str(strategy_setting.rsi_length))
+        self.rsi_length.setValidator(int_validator)
         self.rsi_length.setPlaceholderText("e.g., 14")
         form5.addRow("RSI Length:", self.rsi_length)
         rsi_layout.addLayout(form5)
@@ -234,6 +269,9 @@ class StrategySettingGUI(QDialog):
         self.save_btn = QPushButton("💾 Save Strategy Configuration")
         self.save_btn.clicked.connect(self.save)
         layout.addWidget(self.save_btn)
+
+        # Connect signals
+        self.save_completed.connect(self.on_save_completed)
 
         # Initial toggle states
         self._toggle_long_st()
@@ -258,9 +296,27 @@ class StrategySettingGUI(QDialog):
         if not enabled:
             self.long_st_length.setPlaceholderText("Disabled")
             self.long_st_multi.setPlaceholderText("Disabled")
+            self.long_st_length.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
+            self.long_st_multi.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
         else:
             self.long_st_length.setPlaceholderText("e.g., 10")
             self.long_st_multi.setPlaceholderText("e.g., 1.5")
+            self.long_st_length.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
+            self.long_st_multi.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
 
     def _toggle_short_st(self):
         enabled = self.use_short_st_entry.isChecked() or self.use_short_st_exit.isChecked()
@@ -269,9 +325,27 @@ class StrategySettingGUI(QDialog):
         if not enabled:
             self.short_st_length.setPlaceholderText("Disabled")
             self.short_st_multi.setPlaceholderText("Disabled")
+            self.short_st_length.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
+            self.short_st_multi.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
         else:
             self.short_st_length.setPlaceholderText("e.g., 7")
             self.short_st_multi.setPlaceholderText("e.g., 1.2")
+            self.short_st_length.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
+            self.short_st_multi.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
 
     def _toggle_bb(self):
         enabled = self.bb_entry.isChecked() or self.bb_exit.isChecked()
@@ -280,9 +354,27 @@ class StrategySettingGUI(QDialog):
         if not enabled:
             self.bb_length.setPlaceholderText("Disabled")
             self.bb_std.setPlaceholderText("Disabled")
+            self.bb_length.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
+            self.bb_std.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
         else:
             self.bb_length.setPlaceholderText("e.g., 20")
             self.bb_std.setPlaceholderText("e.g., 2.0")
+            self.bb_length.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
+            self.bb_std.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
 
     def _toggle_macd(self):
         enabled = self.use_macd_entry.isChecked() or self.use_macd_exit.isChecked()
@@ -293,18 +385,71 @@ class StrategySettingGUI(QDialog):
             self.macd_fast.setPlaceholderText("Disabled")
             self.macd_slow.setPlaceholderText("Disabled")
             self.macd_signal.setPlaceholderText("Disabled")
+            for field in [self.macd_fast, self.macd_slow, self.macd_signal]:
+                field.setStyleSheet("""
+                    QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                               border-radius:4px; padding:8px; }
+                """)
         else:
             self.macd_fast.setPlaceholderText("e.g., 10")
             self.macd_slow.setPlaceholderText("e.g., 20")
             self.macd_signal.setPlaceholderText("e.g., 7")
+            for field in [self.macd_fast, self.macd_slow, self.macd_signal]:
+                field.setStyleSheet("""
+                    QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                               border-radius:4px; padding:8px; }
+                    QLineEdit:focus { border:2px solid #58a6ff; }
+                """)
 
     def _toggle_rsi(self):
         enabled = self.use_rsi_entry.isChecked() or self.use_rsi_exit.isChecked()
         self.rsi_length.setEnabled(enabled)
         if not enabled:
             self.rsi_length.setPlaceholderText("Disabled")
+            self.rsi_length.setStyleSheet("""
+                QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+            """)
         else:
             self.rsi_length.setPlaceholderText("e.g., 14")
+            self.rsi_length.setStyleSheet("""
+                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                           border-radius:4px; padding:8px; }
+                QLineEdit:focus { border:2px solid #58a6ff; }
+            """)
+
+    def validate_field(self, field: QLineEdit, key: str, value: str) -> tuple:
+        """Validate field value and return (is_valid, converted_value, error_message)"""
+        if not field.isEnabled():
+            return True, None, None
+
+        if not value.strip():
+            return False, None, f"{self.VALIDATION_RANGES[key][2]} is required"
+
+        try:
+            if key.endswith("_multi") or key == "bb_std":
+                val = float(value)
+            else:
+                val = int(float(value))
+
+            min_val, max_val, name = self.VALIDATION_RANGES[key]
+
+            if val < min_val or val > max_val:
+                return False, None, f"{name} must be between {min_val} and {max_val}"
+
+            # Special validation for MACD
+            if key == "macd_fast" and self.macd_slow.isEnabled():
+                slow_val = int(self.macd_slow.text() or "0")
+                if val >= slow_val:
+                    return False, None, "MACD Fast must be less than Slow period"
+            elif key == "macd_slow" and self.macd_fast.isEnabled():
+                fast_val = int(self.macd_fast.text() or "0")
+                if val <= fast_val:
+                    return False, None, "MACD Slow must be greater than Fast period"
+
+            return True, val, None
+        except ValueError:
+            return False, None, f"{self.VALIDATION_RANGES[key][2]} must be a valid number"
 
     def show_success_feedback(self):
         """# PYQT: Show success with visual feedback"""
@@ -331,11 +476,17 @@ class StrategySettingGUI(QDialog):
     def reset_styles(self):
         """# PYQT: Reset all styles to normal"""
         for field in self.all_fields:
-            field.setStyleSheet("""
-                QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
-                           border-radius:4px; padding:8px; }
-                QLineEdit:focus { border:2px solid #58a6ff; }
-            """)
+            if field.isEnabled():
+                field.setStyleSheet("""
+                    QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                               border-radius:4px; padding:8px; }
+                    QLineEdit:focus { border:2px solid #58a6ff; }
+                """)
+            else:
+                field.setStyleSheet("""
+                    QLineEdit { background:#1a1f26; color:#6e7681; border:1px solid #30363d;
+                               border-radius:4px; padding:8px; }
+                """)
 
         self.save_btn.setText("💾 Save Strategy Configuration")
         self.save_btn.setStyleSheet("""
@@ -362,87 +513,81 @@ class StrategySettingGUI(QDialog):
         self.save_btn.setText("⏳ Validating...")
         self.status_label.setText("")  # Clear any previous status
 
+        # Collect and validate data in main thread
+        data_to_save = {}
+        validation_errors = []
+
+        # Define field mappings
+        field_mappings = [
+            (self.long_st_length, "long_st_length"),
+            (self.long_st_multi, "long_st_multi"),
+            (self.short_st_length, "short_st_length"),
+            (self.short_st_multi, "short_st_multi"),
+            (self.bb_length, "bb_length"),
+            (self.bb_std, "bb_std"),
+            (self.macd_fast, "macd_fast"),
+            (self.macd_slow, "macd_slow"),
+            (self.macd_signal, "macd_signal"),
+            (self.rsi_length, "rsi_length")
+        ]
+
+        for field, key in field_mappings:
+            if field.isEnabled():
+                is_valid, value, error = self.validate_field(field, key, field.text().strip())
+                if is_valid:
+                    data_to_save[key] = value
+                else:
+                    validation_errors.append(error)
+                    field.setStyleSheet("""
+                        QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149;
+                                   border-radius:4px; padding:8px; }
+                    """)
+
+        if validation_errors:
+            self.show_error_feedback("\n".join(validation_errors))
+            self.save_btn.setEnabled(True)
+            return
+
+        # Add checkbox states
+        data_to_save.update({
+            "use_long_st_entry": self.use_long_st_entry.isChecked(),
+            "use_long_st_exit": self.use_long_st_exit.isChecked(),
+            "use_short_st_entry": self.use_short_st_entry.isChecked(),
+            "use_short_st_exit": self.use_short_st_exit.isChecked(),
+            "bb_entry": self.bb_entry.isChecked(),
+            "bb_exit": self.bb_exit.isChecked(),
+            "use_macd_entry": self.use_macd_entry.isChecked(),
+            "use_macd_exit": self.use_macd_exit.isChecked(),
+            "use_rsi_entry": self.use_rsi_entry.isChecked(),
+            "use_rsi_exit": self.use_rsi_exit.isChecked()
+        })
+
         def _save():
             try:
-                # Validate all enabled fields
-                if self.long_st_length.isEnabled():
-                    int(self.long_st_length.text())
-                    float(self.long_st_multi.text())
+                # Update settings object
+                for key, value in data_to_save.items():
+                    setattr(self.strategy_setting, key, value)
 
-                if self.short_st_length.isEnabled():
-                    int(self.short_st_length.text())
-                    float(self.short_st_multi.text())
+                # Save to file
+                success = self.strategy_setting.save()
 
-                if self.bb_length.isEnabled():
-                    int(self.bb_length.text())
-                    float(self.bb_std.text())
+                if success:
+                    self.save_completed.emit(True, "Settings saved successfully!")
+                else:
+                    self.save_completed.emit(False, "Failed to save settings to file")
 
-                if self.macd_fast.isEnabled():
-                    int(self.macd_fast.text())
-                    int(self.macd_slow.text())
-                    int(self.macd_signal.text())
-
-                if self.rsi_length.isEnabled():
-                    int(self.rsi_length.text())
-
-                # Long Supertrend
-                self.strategy_setting.use_long_st_entry = self.use_long_st_entry.isChecked()
-                self.strategy_setting.use_long_st_exit = self.use_long_st_exit.isChecked()
-                self.strategy_setting.use_long_st = self.use_long_st_entry.isChecked()
-                self.strategy_setting.long_st_length = int(
-                    self.long_st_length.text()) if self.long_st_length.isEnabled() else 10
-                self.strategy_setting.long_st_multi = float(
-                    self.long_st_multi.text()) if self.long_st_multi.isEnabled() else 1.5
-
-                # Short Supertrend
-                self.strategy_setting.use_short_st_entry = self.use_short_st_entry.isChecked()
-                self.strategy_setting.use_short_st_exit = self.use_short_st_exit.isChecked()
-                self.strategy_setting.use_short_st = self.use_short_st_entry.isChecked()
-                self.strategy_setting.short_st_length = int(
-                    self.short_st_length.text()) if self.short_st_length.isEnabled() else 7
-                self.strategy_setting.short_st_multi = float(
-                    self.short_st_multi.text()) if self.short_st_multi.isEnabled() else 1.2
-
-                # Bollinger Bands
-                self.strategy_setting.bb_entry = self.bb_entry.isChecked()
-                self.strategy_setting.bb_exit = self.bb_exit.isChecked()
-                self.strategy_setting.bb_length = int(self.bb_length.text()) if self.bb_length.isEnabled() else 20
-                self.strategy_setting.bb_std = float(self.bb_std.text()) if self.bb_std.isEnabled() else 2.0
-
-                # MACD
-                self.strategy_setting.use_macd_entry = self.use_macd_entry.isChecked()
-                self.strategy_setting.use_macd_exit = self.use_macd_exit.isChecked()
-                self.strategy_setting.use_macd = self.use_macd_entry.isChecked()
-                self.strategy_setting.macd_fast = int(self.macd_fast.text()) if self.macd_fast.isEnabled() else 10
-                self.strategy_setting.macd_slow = int(self.macd_slow.text()) if self.macd_slow.isEnabled() else 20
-                self.strategy_setting.macd_signal = int(self.macd_signal.text()) if self.macd_signal.isEnabled() else 7
-
-                # RSI
-                self.strategy_setting.use_rsi_entry = self.use_rsi_entry.isChecked()
-                self.strategy_setting.use_rsi_exit = self.use_rsi_exit.isChecked()
-                self.strategy_setting.use_rsi = self.use_rsi_entry.isChecked()
-                self.strategy_setting.rsi_length = int(self.rsi_length.text()) if self.rsi_length.isEnabled() else 14
-
-                self.strategy_setting.save()
-
-                # Show success and close
-                QTimer.singleShot(0, self.save_success)
-
-            except ValueError as e:
-                QTimer.singleShot(0, lambda: self.save_error(f"Invalid number format: {e}"))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.save_error(str(e)))
+                self.save_completed.emit(False, str(e))
 
         threading.Thread(target=_save, daemon=True).start()
 
-    def save_success(self):
-        """# PYQT: Handle successful save"""
-        self.show_success_feedback()
-        self.save_btn.setEnabled(True)
-        # Close after showing success
-        QTimer.singleShot(2000, self.accept)
-
-    def save_error(self, error_msg):
-        """# PYQT: Handle save error"""
-        self.show_error_feedback(error_msg)
-        self.save_btn.setEnabled(True)
+    def on_save_completed(self, success, message):
+        """Handle save completion in main thread"""
+        if success:
+            self.show_success_feedback()
+            self.save_btn.setEnabled(True)
+            # Close after showing success
+            QTimer.singleShot(2000, self.accept)
+        else:
+            self.show_error_feedback(message)
+            self.save_btn.setEnabled(True)

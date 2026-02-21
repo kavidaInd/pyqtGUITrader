@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -33,39 +34,151 @@ class StrategySetting:
         "macd_signal": 7
     }
 
+    # Type mapping for validation
+    FIELD_TYPES = {
+        "long_st_length": int,
+        "long_st_multi": float,
+        "short_st_length": int,
+        "short_st_multi": float,
+        "bb_exit": bool,
+        "bb_entry": bool,
+        "use_short_st": bool,
+        "use_short_st_entry": bool,
+        "use_short_st_exit": bool,
+        "use_long_st": bool,
+        "use_long_st_entry": bool,
+        "use_long_st_exit": bool,
+        "use_macd": bool,
+        "use_macd_entry": bool,
+        "use_macd_exit": bool,
+        "use_rsi": bool,
+        "use_rsi_entry": bool,
+        "use_rsi_exit": bool,
+        "rsi_length": int,
+        "bb_length": int,
+        "bb_std": float,
+        "macd_fast": int,
+        "macd_slow": int,
+        "macd_signal": int
+    }
+
+    # Validation ranges
+    VALIDATION_RANGES = {
+        "long_st_length": (1, 100),
+        "long_st_multi": (0.1, 10.0),
+        "short_st_length": (1, 100),
+        "short_st_multi": (0.1, 10.0),
+        "rsi_length": (2, 50),
+        "bb_length": (2, 100),
+        "bb_std": (0.1, 5.0),
+        "macd_fast": (1, 50),
+        "macd_slow": (2, 100),
+        "macd_signal": (1, 50)
+    }
+
     def __init__(self, json_file="config/strategy_setting.json"):
-        print()
         self.json_file = json_file
         self.data = dict(self.DEFAULTS)
         self.load()
+
+    def _validate_and_convert(self, key: str, value: Any) -> Any:
+        """Validate and convert value to the correct type"""
+        expected_type = self.FIELD_TYPES.get(key, str)
+
+        if value is None:
+            return self.DEFAULTS[key]
+
+        try:
+            if expected_type == bool:
+                return bool(value)
+            elif expected_type == int:
+                val = int(float(str(value)))
+                # Apply range validation if defined
+                if key in self.VALIDATION_RANGES:
+                    min_val, max_val = self.VALIDATION_RANGES[key]
+                    val = max(min_val, min(max_val, val))
+                return val
+            elif expected_type == float:
+                val = float(value)
+                # Apply range validation if defined
+                if key in self.VALIDATION_RANGES:
+                    min_val, max_val = self.VALIDATION_RANGES[key]
+                    val = max(min_val, min(max_val, val))
+                return val
+            else:
+                return str(value)
+        except (ValueError, TypeError):
+            logger.warning(f"Failed to convert {key}={value} to {expected_type}, using default")
+            return self.DEFAULTS[key]
 
     def load(self):
         if os.path.exists(self.json_file):
             try:
                 with open(self.json_file, "r") as f:
                     loaded = json.load(f)
-                # Ensure all keys are present
-                for k, v in self.DEFAULTS.items():
-                    self.data[k] = loaded.get(k, v)
+
+                if not isinstance(loaded, dict):
+                    logger.error(f"Invalid data format in {self.json_file}. Using defaults.")
+                    return
+
+                # Fill missing keys with defaults, validate existing values
+                for k, default_value in self.DEFAULTS.items():
+                    if k in loaded:
+                        self.data[k] = self._validate_and_convert(k, loaded[k])
+                    else:
+                        self.data[k] = default_value
+
+                # Validate logical relationships
+                self._validate_logical_relationships()
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse strategy settings JSON: {e}")
             except Exception as e:
                 logger.error(f"Failed to load strategy settings: {e}")
         else:
             logger.info(f"Strategy settings file not found at {self.json_file}. Using defaults.")
 
-    def save(self):
-        os.makedirs(os.path.dirname(self.json_file), exist_ok=True)
+    def _validate_logical_relationships(self):
+        """Validate logical relationships between settings"""
+        # Ensure MACD fast < slow
+        if self.data["macd_fast"] >= self.data["macd_slow"]:
+            logger.warning("MACD fast period must be less than slow period. Adjusting.")
+            self.data["macd_fast"] = min(self.data["macd_fast"], self.data["macd_slow"] - 1)
+            if self.data["macd_fast"] < 1:
+                self.data["macd_fast"] = 1
+                self.data["macd_slow"] = self.data["macd_fast"] + 1
+
+    def save(self) -> bool:
+        """Save settings atomically"""
+        dir_path = os.path.dirname(self.json_file)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        temp_file = self.json_file + ".tmp"
         try:
-            with open(self.json_file, "w") as f:
+            with open(temp_file, "w") as f:
                 json.dump(self.data, f, indent=2)
+            os.replace(temp_file, self.json_file)
+            return True
         except Exception as e:
             logger.error(f"Failed to save strategy settings: {e}")
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+            return False
 
     def to_dict(self):
         return dict(self.data)
 
     def from_dict(self, d):
+        if not isinstance(d, dict):
+            return
         for k in self.DEFAULTS:
-            self.data[k] = d.get(k, self.DEFAULTS[k])
+            if k in d:
+                self.data[k] = self._validate_and_convert(k, d[k])
+        self._validate_logical_relationships()
 
     def __repr__(self):
         return f"<StrategySetting {self.data}>"
@@ -77,7 +190,12 @@ class StrategySetting:
 
     @long_st_length.setter
     def long_st_length(self, value):
-        self.data["long_st_length"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["long_st_length"]
+            self.data["long_st_length"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["long_st_length"] = self.DEFAULTS["long_st_length"]
 
     @property
     def long_st_multi(self):
@@ -85,15 +203,23 @@ class StrategySetting:
 
     @long_st_multi.setter
     def long_st_multi(self, value):
-        self.data["long_st_multi"] = float(value)
+        try:
+            val = float(value)
+            min_val, max_val = self.VALIDATION_RANGES["long_st_multi"]
+            self.data["long_st_multi"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["long_st_multi"] = self.DEFAULTS["long_st_multi"]
 
     @property
     def use_long_st(self):
-        return self.data["use_long_st"]
+        return self.data["use_long_st_entry"] or self.data["use_long_st_exit"]
 
     @use_long_st.setter
     def use_long_st(self, value):
-        self.data["use_long_st"] = bool(value)
+        # This is a computed property, so setter just updates both
+        bool_val = bool(value)
+        self.data["use_long_st_entry"] = bool_val
+        self.data["use_long_st_exit"] = bool_val
 
     @property
     def use_long_st_entry(self):
@@ -118,7 +244,12 @@ class StrategySetting:
 
     @short_st_length.setter
     def short_st_length(self, value):
-        self.data["short_st_length"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["short_st_length"]
+            self.data["short_st_length"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["short_st_length"] = self.DEFAULTS["short_st_length"]
 
     @property
     def short_st_multi(self):
@@ -126,15 +257,22 @@ class StrategySetting:
 
     @short_st_multi.setter
     def short_st_multi(self, value):
-        self.data["short_st_multi"] = float(value)
+        try:
+            val = float(value)
+            min_val, max_val = self.VALIDATION_RANGES["short_st_multi"]
+            self.data["short_st_multi"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["short_st_multi"] = self.DEFAULTS["short_st_multi"]
 
     @property
     def use_short_st(self):
-        return self.data["use_short_st"]
+        return self.data["use_short_st_entry"] or self.data["use_short_st_exit"]
 
     @use_short_st.setter
     def use_short_st(self, value):
-        self.data["use_short_st"] = bool(value)
+        bool_val = bool(value)
+        self.data["use_short_st_entry"] = bool_val
+        self.data["use_short_st_exit"] = bool_val
 
     @property
     def use_short_st_entry(self):
@@ -159,7 +297,12 @@ class StrategySetting:
 
     @bb_length.setter
     def bb_length(self, value):
-        self.data["bb_length"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["bb_length"]
+            self.data["bb_length"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["bb_length"] = self.DEFAULTS["bb_length"]
 
     @property
     def bb_std(self):
@@ -167,7 +310,12 @@ class StrategySetting:
 
     @bb_std.setter
     def bb_std(self, value):
-        self.data["bb_std"] = float(value)
+        try:
+            val = float(value)
+            min_val, max_val = self.VALIDATION_RANGES["bb_std"]
+            self.data["bb_std"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["bb_std"] = self.DEFAULTS["bb_std"]
 
     @property
     def bb_entry(self):
@@ -192,7 +340,16 @@ class StrategySetting:
 
     @macd_fast.setter
     def macd_fast(self, value):
-        self.data["macd_fast"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["macd_fast"]
+            val = max(min_val, min(max_val, val))
+            # Ensure fast < slow
+            if val >= self.data["macd_slow"]:
+                self.data["macd_slow"] = val + 1
+            self.data["macd_fast"] = val
+        except (ValueError, TypeError):
+            self.data["macd_fast"] = self.DEFAULTS["macd_fast"]
 
     @property
     def macd_slow(self):
@@ -200,7 +357,19 @@ class StrategySetting:
 
     @macd_slow.setter
     def macd_slow(self, value):
-        self.data["macd_slow"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["macd_slow"]
+            val = max(min_val, min(max_val, val))
+            # Ensure fast < slow
+            if val <= self.data["macd_fast"]:
+                self.data["macd_fast"] = val - 1
+                if self.data["macd_fast"] < 1:
+                    self.data["macd_fast"] = 1
+                    val = 2
+            self.data["macd_slow"] = val
+        except (ValueError, TypeError):
+            self.data["macd_slow"] = self.DEFAULTS["macd_slow"]
 
     @property
     def macd_signal(self):
@@ -208,15 +377,22 @@ class StrategySetting:
 
     @macd_signal.setter
     def macd_signal(self, value):
-        self.data["macd_signal"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["macd_signal"]
+            self.data["macd_signal"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["macd_signal"] = self.DEFAULTS["macd_signal"]
 
     @property
     def use_macd(self):
-        return self.data["use_macd"]
+        return self.data["use_macd_entry"] or self.data["use_macd_exit"]
 
     @use_macd.setter
     def use_macd(self, value):
-        self.data["use_macd"] = bool(value)
+        bool_val = bool(value)
+        self.data["use_macd_entry"] = bool_val
+        self.data["use_macd_exit"] = bool_val
 
     @property
     def use_macd_entry(self):
@@ -241,15 +417,22 @@ class StrategySetting:
 
     @rsi_length.setter
     def rsi_length(self, value):
-        self.data["rsi_length"] = int(value)
+        try:
+            val = int(float(str(value)))
+            min_val, max_val = self.VALIDATION_RANGES["rsi_length"]
+            self.data["rsi_length"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError):
+            self.data["rsi_length"] = self.DEFAULTS["rsi_length"]
 
     @property
     def use_rsi(self):
-        return self.data["use_rsi"]
+        return self.data["use_rsi_entry"] or self.data["use_rsi_exit"]
 
     @use_rsi.setter
     def use_rsi(self, value):
-        self.data["use_rsi"] = bool(value)
+        bool_val = bool(value)
+        self.data["use_rsi_entry"] = bool_val
+        self.data["use_rsi_exit"] = bool_val
 
     @property
     def use_rsi_entry(self):

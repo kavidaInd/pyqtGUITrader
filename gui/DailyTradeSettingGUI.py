@@ -2,13 +2,17 @@
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QMessageBox, QVBoxLayout,
                              QComboBox, QCheckBox, QLabel, QScrollArea, QWidget)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
-from gui.DailyTradeSetting import DailyTradeSetting
 import threading
+
+from gui import DailyTradeSetting
 
 
 class DailyTradeSettingGUI(QDialog):
+    # Add signals for thread-safe communication
+    save_completed = pyqtSignal(bool, str)
+
     INTERVAL_CHOICES = [
         ("5 seconds", "5S"), ("10 seconds", "10S"), ("15 seconds", "15S"),
         ("30 seconds", "30S"), ("45 seconds", "45S"), ("1 minute", "1m"),
@@ -17,6 +21,18 @@ class DailyTradeSettingGUI(QDialog):
         ("30 minutes", "30m"), ("60 minutes", "60m"), ("120 minutes", "120m"),
         ("240 minutes", "240m")
     ]
+
+    # Validation ranges
+    VALIDATION_RANGES = {
+        "week": (0, 53),
+        "lot_size": (1, 10000),
+        "call_lookback": (0, 100),
+        "put_lookback": (0, 100),
+        "max_num_of_option": (1, 10000),
+        "lower_percentage": (0, 100),
+        "cancel_after": (1, 60),
+        "capital_reserve": (0, 1000000)
+    }
 
     def __init__(self, parent, daily_setting: DailyTradeSetting, app=None):
         super().__init__(parent)
@@ -126,6 +142,34 @@ class DailyTradeSettingGUI(QDialog):
         self.save_btn.clicked.connect(self.save)
         layout.addWidget(self.save_btn)
 
+        # Connect signals
+        self.save_completed.connect(self.on_save_completed)
+
+    def validate_field(self, key: str, value: str, typ: type) -> tuple:
+        """Validate field value and return (is_valid, converted_value, error_message)"""
+        if not value.strip():
+            return True, 0 if typ in (int, float) else "", None
+
+        try:
+            if typ == int:
+                val = int(float(value))
+                if key in self.VALIDATION_RANGES:
+                    min_val, max_val = self.VALIDATION_RANGES[key]
+                    if val < min_val or val > max_val:
+                        return False, None, f"{key} must be between {min_val} and {max_val}"
+                return True, val, None
+            elif typ == float:
+                val = float(value)
+                if key in self.VALIDATION_RANGES:
+                    min_val, max_val = self.VALIDATION_RANGES[key]
+                    if val < min_val or val > max_val:
+                        return False, None, f"{key} must be between {min_val} and {max_val}"
+                return True, val, None
+            else:
+                return True, value, None
+        except ValueError:
+            return False, None, f"Invalid {typ.__name__} value for {key}"
+
     def show_success_feedback(self):
         """# PYQT: Show success animation"""
         self.status_label.setText("✓ Settings saved successfully!")
@@ -157,6 +201,13 @@ class DailyTradeSettingGUI(QDialog):
                 QLineEdit:focus { border:2px solid #58a6ff; }
             """)
 
+        # Reset combo box style
+        self.interval_combo.setStyleSheet("""
+            QComboBox { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                       border-radius:4px; padding:8px; font-size:10pt; }
+            QComboBox:focus { border:2px solid #58a6ff; }
+        """)
+
         self.save_btn.setText("💾 Save All Settings")
         self.save_btn.setStyleSheet("""
             QPushButton { background:#238636; color:#fff; border-radius:4px; padding:12px; }
@@ -173,22 +224,6 @@ class DailyTradeSettingGUI(QDialog):
             QPushButton { background:#f85149; color:#fff; border-radius:4px; padding:12px; }
         """)
 
-        # Find and highlight the problematic field if it's a validation error
-        if "number" in error_msg.lower():
-            for key, (entry, typ) in self.vars.items():
-                try:
-                    if typ in (int, float):
-                        text = entry.text().strip()
-                        if text and typ == int:
-                            int(text)
-                        elif text and typ == float:
-                            float(text)
-                except:
-                    entry.setStyleSheet("""
-                        QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149;
-                                   border-radius:4px; padding:8px; }
-                    """)
-
         QTimer.singleShot(2000, self.reset_styles)
 
     def save(self):
@@ -198,52 +233,67 @@ class DailyTradeSettingGUI(QDialog):
         self.save_btn.setText("⏳ Saving...")
         self.status_label.setText("")  # Clear any previous status
 
+        # Collect data in main thread
+        data_to_save = {}
+        validation_errors = []
+
+        # Validate all fields
+        for key, (edit, typ) in self.vars.items():
+            text = edit.text().strip()
+            is_valid, value, error = self.validate_field(key, text, typ)
+            if is_valid:
+                data_to_save[key] = value
+            else:
+                validation_errors.append(error)
+                # Highlight the problematic field
+                edit.setStyleSheet("""
+                    QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149;
+                               border-radius:4px; padding:8px; }
+                """)
+
+        if validation_errors:
+            self.show_error_feedback("\n".join(validation_errors))
+            self.save_btn.setEnabled(True)
+            return
+
+        # Add combo box and checkbox data
+        data_to_save['history_interval'] = self.interval_combo.currentData()
+        data_to_save['sideway_zone_trade'] = self.sideway_check.isChecked()
+
         def _save():
             try:
-                # Validate and collect data
-                for key, (edit, typ) in self.vars.items():
-                    text = edit.text().strip()
-                    if typ == int:
-                        if text:
-                            value = int(float(text))
-                        else:
-                            value = 0
-                    elif typ == float:
-                        value = float(text) if text else 0.0
-                    else:
-                        value = text
+                # Update settings object
+                for key, value in data_to_save.items():
                     setattr(self.daily_setting, key, value)
 
-                # Set interval
-                interval_val = self.interval_combo.currentData()
-                self.daily_setting.history_interval = interval_val
+                # Save to file
+                success = self.daily_setting.save()
 
-                # Set sideway zone
-                self.daily_setting.sideway_zone_trade = self.sideway_check.isChecked()
+                if success:
+                    self.save_completed.emit(True, "Settings saved successfully!")
+                else:
+                    self.save_completed.emit(False, "Failed to save settings to file")
 
-                self.daily_setting.save()
-
-                if self.app and hasattr(self.app, "refresh_settings_live"):
-                    self.app.refresh_settings_live()
-
-                # Show success and close
-                QTimer.singleShot(0, self.save_success)
-
-            except ValueError as e:
-                QTimer.singleShot(0, lambda: self.save_error(f"Invalid number format: {e}"))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.save_error(str(e)))
+                self.save_completed.emit(False, str(e))
 
         threading.Thread(target=_save, daemon=True).start()
 
-    def save_success(self):
-        """# PYQT: Handle successful save"""
-        self.show_success_feedback()
-        self.save_btn.setEnabled(True)
-        # Close after showing success
-        QTimer.singleShot(2000, self.accept)
+    def on_save_completed(self, success, message):
+        """Handle save completion in main thread"""
+        if success:
+            self.show_success_feedback()
+            self.save_btn.setEnabled(True)
 
-    def save_error(self, error_msg):
-        """# PYQT: Handle save error"""
-        self.show_error_feedback(f"Failed to save: {error_msg}")
-        self.save_btn.setEnabled(True)
+            # Refresh app if needed
+            if self.app and hasattr(self.app, "refresh_settings_live"):
+                try:
+                    self.app.refresh_settings_live()
+                except Exception as e:
+                    print(f"Failed to refresh app: {e}")
+
+            # Close after showing success
+            QTimer.singleShot(2000, self.accept)
+        else:
+            self.show_error_feedback(f"Failed to save: {message}")
+            self.save_btn.setEnabled(True)

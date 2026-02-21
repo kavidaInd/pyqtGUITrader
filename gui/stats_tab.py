@@ -1,10 +1,13 @@
 # PYQT: Replaces Tkinter StatsTab - preserves class name
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget,
-                              QTableWidgetItem, QHeaderView, QLabel, QApplication)
-from PyQt5.QtCore import Qt
+                             QTableWidgetItem, QHeaderView, QLabel, QApplication)
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
 import pandas as pd
 import numpy as np
+import threading
+from typing import Any, Optional
+import traceback
 
 
 class StatsTab(QWidget):
@@ -76,9 +79,16 @@ class StatsTab(QWidget):
         ("all_symbols", "All Symbols"),
     ]
 
+    # Cache for formatted values to avoid recomputing
+    _value_cache = {}
+    _cache_size_limit = 1000
+
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
+        self._refresh_lock = threading.Lock()
+        self._last_values = {}  # Store last values to detect changes
+        self._updating = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -135,50 +145,202 @@ class StatsTab(QWidget):
 
         layout.addWidget(self.table)
 
-    def refresh(self):
-        """
-        # PYQT: Called on main thread by QTimer. Reads state and updates table values.
-        """
-        if self.state is None:
-            return
+    def _safe_get_attr(self, obj: Any, key: str, default: Any = "—") -> Any:
+        """Safely get attribute from object with error handling"""
+        try:
+            if hasattr(obj, key):
+                return getattr(obj, key)
+            return default
+        except Exception as e:
+            return f"<Error: {type(e).__name__}>"
 
-        def fmt(val):
-            if val is None:
-                return "—"
+    def _format_value(self, val: Any, max_length: int = 120) -> str:
+        """Format a value for display with caching for complex objects"""
+        if val is None:
+            return "—"
+
+        # Use cache for complex objects to avoid repeated formatting
+        if hasattr(val, '__hash__') and val is not None:
+            try:
+                cache_key = (id(type(val)), hash(str(val)) % self._cache_size_limit)
+                if cache_key in self._value_cache:
+                    return self._value_cache[cache_key]
+            except (TypeError, ValueError):
+                cache_key = None
+        else:
+            cache_key = None
+
+        try:
+            # Handle different types efficiently
             if hasattr(val, "as_dict"):
                 try:
                     d = val.as_dict()
-                    return (f"O:{d.get('open','-')}  H:{d.get('high','-')}  "
-                            f"L:{d.get('low','-')}  C:{d.get('close','-')}  Vol:{d.get('volume','-')}")
+                    formatted = (f"O:{d.get('open', '-')}  H:{d.get('high', '-')}  "
+                                 f"L:{d.get('low', '-')}  C:{d.get('close', '-')}  Vol:{d.get('volume', '-')}")
                 except Exception:
-                    return str(val)
-            if isinstance(val, pd.DataFrame):
-                return f"DataFrame {val.shape}  cols={list(val.columns[:4])}"
-            if isinstance(val, np.ndarray):
-                return f"ndarray shape={val.shape}"
-            if isinstance(val, dict):
+                    formatted = str(val)
+
+            elif isinstance(val, pd.DataFrame):
+                # More efficient DataFrame display
+                if val.empty:
+                    formatted = "Empty DataFrame"
+                else:
+                    cols = list(val.columns[:4])
+                    formatted = f"DataFrame {val.shape}  cols={cols}"
+                    if len(val) > 0:
+                        # Show first row as sample
+                        try:
+                            first_row = val.iloc[0].to_dict()
+                            sample = {k: v for k, v in list(first_row.items())[:3]}
+                            formatted += f"  sample: {sample}"
+                        except:
+                            pass
+
+            elif isinstance(val, pd.Series):
+                formatted = f"Series {val.shape}  {val.name}"
+
+            elif isinstance(val, np.ndarray):
+                formatted = f"ndarray shape={val.shape}  dtype={val.dtype}"
+                if val.size > 0 and val.size < 10:
+                    formatted += f"  {val}"
+
+            elif isinstance(val, dict):
                 s = str(val)
-                return s[:120] + "..." if len(s) > 120 else s
-            if isinstance(val, list):
+                formatted = s[:max_length] + "..." if len(s) > max_length else s
+
+            elif isinstance(val, (list, tuple)):
                 if len(val) > 5:
-                    return f"List[{len(val)}]: {str(val[:4])[:-1]}, ..."
-                return str(val)
-            if isinstance(val, float):
-                return f"{val:.4f}"
-            return str(val)
+                    formatted = f"{type(val).__name__}[{len(val)}]: {str(val[:4])[:-1]}, ..."
+                else:
+                    formatted = str(val)
 
-        for i, (key, _) in enumerate(self.STATS_KEYS):
+            elif isinstance(val, float):
+                formatted = f"{val:.4f}"
+
+            elif isinstance(val, (int, bool)):
+                formatted = str(val)
+
+            else:
+                formatted = str(val)
+
+            # Cache the result if possible
+            if cache_key:
+                self._value_cache[cache_key] = formatted
+                # Limit cache size
+                if len(self._value_cache) > self._cache_size_limit:
+                    # Remove 20% oldest entries
+                    remove_count = self._cache_size_limit // 5
+                    for _ in range(remove_count):
+                        if self._value_cache:
+                            self._value_cache.pop(next(iter(self._value_cache)))
+
+            return formatted
+
+        except Exception as e:
+            return f"<Format Error: {type(e).__name__}>"
+
+    def refresh(self):
+        """
+        # PYQT: Called on main thread by QTimer. Reads state and updates table values.
+        Uses change detection to only update cells that have changed.
+        """
+        if self.state is None or self._updating:
+            return
+
+        # Prevent reentrant calls
+        self._updating = True
+
+        try:
+            # Get a snapshot of values with thread safety
+            with self._refresh_lock:
+                current_values = {}
+                for i, (key, _) in enumerate(self.STATS_KEYS):
+                    try:
+                        val = self._safe_get_attr(self.state, key)
+                        current_values[i] = val
+                    except Exception:
+                        current_values[i] = f"<Access Error>"
+
+            # Update only changed cells
+            for i, val in current_values.items():
+                try:
+                    # Check if value changed
+                    if i in self._last_values:
+                        last_val = self._last_values[i]
+                        if self._values_equal(last_val, val):
+                            continue
+
+                    # Format and update
+                    formatted = self._format_value(val)
+                    current_item = self.table.item(i, 1)
+                    if current_item.text() != formatted:
+                        current_item.setText(formatted)
+
+                    # Store for next comparison
+                    self._last_values[i] = val
+
+                except Exception as e:
+                    self.table.item(i, 1).setText(f"<Update Error>")
+                    print(f"Error updating row {i}: {e}")
+                    traceback.print_exc()
+
+        finally:
+            self._updating = False
+
+    def _values_equal(self, a: Any, b: Any) -> bool:
+        """Compare two values efficiently"""
+        if a is b:
+            return True
+
+        if type(a) != type(b):
+            return False
+
+        if isinstance(a, (pd.DataFrame, pd.Series, np.ndarray)):
+            # For large data structures, just check if they're the same object
+            # or if their shapes and first elements match
             try:
-                val = getattr(self.state, key, "—")
-                self.table.item(i, 1).setText(fmt(val))
-            except Exception as e:
-                self.table.item(i, 1).setText(f"<Error: {str(e)[:40]}>")
+                if hasattr(a, 'shape') and hasattr(b, 'shape'):
+                    if a.shape != b.shape:
+                        return False
+                if hasattr(a, 'iloc') and hasattr(b, 'iloc'):
+                    # Compare first element only
+                    if len(a) > 0 and len(b) > 0:
+                        return str(a.iloc[0]) == str(b.iloc[0])
+                return str(a) == str(b)
+            except:
+                return str(a) == str(b)
 
-    def _copy_to_clipboard(self, row, col):
+        try:
+            return a == b
+        except:
+            return str(a) == str(b)
+
+    def _copy_to_clipboard(self, row: int, col: int):
         """# PYQT: Copy full raw value to system clipboard on double-click"""
+        if col != 1:  # Only copy from value column
+            return
+
         try:
             key = self.STATS_KEYS[row][0]
-            val = getattr(self.state, key, "")
+            val = self._safe_get_attr(self.state, key)
             QApplication.clipboard().setText(str(val))
-        except Exception:
-            pass
+
+            # Visual feedback - briefly highlight the cell
+            item = self.table.item(row, col)
+            if item:
+                original_bg = item.background()
+                item.setBackground(QColor("#238636"))
+                QTimer.singleShot(200, lambda: item.setBackground(original_bg))
+
+        except Exception as e:
+            print(f"Copy failed: {e}")
+
+    def clear_cache(self):
+        """Clear the value cache to free memory"""
+        self._value_cache.clear()
+        self._last_values.clear()
+
+    def closeEvent(self, event):
+        """Clean up when tab is closed"""
+        self.clear_cache()
+        super().closeEvent(event)

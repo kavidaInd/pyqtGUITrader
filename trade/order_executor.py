@@ -124,6 +124,11 @@ class OrderExecutor:
         """
         Update trading state after a buy.
         """
+        # Validation guard for price
+        if price <= 0:
+            logger.error(f"[record_trade_state] Invalid price ({price}) for {symbol}. Cannot set trade state.")
+            return False
+
         state.orders = orders
         state.current_position = option_type
         state.current_trading_symbol = symbol
@@ -133,12 +138,33 @@ class OrderExecutor:
         state.current_trade_started_time = datetime.now()
         state.current_trade_confirmed = False
         state.positions_hold = shares
-        # Defensive: super_trend_short/trend may not exist
-        index_stop_loss = state.derivative_trend.get("super_trend_short", {}).get("trend", None)
-        state.index_stop_loss = index_stop_loss[-1]
-        state.tp_point = price + state.tp_percentage
-        state.stop_loss = price - state.stoploss_percentage
 
+        # Safely extract index stop loss - it's optional, so don't abort if missing
+        try:
+            # Get the trend list safely, default to empty list if any key is missing
+            trend_list = state.derivative_trend.get("super_trend_short", {}).get("trend") or []
+
+            # Set index_stop_loss to the last value if list exists and is not empty
+            if trend_list and len(trend_list) > 0:
+                state.index_stop_loss = float(trend_list[-1])
+                logger.debug(f"[record_trade_state] Index stop loss set to: {state.index_stop_loss}")
+            else:
+                state.index_stop_loss = None
+                logger.warning("[record_trade_state] Index stop loss not available - continuing without it")
+        except (AttributeError, KeyError, IndexError, ValueError, TypeError) as e:
+            # Catch any unexpected errors and set to None
+            state.index_stop_loss = None
+            logger.warning(f"[record_trade_state] Failed to set index stop loss: {e} - continuing without it")
+
+        state.tp_point = price * (1 + state.tp_percentage / 100)
+
+        state.stop_loss = price * (1 + state.stoploss_percentage / 100)
+
+        logger.info(f"[record_trade_state] Entry price: {price:.2f}, TP: {state.tp_point:.2f} "
+                    f"({state.tp_percentage}%), SL: {state.stop_loss:.2f} "
+                    f"({state.stoploss_percentage}%)")
+
+        return True
     def adjust_positions(self, state, shares, side):
         """
         Try to adjust lookback and get a cheaper option if not enough balance for at least one lot.
@@ -203,7 +229,7 @@ class OrderExecutor:
         try:
             if state.current_position not in {BaseEnums.CALL, BaseEnums.PUT}:
                 logger.warning(f"[EXIT] Not in CALL or PUT. Current position: {state.current_position}")
-                return
+                return False
 
             if not state.order_pending:
                 state.order_pending = True
@@ -212,7 +238,7 @@ class OrderExecutor:
                 if sell_price is None:
                     logger.warning("[EXIT] Current price unavailable. Cannot exit position.")
                     state.order_pending = False
-                    return
+                    return False
                 reason = reason if reason else state.reason_to_exit
                 confirmed_orders = getattr(state, "confirmed_orders", [])
                 unconfirmed_orders = getattr(state, "orders", [])
@@ -249,6 +275,8 @@ class OrderExecutor:
 
         except Exception as e:
             logger.exception(f"[EXIT] Exception during exit: {e}")
+            # FIX: Return False to indicate failure
+            return False
 
     def save_trade_to_csv(self, order, state, reason):
         """
