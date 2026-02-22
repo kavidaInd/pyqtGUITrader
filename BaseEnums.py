@@ -1,4 +1,20 @@
 import os
+# Add after existing bot modes
+# Bot Modes
+BACK = "Backtest"
+SIM = "Simulation"  # Paper trading
+LIVE = "Live"
+OPTI = "Optimizer"
+
+# Add new enums
+PAPER = "Paper"  # Alias for SIM
+BACKTEST = "Backtest"
+
+# Backtest status
+BACKTEST_PENDING = "Pending"
+BACKTEST_RUNNING = "Running"
+BACKTEST_COMPLETED = "Completed"
+BACKTEST_FAILED = "Failed"
 
 # Trade Types
 TRADE_TYPE_SCALPING = "Scalping"

@@ -7,4 +7,4 @@ fyers_apiv3~=3.1.7
 asyncio~=3.4.3
 python-dateutil~=2.9.0.post0
 pytz~=2025.2
-pandas_ta
+PyQtChart

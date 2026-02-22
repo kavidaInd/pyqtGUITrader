@@ -1,75 +1,51 @@
-# chart_widget.py - Market Structure Analysis with Pivot Points and HH/HL/LL/LH
-# Dynamic indicator subplots driven entirely by DynamicSignalEngine rules / Config flags.
+# chart_widget.py - Multi-instrument tabbed chart with market structure only.
+# ── TABS ──────────────────────────────────────────────────────────────────────
+#   MultiChartWidget  - QTabWidget containing three ChartWidget tabs:
+#                           "📈 Spot (Index)"  → derivative_trend  (index OHLCV)
+#                           "☎ ATM Call"       → call_trend        (call option)
+#                           "🔻 ATM Put"        → put_trend         (put option)
 #
-# HOW DYNAMIC PANELS WORK
+#   Usage in TradingGUI:
+#       self.chart_widget = MultiChartWidget()        # replaces ChartWidget()
+#       self.chart_widget.set_config(config, engine)  # once, after init
+#       ...
+#       # In _do_chart_update():
+#       state = self.trading_app.state
+#       self.chart_widget.update_charts(
+#           spot_data  = getattr(state, "derivative_trend",  {}) or {},
+#           call_data  = getattr(state, "call_trend",        {}) or {},
+#           put_data   = getattr(state, "put_trend",         {}) or {},
+#       )
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Call  set_config(config, signal_engine)  once at startup and again after
-#    any settings dialog closes.
-#
-# 2. _resolve_active_panels() walks every rule in every DynamicSignalEngine
-#    signal group and reads the "indicator" field from each LHS / RHS.
-#    Those names are normalised via ENGINE_KEY_TO_PANEL and the matching
-#    IndicatorSpec entries are activated.
-#    Config flags (use_rsi, use_macd, …) are the fallback when no engine
-#    rules are configured.
-#
-# 3. Each IndicatorSpec declares:
-#       panel_type  "overlay"  → plotted on the price row (SuperTrend, BB)
-#                   "subplot"  → its own row below price  (MACD, RSI)
-#       trend_keys  dot-paths into trend_data to find the series data
-#       render_fn   a small function that adds the Plotly traces
-#
-# 4. _generate_chart_html() is indicator-agnostic — it loops over the active
-#    specs and calls their render_fn.  Adding a new indicator = add one
-#    IndicatorSpec + one small render function.  Nothing else changes.
-#
-# CALLER INTEGRATION
-# ─────────────────────────────────────────────────────────────────────────────
-#   # startup / after settings dialog:
-#   chart_widget.set_config(config, detector.signal_engine)
-#
-#   # each bar:
-#   chart_widget.update_chart(state.derivative_trend)
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Callable
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from PyQt5.QtCore import QObject, QSize, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QSize, QTimer, pyqtSignal, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtWidgets import (
+    QTabWidget, QVBoxLayout, QWidget, QLabel, QFrame, QHBoxLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QScrollArea,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  INDICATOR REGISTRY
-#  One IndicatorSpec per indicator — the only place that knows how to render it.
+#  INDICATOR REGISTRY  (cleared - no indicators)
 # ═════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class IndicatorSpec:
-    """
-    Declarative description of how one indicator is visualised.
-
-    key         - Canonical name, used as the registry key.
-    trend_keys  - Dict[alias -> dot-path in trend_data].
-                  "macd.histogram"  resolves as trend_data["macd"]["histogram"]
-                  "rsi_series"      resolves as trend_data["rsi_series"]
-    panel_type  - "overlay": drawn on the price row, no extra subplot row.
-                  "subplot": gets its own dedicated row below price.
-    render_fn   - Callable(fig, x, series_dict, row, COLORS) -> None
-                  Adds all Plotly traces for this indicator.
-    y_range     - Optional fixed [min, max] for subplot y-axis (e.g. RSI [0,100]).
-    y_label     - Y-axis title for subplot rows.
-    config_flag - Name of the Config bool attribute used as fallback when no
-                  engine rules are present.  None if the flag has a special name.
-    """
     key: str
     trend_keys: Dict[str, str]
     panel_type: str  # "overlay" | "subplot"
@@ -79,304 +55,62 @@ class IndicatorSpec:
     config_flag: Optional[str] = None
 
 
-# ── Per-indicator render functions ────────────────────────────────────────────
+# Empty registry - no indicators
+INDICATOR_REGISTRY: List[IndicatorSpec] = []
 
-def _render_supertrend(fig, x, s, row, C, label, bull_col, bear_col):
-    """Generic SuperTrend renderer — splits line into bull / bear segments."""
-    trend_vals = s.get("trend", [])
-    directions = s.get("direction", [])
-    if not trend_vals:
-        return
-    bull_x, bull_y, bear_x, bear_y = [], [], [], []
-    for i, tv in enumerate(trend_vals):
-        if tv is None:
-            continue
-        d = directions[i] if i < len(directions) else "0"
-        if str(d) in ("1", "1.0", "True", "bull", "up"):
-            bull_x.append(x[i]);
-            bull_y.append(tv)
-        else:
-            bear_x.append(x[i]);
-            bear_y.append(tv)
-    if bull_x:
-        fig.add_trace(go.Scatter(
-            x=bull_x, y=bull_y, name=f"{label} ↑", mode="lines",
-            line=dict(color=bull_col, width=1.5),
-            hovertemplate=f"{label}: %{{y:.2f}}<extra></extra>",
-            showlegend=True, legendgroup=label,
-        ), row=row, col=1)
-    if bear_x:
-        fig.add_trace(go.Scatter(
-            x=bear_x, y=bear_y, name=f"{label} ↓", mode="lines",
-            line=dict(color=bear_col, width=1.5),
-            hovertemplate=f"{label}: %{{y:.2f}}<extra></extra>",
-            showlegend=True, legendgroup=label,
-        ), row=row, col=1)
+_REGISTRY: Dict[str, IndicatorSpec] = {}
 
+ENGINE_KEY_TO_PANEL: Dict[str, str] = {}
 
-def _render_supertrend_short(fig, x, s, row, C):
-    _render_supertrend(fig, x, s, row, C, "ST Short",
-                       C["st_short_bull"], C["st_short_bear"])
-
-
-def _render_supertrend_long(fig, x, s, row, C):
-    _render_supertrend(fig, x, s, row, C, "ST Long",
-                       C["st_long_bull"], C["st_long_bear"])
-
-
-def _render_bb(fig, x, s, row, C):
-    """Bollinger Bands: upper / lower / middle overlaid on price."""
-    n = len(x)
-    upper = s.get("upper", [])
-    lower = s.get("lower", [])
-    middle = s.get("middle", [])
-    if not upper or len(upper) != n:
-        return
-    # Upper — plotted first so fill="tonexty" on Lower fills the channel
-    fig.add_trace(go.Scatter(
-        x=x, y=upper, name="BB Upper",
-        line=dict(color=C["bb_upper"], width=1, dash="dot"),
-        hovertemplate="BB Upper: %{y:.2f}<extra></extra>",
-        showlegend=True, legendgroup="bb",
-    ), row=row, col=1)
-    if lower and len(lower) == n:
-        fig.add_trace(go.Scatter(
-            x=x, y=lower, name="BB Lower",
-            line=dict(color=C["bb_lower"], width=1, dash="dot"),
-            fill="tonexty", fillcolor=C["bb_fill"],
-            hovertemplate="BB Lower: %{y:.2f}<extra></extra>",
-            showlegend=True, legendgroup="bb",
-        ), row=row, col=1)
-    if middle and len(middle) == n:
-        fig.add_trace(go.Scatter(
-            x=x, y=middle, name="BB Mid",
-            line=dict(color=C["bb_mid"], width=1, dash="dash"),
-            hovertemplate="BB Mid: %{y:.2f}<extra></extra>",
-            showlegend=False, legendgroup="bb",
-        ), row=row, col=1)
-
-
-def _render_macd(fig, x, s, row, C):
-    """MACD: histogram bars + MACD line + signal line + zero reference."""
-    n = len(x)
-    macd_vals = s.get("macd", [])
-    sig_vals = s.get("signal", [])
-    hist_vals = s.get("histogram", [])
-    if not macd_vals or len(macd_vals) != n:
-        return
-    # Histogram
-    if hist_vals and len(hist_vals) == n:
-        hist_colors = [C["macd_hist_pos"] if (v is not None and v >= 0)
-                       else C["macd_hist_neg"] for v in hist_vals]
-        fig.add_trace(go.Bar(
-            x=x, y=hist_vals, name="Histogram",
-            marker_color=hist_colors,
-            hovertemplate="Hist: %{y:.4f}<extra></extra>",
-            showlegend=True,
-        ), row=row, col=1)
-    # MACD line
-    fig.add_trace(go.Scatter(
-        x=x, y=macd_vals, name="MACD",
-        line=dict(color=C["macd_line"], width=1.5),
-        hovertemplate="MACD: %{y:.4f}<extra></extra>",
-        showlegend=True,
-    ), row=row, col=1)
-    # Signal line
-    if sig_vals and len(sig_vals) == n:
-        fig.add_trace(go.Scatter(
-            x=x, y=sig_vals, name="Signal",
-            line=dict(color=C["macd_signal"], width=1.5, dash="dash"),
-            hovertemplate="Signal: %{y:.4f}<extra></extra>",
-            showlegend=True,
-        ), row=row, col=1)
-    # Zero reference
-    fig.add_hline(y=0, row=row, col=1,
-                  line=dict(color=C["text"], width=1, dash="dot"))
-
-
-def _render_rsi(fig, x, s, row, C):
-    """RSI: line + OB/OS shaded regions + reference lines + current value label."""
-    series = s.get("series", [])
-    if not series:
-        return
-    # Shaded OB / OS bands
-    fig.add_hrect(y0=70, y1=100, row=row, col=1,
-                  fillcolor=C["rsi_ob"], layer="below", line_width=0)
-    fig.add_hrect(y0=0, y1=30, row=row, col=1,
-                  fillcolor=C["rsi_os"], layer="below", line_width=0)
-    # RSI line
-    xs = x[:len(series)]
-    fig.add_trace(go.Scatter(
-        x=xs, y=series, name="RSI",
-        line=dict(color=C["rsi_line"], width=1.5),
-        hovertemplate="RSI: %{y:.2f}<extra></extra>",
-        showlegend=True,
-    ), row=row, col=1)
-    # Reference lines at 70 / 50 / 30
-    for lvl, col_key, lbl in (
-            (70, "rsi_ob_line", "OB 70"),
-            (50, "rsi_mid", "50"),
-            (30, "rsi_os_line", "OS 30"),
-    ):
-        fig.add_hline(y=lvl, row=row, col=1,
-                      line=dict(color=C[col_key], width=1, dash="dot"),
-                      annotation_text=lbl, annotation_position="right",
-                      annotation_font=dict(size=8, color=C[col_key]))
-    # Current value annotation coloured by zone
-    last = next((v for v in reversed(series) if v is not None), None)
-    if last is not None:
-        col = (C["rsi_ob_line"] if last > 70
-               else C["rsi_os_line"] if last < 30
-        else C["rsi_line"])
-        fig.add_annotation(
-            x=len(series) - 1, y=last,
-            text=f"  {last:.1f}", showarrow=False,
-            font=dict(size=9, color=col), xanchor="left",
-            row=row, col=1,
-        )
-
-
-# ── Registry — order determines subplot row order ─────────────────────────────
-INDICATOR_REGISTRY: List[IndicatorSpec] = [
-
-    IndicatorSpec(
-        key="supertrend_short",
-        trend_keys={
-            "trend": "super_trend_short.trend",
-            "direction": "super_trend_short.direction",
-        },
-        panel_type="overlay",
-        render_fn=_render_supertrend_short,
-        config_flag="use_short_st",
-    ),
-
-    IndicatorSpec(
-        key="supertrend_long",
-        trend_keys={
-            "trend": "super_trend_long.trend",
-            "direction": "super_trend_long.direction",
-        },
-        panel_type="overlay",
-        render_fn=_render_supertrend_long,
-        config_flag="use_long_st",
-    ),
-
-    IndicatorSpec(
-        key="bb",
-        trend_keys={
-            "upper": "bb.upper",
-            "middle": "bb.middle",
-            "lower": "bb.lower",
-        },
-        panel_type="overlay",
-        render_fn=_render_bb,
-        config_flag=None,  # activated by bb_entry OR bb_exit
-    ),
-
-    IndicatorSpec(
-        key="macd",
-        trend_keys={
-            "macd": "macd.macd",
-            "signal": "macd.signal",
-            "histogram": "macd.histogram",
-        },
-        panel_type="subplot",
-        render_fn=_render_macd,
-        y_label="MACD",
-        config_flag="use_macd",
-    ),
-
-    IndicatorSpec(
-        key="rsi",
-        trend_keys={
-            "series": "rsi_series",
-        },
-        panel_type="subplot",
-        render_fn=_render_rsi,
-        y_range=[0, 100],
-        y_label="RSI",
-        config_flag="use_rsi",
-    ),
-]
-
-# Fast lookup by key
-_REGISTRY: Dict[str, IndicatorSpec] = {s.key: s for s in INDICATOR_REGISTRY}
-
-# Maps DynamicSignalEngine indicator names → registry keys
-ENGINE_KEY_TO_PANEL: Dict[str, str] = {
-    "supertrend": "supertrend_short",
-    "bbands": "bb",
-    "bb": "bb",
-    "bollinger": "bb",
-    "macd": "macd",
-    "rsi": "rsi",
-}
-
-
-# ── Active-panel resolution ───────────────────────────────────────────────────
 
 def _resolve_active_panels(config, signal_engine) -> List[str]:
-    """
-    Return ordered list of registry keys to render this session.
-
-    Priority: engine rules > config flags > nothing.
-    Order follows INDICATOR_REGISTRY so the layout is stable.
-    """
-    active: Set[str] = set()
-
-    # 1. Walk engine rules
-    if signal_engine is not None:
-        try:
-            from strategy.dynamic_signal_engine import SIGNAL_GROUPS
-            for sig in SIGNAL_GROUPS:
-                for rule in signal_engine.get_rules(sig):
-                    for side_key in ("lhs", "rhs"):
-                        side = rule.get(side_key, {})
-                        if side.get("type", "indicator") == "indicator":
-                            eng_key = side.get("indicator", "").lower()
-                            reg_key = ENGINE_KEY_TO_PANEL.get(eng_key)
-                            if reg_key:
-                                active.add(reg_key)
-        except Exception as e:
-            logger.warning(f"Could not inspect signal engine rules: {e}")
-
-    # 2. Fall back to Config flags when engine produced nothing
-    if not active and config is not None:
-        for spec in INDICATOR_REGISTRY:
-            if spec.config_flag and getattr(config, spec.config_flag, False):
-                active.add(spec.key)
-        # BB has two flags
-        if getattr(config, "bb_entry", False) or getattr(config, "bb_exit", False):
-            active.add("bb")
-
-    # Return in registry declaration order
-    return [spec.key for spec in INDICATOR_REGISTRY if spec.key in active]
+    """Return ordered registry keys to render - always empty now."""
+    return []
 
 
 def _load_series(spec: IndicatorSpec, trend_data: Dict,
                  clean_fn: Callable) -> Dict[str, List]:
-    """
-    Extract and clean every series declared in spec.trend_keys.
-    Dot-paths support one level of nesting: "macd.histogram".
-    Direction lists are passed through as-is (strings, not floats).
-    """
     out = {}
     for alias, dot_path in spec.trend_keys.items():
         parts = dot_path.split(".", 1)
         raw = trend_data.get(parts[0])
         if len(parts) == 2 and isinstance(raw, dict):
             raw = raw.get(parts[1])
-        out[alias] = raw if alias == "direction" and isinstance(raw, list) \
-            else clean_fn(raw)
+        out[alias] = (raw if alias == "direction" and isinstance(raw, list)
+                      else clean_fn(raw))
     return out
 
 
+# ── Timestamp helpers ─────────────────────────────────────────────────────────
+
+def _ts_to_label(ts: Any) -> str:
+    """Convert a Unix timestamp (seconds) to 'HH:MM' string."""
+    try:
+        return datetime.fromtimestamp(float(ts)).strftime("%H:%M")
+    except Exception:
+        return str(ts)
+
+
+def _build_x_axis(trend_data: Dict, n: int) -> List:
+    """
+    Return x-axis values.  Prefers 'timestamps' key (list of Unix seconds).
+    Falls back to bar indices (0..n-1).
+    """
+    ts = trend_data.get("timestamps")
+    if ts and isinstance(ts, (list, tuple)) and len(ts) == n:
+        try:
+            labels = [_ts_to_label(t) for t in ts]
+            return labels
+        except Exception:
+            pass
+    return list(range(n))
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-#  Market structure helpers  (original code — unchanged)
+#  Market structure helpers  (unchanged)
 # ═════════════════════════════════════════════════════════════════════════════
 
 class StructureType(Enum):
-    """Market structure types"""
     HH = "Higher High"
     HL = "Higher Low"
     LH = "Lower High"
@@ -386,224 +120,102 @@ class StructureType(Enum):
 
 @dataclass
 class PivotPoint:
-    """Represents a pivot point in market structure"""
     index: int
     price: float
-    type: str  # 'high' or 'low'
-    strength: int  # 1-3, based on number of bars on each side
+    type: str  # 'high' | 'low'
+    strength: int  # 1–3
     structure: StructureType = StructureType.NONE
 
 
 class ChartUpdater(QObject):
     """# PYQT: Worker object for chart updates"""
     update_requested = pyqtSignal(object)
-    update_completed = pyqtSignal(bool, str)  # success, message
+    update_completed = pyqtSignal(bool, str)
 
 
 class MarketStructureAnalyzer:
-    """
-    Analyzes market structure to identify pivot points and
-    Higher Highs (HH), Higher Lows (HL), Lower Highs (LH), Lower Lows (LL)
-    """
-
     def __init__(self, left_bars: int = 5, right_bars: int = 5):
-        """
-        Args:
-            left_bars: Number of bars to check on left side for pivot confirmation
-            right_bars: Number of bars to check on right side for pivot confirmation
-        """
         self.left_bars = left_bars
         self.right_bars = right_bars
 
     def find_pivot_points(self, high: List[float], low: List[float]) -> List[PivotPoint]:
-        """
-        Find pivot highs and lows in the price data
-
-        Args:
-            high: List of high prices
-            low: List of low prices
-
-        Returns:
-            List of PivotPoint objects
-        """
         if len(high) < self.left_bars + self.right_bars + 1:
             return []
-
         pivots = []
         n = len(high)
-
         for i in range(self.left_bars, n - self.right_bars):
-            # Check for pivot high
-            is_pivot_high = True
-            for j in range(i - self.left_bars, i + self.right_bars + 1):
-                if j == i:
-                    continue
-                if high[j] >= high[i]:
-                    is_pivot_high = False
-                    break
+            is_ph = all(high[j] < high[i]
+                        for j in range(i - self.left_bars, i + self.right_bars + 1)
+                        if j != i)
+            if is_ph:
+                diffs = [high[i] - high[j]
+                         for j in range(i - self.left_bars, i + self.right_bars + 1)
+                         if j != i]
+                avg = sum(diffs) / len(diffs) if diffs else 0
+                rng = (max(high) - min(high)) or 1
+                s = 3 if avg > rng * 0.05 else 2 if avg > rng * 0.02 else 1
+                pivots.append(PivotPoint(i, high[i], 'high', s))
 
-            if is_pivot_high:
-                # Calculate strength based on how many bars are clearly lower
-                strength = 1
-                avg_diff = 0
-                count = 0
-                for j in range(i - self.left_bars, i + self.right_bars + 1):
-                    if j != i:
-                        avg_diff += (high[i] - high[j])
-                        count += 1
-                if count > 0:
-                    avg_diff /= count
-                    if avg_diff > (max(high) - min(high)) * 0.02:  # 2% of range
-                        strength = 2
-                    if avg_diff > (max(high) - min(high)) * 0.05:  # 5% of range
-                        strength = 3
-
-                pivots.append(PivotPoint(
-                    index=i,
-                    price=high[i],
-                    type='high',
-                    strength=strength
-                ))
-
-            # Check for pivot low
-            is_pivot_low = True
-            for j in range(i - self.left_bars, i + self.right_bars + 1):
-                if j == i:
-                    continue
-                if low[j] <= low[i]:
-                    is_pivot_low = False
-                    break
-
-            if is_pivot_low:
-                # Calculate strength
-                strength = 1
-                avg_diff = 0
-                count = 0
-                for j in range(i - self.left_bars, i + self.right_bars + 1):
-                    if j != i:
-                        avg_diff += (low[j] - low[i])
-                        count += 1
-                if count > 0:
-                    avg_diff /= count
-                    if avg_diff > (max(high) - min(low)) * 0.02:
-                        strength = 2
-                    if avg_diff > (max(high) - min(low)) * 0.05:
-                        strength = 3
-
-                pivots.append(PivotPoint(
-                    index=i,
-                    price=low[i],
-                    type='low',
-                    strength=strength
-                ))
-
+            is_pl = all(low[j] > low[i]
+                        for j in range(i - self.left_bars, i + self.right_bars + 1)
+                        if j != i)
+            if is_pl:
+                diffs = [low[j] - low[i]
+                         for j in range(i - self.left_bars, i + self.right_bars + 1)
+                         if j != i]
+                avg = sum(diffs) / len(diffs) if diffs else 0
+                rng = (max(high) - min(low)) or 1
+                s = 3 if avg > rng * 0.05 else 2 if avg > rng * 0.02 else 1
+                pivots.append(PivotPoint(i, low[i], 'low', s))
         return pivots
 
     def identify_structure(self, pivots: List[PivotPoint]) -> List[PivotPoint]:
-        """
-        Identify HH, HL, LH, LL patterns from pivot points
-
-        Args:
-            pivots: List of pivot points in chronological order
-
-        Returns:
-            Updated pivots with structure type identified
-        """
         if len(pivots) < 2:
             return pivots
-
-        # Sort by index
         pivots.sort(key=lambda x: x.index)
-
-        # Identify structure
         for i in range(1, len(pivots)):
-            current = pivots[i]
-            previous = pivots[i - 1]
-
-            if current.type == 'high' and previous.type == 'high':
-                if current.price > previous.price:
-                    current.structure = StructureType.HH
-                else:
-                    current.structure = StructureType.LH
-
-            elif current.type == 'low' and previous.type == 'low':
-                if current.price > previous.price:
-                    current.structure = StructureType.HL
-                else:
-                    current.structure = StructureType.LL
-
+            c, p = pivots[i], pivots[i - 1]
+            if c.type == 'high' and p.type == 'high':
+                c.structure = StructureType.HH if c.price > p.price else StructureType.LH
+            elif c.type == 'low' and p.type == 'low':
+                c.structure = StructureType.HL if c.price > p.price else StructureType.LL
         return pivots
 
     def get_trend_lines(self, pivots: List[PivotPoint]) -> Dict[str, List[Tuple[int, float]]]:
-        """
-        Generate trend lines connecting HH/HL and LH/LL
-
-        Returns:
-            Dictionary with 'uptrend' and 'downtrend' lines
-        """
-        uptrend_points = []
-        downtrend_points = []
-
-        # Filter pivots with structure
-        for pivot in pivots:
-            if pivot.structure in [StructureType.HL, StructureType.LL]:
-                # For uptrend, connect Higher Lows
-                if pivot.structure == StructureType.HL:
-                    uptrend_points.append((pivot.index, pivot.price))
-            elif pivot.structure in [StructureType.HH, StructureType.LH]:
-                # For downtrend, connect Lower Highs
-                if pivot.structure == StructureType.LH:
-                    downtrend_points.append((pivot.index, pivot.price))
-
-        return {
-            'uptrend': uptrend_points,
-            'downtrend': downtrend_points
-        }
+        up, dn = [], []
+        for p in pivots:
+            if p.structure == StructureType.HL:
+                up.append((p.index, p.price))
+            elif p.structure == StructureType.LH:
+                dn.append((p.index, p.price))
+        return {"uptrend": up, "downtrend": dn}
 
     def get_market_phase(self, pivots: List[PivotPoint]) -> str:
-        """
-        Determine current market phase based on recent structure
-
-        Returns:
-            'uptrend', 'downtrend', 'ranging', or 'neutral'
-        """
         if len(pivots) < 4:
             return 'neutral'
-
-        # Get last 4 pivots
         recent = pivots[-4:]
-
-        # Check for uptrend pattern (HH and HL)
-        hh_count = sum(1 for p in recent if p.structure == StructureType.HH)
-        hl_count = sum(1 for p in recent if p.structure == StructureType.HL)
-
-        if hh_count >= 2 and hl_count >= 2:
-            return 'uptrend'
-
-        # Check for downtrend pattern (LH and LL)
-        lh_count = sum(1 for p in recent if p.structure == StructureType.LH)
-        ll_count = sum(1 for p in recent if p.structure == StructureType.LL)
-
-        if lh_count >= 2 and ll_count >= 2:
-            return 'downtrend'
-
-        # Check for ranging (alternating patterns)
-        if len(set(p.structure for p in recent)) >= 3:
-            return 'ranging'
-
+        hh = sum(1 for p in recent if p.structure == StructureType.HH)
+        hl = sum(1 for p in recent if p.structure == StructureType.HL)
+        lh = sum(1 for p in recent if p.structure == StructureType.LH)
+        ll = sum(1 for p in recent if p.structure == StructureType.LL)
+        if hh >= 2 and hl >= 2: return 'uptrend'
+        if lh >= 2 and ll >= 2: return 'downtrend'
+        if len(set(p.structure for p in recent)) >= 3: return 'ranging'
         return 'neutral'
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  ChartWidget
+#  ChartWidget  — single-instrument chart (price + structure only)
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ChartWidget(QWebEngineView):
     """
-    # PYQT: Market Structure Chart showing pivot points and HH/HL/LL/LH patterns.
-    Indicator subplots (SuperTrend, BB, MACD, RSI, …) are added and removed
-    automatically based on whatever indicators are referenced in the live
-    DynamicSignalEngine rules or Config flags.
+    Market-structure candlestick chart with price and pivot points only.
+
+    USAGE
+    ─────
+    1. chart.set_config(config, signal_engine)   # once at startup / after strategy change
+    2. chart.update_chart(trend_data)            # on every new bar
     """
 
     DARK_BG = "#0d1117"
@@ -611,308 +223,170 @@ class ChartWidget(QWebEngineView):
     TEXT_COLOR = "#e6edf3"
     GRID_COLOR = "#30363d"
 
-    # Color scheme — extended to cover all indicator panels
     COLORS = {
-        # Candles
-        "candle_up": "#3fb950",
-        "candle_down": "#f85149",
-        # Pivot / structure
-        "pivot_high": "#f0883e",
-        "pivot_low": "#58a6ff",
-        "hh": "#7ee37d",
-        "hl": "#58a6ff",
-        "lh": "#f85149",
-        "ll": "#db6d28",
-        "trend_up": "#3fb950",
-        "trend_down": "#f85149",
-        # SuperTrend
-        "st_short_bull": "#3fb950",
-        "st_short_bear": "#f85149",
-        "st_long_bull": "#7ee37d",
-        "st_long_bear": "#db6d28",
-        # Bollinger Bands
-        "bb_upper": "#f0883e",
-        "bb_mid": "#8b949e",
-        "bb_lower": "#58a6ff",
-        "bb_fill": "rgba(88,166,255,0.07)",
-        # MACD
-        "macd_line": "#58a6ff",
-        "macd_signal": "#f0883e",
-        "macd_hist_pos": "#3fb950",
-        "macd_hist_neg": "#f85149",
-        # RSI
-        "rsi_line": "#a371f7",
-        "rsi_ob": "rgba(248,81,73,0.15)",
-        "rsi_os": "rgba(63,185,80,0.15)",
-        "rsi_ob_line": "#f85149",
-        "rsi_os_line": "#3fb950",
-        "rsi_mid": "#30363d",
-        # Volume
+        "candle_up": "#3fb950", "candle_down": "#f85149",
+        "pivot_high": "#f0883e", "pivot_low": "#58a6ff",
+        "hh": "#7ee37d", "hl": "#58a6ff",
+        "lh": "#f85149", "ll": "#db6d28",
+        "trend_up": "#3fb950", "trend_down": "#f85149",
+        "text": "#8b949e",
         "vol_up": "rgba(63,185,80,0.45)",
         "vol_down": "rgba(248,81,73,0.45)",
-        # Misc
-        "text": "#8b949e",
     }
 
-    # Row height proportions
-    _MAIN_RATIO = 0.52
-    _SUB_RATIO = 0.20  # each subplot panel
-    _VOL_RATIO = 0.08
+    _MAIN_RATIO = 0.70
+    _VOL_RATIO = 0.30
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"background: {self.DARK_BG}; border: none;")
-
-        # Set minimum size
         self.setMinimumSize(QSize(400, 300))
 
-        # Dynamic panel state
         self._config = None
         self._signal_engine = None
-        self._active_keys: List[str] = []  # registry keys currently active
+        self._active_keys: List[str] = []
+        self._config_set = False
 
-        # Market structure analyzer
         self.analyzer = MarketStructureAnalyzer(left_bars=5, right_bars=5)
 
-        # State tracking
         self._last_data_fingerprint = ""
         self._pending_data = None
         self._update_timer = QTimer()
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self._perform_update)
 
-        # Cache for generated HTML
         self._html_cache = {}
         self._max_cache_size = 5
-
-        # Error recovery
         self._error_count = 0
         self._max_errors = 3
 
-        # Updater for background processing
         self.updater = ChartUpdater()
         self.updater.update_requested.connect(self.update_chart)
 
-        # Show placeholder initially
         self._show_placeholder()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_config(self, config, signal_engine=None) -> None:
         """
-        Attach Config + optional DynamicSignalEngine so the chart knows
-        which indicator panels to draw.
-
-        Call once at startup and again whenever strategy settings change
-        (e.g. after StrategySettingGUI closes) so the layout rebuilds on
-        the next bar.
-
-        Args:
-            config:        Config instance from config.py
-            signal_engine: DynamicSignalEngine instance (may be None)
+        Attach Config + optional DynamicSignalEngine.
+        Call at startup and again after strategy changes.
         """
         self._config = config
         self._signal_engine = signal_engine
         self._active_keys = _resolve_active_panels(config, signal_engine)
+        self._config_set = True
 
-        # Bust cache — layout may have changed
+        # Bust cache
         self._last_data_fingerprint = ""
         self._html_cache.clear()
 
-        logger.info(
-            f"ChartWidget panels → "
-            f"{self._active_keys or ['price + structure only']}"
-        )
-
-    # ── Original public methods (unchanged) ───────────────────────────────────
+        # logger.info(f"ChartWidget: price + structure only")
 
     def update_chart(self, trend_data: dict):
-        """
-        # PYQT: Thread-safe chart update - throttled to prevent flicker
-        Can be called from any thread
-        """
+        """Thread-safe chart update — throttled to prevent flicker."""
+        if not trend_data:
+            return
         try:
-            fp = self._fingerprint(trend_data)
+            # Auto-resolve panels if set_config was never called
+            if not self._config_set:
+                self._active_keys = _resolve_active_panels(None, None)
+                logger.debug("ChartWidget: set_config not yet called; "
+                             "rendering price + structure only.")
 
-            # Skip if no meaningful change
+            fp = self._fingerprint(trend_data)
             if fp == self._last_data_fingerprint or fp == "":
                 return
 
-            # Reset error count on successful data
             self._error_count = 0
-
-            # Store new fingerprint
             self._last_data_fingerprint = fp
 
-            # Check cache first
             if fp in self._html_cache:
                 self.setHtml(self._html_cache[fp])
                 return
 
-            # Schedule update on main thread with debounce
             self._pending_data = trend_data
-            self._update_timer.start(300)  # 300ms debounce
+            self._update_timer.start(300)
 
         except Exception as e:
-            logger.error(f"Update chart failed: {e}")
+            logger.error(f"update_chart failed: {e}")
             self._error_count += 1
             if self._error_count >= self._max_errors:
                 self._show_error_placeholder(str(e))
 
     def clear_cache(self):
-        """Clear the HTML cache to free memory"""
         self._html_cache.clear()
-        logger.debug("Chart cache cleared")
 
     def resizeEvent(self, event):
-        """Handle resize events to ensure chart fits"""
         super().resizeEvent(event)
-        # Trigger a re-render on next update
         self._last_data_fingerprint = ""
-        if hasattr(self, 'updater'):
+        if hasattr(self, 'updater') and self._pending_data is not None:
             self.updater.update_requested.emit(self._pending_data)
 
-    # ── Internal — placeholders (original code unchanged) ─────────────────────
+    # ── Placeholders ──────────────────────────────────────────────────────────
 
-    def _show_placeholder(self, message: str = "Waiting for market data..."):
-        """Show placeholder text when no data"""
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{
-                    background: {self.DARK_BG};
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    height: 100vh;
-                    margin: 0;
-                    font-family: 'Segoe UI', sans-serif;
-                }}
-                .message {{
-                    color: #8b949e;
-                    font-size: 16px;
-                    text-align: center;
-                    padding: 20px;
-                }}
-                .spinner {{
-                    border: 3px solid {self.CARD_BG};
-                    border-top: 3px solid {self.COLORS["pivot_low"]};
-                    border-radius: 50%;
-                    width: 40px;
-                    height: 40px;
-                    animation: spin 1s linear infinite;
-                    margin: 20px auto;
-                }}
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="message">
-                <div class="spinner"></div>
-                <div>📊 {message}</div>
-            </div>
-        </body>
-        </html>
-        """
+    def _show_placeholder(self, message: str = "Waiting for market data…"):
+        html = f"""<!DOCTYPE html><html><head><style>
+            body{{background:{self.DARK_BG};display:flex;align-items:center;
+                 justify-content:center;height:100vh;margin:0;
+                 font-family:'Segoe UI',sans-serif;}}
+            .msg{{color:#8b949e;font-size:16px;text-align:center;padding:20px;}}
+            .spin{{border:3px solid {self.CARD_BG};
+                   border-top:3px solid {self.COLORS['pivot_low']};
+                   border-radius:50%;width:40px;height:40px;
+                   animation:spin 1s linear infinite;margin:20px auto;}}
+            @keyframes spin{{0%{{transform:rotate(0deg)}}100%{{transform:rotate(360deg)}}}}
+        </style></head><body>
+            <div class="msg"><div class="spin"></div><div>📊 {message}</div></div>
+        </body></html>"""
         self.setHtml(html)
 
     def _show_error_placeholder(self, error_msg: str):
-        """Show error message when chart generation fails"""
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{
-                    background: {self.DARK_BG};
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    height: 100vh;
-                    margin: 0;
-                    font-family: 'Segoe UI', sans-serif;
-                }}
-                .error {{
-                    color: {self.COLORS["candle_down"]};
-                    font-size: 14px;
-                    text-align: center;
-                    padding: 20px;
-                    border: 1px solid {self.COLORS["candle_down"]};
-                    border-radius: 6px;
-                    background: rgba(248, 81, 73, 0.1);
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="error">
-                ❌ Chart Error: {error_msg}
-            </div>
-        </body>
-        </html>
-        """
+        html = f"""<!DOCTYPE html><html><head><style>
+            body{{background:{self.DARK_BG};display:flex;align-items:center;
+                 justify-content:center;height:100vh;margin:0;
+                 font-family:'Segoe UI',sans-serif;}}
+            .err{{color:{self.COLORS['candle_down']};font-size:14px;text-align:center;
+                  padding:20px;border:1px solid {self.COLORS['candle_down']};
+                  border-radius:6px;background:rgba(248,81,73,.1);}}
+        </style></head><body>
+            <div class="err">❌ Chart Error: {error_msg}</div>
+        </body></html>"""
         self.setHtml(html)
 
-    # ── Internal — fingerprint (original, extended with panel signature) ───────
+    # ── Fingerprint ───────────────────────────────────────────────────────────
 
     def _fingerprint(self, trend_data: Optional[Dict]) -> str:
-        """
-        Create lightweight fingerprint to detect meaningful changes.
-        Panel signature is included so a config change forces a redraw.
-        """
         try:
             if not trend_data or not isinstance(trend_data, dict):
                 return ""
-
             close = trend_data.get("close") or []
             if not close or not isinstance(close, (list, np.ndarray)):
                 return ""
-
-            # Convert to list if numpy array
             if isinstance(close, np.ndarray):
                 close = close.tolist()
-
-            n_points = len(close)
-            if n_points == 0:
+            n = len(close)
+            if n == 0:
                 return ""
-
-            # Get last few values
-            last_values = close[-5:] if n_points >= 5 else close
-
-            # Include active panel signature so layout changes trigger redraw
-            panel_sig = ",".join(self._active_keys)
-
-            fp_parts = [
-                str(n_points),
-                panel_sig,
-                str([round(v, 4) if isinstance(v, (int, float)) else str(v)
-                     for v in last_values])
-            ]
-
-            return ":".join(fp_parts)
-
+            last = close[-5:] if n >= 5 else close
+            return ":".join([
+                str(n),
+                str([round(v, 4) if isinstance(v, (int, float)) else str(v) for v in last])
+            ])
         except Exception as e:
-            logger.debug(f"Fingerprint generation failed: {e}")
+            logger.debug(f"Fingerprint failed: {e}")
             return ""
 
-    # ── Internal — data cleaning (original code unchanged) ────────────────────
+    # ── Data cleaning ─────────────────────────────────────────────────────────
 
     def _clean_data(self, raw: Any) -> List[float]:
-        """
-        Clean and validate data series
-        """
         if raw is None:
             return []
-
         try:
             if isinstance(raw, np.ndarray):
                 raw = raw.tolist()
-
             if not isinstance(raw, (list, tuple)):
                 return []
-
             cleaned = []
             for x in raw:
                 try:
@@ -921,134 +395,93 @@ class ChartWidget(QWebEngineView):
                     elif isinstance(x, (int, float)) and not np.isnan(x):
                         cleaned.append(float(x))
                     elif isinstance(x, str):
-                        x_lower = x.lower().strip()
-                        if x_lower in ("nan", "none", "null", ""):
+                        xl = x.lower().strip()
+                        if xl in ("nan", "none", "null", ""):
                             cleaned.append(None)
                         else:
                             try:
                                 cleaned.append(float(x))
-                            except ValueError:
+                            except:
                                 cleaned.append(None)
                     else:
                         cleaned.append(None)
-                except (ValueError, TypeError):
+                except:
                     cleaned.append(None)
-
             return cleaned
-
         except Exception as e:
-            logger.error(f"Data cleaning failed: {e}")
+            logger.error(f"_clean_data failed: {e}")
             return []
 
-    # ── Internal — Qt timer callback (original code unchanged) ────────────────
+    # ── Timer callback ────────────────────────────────────────────────────────
 
     def _perform_update(self):
-        """# PYQT: Perform chart update on main thread"""
         if self._pending_data is None:
             return
-
         trend_data = self._pending_data
         self._pending_data = None
-
         try:
-            # Generate HTML (on main thread)
             html = self._generate_chart_html(trend_data)
             if html:
-                # Cache the HTML
                 fp = self._fingerprint(trend_data)
                 if fp and len(self._html_cache) < self._max_cache_size:
                     self._html_cache[fp] = html
-
                 self.setHtml(html)
-
-                # Emit completion signal
                 if hasattr(self, 'updater'):
                     self.updater.update_completed.emit(True, "Chart updated")
             else:
                 self._show_placeholder("Insufficient data for chart")
-
         except Exception as e:
             logger.error(f"Chart update error: {e}", exc_info=True)
             self._show_error_placeholder(str(e))
             if hasattr(self, 'updater'):
                 self.updater.update_completed.emit(False, str(e))
 
-    # ── Core renderer — fully dynamic, no hardcoded indicator names ───────────
+    # ── Core renderer ─────────────────────────────────────────────────────────
 
-    def _generate_chart_html(self, trend_data: Dict) -> Optional[str]:
-        """
-        Generate Plotly HTML.
-
-        Layout is determined entirely by self._active_keys (populated by
-        set_config from the engine rules / Config flags).
-        No indicator name appears in this method — all rendering is
-        delegated to the IndicatorSpec.render_fn callbacks.
-        """
+    def _generate_chart_html(self, trend_data: Dict,
+                             title_prefix: str = "") -> Optional[str]:
         if not trend_data or not isinstance(trend_data, dict):
             return None
-
         try:
             # ── 1. Price data ─────────────────────────────────────────────────
-            open_prices = self._clean_data(trend_data.get("open"))
+            open_p = self._clean_data(trend_data.get("open"))
             high = self._clean_data(trend_data.get("high"))
             low = self._clean_data(trend_data.get("low"))
             close = self._clean_data(trend_data.get("close"))
             volume = self._clean_data(trend_data.get("volume"))
-            symbol_name = trend_data.get("name", "Derivative")
+            sym = trend_data.get("name", title_prefix or "Instrument")
 
             if not close:
                 return None
-
             n = len(close)
             if n < 10:
-                logger.debug(f"Insufficient data: {n} points")
                 return None
 
-            x = list(range(n))
+            # Use timestamps if available
+            x = _build_x_axis(trend_data, n)
 
-            # Use close for high/low if OHLC not available
-            if not high:
-                high = close
-            if not low:
-                low = close
+            if not high: high = close
+            if not low:  low = close
 
             # ── 2. Market structure ───────────────────────────────────────────
             pivots = self.analyzer.find_pivot_points(high, low)
             pivots = self.analyzer.identify_structure(pivots)
             trend_lines = self.analyzer.get_trend_lines(pivots)
-            market_phase = self.analyzer.get_market_phase(pivots)
+            phase = self.analyzer.get_market_phase(pivots)
 
-            # ── 3. Option signal for annotation ───────────────────────────────
+            # ── 3. Signal annotation ──────────────────────────────────────────
             opt_signal = trend_data.get("option_signal") or {}
             signal_value = (opt_signal.get("signal_value", "")
                             if isinstance(opt_signal, dict) else "")
 
-            # ── 4. Split active specs into overlay vs subplot ──────────────────
-            overlay_specs = [_REGISTRY[k] for k in self._active_keys
-                             if k in _REGISTRY and _REGISTRY[k].panel_type == "overlay"]
-            subplot_specs = [_REGISTRY[k] for k in self._active_keys
-                             if k in _REGISTRY and _REGISTRY[k].panel_type == "subplot"]
-
-            n_sub = len(subplot_specs)
+            # ── 4. Determine rows ─────────────────────────────────────────────
             has_vol = bool(volume and len(volume) == n)
-            n_rows = 1 + n_sub + (1 if has_vol else 0)
-
-            # Row heights
-            remaining = 1.0 - self._MAIN_RATIO
-            vol_h = self._VOL_RATIO if has_vol else 0.0
-            sub_h = (remaining - vol_h) / n_sub if n_sub else 0.0
-            row_heights = [self._MAIN_RATIO] + [sub_h] * n_sub
+            n_rows = 1 + (1 if has_vol else 0)
+            row_heights = [self._MAIN_RATIO]
             if has_vol:
-                row_heights.append(vol_h)
+                row_heights.append(self._VOL_RATIO)
 
-            # Map key / "price" / "volume" → plotly row number
-            row_of: Dict[str, int] = {"price": 1}
-            for i, spec in enumerate(subplot_specs):
-                row_of[spec.key] = 2 + i
-            if has_vol:
-                row_of["volume"] = n_rows
-
-            # ── 5. Create figure ──────────────────────────────────────────────
+            # ── 5. Figure ─────────────────────────────────────────────────────
             fig = make_subplots(
                 rows=n_rows, cols=1,
                 shared_xaxes=True,
@@ -1057,146 +490,105 @@ class ChartWidget(QWebEngineView):
                 specs=[[{"type": "xy"}]] * n_rows,
             )
 
-            pr = row_of["price"]
-
             # ── 6. Price trace ────────────────────────────────────────────────
-            if open_prices and len(open_prices) == n:
+            if open_p and len(open_p) == n:
                 fig.add_trace(go.Candlestick(
-                    x=x,
-                    open=open_prices, high=high, low=low, close=close,
+                    x=x, open=open_p, high=high, low=low, close=close,
                     name="Price",
                     increasing=dict(line=dict(color=self.COLORS["candle_up"]),
                                     fillcolor=self.COLORS["candle_up"]),
                     decreasing=dict(line=dict(color=self.COLORS["candle_down"]),
                                     fillcolor=self.COLORS["candle_down"]),
                     showlegend=False,
-                ), row=pr, col=1)
+                ), row=1, col=1)
             else:
                 fig.add_trace(go.Scatter(
                     x=x, y=close, name="Price",
                     line=dict(color="#58a6ff", width=2),
                     hovertemplate="Price: %{y:.2f}<extra></extra>",
                     showlegend=False,
-                ), row=pr, col=1)
+                ), row=1, col=1)
 
-            # ── 7. Overlay indicators on price row ────────────────────────────
-            for spec in overlay_specs:
-                series = _load_series(spec, trend_data, self._clean_data)
-                spec.render_fn(fig, x, series, pr, self.COLORS)
-
-            # ── 8. Pivot points ───────────────────────────────────────────────
-            pivot_x, pivot_y, pivot_text, pivot_colors, pivot_symbols = [], [], [], [], []
-
-            for pivot in pivots:
-                pivot_x.append(pivot.index)
-                pivot_y.append(pivot.price)
-
-                if pivot.structure == StructureType.HH:
-                    pivot_colors.append(self.COLORS["hh"])
-                    pivot_symbols.append("triangle-up")
-                    pivot_text.append(f"HH<br>Price: {pivot.price:.2f}<br>Strength: {pivot.strength}")
-                elif pivot.structure == StructureType.HL:
-                    pivot_colors.append(self.COLORS["hl"])
-                    pivot_symbols.append("triangle-up")
-                    pivot_text.append(f"HL<br>Price: {pivot.price:.2f}<br>Strength: {pivot.strength}")
-                elif pivot.structure == StructureType.LH:
-                    pivot_colors.append(self.COLORS["lh"])
-                    pivot_symbols.append("triangle-down")
-                    pivot_text.append(f"LH<br>Price: {pivot.price:.2f}<br>Strength: {pivot.strength}")
-                elif pivot.structure == StructureType.LL:
-                    pivot_colors.append(self.COLORS["ll"])
-                    pivot_symbols.append("triangle-down")
-                    pivot_text.append(f"LL<br>Price: {pivot.price:.2f}<br>Strength: {pivot.strength}")
+            # ── 7. Pivot points ───────────────────────────────────────────────
+            px_, py_, pt_, pcol, psym = [], [], [], [], []
+            for pv in pivots:
+                px_.append(x[pv.index] if pv.index < len(x) else pv.index)
+                py_.append(pv.price)
+                if pv.structure == StructureType.HH:
+                    pcol.append(self.COLORS["hh"]);
+                    psym.append("triangle-up");
+                    pt_.append(f"HH {pv.price:.2f}")
+                elif pv.structure == StructureType.HL:
+                    pcol.append(self.COLORS["hl"]);
+                    psym.append("triangle-up");
+                    pt_.append(f"HL {pv.price:.2f}")
+                elif pv.structure == StructureType.LH:
+                    pcol.append(self.COLORS["lh"]);
+                    psym.append("triangle-down");
+                    pt_.append(f"LH {pv.price:.2f}")
+                elif pv.structure == StructureType.LL:
+                    pcol.append(self.COLORS["ll"]);
+                    psym.append("triangle-down");
+                    pt_.append(f"LL {pv.price:.2f}")
                 else:
-                    if pivot.type == 'high':
-                        pivot_colors.append(self.COLORS["pivot_high"])
-                        pivot_symbols.append("circle")
-                        pivot_text.append(f"Pivot High<br>Price: {pivot.price:.2f}<br>Strength: {pivot.strength}")
-                    else:
-                        pivot_colors.append(self.COLORS["pivot_low"])
-                        pivot_symbols.append("circle")
-                        pivot_text.append(f"Pivot Low<br>Price: {pivot.price:.2f}<br>Strength: {pivot.strength}")
+                    c = self.COLORS["pivot_high"] if pv.type == 'high' else self.COLORS["pivot_low"]
+                    pcol.append(c);
+                    psym.append("circle");
+                    pt_.append(f"Pivot {pv.price:.2f}")
 
-            if pivot_x:
+            if px_:
                 fig.add_trace(go.Scatter(
-                    x=pivot_x, y=pivot_y,
-                    mode="markers+text",
-                    name="Pivot Points",
-                    marker=dict(
-                        size=[8 + s * 2 for s in [p.strength for p in pivots]],
-                        color=pivot_colors,
-                        symbol=pivot_symbols,
-                        line=dict(width=1, color="white")
-                    ),
-                    text=[p.structure.value[:2] if p.structure != StructureType.NONE
-                          else "" for p in pivots],
+                    x=px_, y=py_, mode="markers+text", name="Pivots",
+                    marker=dict(size=[8 + p.strength * 2 for p in pivots],
+                                color=pcol, symbol=psym,
+                                line=dict(width=1, color="white")),
+                    text=[p.structure.value[:2] if p.structure != StructureType.NONE else ""
+                          for p in pivots],
                     textposition="top center",
                     textfont=dict(size=9, color="white"),
                     hovertemplate="%{text}<extra></extra>",
-                    showlegend=False
-                ), row=pr, col=1)
+                    showlegend=False,
+                ), row=1, col=1)
 
-            # ── 9. Trend lines ────────────────────────────────────────────────
-            if len(trend_lines['uptrend']) >= 2:
-                x_vals, y_vals = zip(*trend_lines['uptrend'])
-                fig.add_trace(go.Scatter(
-                    x=x_vals, y=y_vals,
-                    mode="lines", name="Uptrend",
-                    line=dict(color=self.COLORS["trend_up"], width=2, dash="solid"),
-                    opacity=0.7, showlegend=True
-                ), row=pr, col=1)
+            # ── 8. Trend lines ────────────────────────────────────────────────
+            for direction, col_key, label in (
+                    ("uptrend", "trend_up", "Uptrend"),
+                    ("downtrend", "trend_down", "Downtrend"),
+            ):
+                pts = trend_lines[direction]
+                if len(pts) >= 2:
+                    xi, yi = zip(*pts)
+                    xi_lbl = [x[i] if i < len(x) else i for i in xi]
+                    fig.add_trace(go.Scatter(
+                        x=xi_lbl, y=yi, mode="lines", name=label,
+                        line=dict(color=self.COLORS[col_key], width=2),
+                        opacity=0.7, showlegend=True,
+                    ), row=1, col=1)
 
-            if len(trend_lines['downtrend']) >= 2:
-                x_vals, y_vals = zip(*trend_lines['downtrend'])
-                fig.add_trace(go.Scatter(
-                    x=x_vals, y=y_vals,
-                    mode="lines", name="Downtrend",
-                    line=dict(color=self.COLORS["trend_down"], width=2, dash="solid"),
-                    opacity=0.7, showlegend=True
-                ), row=pr, col=1)
-
-            # ── 10. Recent high / low reference lines ─────────────────────────
+            # ── 9. Recent high / low reference lines ─────────────────────────
             if pivots:
                 try:
                     hp = [p for p in pivots[-5:] if p.type == 'high']
                     lp = [p for p in pivots[-5:] if p.type == 'low']
                     if hp:
-                        recent_high = max(p.price for p in hp)
-                        fig.add_hline(
-                            y=recent_high, row=pr, col=1,
-                            line=dict(color=self.COLORS["pivot_high"], dash="dash", width=1),
-                            annotation_text=f"Recent High: {recent_high:.2f}",
-                            annotation_position="right"
-                        )
+                        rh = max(p.price for p in hp)
+                        fig.add_hline(y=rh, row=1, col=1,
+                                      line=dict(color=self.COLORS["pivot_high"],
+                                                dash="dash", width=1),
+                                      annotation_text=f"R {rh:.2f}",
+                                      annotation_position="right")
                     if lp:
-                        recent_low = min(p.price for p in lp)
-                        fig.add_hline(
-                            y=recent_low, row=pr, col=1,
-                            line=dict(color=self.COLORS["pivot_low"], dash="dash", width=1),
-                            annotation_text=f"Recent Low: {recent_low:.2f}",
-                            annotation_position="right"
-                        )
+                        rl = min(p.price for p in lp)
+                        fig.add_hline(y=rl, row=1, col=1,
+                                      line=dict(color=self.COLORS["pivot_low"],
+                                                dash="dash", width=1),
+                                      annotation_text=f"S {rl:.2f}",
+                                      annotation_position="right")
                 except Exception:
                     pass
 
-            # ── 11. Subplot indicators — driven purely by registry ─────────────
-            for spec in subplot_specs:
-                row = row_of[spec.key]
-                series = _load_series(spec, trend_data, self._clean_data)
-                spec.render_fn(fig, x, series, row, self.COLORS)
-                y_kwargs = {}
-                if spec.y_range:
-                    y_kwargs["range"] = spec.y_range
-                fig.update_yaxes(
-                    title_text=spec.y_label,
-                    title_font=dict(size=9, color=self.COLORS["text"]),
-                    row=row, col=1,
-                    **y_kwargs,
-                )
-
-            # ── 12. Volume panel ──────────────────────────────────────────────
+            # ── 10. Volume panel ──────────────────────────────────────────────
             if has_vol:
-                vr = row_of["volume"]
                 vol_colors = []
                 for i, v in enumerate(volume):
                     if v is None or i == 0:
@@ -1204,151 +596,624 @@ class ChartWidget(QWebEngineView):
                     elif close[i] is not None and close[i - 1] is not None:
                         vol_colors.append(
                             self.COLORS["vol_up"] if close[i] >= close[i - 1]
-                            else self.COLORS["vol_down"]
-                        )
+                            else self.COLORS["vol_down"])
                     else:
                         vol_colors.append(self.COLORS["vol_up"])
-
                 fig.add_trace(go.Bar(
                     x=x, y=volume, name="Volume",
                     marker_color=vol_colors,
                     hovertemplate="Vol: %{y:,.0f}<extra></extra>",
                     showlegend=False,
-                ), row=vr, col=1)
-                fig.update_yaxes(
-                    title_text="Vol",
-                    title_font=dict(size=8, color=self.COLORS["text"]),
-                    row=vr, col=1,
-                )
+                ), row=2, col=1)
+                fig.update_yaxes(title_text="Vol",
+                                 title_font=dict(size=8, color=self.COLORS["text"]),
+                                 row=2, col=1)
 
-            # ── 13. Active signal annotation ──────────────────────────────────
-            _SIG_STYLE = {
+            # ── 11. Signal annotation ─────────────────────────────────────────
+            _SIG = {
                 "BUY_CALL": ("#a6e3a1", "📈"),
                 "BUY_PUT": ("#89b4fa", "📉"),
                 "SELL_CALL": ("#f38ba8", "🔴"),
                 "SELL_PUT": ("#fab387", "🔵"),
                 "HOLD": ("#f9e2af", "⏸"),
             }
-            if signal_value in _SIG_STYLE:
-                sc, ico = _SIG_STYLE[signal_value]
+            if signal_value in _SIG:
+                sc, ico = _SIG[signal_value]
                 last_c = next((v for v in reversed(close) if v is not None), None)
                 if last_c is not None:
                     fig.add_annotation(
-                        x=n - 1, y=last_c,
-                        text=f"  {ico} {signal_value}",
-                        showarrow=False,
-                        font=dict(size=11, color=sc),
-                        xanchor="left",
-                        bgcolor=f"{sc}22",
-                        bordercolor=sc,
-                        borderwidth=1,
-                        row=pr, col=1,
+                        x=x[-1], y=last_c,
+                        text=f"  {ico} {signal_value}", showarrow=False,
+                        font=dict(size=11, color=sc), xanchor="left",
+                        bgcolor=f"{sc}", bordercolor=sc, borderwidth=1,
+                        row=1, col=1,
                     )
 
-            # ── 14. Global layout ─────────────────────────────────────────────
-            active_label = " · ".join(
-                k.upper().replace("_", " ") for k in self._active_keys
-            ) or "Price Structure"
-
+            # ── 12. Layout ────────────────────────────────────────────────────
             fig.update_layout(
                 title=dict(
-                    text=(
-                        f"Market Structure Analysis - {market_phase.upper()}"
-                        f"<br><sup style='color:{self.COLORS['text']};font-size:10px'>"
-                        f"Active: {active_label}</sup>"
-                    ),
-                    font=dict(color=self.TEXT_COLOR, size=14)
+                    text=(f"{sym}  —  {phase.upper()}"
+                          f"<br><sup style='color:{self.COLORS['text']};font-size:10px'>"
+                          f"Price Structure Only</sup>"),
+                    font=dict(color=self.TEXT_COLOR, size=13),
                 ),
                 paper_bgcolor=self.DARK_BG,
                 plot_bgcolor=self.CARD_BG,
-                font=dict(color=self.TEXT_COLOR, family="Segoe UI, sans-serif", size=11),
+                font=dict(color=self.TEXT_COLOR,
+                          family="Segoe UI, sans-serif", size=11),
                 legend=dict(
-                    bgcolor=self.CARD_BG,
-                    bordercolor=self.GRID_COLOR,
-                    borderwidth=1,
-                    font=dict(size=10),
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
+                    bgcolor=self.CARD_BG, bordercolor=self.GRID_COLOR,
+                    borderwidth=1, font=dict(size=10),
+                    orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1,
                 ),
                 margin=dict(l=50, r=80, t=60, b=20),
                 hovermode="x unified",
-                hoverlabel=dict(
-                    bgcolor=self.CARD_BG,
-                    font_size=10,
-                    font_family="Consolas, monospace"
-                ),
+                hoverlabel=dict(bgcolor=self.CARD_BG,
+                                font_size=10, font_family="Consolas, monospace"),
                 xaxis_rangeslider_visible=False,
             )
 
-            # ── 15. Axis styling ──────────────────────────────────────────────
-            # Hide x-tick labels on all rows except the bottom
-            fig.update_xaxes(
-                gridcolor=self.GRID_COLOR,
-                zeroline=False,
-                showgrid=True,
-                tickfont=dict(size=9),
-                showticklabels=False,
-            )
-            # Show x labels only on bottom row
-            fig.update_xaxes(
-                showticklabels=True,
-                title="Bar Number",
-                row=n_rows, col=1,
-            )
-            fig.update_yaxes(
-                gridcolor=self.GRID_COLOR,
-                zeroline=False,
-                showgrid=True,
-                tickfont=dict(size=9),
-            )
-            fig.update_yaxes(title="Price", row=pr, col=1)
+            # ── 13. Axis styling ──────────────────────────────────────────────
+            fig.update_xaxes(gridcolor=self.GRID_COLOR, zeroline=False,
+                             showgrid=True, tickfont=dict(size=9),
+                             showticklabels=False)
+            fig.update_xaxes(showticklabels=True,
+                             title="Time" if isinstance(x[0], str) else "Bar",
+                             row=n_rows, col=1)
+            fig.update_yaxes(gridcolor=self.GRID_COLOR, zeroline=False,
+                             showgrid=True, tickfont=dict(size=9))
+            fig.update_yaxes(title="Price", row=1, col=1)
 
-            # ── 16. Serialise to HTML ─────────────────────────────────────────
+            # ── 14. Serialise ─────────────────────────────────────────────────
             html = fig.to_html(
-                include_plotlyjs="cdn",
-                full_html=True,
+                include_plotlyjs="cdn", full_html=True,
                 config={
-                    "displayModeBar": True,
-                    "displaylogo": False,
-                    "responsive": True,
-                    "scrollZoom": True,
+                    "displayModeBar": True, "displaylogo": False,
+                    "responsive": True, "scrollZoom": True,
                     "doubleClick": "reset",
-                    "showTips": True,
-                    "modeBarButtonsToRemove": ["lasso2d", "select2d"]
-                }
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                },
             )
-
-            # Add custom CSS for performance
-            css = """
-            <style>
-                .plotly-graph-div {
-                    contain: strict;
-                    width: 100%;
-                    height: 100%;
-                }
-                .main-svg {
-                    contain: strict;
-                }
-                .js-plotly-plot {
-                    width: 100%;
-                    height: 100%;
-                }
-                /* Tooltip styling */
-                .hovertext text {
-                    fill: #e6edf3 !important;
-                }
+            css = """<style>
+                .plotly-graph-div,.js-plotly-plot{width:100%;height:100%;}
+                .main-svg{contain:strict;}
+                .hovertext text{fill:#e6edf3!important;}
             </style>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            """
-
-            # Insert CSS before closing head
+            <meta name="viewport" content="width=device-width,initial-scale=1.0">"""
             html = html.replace("</head>", css + "</head>")
-
             return html
 
         except Exception as e:
-            logger.error(f"Chart HTML generation failed: {e}", exc_info=True)
+            logger.error(f"_generate_chart_html failed: {e}", exc_info=True)
             return None
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  _SignalDataTab  — live indicator values + rule results (4th chart tab)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_SD_BG      = "#0d1117"
+_SD_PANEL   = "#161b22"
+_SD_ROW_A   = "#1c2128"
+_SD_ROW_B   = "#22272e"
+_SD_BORDER  = "#30363d"
+_SD_TEXT    = "#e6edf3"
+_SD_DIM     = "#8b949e"
+_SD_GREEN   = "#3fb950"
+_SD_RED     = "#f85149"
+_SD_YELLOW  = "#d29922"
+_SD_BLUE    = "#58a6ff"
+_SD_ORANGE  = "#ffa657"
+_SD_GREY    = "#484f58"
+
+_SIG_COLORS = {
+    "BUY_CALL": "#3fb950", "BUY_PUT": "#58a6ff",
+    "SELL_CALL": "#f85149", "SELL_PUT": "#ffa657",
+    "HOLD": "#d29922",      "WAIT":    "#484f58",
+}
+_SIG_LABELS = {
+    "BUY_CALL": "📈  Buy Call",  "BUY_PUT":   "📉  Buy Put",
+    "SELL_CALL": "🔴  Sell Call", "SELL_PUT":  "🟠  Sell Put",
+    "HOLD": "⏸   Hold",          "WAIT":      "⏳  Wait",
+}
+_SIG_GROUPS = ["BUY_CALL", "BUY_PUT", "SELL_CALL", "SELL_PUT", "HOLD"]
+
+
+class _SignalDataTab(QWidget):
+    """
+    Self-contained tab widget showing:
+      • Current signal badge + per-group fired pills
+      • Indicator Values table  (from option_signal["indicator_values"])
+      • Rule Results table       (from option_signal["rule_results"])
+
+    Call  refresh(option_signal_dict)  on every chart update.
+    option_signal is already present inside spot_data["option_signal"].
+    """
+
+    # ── Stylesheet ─────────────────────────────────────────────────────────
+    _SS = f"""
+        QWidget, QFrame {{
+            background: {_SD_BG}; color: {_SD_TEXT};
+            font-family: 'Segoe UI', 'Consolas', monospace;
+        }}
+        QLabel {{ color: {_SD_TEXT}; background: transparent; }}
+        QTableWidget {{
+            background: {_SD_PANEL}; gridline-color: {_SD_BORDER};
+            border: 1px solid {_SD_BORDER}; border-radius: 4px;
+            color: {_SD_TEXT}; font-size: 9pt;
+        }}
+        QTableWidget::item {{ padding: 5px 10px; }}
+        QHeaderView::section {{
+            background: #21262d; color: {_SD_DIM};
+            border: none; border-bottom: 1px solid {_SD_BORDER};
+            padding: 5px 10px; font-size: 8pt; font-weight: bold;
+        }}
+        QScrollArea {{ border: none; background: transparent; }}
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(self._SS)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 8)
+        root.setSpacing(10)
+
+        # ── Top: signal badge + group pills ───────────────────────────────
+        top = QHBoxLayout()
+        top.setSpacing(16)
+
+        # Signal badge column
+        sig_col = QVBoxLayout(); sig_col.setSpacing(3)
+        sig_col.addWidget(self._dim_lbl("CURRENT SIGNAL"))
+        self._badge = QLabel(_SIG_LABELS["WAIT"])
+        self._badge.setAlignment(Qt.AlignCenter)
+        self._badge.setFixedHeight(38)
+        self._badge.setMinimumWidth(150)
+        self._badge.setStyleSheet(self._badge_ss(_SD_GREY))
+        sig_col.addWidget(self._badge)
+        top.addLayout(sig_col)
+
+        top.addWidget(self._vline())
+
+        # Conflict badge
+        self._conflict_badge = QLabel("  NO CONFLICT  ")
+        self._conflict_badge.setAlignment(Qt.AlignCenter)
+        self._conflict_badge.setFixedHeight(24)
+        self._conflict_badge.setStyleSheet(
+            f"color:{_SD_GREY}; background:{_SD_GREY}18; border:1px solid {_SD_GREY};"
+            f" border-radius:4px; font-size:8pt; font-weight:bold; padding:1px 8px;"
+        )
+        sig_col.addWidget(self._conflict_badge)
+
+        # Group pills column
+        pills_col = QVBoxLayout(); pills_col.setSpacing(3)
+        pills_col.addWidget(self._dim_lbl("GROUP STATUS"))
+        pills_row = QHBoxLayout(); pills_row.setSpacing(8)
+        self._pills: Dict[str, QLabel] = {}
+        for sig in _SIG_GROUPS:
+            p = QLabel(sig.replace("_", "\n"))
+            p.setAlignment(Qt.AlignCenter)
+            p.setFixedSize(80, 46)
+            p.setStyleSheet(self._pill_ss(sig, False))
+            self._pills[sig] = p
+            pills_row.addWidget(p)
+        pills_row.addStretch()
+        pills_col.addLayout(pills_row)
+        top.addLayout(pills_col, 1)
+
+        root.addLayout(top)
+        root.addWidget(self._hline())
+
+        # ── Scrollable body ────────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 4, 4, 4)
+        body_layout.setSpacing(14)
+
+        # No-data placeholder
+        self._no_data_lbl = QLabel("⚪  Waiting for first signal evaluation…")
+        self._no_data_lbl.setAlignment(Qt.AlignCenter)
+        self._no_data_lbl.setStyleSheet(
+            f"color:{_SD_GREY}; font-size:10pt; padding:30px;"
+        )
+        body_layout.addWidget(self._no_data_lbl)
+
+        # Indicator values section
+        body_layout.addWidget(self._section_lbl("📊  Indicator Values"))
+        self._ind_table = self._make_table(
+            ["Indicator", "Current Value", "Prev Value"],
+            [QHeaderView.Stretch, QHeaderView.ResizeToContents, QHeaderView.ResizeToContents],
+        )
+        body_layout.addWidget(self._ind_table)
+
+        # Rule results section
+        body_layout.addWidget(self._section_lbl("🔬  Rule Results  (last evaluation)"))
+        self._rule_table = self._make_table(
+            ["Group", "Rule Expression", "Actual Values", "Result"],
+            [QHeaderView.ResizeToContents, QHeaderView.Stretch,
+             QHeaderView.ResizeToContents, QHeaderView.ResizeToContents],
+        )
+        body_layout.addWidget(self._rule_table)
+        body_layout.addStretch()
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+
+        # ── Footer timestamp ───────────────────────────────────────────────
+        self._ts_lbl = QLabel("Not yet updated")
+        self._ts_lbl.setAlignment(Qt.AlignRight)
+        self._ts_lbl.setStyleSheet(f"color:{_SD_GREY}; font-size:8pt; padding-right:4px;")
+        root.addWidget(self._ts_lbl)
+
+    # ── Static helpers ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_table(headers: list, col_modes: list) -> QTableWidget:
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        for i, m in enumerate(col_modes):
+            t.horizontalHeader().setSectionResizeMode(i, m)
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        t.setAlternatingRowColors(True)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.setStyleSheet(
+            f"QTableWidget {{ alternate-background-color: {_SD_ROW_B}; background: {_SD_ROW_A}; }}"
+        )
+        t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        return t
+
+    @staticmethod
+    def _dim_lbl(text: str) -> QLabel:
+        l = QLabel(text)
+        l.setStyleSheet(f"color:{_SD_DIM}; font-size:7pt; font-weight:bold;")
+        return l
+
+    @staticmethod
+    def _section_lbl(text: str) -> QLabel:
+        l = QLabel(text)
+        l.setStyleSheet(
+            f"color:{_SD_TEXT}; font-size:10pt; font-weight:bold;"
+            f" border-bottom:1px solid {_SD_BORDER}; padding-bottom:4px;"
+        )
+        return l
+
+    @staticmethod
+    def _badge_ss(color: str) -> str:
+        return (
+            f"QLabel {{ background:{color}22; color:{color}; border:2px solid {color};"
+            f" border-radius:6px; font-size:12pt; font-weight:bold; padding:2px 14px; }}"
+        )
+
+    @staticmethod
+    def _pill_ss(sig: str, fired: bool) -> str:
+        color  = _SIG_COLORS.get(sig, _SD_GREY) if fired else _SD_GREY
+        alpha  = "33" if fired else "18"
+        border = "2px" if fired else "1px"
+        return (
+            f"QLabel {{ background:{color}{alpha}; color:{color};"
+            f" border:{border} solid {color}; border-radius:5px;"
+            f" font-size:8pt; font-weight:bold; }}"
+        )
+
+    @staticmethod
+    def _hline() -> QFrame:
+        f = QFrame(); f.setFrameShape(QFrame.HLine)
+        f.setStyleSheet(f"QFrame {{ background:{_SD_BORDER}; max-height:1px; border:none; }}")
+        return f
+
+    @staticmethod
+    def _vline() -> QFrame:
+        f = QFrame(); f.setFrameShape(QFrame.VLine)
+        f.setStyleSheet(f"QFrame {{ background:{_SD_BORDER}; max-width:1px; border:none; }}")
+        return f
+
+    @staticmethod
+    def _cell(text: str, color: str = _SD_TEXT, bold: bool = False,
+              bg: str = None, align: int = Qt.AlignVCenter | Qt.AlignLeft) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setForeground(QColor(color))
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        item.setTextAlignment(align)
+        if bold:
+            f = item.font(); f.setBold(True); item.setFont(f)
+        if bg:
+            item.setBackground(QColor(bg))
+        return item
+
+    @staticmethod
+    def _humanise_key(cache_key: str) -> str:
+        """'rsi_{"length": 14}' → 'RSI  (length=14)'"""
+        try:
+            import json
+            idx = cache_key.index("_")
+            name = cache_key[:idx].upper()
+            params = json.loads(cache_key[idx + 1:])
+            p_str = ", ".join(f"{k}={v}" for k, v in params.items())
+            return f"{name}  ({p_str})" if p_str else name
+        except Exception:
+            return cache_key
+
+    # ── Public refresh ─────────────────────────────────────────────────────
+
+    def refresh(self, option_signal: Optional[Dict]):
+        """Call every time spot_data is updated. option_signal may be None."""
+        from datetime import datetime
+
+        if not option_signal or not option_signal.get("available"):
+            self._no_data_lbl.show()
+            self._ind_table.setRowCount(0)
+            self._ind_table.setFixedHeight(40)
+            self._rule_table.setRowCount(0)
+            self._rule_table.setFixedHeight(40)
+            self._badge.setText(_SIG_LABELS["WAIT"])
+            self._badge.setStyleSheet(self._badge_ss(_SD_GREY))
+            for sig in _SIG_GROUPS:
+                self._pills[sig].setStyleSheet(self._pill_ss(sig, False))
+            return
+
+        self._no_data_lbl.hide()
+
+        # ── Signal badge ───────────────────────────────────────────────────
+        sv    = option_signal.get("signal_value", "WAIT")
+        color = _SIG_COLORS.get(sv, _SD_GREY)
+        self._badge.setText(_SIG_LABELS.get(sv, sv))
+        self._badge.setStyleSheet(self._badge_ss(color))
+
+        # ── Conflict badge ─────────────────────────────────────────────────
+        conflict = option_signal.get("conflict", False)
+        if conflict:
+            self._conflict_badge.setText("  ⚠ CONFLICT  ")
+            self._conflict_badge.setStyleSheet(
+                f"color:{_SD_RED}; background:{_SD_RED}18; border:1px solid {_SD_RED};"
+                f" border-radius:4px; font-size:8pt; font-weight:bold; padding:1px 8px;"
+            )
+        else:
+            self._conflict_badge.setText("  ✓ NO CONFLICT  ")
+            self._conflict_badge.setStyleSheet(
+                f"color:{_SD_GREY}; background:{_SD_GREY}18; border:1px solid {_SD_GREY};"
+                f" border-radius:4px; font-size:8pt; font-weight:bold; padding:1px 8px;"
+            )
+
+        # ── Fired pills ────────────────────────────────────────────────────
+        fired_map = option_signal.get("fired", {})
+        for sig in _SIG_GROUPS:
+            self._pills[sig].setStyleSheet(self._pill_ss(sig, fired_map.get(sig, False)))
+
+        # ── Indicator values table ─────────────────────────────────────────
+        ind_vals: Dict = option_signal.get("indicator_values", {})
+        self._ind_table.setRowCount(len(ind_vals))
+        for i, (k, v) in enumerate(ind_vals.items()):
+            last = v.get("last")
+            prev = v.get("prev")
+            self._ind_table.setItem(i, 0, self._cell(self._humanise_key(k), _SD_DIM))
+            self._ind_table.setItem(i, 1, self._cell(
+                f"{last:.4f}" if last is not None else "N/A",
+                _SD_BLUE, bold=True, align=Qt.AlignVCenter | Qt.AlignRight))
+            self._ind_table.setItem(i, 2, self._cell(
+                f"{prev:.4f}" if prev is not None else "N/A",
+                _SD_GREY, align=Qt.AlignVCenter | Qt.AlignRight))
+        self._ind_table.setFixedHeight(max(50, 28 * len(ind_vals) + 30))
+
+        # ── Rule results table ─────────────────────────────────────────────
+        rule_results: Dict = option_signal.get("rule_results", {})
+        display_rows: List[Dict] = []
+
+        for group in _SIG_GROUPS:
+            rules      = rule_results.get(group, [])
+            grp_fired  = fired_map.get(group, False)
+            grp_color  = _SIG_COLORS.get(group, _SD_GREY) if grp_fired else _SD_GREY
+
+            # First-False blocker in AND chain
+            first_false = -1
+            if not grp_fired and rules:
+                for idx, r in enumerate(rules):
+                    if not r.get("result", True):
+                        first_false = idx; break
+
+            if not rules:
+                display_rows.append({
+                    "group": group, "gc": grp_color, "first": True,
+                    "rule": "No rules configured", "values": "—",
+                    "result": None, "blocker": False,
+                })
+                continue
+
+            for idx, r in enumerate(rules):
+                result    = r.get("result", False)
+                lhs_val   = r.get("lhs_value")   # float | None  (new engine fields)
+                rhs_val   = r.get("rhs_value")   # float | None
+                detail    = r.get("detail", "")  # pre-formatted "47.23 > 50.00 → ✗"
+                is_blocker = (idx == first_false)
+
+                if detail:
+                    values_str = detail
+                elif lhs_val is not None and rhs_val is not None:
+                    rule_str = r.get("rule", "?")
+                    op = "?"
+                    for _op in ("crosses_above", "crosses_below",
+                                ">=", "<=", "!=", "==", ">", "<"):
+                        if f" {_op} " in rule_str:
+                            op = _op; break
+                    values_str = f"{lhs_val:.4f}  {op}  {rhs_val:.4f}"
+                else:
+                    values_str = "—"
+
+                display_rows.append({
+                    "group": group, "gc": grp_color, "first": (idx == 0),
+                    "rule": r.get("rule", "?"), "values": values_str,
+                    "result": result, "blocker": is_blocker,
+                })
+
+        self._rule_table.setRowCount(len(display_rows))
+        for i, row in enumerate(display_rows):
+            gc      = row["gc"]
+            blocker = row["blocker"]
+            result  = row["result"]
+
+            # Group column
+            g_text = row["group"].replace("_", " ") if row["first"] else ""
+            self._rule_table.setItem(i, 0, self._cell(g_text, gc, bold=True))
+
+            # Rule expression
+            r_text  = ("⚠ " if blocker else "  ") + row["rule"]
+            r_color = _SD_YELLOW if blocker else _SD_TEXT
+            self._rule_table.setItem(i, 1, self._cell(
+                r_text, r_color, bold=blocker,
+                bg=_SD_RED + "14" if blocker else None))
+
+            # Actual values
+            self._rule_table.setItem(i, 2, self._cell(row["values"], _SD_BLUE))
+
+            # Result
+            if result is None:
+                rt, rc = "—", _SD_GREY
+            elif result:
+                rt, rc = "✅  True",  _SD_GREEN
+            else:
+                rt, rc = "❌  False", _SD_RED
+            self._rule_table.setItem(i, 3, self._cell(
+                rt, rc, bold=True, align=Qt.AlignVCenter | Qt.AlignHCenter))
+
+        self._rule_table.setFixedHeight(max(50, 28 * len(display_rows) + 30))
+        self._ts_lbl.setText(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  MultiChartWidget  — tabbed Spot / Call / Put
+# ═════════════════════════════════════════════════════════════════════════════
+
+class MultiChartWidget(QWidget):
+    """
+    QTabWidget exposing four tabs:
+        Tab 0 → "📈  Spot"          (SpotIndex OHLCV chart)
+        Tab 1 → "☎   ATM Call"      (Call option OHLCV chart)
+        Tab 2 → "🔻  ATM Put"        (Put option OHLCV chart)
+        Tab 3 → "🔬  Signal Data"    (live indicator values + rule results)
+
+    Integration in TradingGUI (unchanged from three-tab version)
+    ─────────────────────────
+        self.chart_widget = MultiChartWidget()
+        self.chart_widget.set_config(config, signal_engine)
+
+    In _do_chart_update():
+        self.chart_widget.update_charts(
+            spot_data = getattr(state, "derivative_trend", {}) or {},
+            call_data = getattr(state, "call_trend",       {}) or {},
+            put_data  = getattr(state, "put_trend",        {}) or {},
+        )
+
+    The Signal Data tab is fed automatically from spot_data["option_signal"]
+    — no extra wiring required.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #30363d;
+                background: #0d1117;
+            }
+            QTabBar::tab {
+                background: #161b22;
+                color: #8b949e;
+                padding: 7px 18px;
+                border: 1px solid #30363d;
+                border-bottom: none;
+                font-size: 10pt;
+                font-weight: bold;
+                min-width: 130px;
+            }
+            QTabBar::tab:selected {
+                background: #1f6feb;
+                color: #ffffff;
+                border-color: #388bfd;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #21262d;
+                color: #e6edf3;
+            }
+        """)
+
+        self._spot_chart  = ChartWidget()
+        self._call_chart  = ChartWidget()
+        self._put_chart   = ChartWidget()
+        self._signal_tab  = _SignalDataTab()       # ← new
+
+        self._tabs.addTab(self._spot_chart,  "📈  Spot")
+        self._tabs.addTab(self._call_chart,  "☎   ATM Call")
+        self._tabs.addTab(self._put_chart,   "🔻  ATM Put")
+        self._tabs.addTab(self._signal_tab,  "🔬  Signal Data")   # ← new
+
+        layout.addWidget(self._tabs)
+
+    # ── Forward set_config to all three charts ────────────────────────────────
+
+    def set_config(self, config, signal_engine=None) -> None:
+        """Call once at startup and after every strategy change."""
+        for chart in (self._spot_chart, self._call_chart, self._put_chart):
+            chart.set_config(config, signal_engine)
+        # _signal_tab needs no config — it reads from spot_data["option_signal"]
+
+    # ── Update all three charts ───────────────────────────────────────────────
+
+    def update_charts(self,
+                      spot_data: dict,
+                      call_data: Optional[dict] = None,
+                      put_data: Optional[dict] = None) -> None:
+        """
+        Push new trend data to each chart tab and refresh the Signal Data tab.
+        Pass None / {} for tabs whose data is not yet available.
+        """
+        if spot_data:
+            self._spot_chart.update_chart(spot_data)
+            # Feed the Signal Data tab from spot_data["option_signal"]
+            option_signal = (spot_data.get("option_signal")
+                             if isinstance(spot_data, dict) else None)
+            self._signal_tab.refresh(option_signal)
+        if call_data:
+            self._call_chart.update_chart(call_data)
+        if put_data:
+            self._put_chart.update_chart(put_data)
+
+    # ── Convenience: keep old single-chart API working ────────────────────────
+
+    def update_chart(self, trend_data: dict) -> None:
+        """
+        Backward-compatible: routes to spot chart only.
+        Prefer update_charts() for the full multi-instrument experience.
+        """
+        self.update_charts(spot_data=trend_data)
+
+    def clear_cache(self):
+        for c in (self._spot_chart, self._call_chart, self._put_chart):
+            c.clear_cache()
+        # Signal tab has no cache to clear but reset its display
+        self._signal_tab.refresh(None)
+
+    # ── Expose tab references for direct access if needed ─────────────────────
+
+    @property
+    def spot_chart(self) -> ChartWidget:
+        return self._spot_chart
+
+    @property
+    def call_chart(self) -> ChartWidget:
+        return self._call_chart
+
+    @property
+    def put_chart(self) -> ChartWidget:
+        return self._put_chart
+
+    @property
+    def signal_tab(self) -> "_SignalDataTab":
+        """Direct access to the Signal Data tab if needed."""
+        return self._signal_tab

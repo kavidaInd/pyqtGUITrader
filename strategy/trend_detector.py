@@ -3,17 +3,94 @@ import logging
 import pandas as pd
 import numpy as np
 from Utils.Quants import Quants
-
-try:
-    from dynamic_signal_engine import DynamicSignalEngine, OptionSignal
-    _ENGINE_AVAILABLE = True
-except ImportError:
-    _ENGINE_AVAILABLE = False
+from strategy.dynamic_signal_engine import DynamicSignalEngine
 
 logger = logging.getLogger(__name__)
 
 
+# ── Debug helper ──────────────────────────────────────────────────────────────
+
+def _debug_signal_result(result: dict):
+    """
+    Pretty-prints a full signal evaluation result with actual indicator values.
+    Replaces the old raw print(option_signal_result).
+
+    Output example:
+    ┌─ SIGNAL: WAIT ──────────────────────────────────────
+    │ Indicator snapshot:
+    │   rsi_{"length":14}        last=47.2300  prev=46.8100
+    │   macd_{"fast":12,...}     last=-0.3100  prev=-0.2900
+    │   ema_{"length":20}        last=244.8000 prev=244.5000
+    │
+    │ BUY_CALL  [AND] → MISS
+    │   ✗  CLOSE > OPEN          47.2300 > 48.1000  → False
+    │   ✓  CLOSE > EMA           247.300 > 244.800  → True
+    │   ✗  RSI > 50.0            47.2300 > 50.0000  → False  ← BLOCKER
+    │
+    │ BUY_PUT   [AND] → MISS
+    │   ✗  MACD < MACD           -0.3100 < -0.3100  → False  ← SELF-COMPARE BUG
+    └─────────────────────────────────────────────────────
+    """
+    if not result or not result.get("available"):
+        logger.debug("[SignalEngine] No result / engine not available.")
+        return
+
+    lines = []
+    signal_val = result.get("signal_value", "WAIT")
+    lines.append(f"┌─ SIGNAL: {signal_val} " + "─" * max(0, 45 - len(signal_val)))
+
+    # ── Indicator snapshot ────────────────────────────────────────────────────
+    ind_vals = result.get("indicator_values", {})
+    if ind_vals:
+        lines.append("│ Indicator snapshot:")
+        for key, val in ind_vals.items():
+            last = f"{val['last']:.4f}" if val.get("last") is not None else "N/A "
+            prev = f"{val['prev']:.4f}" if val.get("prev") is not None else "N/A "
+            lines.append(f"│   {key:<40}  last={last}  prev={prev}")
+        lines.append("│")
+
+    # ── Per-group rule breakdown ──────────────────────────────────────────────
+    rule_results = result.get("rule_results", {})
+    fired = result.get("fired", {})
+
+    for group, rules in rule_results.items():
+        if not rules:
+            continue
+        logic = "AND"  # default; AND is the common path shown in logs
+        group_fired = fired.get(group, False)
+        status = "FIRED ✓" if group_fired else "MISS  ✗"
+        lines.append(f"│ {group:<12} [{logic}] → {status}")
+
+        # Find the AND-chain blocker (first False in AND mode)
+        first_false_found = False
+        for r in rules:
+            res = r.get("result", False)
+            lv = r.get("lhs_value")
+            rv = r.get("rhs_value")
+            detail = r.get("detail", "")
+            rule_s = r.get("rule", "?")
+            tick = "✓" if res else "✗"
+
+            # Flag the first blocker in an AND chain
+            blocker_note = ""
+            if not res and not first_false_found and not group_fired:
+                blocker_note = "  ← BLOCKER"
+                first_false_found = True
+
+            # Flag obvious self-compare bug: same lhs_value == rhs_value for < or > ops
+            if lv is not None and rv is not None and lv == rv and "MACD < MACD" in rule_s:
+                blocker_note = "  ← SELF-COMPARE BUG"
+
+            lines.append(f"│   {tick}  {rule_s:<35}  {detail}{blocker_note}")
+
+        lines.append("│")
+
+    lines.append("└" + "─" * 52)
+    logger.debug("\n".join(lines))
+
+
 def to_native(value):
+    """Convert numpy or pandas objects to native Python types and round floats."""
     if isinstance(value, (np.generic, float)):
         return round(value.item(), 2)
     elif isinstance(value, (int,)):
@@ -24,112 +101,66 @@ def to_native(value):
 def round_series(series):
     if isinstance(series, (float, int, np.float64, np.int64)):
         return round(series, 2)
+    if isinstance(series, pd.Series):
+        return series.round(2).tolist()
     return [round(x, 2) if x is not None else None for x in series]
 
 
 class TrendDetector:
-    def __init__(self, config: object):
+    def __init__(self, config: object, signal_engine: DynamicSignalEngine = None):
         self.config = config
-        if _ENGINE_AVAILABLE:
-            self.signal_engine = DynamicSignalEngine()
-            logger.info("DynamicSignalEngine (option signals) initialised.")
-        else:
-            self.signal_engine = None
-            logger.warning("DynamicSignalEngine not available — dynamic option signals disabled.")
+        self.signal_engine = signal_engine
+        self._last_cache = {}  # Store last indicator cache for debugging
 
-    def reload_signal_engine(self) -> bool:
-        if self.signal_engine is None:
-            return False
-        ok = self.signal_engine.load()
-        logger.info("DynamicSignalEngine config reloaded." if ok else "DynamicSignalEngine reload failed.")
-        return ok
+    def set_signal_engine(self, signal_engine: DynamicSignalEngine):
+        """Set or update the signal engine"""
+        self.signal_engine = signal_engine
 
     def detect(self, df: pd.DataFrame, state: object, symbol: str) -> dict | None:
         try:
             if df is None or df.empty:
-                logger.warning(f"Empty/None DataFrame for {symbol}")
+                logger.warning(f"Empty or None DataFrame for symbol {symbol}")
                 return None
-            required_cols = {'open', 'high', 'low', 'close'}
+
+            required_cols = {'open', 'high', 'low', 'close', 'volume'}
             missing = required_cols - set(df.columns)
             if missing:
-                logger.error(f"DataFrame for {symbol} missing: {missing}")
+                logger.error(f"DataFrame for {symbol} missing required columns: {missing}")
                 return None
 
-            results = {'name': symbol}
-            results['close'] = round_series(df['close'])
+            results = {
+                'name': symbol,
+                'close': round_series(df['close']),
+                'open': round_series(df['open']),
+                'high': round_series(df['high']),
+                'low': round_series(df['low']),
+                'volume': df['volume'].tolist() if 'volume' in df else [],
+            }
+            # Store timestamps so the chart can show real times (HH:MM)
+            if "Time" in df.columns:
+                results["timestamps"] = df["Time"].tolist()
+            elif df.index.name == "Time" or hasattr(df.index, 'to_list'):
+                try:
+                    results["timestamps"] = df.index.to_list()
+                except Exception:
+                    pass
 
-            # SuperTrend Short
-            try:
-                st_short = Quants.supertrend(df=df,
-                    period=getattr(self.config,'short_st_length',10),
-                    multiplier=getattr(self.config,'short_st_multi',3), full_output=True)
-                results['super_trend_short'] = {
-                    'trend': round_series(st_short['trend']),
-                    'direction': list(map(str, st_short['direction']))}
-            except Exception as e:
-                logger.error(f"SuperTrend Short error for {symbol}: {e}", exc_info=True)
-                results['super_trend_short'] = None
+            # Evaluate dynamic signals if engine is available
+            option_signal_result = None
+            if self.signal_engine is not None:
+                try:
+                    option_signal_result = self.signal_engine.evaluate(df)
+                    # ── Structured debug log ──────────────────────────────────
+                    _debug_signal_result(option_signal_result)
+                    # ─────────────────────────────────────────────────────────
+                    if hasattr(self.signal_engine, '_last_cache'):
+                        self._last_cache = self.signal_engine.last_cache
+                except Exception as e:
+                    logger.error(f"Error evaluating dynamic signals: {e}", exc_info=True)
+                    option_signal_result = None
 
-            # SuperTrend Long
-            try:
-                st_long = Quants.supertrend(df=df,
-                    period=getattr(self.config,'long_st_length',21),
-                    multiplier=getattr(self.config,'long_st_multi',5), full_output=True)
-                results['super_trend_long'] = {
-                    'trend': round_series(st_long['trend']),
-                    'direction': list(map(str, st_long['direction']))}
-            except Exception as e:
-                logger.error(f"SuperTrend Long error for {symbol}: {e}", exc_info=True)
-                results['super_trend_long'] = None
-
-            # MACD
-            try:
-                macd_result = Quants.macd(df=df,
-                    fast=getattr(self.config,'macd_fast',12),
-                    slow=getattr(self.config,'macd_slow',26),
-                    signal=getattr(self.config,'macd_signal',9))
-                results['macd'] = {
-                    'macd': round_series(macd_result['macd']),
-                    'signal': round_series(macd_result['signal']),
-                    'histogram': round_series(macd_result['histogram'])}
-                results['macd_bottoming'] = bool(Quants.is_bottoming(macd_result['macd']))
-                results['macd_topping']   = bool(Quants.is_topping(macd_result['macd']))
-                results['macd_cross_up']  = bool(Quants.has_crossed_above(macd_result['macd'], macd_result['signal']))
-                results['macd_cross_down']= bool(Quants.has_crossed_below(macd_result['macd'], macd_result['signal']))
-            except Exception as e:
-                logger.error(f"MACD error for {symbol}: {e}", exc_info=True)
-                results['macd'] = None
-                results['macd_bottoming'] = results['macd_topping'] = results['macd_cross_up'] = results['macd_cross_down'] = False
-
-            # Bollinger Bands
-            try:
-                bb_result = Quants.bollinger_bands(data=df,
-                    period=getattr(self.config,'bb_length',20),
-                    factor=getattr(self.config,'bb_std',2), full_output=True)
-                results['bb'] = {
-                    'middle': round_series(bb_result['middle']),
-                    'upper':  round_series(bb_result['upper']),
-                    'lower':  round_series(bb_result['lower'])}
-            except Exception as e:
-                logger.error(f"BB error for {symbol}: {e}", exc_info=True)
-                results['bb'] = None
-
-            # RSI
-            try:
-                if 'close' not in df or len(df['close'].dropna()) < 15:
-                    raise ValueError("Not enough data for RSI.")
-                rsi_series = Quants.rsi(data=df, period=getattr(self.config,'rsi_length',14), full_output=True)
-                results['rsi']          = round(float(rsi_series.iloc[-1]), 2)
-                results['rsi_series']   = round_series(rsi_series)
-                results['rsi_bottoming']= bool(Quants.is_bottoming(rsi_series))
-                results['rsi_topping']  = bool(Quants.is_topping(rsi_series))
-            except Exception as e:
-                logger.error(f"RSI error for {symbol}: {e}", exc_info=True)
-                results['rsi'] = results['rsi_series'] = None
-                results['rsi_bottoming'] = results['rsi_topping'] = False
-
-            # ── Dynamic option signals ──────────────────────────────────
-            results['option_signal'] = self._evaluate_option_signal(df, symbol)
+            # Add the signal result to the trend data
+            results['option_signal'] = option_signal_result
 
             return results
 
@@ -137,44 +168,6 @@ class TrendDetector:
             logger.error(f"Trend detection error for {symbol}: {e}", exc_info=True)
             return None
 
-    def _evaluate_option_signal(self, df: pd.DataFrame, symbol: str) -> dict:
-        """
-        Run the DynamicSignalEngine and return the option signal dict.
-        Schema:
-          {
-            "signal":       OptionSignal  (BUY_CALL / BUY_PUT / SELL_CALL / SELL_PUT / HOLD / WAIT)
-            "signal_value": str
-            "fired":        {group: bool, ...}
-            "rule_results": {group: [{rule, result}, ...], ...}
-            "conflict":     bool
-            "available":    bool
-          }
-        """
-        neutral = {
-            "signal":       OptionSignal.WAIT if _ENGINE_AVAILABLE else "WAIT",
-            "signal_value": "WAIT",
-            "fired":        {},
-            "rule_results": {},
-            "conflict":     False,
-            "available":    False,
-        }
-
-        if self.signal_engine is None:
-            return neutral
-
-        has_rules = any(
-            len(self.signal_engine.get_rules(sig)) > 0
-            for sig in ["BUY_CALL","BUY_PUT","SELL_CALL","SELL_PUT","HOLD"]
-        )
-        if not has_rules:
-            neutral["available"] = True
-            return neutral
-
-        try:
-            result = self.signal_engine.evaluate(df)
-            result["available"] = True
-            logger.debug(f"[{symbol}] Option signal → {result['signal_value']}  conflict={result['conflict']}")
-            return result
-        except Exception as e:
-            logger.error(f"DynamicSignalEngine eval error for {symbol}: {e}", exc_info=True)
-            return neutral
+    def get_indicator_cache(self) -> dict:
+        """Return the last indicator cache for debugging"""
+        return self._last_cache.copy() if self._last_cache else {}

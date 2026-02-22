@@ -1,21 +1,25 @@
-import logging
+#!/usr/bin/env python3
+"""
+Main trading application with support for LIVE, PAPER, and BACKTEST modes.
+"""
 import concurrent.futures
+import logging
 import threading
-from typing import Optional, Any, Dict, List, Tuple
-from datetime import datetime
+from typing import Optional, Any, Dict
 
 import BaseEnums
-from Broker import Broker
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
+from broker.Broker import Broker, TokenExpiredError
 from data.websocket_manager import WebSocketManager
 from gui.DailyTradeSetting import DailyTradeSetting
 from gui.ProfitStoplossSetting import ProfitStoplossSetting
 from models.trade_state import TradeState
+from strategy.dynamic_signal_engine import DynamicSignalEngine
+from strategy.strategy_manager import StrategyManager
 from strategy.trend_detector import TrendDetector
 from trade.order_executor import OrderExecutor
 from trade.position_monitor import PositionMonitor
-from strategy.dynamic_signal_engine import OptionSignal
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +33,16 @@ def safe_last(val):
 
 class TradingApp:
     def __init__(self, config: Any, trading_mode_var: Optional[Any] = None, broker_setting: Optional[Any] = None):
+
         self.state = TradeState()
         self.config = config
         self.broker = Broker(state=self.state, broker_setting=broker_setting)
         self.trade_config = DailyTradeSetting()
         self.profit_loss_config = ProfitStoplossSetting()
         self.state.cancel_pending_trade = self.cancel_pending_trade
-
-        self.detector = TrendDetector(config=self.config)
+        self.strategy_manager = StrategyManager()
+        self.signal_engine = self._create_signal_engine()
+        self.detector = TrendDetector(config=self.config, signal_engine=self.signal_engine)
         self.executor = OrderExecutor(broker_api=self.broker, config=self.config)
         self.monitor = PositionMonitor()
         self.ws = WebSocketManager(
@@ -44,7 +50,6 @@ class TradingApp:
             client_id=getattr(broker_setting, "client_id", "") if broker_setting else "",
             on_message_callback=self.on_message
         )
-        self.trading_mode_var = trading_mode_var
 
         # Thread pool for non-blocking operations
         self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
@@ -55,19 +60,41 @@ class TradingApp:
         self._history_fetch_in_progress = threading.Event()
         self._processing_in_progress = threading.Event()
 
+        # Option chain: stores live tick data for all subscribed options
+        self._option_chain_lock = threading.Lock()
+        self.state.option_chain: Dict[str, Dict[str, Optional[float]]] = {}
+
+        # Number of ITM and OTM strikes to subscribe on each side of ATM
+        self._chain_itm = 5
+        self._chain_otm = 5
+
         # Ensure confirmed_orders is always a list
         if not hasattr(self.state, "confirmed_orders"):
             self.state.confirmed_orders = []
 
-        logger.info("🚀 TradingApp initialized with dynamic signal engine")
+        # logger.info("🚀 TradingApp initialized with dynamic signal engine")
 
-    def get_trading_mode(self) -> str:
-        if self.trading_mode_var is None:
-            return "algo"
-        return self.trading_mode_var.get()
+    def _create_signal_engine(self) -> DynamicSignalEngine:
+        """Create signal engine with active strategy config"""
+        engine = DynamicSignalEngine()
+        active_config = self.strategy_manager.get_active_engine_config()
+        if active_config:
+            engine.from_dict(active_config)
+            # logger.info(f"Loaded signal engine config from active strategy: {self.strategy_manager.get_active_name()}")
+        return engine
+
+    def reload_signal_engine(self):
+        """Reload signal engine from active strategy (called when strategy changes)"""
+        new_config = self.strategy_manager.get_active_engine_config()
+        if new_config and self.signal_engine:
+            self.signal_engine.from_dict(new_config)
+            # Update trend detector's signal engine
+            if hasattr(self.detector, 'set_signal_engine'):
+                self.detector.set_signal_engine(self.signal_engine)
+            # logger.info(f"Signal engine reloaded with strategy: {self.strategy_manager.get_active_name()}")
 
     def run(self) -> None:
-        logger.info("Starting trading app with dynamic signals...")
+        # logger.info("Starting trading app with dynamic signals...")
         try:
             self.initialize_market_state()
             self.subscribe_market_data()
@@ -77,32 +104,70 @@ class TradingApp:
     def initialize_market_state(self) -> None:
         try:
             self.apply_settings_to_state()
-            self.state.derivative_current_price = self.broker.get_option_current_price(self.state.derivative)
-            logger.info(f"Initial price for {self.state.derivative}: {self.state.derivative_current_price}")
+
+            # Get initial price for derivative
+            if hasattr(self.broker, 'get_option_current_price'):
+                self.state.derivative_current_price = self.broker.get_option_current_price(self.state.derivative)
+                # logger.info(f"Initial price for {self.state.derivative}: {self.state.derivative_current_price}")
+            else:
+                logger.warning("Broker doesn't support get_option_current_price")
+
         except Exception as price_error:
             logger.error(f"Failed to get initial price: {price_error!r}", exc_info=True)
 
     def subscribe_market_data(self) -> None:
         try:
             if self.state.derivative_current_price is not None:
+                spot = self.state.derivative_current_price
+                expiry = self.state.expiry
+                derivative = self.state.derivative
+
+                # ATM options (used for trade execution & history)
                 self.state.put_option = OptionUtils.get_option_at_price(
-                    self.state.derivative_current_price,
-                    op_type="PE", expiry=self.state.expiry,
-                    lookback=self.state.put_lookback)
+                    spot, op_type="PE", expiry=expiry,
+                    lookback=self.state.put_lookback,
+                    derivative_name=derivative)
 
                 self.state.call_option = OptionUtils.get_option_at_price(
-                    self.state.derivative_current_price,
-                    op_type="CE", expiry=self.state.expiry,
-                    lookback=self.state.call_lookback)
+                    spot, op_type="CE", expiry=expiry,
+                    lookback=self.state.call_lookback,
+                    derivative_name=derivative)
 
+                # Build option chain: _chain_itm ITM + ATM + _chain_otm OTM on each side
+                call_chain = OptionUtils.get_all_option(
+                    expiry=expiry, symbol=derivative, strike=spot,
+                    itm=self._chain_itm, otm=self._chain_otm, putorcall="CE")
+
+                put_chain = OptionUtils.get_all_option(
+                    expiry=expiry, symbol=derivative, strike=spot,
+                    itm=self._chain_itm, otm=self._chain_otm, putorcall="PE")
+
+                # Initialize chain storage with zero-state entries
+                with self._option_chain_lock:
+                    new_chain: Dict[str, Dict[str, Optional[float]]] = {}
+                    for sym in call_chain + put_chain:
+                        full_sym = self.symbol_full(sym)
+                        if full_sym:
+                            new_chain[full_sym] = self.state.option_chain.get(
+                                full_sym, {"ltp": None, "ask": None, "bid": None}
+                            )
+                    self.state.option_chain = new_chain
+
+                logger.info(
+                    f"[subscribe_market_data] Chain built: {len(call_chain)} CE + {len(put_chain)} PE "
+                    f"| ATM CE: {self.state.call_option} | ATM PE: {self.state.put_option}"
+                )
+
+            # Compose full symbol list: derivative + all chain symbols
+            chain_symbols = list(self.state.option_chain.keys())
             self.state.all_symbols = list(filter(None, [
                 self.symbol_full(self.state.derivative),
-                self.symbol_full(self.state.put_option),
-                self.symbol_full(self.state.call_option)
+                *chain_symbols
             ]))
 
             self.ws.symbols = self.state.all_symbols
             self.ws.connect()
+
         except Exception as ws_error:
             logger.error(f"WebSocket connection/subscription failed: {ws_error!r}", exc_info=True)
 
@@ -144,11 +209,16 @@ class TradingApp:
         """
         try:
             # Run all monitoring and decision logic
-            self.monitor.update_trailing_sl_tp(self.broker, self.state)
+            if hasattr(self, 'monitor') and self.monitor:
+                self.monitor.update_trailing_sl_tp(self.broker, self.state)
+
             self.evaluate_trend_and_decision()
             self.monitor_active_trade_status()
             self.monitor_profit_loss_status()
 
+        except TokenExpiredError:
+            logger.critical("Token expired in stage 2 processing")
+            raise
         except Exception as e:
             logger.error(f"Exception in message stage 2 processing: {e!r}", exc_info=True)
         finally:
@@ -157,11 +227,29 @@ class TradingApp:
     def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float) -> None:
         if symbol == self.symbol_full(self.state.derivative):
             self.state.derivative_current_price = ltp
-        elif symbol == self.symbol_full(self.state.put_option):
-            self.state.put_current_close = ask_price if self.state.current_position else bid_price
-        elif symbol == self.symbol_full(self.state.call_option):
-            self.state.call_current_close = ask_price if self.state.current_position else bid_price
+            return
 
+        # --- Option chain tick ---
+        with self._option_chain_lock:
+            if symbol in self.state.option_chain:
+                self.state.option_chain[symbol] = {
+                    "ltp": ltp,
+                    "ask": ask_price,
+                    "bid": bid_price,
+                }
+
+        # --- ATM option convenience state ---
+        use_ask = bool(self.state.current_position)
+
+        atm_put_sym = self.symbol_full(self.state.put_option)
+        atm_call_sym = self.symbol_full(self.state.call_option)
+
+        if symbol == atm_put_sym:
+            self.state.put_current_close = ask_price if use_ask else bid_price
+        elif symbol == atm_call_sym:
+            self.state.call_current_close = ask_price if use_ask else bid_price
+
+        # Update current_price for open position P&L tracking
         if self.state.current_position:
             cp = self.state.current_position
             self.state.current_price = self.state.call_current_close \
@@ -174,11 +262,10 @@ class TradingApp:
                     self._history_fetch_in_progress.set()
                     self._fetch_executor.submit(self._fetch_history_and_detect)
 
-            if self.get_trading_mode() == "algo":
-                # Get trend decision based on dynamic signals
-                self.state.trend = self.determine_trend_from_signals()
+            self.state.trend = self.determine_trend_from_signals()
 
-                # Execute based on trend
+            # Execute based on trend (only for algo trading)
+            if hasattr(self, 'executor') and self.executor:
                 self.execute_based_on_trend()
 
         except Exception as trend_error:
@@ -188,61 +275,45 @@ class TradingApp:
         """Runs on thread pool — fetches history and updates trend state."""
         try:
             # Fetch derivative history
-            self.state.derivative_history_df = self.broker.get_history(
-                symbol=self.state.derivative, interval=self.state.interval)
+            if hasattr(self.broker, 'get_history'):
+                self.state.derivative_history_df = self.broker.get_history(
+                    symbol=self.state.derivative, interval=self.state.interval)
 
-            if self.state.derivative_history_df is not None and \
-                    not self.state.derivative_history_df.empty:
+                self.state.current_call_data = self.broker.get_history(
+                    symbol=self.state.call_option, interval=self.state.interval)
 
-                self.state.last_index_updated = \
-                    self.state.derivative_history_df["Time"].iloc[-1]
+                self.state.current_put_data = self.broker.get_history(
+                    symbol=self.state.put_option, interval=self.state.interval)
 
-                # Run trend detection with signal engine
-                self.state.derivative_trend = self.detector.detect(
-                    self.state.derivative_history_df, self.state, self.state.derivative)
+                if self.state.derivative_history_df is not None and \
+                        not self.state.derivative_history_df.empty:
 
-                # The detector populates option_signal_result in state
-                if self.state.dynamic_signals_active:
-                    logger.info(f"📊 Dynamic signal: {self.state.option_signal}")
+                    self.state.last_index_updated = \
+                        self.state.derivative_history_df["Time"].iloc[-1]
 
-                    # Log conflict if any
-                    if self.state.signal_conflict:
-                        logger.warning("⚠️ Signal conflict detected - BUY_CALL and BUY_PUT both true")
+                    # Run trend detection with signal engine
+                    self.state.derivative_trend = self.detector.detect(
+                        self.state.derivative_history_df, self.state, self.state.derivative)
 
-                    # Log detailed signal info at debug level
-                    if logger.isEnabledFor(logging.DEBUG):
-                        self._log_signal_details()
+                    self.state.call_trend = self.detector.detect(
+                        self.state.current_call_data, self.state, self.state.call_option)
 
-                # Get supertrend direction for option selection (still needed for charting)
-                trend = self._get_supertrend_direction()
+                    self.state.put_trend = self.detector.detect(
+                        self.state.current_put_data, self.state, self.state.put_option)
 
-                if trend is not None:
-                    symbol = self.state.call_option if trend == 1 else self.state.put_option
-                    self.state.option_history_df = self.broker.get_history(
-                        symbol=symbol, interval=self.state.interval)
+                    if self.state.dynamic_signals_active:
+                        logger.info(f"📊 Dynamic signal: {self.state.option_signal}")
 
-                    if self.state.option_history_df is not None and \
-                            not self.state.option_history_df.empty:
-                        self.state.option_trend = self.detector.detect(
-                            self.state.option_history_df, self.state, symbol)
+                        if self.state.signal_conflict:
+                            logger.warning("⚠️ Signal conflict detected - BUY_CALL and BUY_PUT both true")
+
+                        if logger.isEnabledFor(logging.DEBUG):
+                            self._log_signal_details()
 
         except Exception as e:
             logger.error(f"Error in _fetch_history_and_detect: {e!r}", exc_info=True)
         finally:
             self._history_fetch_in_progress.clear()
-
-    def _get_supertrend_direction(self) -> Optional[int]:
-        """Helper to get supertrend direction if needed for other purposes."""
-        try:
-            if getattr(self.config, "use_long_st", False):
-                trend_data = self.state.derivative_trend.get("super_trend_long", {})
-            else:
-                trend_data = self.state.derivative_trend.get("super_trend_short", {})
-
-            direction = safe_last(trend_data.get("direction"))
-            return int(direction) if direction is not None else None
-        except:
-            return None
 
     def _log_signal_details(self):
         """Log detailed signal information using state properties."""
@@ -254,13 +325,12 @@ class TradingApp:
             logger.debug(f"Signal snapshot - Value: {snapshot.get('signal_value')}")
             logger.debug(f"Fired signals: {snapshot.get('fired', {})}")
 
-            # Log which rules triggered
             rule_results = snapshot.get('rule_results', {})
             for signal_name, rules in rule_results.items():
                 triggered = [r for r in rules if r.get('result')]
                 if triggered:
                     logger.debug(f"  {signal_name} triggered by {len(triggered)} rule(s)")
-                    for rule in triggered[:2]:  # Limit to first 2 for brevity
+                    for rule in triggered[:2]:
                         logger.debug(f"    - {rule.get('rule', 'Unknown rule')}")
 
         except Exception as e:
@@ -269,42 +339,35 @@ class TradingApp:
     def determine_trend_from_signals(self) -> Optional[tuple]:
         """
         Determine trend direction based on dynamic option signals.
-        Uses TradeState's convenience properties for clean code.
         Returns trend enum values (ENTER_CALL, ENTER_PUT, EXIT_CALL, EXIT_PUT, RESET_PREVIOUS_TRADE)
         """
         try:
-            # Use state's properties for clean access
             if not self.state.dynamic_signals_active:
                 return None
 
             signal_value = self.state.option_signal
             signal_conflict = self.state.signal_conflict
 
-            # Get current position state
             current_pos = self.state.current_position
             previous_pos = self.state.previous_position
 
             trend = None
 
-            # Log the signal for debugging
             logger.debug(f"Option signal: {signal_value}, conflict={signal_conflict}")
 
             # === EXIT Conditions ===
             if current_pos == BaseEnums.CALL:
-                # Exit CALL on SELL_CALL or BUY_PUT (trend reversal)
                 if signal_value in ['SELL_CALL', 'BUY_PUT']:
                     trend = BaseEnums.EXIT_CALL
                     self.state.reason_to_exit = self._get_exit_reason('CALL')
 
             elif current_pos == BaseEnums.PUT:
-                # Exit PUT on SELL_PUT or BUY_CALL (trend reversal)
                 if signal_value in ['SELL_PUT', 'BUY_CALL']:
                     trend = BaseEnums.EXIT_PUT
                     self.state.reason_to_exit = self._get_exit_reason('PUT')
 
             # === ENTRY Conditions ===
             elif current_pos is None and previous_pos is None:
-                # Entry based on BUY signals
                 if self.state.should_buy_call:
                     trend = BaseEnums.ENTER_CALL
                     self.state.reason_to_exit = "BUY_CALL signal triggered"
@@ -321,7 +384,6 @@ class TradingApp:
 
             # === RESET Condition ===
             elif current_pos is None and previous_pos in {BaseEnums.CALL, BaseEnums.PUT}:
-                # Reset previous trade flag when opposite signal appears
                 if previous_pos == BaseEnums.CALL and signal_value in ['BUY_PUT', 'SELL_PUT']:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous CALL trade flag - opposite signal detected")
@@ -330,7 +392,6 @@ class TradingApp:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous PUT trade flag - opposite signal detected")
 
-            # Log the decision
             if trend:
                 logger.info(f"📈 Determined trend: {trend} | Reason: {self.state.reason_to_exit}")
 
@@ -348,14 +409,12 @@ class TradingApp:
 
             rule_results = self.state.option_signal_result.get('rule_results', {})
 
-            # Check SELL signals first
             sell_signal = 'SELL_CALL' if position_type == 'CALL' else 'SELL_PUT'
             if sell_signal in rule_results:
                 for rule in rule_results[sell_signal]:
                     if rule.get('result'):
                         return f"{sell_signal}: {rule.get('rule', 'Unknown rule')}"
 
-            # Check opposite BUY signals
             opposite = 'BUY_PUT' if position_type == 'CALL' else 'BUY_CALL'
             if opposite in rule_results:
                 for rule in rule_results[opposite]:
@@ -370,7 +429,7 @@ class TradingApp:
 
     def monitor_active_trade_status(self) -> None:
         try:
-            if not self.state.current_trade_confirmed or self.get_trading_mode() != "algo":
+            if not self.state.current_trade_confirmed:
                 return
 
             index_stop_loss = getattr(self.state, "index_stop_loss", None)
@@ -381,41 +440,42 @@ class TradingApp:
                     if self.state.current_position:
                         logger.info("Market close approaching. Exiting active position.")
                         self.state.reason_to_exit = "Auto-exit before market close."
-                        success = self.executor.exit_position(self.state)
-                        if not success:
-                            logger.error("Exit failed near market close")
+                        if hasattr(self, 'executor') and self.executor:
+                            success = self.executor.exit_position(self.state)
+                            if not success:
+                                logger.error("Exit failed near market close")
                         return
 
                 # Use dynamic signals for exit
                 if self.state.current_position == BaseEnums.PUT:
-                    # Exit on SELL_PUT or BUY_CALL
                     if self.state.should_sell_put or self.state.should_buy_call:
                         self.state.reason_to_exit = f"PUT exit: {self.state.option_signal}"
-                        success = self.executor.exit_position(self.state)
-                        if not success:
-                            logger.error("Exit failed for PUT")
+                        if hasattr(self, 'executor') and self.executor:
+                            success = self.executor.exit_position(self.state)
+                            if not success:
+                                logger.error("Exit failed for PUT")
 
-                    # Index stop loss as safety
                     elif index_stop_loss is not None and current_derivative_price >= index_stop_loss:
                         self.state.reason_to_exit = "PUT exit: Derivative crossed above ST (safety)"
-                        success = self.executor.exit_position(self.state)
-                        if not success:
-                            logger.error("Exit failed for PUT (safety)")
+                        if hasattr(self, 'executor') and self.executor:
+                            success = self.executor.exit_position(self.state)
+                            if not success:
+                                logger.error("Exit failed for PUT (safety)")
 
                 elif self.state.current_position == BaseEnums.CALL:
-                    # Exit on SELL_CALL or BUY_PUT
                     if self.state.should_sell_call or self.state.should_buy_put:
                         self.state.reason_to_exit = f"CALL exit: {self.state.option_signal}"
-                        success = self.executor.exit_position(self.state)
-                        if not success:
-                            logger.error("Exit failed for CALL")
+                        if hasattr(self, 'executor') and self.executor:
+                            success = self.executor.exit_position(self.state)
+                            if not success:
+                                logger.error("Exit failed for CALL")
 
-                    # Index stop loss as safety
                     elif index_stop_loss is not None and current_derivative_price <= index_stop_loss:
                         self.state.reason_to_exit = "CALL exit: Derivative dropped below ST (safety)"
-                        success = self.executor.exit_position(self.state)
-                        if not success:
-                            logger.error("Exit failed for CALL (safety)")
+                        if hasattr(self, 'executor') and self.executor:
+                            success = self.executor.exit_position(self.state)
+                            if not success:
+                                logger.error("Exit failed for CALL (safety)")
 
             else:
                 # Unconfirmed trade - check for cancellation signals
@@ -425,7 +485,6 @@ class TradingApp:
                         self.cancel_pending_trade()
                         return
 
-                # Cancel pending trades if opposite signal appears
                 if self.state.current_position == BaseEnums.PUT:
                     if self.state.should_buy_call or self.state.should_sell_call:
                         logger.info(f"Cancel pending PUT - {self.state.option_signal}")
@@ -450,24 +509,23 @@ class TradingApp:
 
             if stop_loss is not None and current_price is not None and current_price <= stop_loss:
                 self.state.reason_to_exit = f"{self.state.current_position} exit: Option price below stop loss."
-                success = self.executor.exit_position(self.state)
-                if not success:
-                    logger.error(f"Exit failed for stop loss at {stop_loss}")
+                if hasattr(self, 'executor') and self.executor:
+                    success = self.executor.exit_position(self.state)
+                    if not success:
+                        logger.error(f"Exit failed for stop loss at {stop_loss}")
 
             elif tp_point is not None and current_price is not None and current_price >= tp_point:
                 self.state.reason_to_exit = f"{self.state.current_position} exit: Target profit hit."
-                success = self.executor.exit_position(self.state)
-                if not success:
-                    logger.error(f"Exit failed for take profit at {tp_point}")
+                if hasattr(self, 'executor') and self.executor:
+                    success = self.executor.exit_position(self.state)
+                    if not success:
+                        logger.error(f"Exit failed for take profit at {tp_point}")
 
         except Exception as e:
             logger.error(f"Error monitoring profit/loss status: {e!r}", exc_info=True)
 
     def execute_based_on_trend(self) -> None:
         try:
-            if self.get_trading_mode() != "algo":
-                return
-
             if Utils.check_sideway_time() and not self.state.sideway_zone_trade:
                 logger.info("Sideways period (12:00–2:00). Skipping trading decision.")
                 return
@@ -483,7 +541,6 @@ class TradingApp:
             trend = self.state.trend
 
             if self.state.current_position is None:
-                # Entry signals - use state properties
                 if trend == BaseEnums.ENTER_CALL and self.state.should_buy_call:
                     logger.info("🎯 ENTER_CALL confirmed by BUY_CALL")
                     success = self.executor.buy_option(self.state, option_type=BaseEnums.CALL)
@@ -501,7 +558,6 @@ class TradingApp:
                     self.state.previous_position = None
 
             else:
-                # Validate position alignment with signals
                 if self.state.current_position == BaseEnums.CALL:
                     if self.state.should_buy_put or self.state.should_sell_call:
                         logger.warning(f"Position CALL but signal is {self.state.option_signal} - will exit soon")
@@ -528,17 +584,19 @@ class TradingApp:
             for order in self.state.orders:
                 order_id = order.get("id")
                 try:
-                    status_list = self.broker.get_current_order_status(order_id)
-                    if status_list:
-                        order_status = status_list[0].get("status")
-                        if order_status == BaseEnums.ORDER_STATUS_CONFIRMED:
-                            confirmed_found = True
-                            confirmed_orders.append(order)
-                            logger.info(f"✅ Order {order_id} confirmed. Will not cancel.")
-                            continue
+                    if hasattr(self.broker, 'get_current_order_status'):
+                        status_list = self.broker.get_current_order_status(order_id)
+                        if status_list:
+                            order_status = status_list[0].get("status")
+                            if order_status == BaseEnums.ORDER_STATUS_CONFIRMED:
+                                confirmed_found = True
+                                confirmed_orders.append(order)
+                                logger.info(f"✅ Order {order_id} confirmed. Will not cancel.")
+                                continue
 
-                    self.broker.cancel_order(order_id=order_id)
-                    logger.info(f"Cancelled order ID: {order_id}")
+                    if hasattr(self.broker, 'cancel_order'):
+                        self.broker.cancel_order(order_id=order_id)
+                        logger.info(f"Cancelled order ID: {order_id}")
 
                 except Exception as e:
                     logger.error(f"❌ Failed to cancel order ID {order_id}: {e}", exc_info=True)
@@ -567,22 +625,24 @@ class TradingApp:
         return f"NSE:{symbol}" if symbol and not symbol.startswith("NSE:") else symbol
 
     def refresh_settings_live(self) -> None:
+        """Refresh settings from config files."""
         self.trade_config.load()
         self.profit_loss_config.load()
         self.apply_settings_to_state()
 
-        # Reload signal engine config when settings change
-        if hasattr(self.detector, 'reload_signal_engine'):
-            self.detector.reload_signal_engine()
-            logger.info("Signal engine configuration reloaded")
+        self.reload_signal_engine()
+        logger.info("Signal engine configuration reloaded")
 
     def apply_settings_to_state(self) -> None:
+        """Apply settings to state object."""
         self.state.capital_reserve = getattr(self.trade_config, "capital_reserve", 0)
-        balance = self.broker.get_balance(getattr(self.state, "capital_reserve", 0))
-        if balance and balance > 0:
-            self.state.account_balance = balance
-        else:
-            logger.warning(f"Balance returned {balance}. Keeping existing value: {self.state.account_balance}")
+
+        if hasattr(self, 'broker') and self.broker:
+            balance = self.broker.get_balance(getattr(self.state, "capital_reserve", 0))
+            if balance and balance > 0:
+                self.state.account_balance = balance
+            else:
+                logger.warning(f"Balance returned {balance}. Keeping existing value: {self.state.account_balance}")
 
         self.state.derivative = getattr(self.trade_config, "derivative", "")
         self.state.expiry = getattr(self.trade_config, "week", "")
@@ -609,3 +669,19 @@ class TradingApp:
         logger.info(f"[Settings] Applied trade and P/L configs - Capital: {self.state.capital_reserve}, "
                     f"Lot size: {self.state.lot_size}, TP: {self.state.tp_percentage}%, "
                     f"SL: {self.state.stoploss_percentage}%")
+
+    def cleanup(self) -> None:
+        """Clean up resources before shutdown."""
+        logger.info("Cleaning up TradingApp resources...")
+        self.should_stop = True
+
+        if hasattr(self, 'ws') and self.ws:
+            try:
+                self.ws.unsubscribe()
+                logger.info("WebSocket disconnected")
+            except Exception as e:
+                logger.error(f"Error disconnecting WebSocket: {e}")
+
+        if hasattr(self, '_fetch_executor'):
+            self._fetch_executor.shutdown(wait=False)
+            logger.info("Thread pool shut down")

@@ -8,7 +8,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QHBoxLayout,
     QPushButton, QRadioButton, QAction,
-    QMessageBox, QLabel, QVBoxLayout, QFrame, QDialog, QDialogButtonBox, QPlainTextEdit
+    QMessageBox, QLabel, QVBoxLayout, QFrame
 )
 
 # PYQT: Import existing trading engine (unchanged)
@@ -22,20 +22,21 @@ from gui.FyersManualLoginPopup import FyersManualLoginPopup
 from gui.ProfitStoplossSetting import ProfitStoplossSetting
 from gui.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
 from gui.StrategySetting import StrategySetting
+from gui.StrategySettingGUI import StrategySettingGUI
 from gui.app_status_bar import AppStatusBar
-from gui.chart_widget import ChartWidget
-from gui.indicator_builder_dialog import IndicatorRuleBuilderDialog
+from gui.chart_widget import MultiChartWidget
 from gui.log_handler import QtLogHandler
+from gui.popups.dynamic_signal_debug_popup import DynamicSignalDebugPopup
 from gui.popups.logs_popup import LogPopup
 from gui.popups.stats_popup import StatsPopup
 from gui.popups.trade_history_popup import TradeHistoryPopup
 from gui.status_panel import StatusPanel
 from new_main import TradingApp
 from strategy.strategy_editor_window import StrategyEditorWindow
+from strategy.strategy_manager import StrategyManager
 from strategy.strategy_picker_sidebar import StrategyPickerSidebar
 from trading_thread import TradingThread
-from gui.popups.dynamic_signal_debug_popup import DynamicSignalDebugPopup
-from strategy.strategy_manager import StrategyManager
+
 
 class TradingGUI(QMainWindow):
     """# PYQT: Main window - replaces Tkinter TradingGUI class"""
@@ -102,7 +103,7 @@ class TradingGUI(QMainWindow):
         root_logger.setLevel(logging.INFO)
 
         # Print existing handlers
-        print(f"Existing handlers before cleanup: {root_logger.handlers}")
+        # print(f"Existing handlers before cleanup: {root_logger.handlers}")
 
         # Remove stale handlers from previous runs
         for h in list(root_logger.handlers):
@@ -111,13 +112,13 @@ class TradingGUI(QMainWindow):
                 root_logger.removeHandler(h)
 
         root_logger.addHandler(self._log_handler)
-        print(f"Handlers after adding: {root_logger.handlers}")
+        # print(f"Handlers after adding: {root_logger.handlers}")
 
         # Test log immediately
-        logging.info("🟡 TEST LOG FROM SETUP - This should appear in popup")
+        # logging.info("🟡 TEST LOG FROM SETUP - This should appear in popup")
 
         # Schedule another test after UI is built
-        QTimer.singleShot(2000, self._test_logging)
+        # QTimer.singleShot(2000, self._test_logging)
 
     def _test_logging(self):
         """Test logging at different levels"""
@@ -154,7 +155,7 @@ class TradingGUI(QMainWindow):
         left_layout.setSpacing(5)
 
         # Chart widget
-        self.chart_widget = ChartWidget()
+        self.chart_widget = MultiChartWidget()
         self.chart_widget.setMinimumWidth(800)
         left_layout.addWidget(self.chart_widget, 1)  # Give it stretch factor
 
@@ -280,7 +281,7 @@ class TradingGUI(QMainWindow):
         # Add buttons in order
         layout.addWidget(self.btn_start)
         layout.addWidget(self.btn_stop)
-        layout.addStretch()  # Push remaining buttons to the right
+        layout.addStretch()
         layout.addWidget(self.btn_call)
         layout.addWidget(self.btn_put)
         layout.addWidget(self.btn_exit)
@@ -296,14 +297,13 @@ class TradingGUI(QMainWindow):
         # CHART FIX: Use longer interval and debounce
         self.timer_chart = QTimer(self)
         self.timer_chart.timeout.connect(self._tick_chart)
-        self.timer_chart.start(5000)  # 5s - chart updates and trade history
-        self._last_chart_fp = ""  # Track last fingerprint
-        self._chart_update_pending = False  # Prevent overlapping updates
+        self.timer_chart.start(5000)
+        self._last_chart_fp = ""
+        self._chart_update_pending = False
 
-        # App status update timer (more frequent for operation feedback)
         self.timer_app_status = QTimer(self)
         self.timer_app_status.timeout.connect(self._update_app_status)
-        self.timer_app_status.start(500)  # 500ms for more responsive status updates
+        self.timer_app_status.start(500)
 
     @pyqtSlot()
     def _tick_fast(self):
@@ -395,13 +395,16 @@ class TradingGUI(QMainWindow):
                 self._chart_update_pending = True
                 QTimer.singleShot(100, self._do_chart_update)
 
+    # AFTER:
     def _do_chart_update(self):
-        """# PYQT: Actually perform chart update"""
         try:
             if self.trading_app:
-                trend_data = getattr(self.trading_app.state, "derivative_trend", {}) or {}
-                if trend_data:
-                    self.chart_widget.update_chart(trend_data)
+                state = self.trading_app.state
+                self.chart_widget.update_charts(
+                    spot_data=getattr(state, "derivative_trend", {}) or {},
+                    call_data=getattr(state, "call_trend", {}) or {},
+                    put_data=getattr(state, "put_trend", {}) or {},
+                )
         finally:
             self._chart_update_pending = False
 
@@ -430,6 +433,17 @@ class TradingGUI(QMainWindow):
                 config=self.config,
                 broker_setting=self.brokerage_setting,
             )
+            # Wire up chart config + signal engine
+            try:
+                engine = getattr(
+                    getattr(self.trading_app, 'detector', None),
+                    'signal_engine', None
+                )
+                self.chart_widget.set_config(self.config, engine)
+                logging.info("Chart config set from trading app")
+            except Exception as e:
+                logging.warning(f"Could not set chart config: {e}")
+                self.chart_widget.set_config(self.config, None)
             # Connect to app status updates
             self.app_status_bar.update_status({
                 'initialized': True,
@@ -674,11 +688,8 @@ class TradingGUI(QMainWindow):
 
     # Settings dialog openers
     def _open_strategy(self):
-        dlg = IndicatorRuleBuilderDialog()
-        # dlg.signals_updated.connect(self.trend_detector.reload_signal_engine)
+        dlg = StrategySettingGUI(self, self.strategy_setting)
         dlg.exec_()
-        # dlg = StrategySettingGUI(self, self.strategy_setting)
-        # dlg.exec_()
 
     def _open_daily(self):
         dlg = DailyTradeSettingGUI(self, daily_setting=self.daily_setting,
@@ -828,6 +839,16 @@ class TradingGUI(QMainWindow):
             name = self.strategy_manager.get_active_name()
             if hasattr(self, "_active_strategy_lbl"):
                 self._active_strategy_lbl.setText(f"⚡  {name}")
+
+            if hasattr(self, 'chart_widget'):
+                try:
+                    engine = (self.trading_app.detector.signal_engine
+                              if self.trading_app
+                                 and hasattr(self.trading_app, 'detector')
+                              else None)
+                    self.chart_widget.set_config(self.config, engine)
+                except Exception as e:
+                    logging.warning(f"Chart config refresh failed: {e}")
 
             logging.info(f"Applied strategy: {name}")
 

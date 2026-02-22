@@ -139,14 +139,15 @@ class TradeState:
         # ── Trend dicts ─────────────────────────────────────────────
         self._option_trend: Dict[str, Any] = _default_trend_dict()
         self._derivative_trend: Dict[str, Any] = _default_trend_dict()
+        self._call_trend: Dict[str, Any] = _default_trend_dict()
+        self._put_trend: Dict[str, Any] = _default_trend_dict()
+        self.option_chain = {}
 
         # ── Auth ────────────────────────────────────────────────────
         self._token: Optional[str] = None
 
         # ── Candle snapshots ─────────────────────────────────────────
         self._current_index_data: Candle = Candle()
-        self._current_put_data: Candle = Candle()
-        self._current_call_data: Candle = Candle()
 
         # ── Instrument identifiers ───────────────────────────────────
         self._call_option: Optional[str] = None
@@ -165,6 +166,8 @@ class TradeState:
         self._derivative_history_df: Optional[pd.DataFrame] = None
         self._option_history_df: Optional[pd.DataFrame] = None
         self._last_index_updated: Optional[float] = None
+        self._current_put_data: Optional[pd.DataFrame] = None
+        self._current_call_data: Optional[pd.DataFrame] = None
 
         # ── Orders ───────────────────────────────────────────────────
         self._orders: List[Dict[str, Any]] = []
@@ -281,6 +284,26 @@ class TradeState:
         with self._lock:
             self._derivative_trend = value if value is not None else _default_trend_dict()
 
+    @property
+    def call_trend(self) -> Dict[str, Any]:
+        with self._lock:
+            return copy.copy(self._call_trend)
+
+    @call_trend.setter
+    def call_trend(self, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._call_trend = value if value is not None else _default_trend_dict()
+
+    @property
+    def put_trend(self) -> Dict[str, Any]:
+        with self._lock:
+            return copy.copy(self._put_trend)
+
+    @put_trend.setter
+    def put_trend(self, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._put_trend = value if value is not None else _default_trend_dict()
+
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
@@ -306,19 +329,19 @@ class TradeState:
         self._set("_current_index_data", value)
 
     @property
-    def current_put_data(self) -> Candle:
+    def current_put_data(self) -> Optional[pd.DataFrame]:
         return self._get("_current_put_data")
 
     @current_put_data.setter
-    def current_put_data(self, value: Candle) -> None:
+    def current_put_data(self, value: Optional[pd.DataFrame]) -> None:
         self._set("_current_put_data", value)
 
     @property
-    def current_call_data(self) -> Candle:
+    def current_call_data(self) -> Optional[pd.DataFrame]:
         return self._get("_current_call_data")
 
     @current_call_data.setter
-    def current_call_data(self, value: Candle) -> None:
+    def current_call_data(self, value: Optional[pd.DataFrame]) -> None:
         self._set("_current_call_data", value)
 
     # ------------------------------------------------------------------

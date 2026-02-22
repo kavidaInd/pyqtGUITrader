@@ -50,37 +50,37 @@ from PyQt5.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 # ── Colours matching the dark theme ─────────────────────────────────────────
-BG_MAIN   = "#0d1117"
-BG_PANEL  = "#161b22"
-BG_ROW_A  = "#1c2128"
-BG_ROW_B  = "#22272e"
-BORDER    = "#30363d"
-TEXT_DIM  = "#8b949e"
+BG_MAIN = "#0d1117"
+BG_PANEL = "#161b22"
+BG_ROW_A = "#1c2128"
+BG_ROW_B = "#22272e"
+BORDER = "#30363d"
+TEXT_DIM = "#8b949e"
 TEXT_MAIN = "#e6edf3"
-GREEN     = "#3fb950"
-RED       = "#f85149"
-YELLOW    = "#d29922"
-BLUE      = "#58a6ff"
-PURPLE    = "#bc8cff"
-ORANGE    = "#ffa657"
-GREY_OFF  = "#484f58"
+GREEN = "#3fb950"
+RED = "#f85149"
+YELLOW = "#d29922"
+BLUE = "#58a6ff"
+PURPLE = "#bc8cff"
+ORANGE = "#ffa657"
+GREY_OFF = "#484f58"
 
 SIGNAL_COLORS = {
-    "BUY_CALL":  "#3fb950",
-    "BUY_PUT":   "#58a6ff",
+    "BUY_CALL": "#3fb950",
+    "BUY_PUT": "#58a6ff",
     "SELL_CALL": "#f85149",
-    "SELL_PUT":  "#ffa657",
-    "HOLD":      "#d29922",
-    "WAIT":      "#484f58",
+    "SELL_PUT": "#ffa657",
+    "HOLD": "#d29922",
+    "WAIT": "#484f58",
 }
 
 SIGNAL_LABELS = {
-    "BUY_CALL":  "📈  Buy Call",
-    "BUY_PUT":   "📉  Buy Put",
+    "BUY_CALL": "📈  Buy Call",
+    "BUY_PUT": "📉  Buy Put",
     "SELL_CALL": "🔴  Sell Call",
-    "SELL_PUT":  "🟠  Sell Put",
-    "HOLD":      "⏸   Hold",
-    "WAIT":      "⏳  Wait",
+    "SELL_PUT": "🟠  Sell Put",
+    "HOLD": "⏸   Hold",
+    "WAIT": "⏳  Wait",
 }
 
 SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "SELL_CALL", "SELL_PUT", "HOLD"]
@@ -182,6 +182,7 @@ def _value_label(text: str, color: str = TEXT_MAIN, size: int = 9) -> QLabel:
 
 class _SignalBadge(QLabel):
     """Pill-shaped label showing a signal value."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
@@ -211,13 +212,19 @@ class _SignalBadge(QLabel):
 
 class _RuleRow:
     """One row in a rule table: rule expression | current values | result."""
+
     def __init__(self, table: QTableWidget, row: int):
         self.table = table
         self.row = row
 
-    def set(self, rule_str: str, lhs_val: str, op: str, rhs_val: str, result: bool, error: str = ""):
+    def set(self, rule_str: str, lhs_val: str, op: str, rhs_val: str, result: bool,
+            error: str = "", is_blocker: bool = False):
+        # Annotate the rule expression with a BLOCKER tag when it is the
+        # first False rule in an AND chain that prevents the group firing.
+        display_rule = f"⚠ {rule_str}  [► BLOCKER]" if is_blocker else rule_str
+
         items = [
-            (rule_str, TEXT_MAIN),
+            (display_rule, YELLOW if is_blocker else TEXT_MAIN),
             (lhs_val, BLUE),
             (op, YELLOW),
             (rhs_val, ORANGE),
@@ -231,6 +238,11 @@ class _RuleRow:
             item.setForeground(QColor(color))
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            if is_blocker:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setBackground(QColor(RED + "18"))
             self.table.setItem(self.row, col, item)
 
 
@@ -239,6 +251,7 @@ class _GroupPanel(QGroupBox):
     Panel for one signal group (BUY_CALL, BUY_PUT, etc.).
     Shows logic mode, fired status, and a per-rule table.
     """
+
     def __init__(self, signal: str, parent=None):
         label = SIGNAL_LABELS.get(signal, signal)
         color = SIGNAL_COLORS.get(signal, GREY_OFF)
@@ -323,14 +336,46 @@ class _GroupPanel(QGroupBox):
         self._table.show()
         self._table.setRowCount(len(rule_results))
 
+        # Identify the first-blocker index: first False in an AND chain
+        # (only meaningful when logic == AND and group did not fire)
+        first_blocker_idx = -1
+        if logic.upper() == "AND" and not fired:
+            for idx, entry in enumerate(rule_results):
+                if not entry.get("result", True):
+                    first_blocker_idx = idx
+                    break
+
         for i, entry in enumerate(rule_results):
             rule_str = entry.get("rule", "?")
-            result   = entry.get("result", False)
-            error    = entry.get("error", "")
+            result = entry.get("result", False)
+            error = entry.get("error", "")
+            is_blocker = (i == first_blocker_idx)
 
-            # Try to extract LHS/op/RHS from rule string for display
-            lhs_val, op, rhs_val = _parse_rule_display(rule_str, indicator_cache)
-            _RuleRow(self._table, i).set(rule_str, lhs_val, op, rhs_val, result, error)
+            # --- Use pre-computed values from dynamic_signal_engine (new fields) ---
+            lhs_raw = entry.get("lhs_value")  # float or None
+            rhs_raw = entry.get("rhs_value")  # float or None
+            detail = entry.get("detail", "")  # "47.2300 > 50.0000 → ✗"
+
+            # Format values for display; fall back to old cache-parsing if absent
+            if lhs_raw is not None:
+                lhs_val = f"{lhs_raw:.4f}"
+            else:
+                lhs_val, _, _ = _parse_rule_display(rule_str, indicator_cache)
+
+            if rhs_raw is not None:
+                rhs_val = f"{rhs_raw:.4f}"
+            else:
+                _, _, rhs_val = _parse_rule_display(rule_str, indicator_cache)
+
+            # Extract operator from rule string
+            for _op in ["crosses_above", "crosses_below", ">=", "<=", "!=", "==", ">", "<"]:
+                if f" {_op} " in rule_str:
+                    op = _op
+                    break
+            else:
+                op = "?"
+
+            _RuleRow(self._table, i).set(rule_str, lhs_val, op, rhs_val, result, error, is_blocker)
 
         self._table.setFixedHeight(30 * len(rule_results) + 30)
 
@@ -341,6 +386,7 @@ def _parse_rule_display(rule_str: str, cache: Dict = None):
     If indicator_cache has the computed value, show it.
     """
     OPERATORS = ["crosses_above", "crosses_below", ">=", "<=", "!=", "==", ">", "<"]
+
     for op in OPERATORS:
         if f" {op} " in rule_str:
             parts = rule_str.split(f" {op} ", 1)
@@ -350,6 +396,41 @@ def _parse_rule_display(rule_str: str, cache: Dict = None):
             # Look up current value from indicator cache
             lhs_val = _lookup_cache(lhs_name, cache)
             rhs_val = _lookup_cache(rhs_name, cache)
+
+            # If we couldn't find values, try to extract the raw numbers from the rule string
+            if lhs_val == lhs_name and cache:
+                # Try to extract from cache by indicator name without params
+                lhs_base = lhs_name.split('(')[0].lower()
+                for key, series in cache.items():
+                    if key.startswith(lhs_base + '_'):
+                        try:
+                            import pandas as pd
+                            if isinstance(series, pd.Series) and len(series) > 0:
+                                val = series.iloc[-1]
+                                if val is not None:
+                                    import math
+                                    if not math.isnan(float(val)):
+                                        lhs_val = f"{lhs_name} [{float(val):.4f}]"
+                                        break
+                        except Exception:
+                            pass
+
+            if rhs_val == rhs_name and cache and rhs_name not in ["?", "scalar"]:
+                rhs_base = rhs_name.split('(')[0].lower()
+                for key, series in cache.items():
+                    if key.startswith(rhs_base + '_'):
+                        try:
+                            import pandas as pd
+                            if isinstance(series, pd.Series) and len(series) > 0:
+                                val = series.iloc[-1]
+                                if val is not None:
+                                    import math
+                                    if not math.isnan(float(val)):
+                                        rhs_val = f"{rhs_name} [{float(val):.4f}]"
+                                        break
+                        except Exception:
+                            pass
+
             return lhs_val, op, rhs_val
 
     return "?", "?", "?"
@@ -357,27 +438,43 @@ def _parse_rule_display(rule_str: str, cache: Dict = None):
 
 def _lookup_cache(name: str, cache: Dict = None) -> str:
     """Try to find a computed indicator value from the engine cache."""
-    if cache is None:
+    if cache is None or not cache:
         return name
-    # Cache key format: "rsi_{"length": 14}"
-    name_lower = name.lower().split("(")[0].strip()
+
+    # Extract the base indicator name (remove parameters)
+    name_lower = name.lower().split('(')[0].strip()
+
+    # First try exact match
     for key, series in cache.items():
-        if key.startswith(name_lower + "_"):
+        if key.startswith(name_lower + '_'):
             try:
                 import pandas as pd
                 if isinstance(series, pd.Series) and len(series) > 0:
                     val = series.iloc[-1]
-                    if val is not None:
+                    if val is not None and not pd.isna(val):
                         import math
                         if not math.isnan(float(val)):
-                            return f"{name}  [{float(val):.4f}]"
+                            # Format nicely
+                            if abs(val) < 0.01 or abs(val) > 1000:
+                                return f"{name}  [{val:.6f}]"
+                            else:
+                                return f"{name}  [{val:.2f}]"
             except Exception:
                 pass
+
+    # If it's a scalar value, return it as is
+    try:
+        float_val = float(name)
+        return f"{float_val:.2f}"
+    except ValueError:
+        pass
+
     return name
 
 
 class _IndicatorCachePanel(QWidget):
     """Tab showing raw computed indicator values from the engine cache."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -400,21 +497,40 @@ class _IndicatorCachePanel(QWidget):
         layout.addWidget(self._table)
 
     def update_cache(self, cache: Dict):
+        """Legacy path: cache is {key: pd.Series}."""
         import pandas as pd
         rows = []
         for key, series in cache.items():
             try:
                 if isinstance(series, pd.Series) and len(series) > 0:
                     latest = series.iloc[-1]
-                    prev   = series.iloc[-2] if len(series) >= 2 else None
+                    prev = series.iloc[-2] if len(series) >= 2 else None
                     latest_str = f"{float(latest):.6f}" if latest is not None else "N/A"
-                    prev_str   = f"{float(prev):.6f}"   if prev   is not None else "N/A"
+                    prev_str = f"{float(prev):.6f}" if prev is not None else "N/A"
                 else:
                     latest_str = prev_str = "N/A"
             except Exception:
                 latest_str = prev_str = "err"
             rows.append((key, latest_str, prev_str))
+        self._render_rows(rows)
 
+    def update_from_values(self, indicator_values: Dict):
+        """
+        New path: indicator_values is {cache_key: {"last": float, "prev": float}}
+        as emitted directly by DynamicSignalEngine.evaluate().
+        No pandas needed — values are already plain floats.
+        """
+        rows = []
+        for key, val in indicator_values.items():
+            last = val.get("last")
+            prev = val.get("prev")
+            last_str = f"{last:.6f}" if last is not None else "N/A"
+            prev_str = f"{prev:.6f}" if prev is not None else "N/A"
+            rows.append((key, last_str, prev_str))
+        self._render_rows(rows)
+
+    def _render_rows(self, rows):
+        """Shared table-population helper."""
         self._table.setRowCount(len(rows))
         for i, (key, latest, prev) in enumerate(rows):
             for j, (text, color) in enumerate([(key, TEXT_DIM), (latest, BLUE), (prev, TEXT_DIM)]):
@@ -426,6 +542,7 @@ class _IndicatorCachePanel(QWidget):
 
 class _RawJsonPanel(QTextEdit):
     """Tab showing the raw evaluate() result dict as JSON."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -524,12 +641,12 @@ class DynamicSignalDebugPopup(QDialog):
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(4)
 
-        self._lbl_conflict   = self._make_status_pair(grid, 0, 0, "CONFLICT")
-        self._lbl_available  = self._make_status_pair(grid, 0, 2, "RULES AVAILABLE")
-        self._lbl_symbol     = self._make_status_pair(grid, 1, 0, "SYMBOL")
+        self._lbl_conflict = self._make_status_pair(grid, 0, 0, "CONFLICT")
+        self._lbl_available = self._make_status_pair(grid, 0, 2, "RULES AVAILABLE")
+        self._lbl_symbol = self._make_status_pair(grid, 1, 0, "SYMBOL")
         self._lbl_last_close = self._make_status_pair(grid, 1, 2, "LAST CLOSE")
-        self._lbl_bars       = self._make_status_pair(grid, 2, 0, "BARS IN DF")
-        self._lbl_timestamp  = self._make_status_pair(grid, 2, 2, "LAST REFRESH")
+        self._lbl_bars = self._make_status_pair(grid, 2, 0, "BARS IN DF")
+        self._lbl_timestamp = self._make_status_pair(grid, 2, 2, "LAST REFRESH")
 
         layout.addLayout(grid, 1)
         layout.addStretch()
@@ -697,8 +814,8 @@ class DynamicSignalDebugPopup(QDialog):
             # Try to get engine's indicator cache for richer display
             indicator_cache = {}
             if hasattr(self.trading_app, "trend_detector") and \
-               hasattr(self.trading_app.trend_detector, "signal_engine") and \
-               self.trading_app.trend_detector.signal_engine is not None:
+                    hasattr(self.trading_app.trend_detector, "signal_engine") and \
+                    self.trading_app.trend_detector.signal_engine is not None:
                 engine = self.trading_app.trend_detector.signal_engine
                 # Access last cache if stored (see note below)
                 indicator_cache = getattr(engine, "_last_cache", {})
@@ -714,13 +831,21 @@ class DynamicSignalDebugPopup(QDialog):
                     "signal_engine", None
                 )
                 if engine:
-                    logic   = engine.get_logic(sig)
+                    logic = engine.get_logic(sig)
                     enabled = engine.is_enabled(sig)
 
                 panel.update(rules_for_sig, is_fired, logic, enabled, indicator_cache)
 
             # ── Indicator values tab ─────────────────────────────────────────
-            self._cache_panel.update_cache(indicator_cache)
+            # Prefer the pre-computed indicator_values dict emitted by evaluate()
+            # (contains {cache_key: {last, prev}} floats — no need to dig into
+            # engine internals or re-evaluate pd.Series here).
+            indicator_values = option_signal.get("indicator_values", {})
+            if indicator_values:
+                self._cache_panel.update_from_values(indicator_values)
+            else:
+                # Fallback: old raw-cache path for backwards compatibility
+                self._cache_panel.update_cache(indicator_cache)
 
             # ── Raw JSON tab ─────────────────────────────────────────────────
             self._json_panel.update_result(option_signal)

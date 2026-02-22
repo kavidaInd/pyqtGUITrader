@@ -66,122 +66,63 @@ INDICATOR_COLUMN_HINTS: Dict[str, str] = {
 
 
 def _compute_indicator(df, indicator, params):
-    """
-    Compute indicator using pandas_ta
-    """
-    if ta is None:
-        logger.error("pandas_ta not installed")
-        return None
-
-    ind_name = indicator.lower()
-
+    if ta is None: return None
+    ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
     try:
-        # Get the indicator function from pandas_ta
         method = getattr(ta, ind_name, None)
-        if not method:
-            logger.error(f"Indicator '{indicator}' not found in pandas_ta")
-            return None
-
-        # Prepare arguments based on what's available in df
-        kwargs = {}
-
-        # Common price columns
-        if 'close' in df.columns:
-            kwargs['close'] = df['close']
-        if 'open' in df.columns:
-            kwargs['open'] = df['open']
-        if 'high' in df.columns:
-            kwargs['high'] = df['high']
-        if 'low' in df.columns:
-            kwargs['low'] = df['low']
-        if 'volume' in df.columns:
-            kwargs['volume'] = df['volume']
-
-        # Add all parameters from the rule
-        kwargs.update(params)
-
-        # Call the indicator
-        result = method(**kwargs)
-
-        if result is None:
-            logger.warning(f"Indicator {indicator} returned None")
-            return None
-
-        # Handle different return types
+        if not method: return None
+        result = method(high=df.get("high"), low=df.get("low"), close=df.get("close"),
+                        open=df.get("open"), volume=df.get("volume"), **params)
+        if result is None: return None
         if isinstance(result, pd.DataFrame):
-            # For indicators that return multiple columns, try to get the main one
-            # Common patterns: first column, or column with indicator name
+            hint = INDICATOR_COLUMN_HINTS.get(indicator.lower())
+            if hint and hint in result.columns: return result[hint]
             for col in result.columns:
-                if ind_name.upper() in col.upper():
-                    return result[col]
-            return result.iloc[:, 0]  # fallback to first column
-
-        elif isinstance(result, pd.Series):
-            return result
-
-        elif isinstance(result, tuple):
-            # Some indicators return multiple series
-            return result[0]  # take first one
-
-        else:
-            logger.warning(f"Unexpected return type from {indicator}: {type(result)}")
-            return None
-
+                if ind_name.upper() in col.upper() or indicator.upper() in col.upper(): return result[col]
+            return result.iloc[:, 0]
+        if isinstance(result, pd.Series): return result
+        return None
     except Exception as e:
-        logger.error(f"Error computing '{indicator}' with params {params}: {e}", exc_info=True)
+        logger.error(f"Error computing '{indicator}': {e}", exc_info=True)
         return None
 
 
 def _resolve_side(df, side_def, cache):
-    """
-    Resolve a side definition (LHS or RHS) to a pandas Series
-    """
     t = side_def.get("type", "indicator")
-
     if t == "scalar":
-        # Create a constant series
-        value = float(side_def.get("value", 0))
-        return pd.Series([value] * len(df), index=df.index)
-
+        return pd.Series([float(side_def.get("value", 0))] * len(df), index=df.index)
     if t == "column":
         col = side_def.get("column", "close")
-        if col in df.columns:
-            return df[col].astype(float)
-        else:
-            logger.error(f"Column '{col}' not found in DataFrame")
-            return None
-
-    # Indicator
+        return df[col].astype(float) if col in df.columns else None
     indicator = side_def.get("indicator", "").lower()
-    params = side_def.get("params", {})
-
-    # Create cache key
+    params = side_def.get("params", INDICATOR_DEFAULTS.get(indicator, {}))
     cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}"
-
     if cache_key not in cache:
         cache[cache_key] = _compute_indicator(df, indicator, params)
+    return cache[cache_key]
 
-    return cache.get(cache_key)
 
 def _apply_operator(lhs, op, rhs):
+    """Returns (result: bool, lhs_val: float|None, rhs_val: float|None)."""
     try:
         if op == "crosses_above":
-            if len(lhs) < 2 or len(rhs) < 2: return False
+            if len(lhs) < 2 or len(rhs) < 2: return False, None, None
             pl, cl = float(lhs.iloc[-2]), float(lhs.iloc[-1])
             pr, cr = float(rhs.iloc[-2]), float(rhs.iloc[-1])
-            return (pl <= pr) and (cl > cr)
+            return (pl <= pr) and (cl > cr), round(cl, 6), round(cr, 6)
         if op == "crosses_below":
-            if len(lhs) < 2 or len(rhs) < 2: return False
+            if len(lhs) < 2 or len(rhs) < 2: return False, None, None
             pl, cl = float(lhs.iloc[-2]), float(lhs.iloc[-1])
             pr, cr = float(rhs.iloc[-2]), float(rhs.iloc[-1])
-            return (pl >= pr) and (cl < cr)
+            return (pl >= pr) and (cl < cr), round(cl, 6), round(cr, 6)
         lv, rv = float(lhs.iloc[-1]), float(rhs.iloc[-1])
-        if np.isnan(lv) or np.isnan(rv): return False
-        return bool({">": lv > rv, "<": lv < rv, ">=": lv >= rv, "<=": lv <= rv,
-                     "==": abs(lv - rv) < 1e-9, "!=": abs(lv - rv) >= 1e-9}.get(op, False))
+        if np.isnan(lv) or np.isnan(rv): return False, None, None
+        result = bool({">": lv > rv, "<": lv < rv, ">=": lv >= rv, "<=": lv <= rv,
+                       "==": abs(lv - rv) < 1e-9, "!=": abs(lv - rv) >= 1e-9}.get(op, False))
+        return result, round(lv, 6), round(rv, 6)
     except Exception as e:
         logger.error(f"Operator error '{op}': {e}", exc_info=True)
-        return False
+        return False, None, None
 
 
 def _rule_to_string(rule):
@@ -316,17 +257,35 @@ class DynamicSignalEngine:
         for rule in rules:
             rule_str = _rule_to_string(rule)
             try:
-                lhs = _resolve_side(df, rule.get("lhs", {}), cache)
-                rhs = _resolve_side(df, rule.get("rhs", {}), cache)
-                result = False if (lhs is None or rhs is None) else _apply_operator(lhs, rule.get("op", ">"), rhs)
-                rule_results.append({"rule": rule_str, "result": result})
+                lhs_series = _resolve_side(df, rule.get("lhs", {}), cache)
+                rhs_series = _resolve_side(df, rule.get("rhs", {}), cache)
+                if lhs_series is None or rhs_series is None:
+                    result, lhs_val, rhs_val = False, None, None
+                else:
+                    result, lhs_val, rhs_val = _apply_operator(lhs_series, rule.get("op", ">"), rhs_series)
+
+                # Build a human-readable value string, e.g. "47.23 > 50.0 → False"
+                def _fmt(v):
+                    if v is None: return "N/A"
+                    return f"{v:.4f}" if isinstance(v, float) else str(v)
+
+                entry = {
+                    "rule":      rule_str,
+                    "result":    result,
+                    "lhs_value": lhs_val,
+                    "rhs_value": rhs_val,
+                    "detail":    f"{_fmt(lhs_val)} {rule.get('op','?')} {_fmt(rhs_val)} → {'✓' if result else '✗'}",
+                }
+                rule_results.append(entry)
+
                 if logic == "AND":
                     group_result = group_result and result
                 else:
                     group_result = group_result or result
             except Exception as e:
                 logger.error(f"Rule eval error '{rule_str}': {e}", exc_info=True)
-                rule_results.append({"rule": rule_str, "result": False, "error": str(e)})
+                rule_results.append({"rule": rule_str, "result": False, "lhs_value": None, "rhs_value": None,
+                                     "detail": f"ERROR: {e}", "error": str(e)})
                 if logic == "AND": group_result = False
         return group_result, rule_results
 
@@ -334,19 +293,19 @@ class DynamicSignalEngine:
         """
         Returns:
           {
-            "signal":       OptionSignal,
-            "signal_value": str,                  # "BUY_CALL" | "BUY_PUT" | ...
-            "fired":        {group: bool, ...},
-            "rule_results": {group: [{rule, result},...], ...},
-            "conflict":     bool,
-            "available":    bool,
+            "signal":           OptionSignal,
+            "signal_value":     str,
+            "fired":            {group: bool, ...},
+            "rule_results":     {group: [{rule, result, lhs_value, rhs_value, detail},...], ...},
+            "indicator_values": {cache_key: last_value, ...},   # ← NEW: actual computed values
+            "conflict":         bool,
+            "available":        bool,
           }
         """
         neutral = self._neutral_result()
         if df is None or df.empty or len(df) < 2:
             return neutral
         cache = {}
-        self._last_cache = cache
         fired = {}
         rule_results = {}
         has_any_rules = False
@@ -355,13 +314,33 @@ class DynamicSignalEngine:
             fired[sig.value] = gf
             rule_results[sig.value] = rd
             if rd: has_any_rules = True
+
+        self._last_cache = cache
+
+        # Build a flat {label: value} dict from the cache for easy reading
+        indicator_values = {}
+        for cache_key, series in cache.items():
+            if series is not None and hasattr(series, "iloc") and len(series) > 0:
+                try:
+                    last_val = series.iloc[-1]
+                    prev_val = series.iloc[-2] if len(series) > 1 else None
+                    indicator_values[cache_key] = {
+                        "last":  round(float(last_val), 6) if not np.isnan(float(last_val)) else None,
+                        "prev":  round(float(prev_val), 6) if prev_val is not None and not np.isnan(float(prev_val)) else None,
+                    }
+                except Exception:
+                    indicator_values[cache_key] = {"last": None, "prev": None}
+
         if not has_any_rules: return neutral
         resolved = self._resolve(fired)
         return {
-            "signal": resolved, "signal_value": resolved.value,
-            "fired": fired, "rule_results": rule_results,
-            "conflict": fired.get("BUY_CALL", False) and fired.get("BUY_PUT", False),
-            "available": True,
+            "signal":           resolved,
+            "signal_value":     resolved.value,
+            "fired":            fired,
+            "rule_results":     rule_results,
+            "indicator_values": indicator_values,
+            "conflict":         fired.get("BUY_CALL", False) and fired.get("BUY_PUT", False),
+            "available":        True,
         }
 
     def _resolve(self, fired):
@@ -383,11 +362,18 @@ class DynamicSignalEngine:
     @staticmethod
     def _neutral_result():
         return {
-            "signal": OptionSignal.WAIT, "signal_value": "WAIT",
-            "fired": {s.value: False for s in SIGNAL_GROUPS},
-            "rule_results": {s.value: [] for s in SIGNAL_GROUPS},
-            "conflict": False, "available": False,
+            "signal":           OptionSignal.WAIT,
+            "signal_value":     "WAIT",
+            "fired":            {s.value: False for s in SIGNAL_GROUPS},
+            "rule_results":     {s.value: [] for s in SIGNAL_GROUPS},
+            "indicator_values": {},
+            "conflict":         False,
+            "available":        False,
         }
+
+    @property
+    def last_cache(self):
+        return self._last_cache
 
 
 def build_example_config():

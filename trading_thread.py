@@ -6,7 +6,7 @@ from typing import Optional
 import time
 
 # Import the custom exception from Broker
-from Broker import TokenExpiredError
+from broker.Broker import TokenExpiredError
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 """
 strategy_editor_window.py
 ==========================
-Full-page Strategy Editor Window.
+Full-page Strategy Editor Window with tab-based signal rules and complete indicator registry.
 
 Layout:
   ┌─────────────────────────────────────────────────────────────┐
@@ -12,24 +12,26 @@ Layout:
   │  [+ New]      │   │ ⚙ Info  │📊 Indics │ 🔬 Sig Rules  │  │
   │  [⧉ Dup]      │   └─────────┴──────────┴────────────────┘  │
   │               │                                             │
-  │  ● Strategy A │   (tab content)                             │
-  │    Strategy B │                                             │
-  │    Strategy C │                                             │
-  │               │                                             │
-  │  [🗑 Delete]  │   [💾 Save]  [↺ Revert]                    │
+  │  ● Strategy A │   ┌─────────────────────────────────────┐  │
+  │    Strategy B │   │ 📈 BUY CALL  📉 BUY PUT  🔴 SELL ...│  │
+  │    Strategy C │   ├─────────────────────────────────────┤  │
+  │               │   │  Logic: [AND▼]  ✓ Enabled           │  │
+  │  [🗑 Delete]  │   │  ┌─────────────────────────────────┐ │  │
+  │               │   │  │ [RSI▼] [>] [30]           [✕]  │ │  │
+  │               │   │  │ [MACD▼] [crosses_above] [0] [✕]│ │  │
+  │               │   │  └─────────────────────────────────┘ │  │
+  │               │   │  [＋ Add Rule]  [📋 Load Preset▼]    │  │
+  │               │   └─────────────────────────────────────┘  │
+  │               │   [💾 Save]  [↺ Revert]                    │
   └───────────────┴─────────────────────────────────────────────┘
-
-Usage:
-    mgr = StrategyManager()
-    win = StrategyEditorWindow(mgr, parent=self)
-    win.show()
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator
@@ -39,16 +41,15 @@ from PyQt5.QtWidgets import (
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
-    QHeaderView, QTableWidget, QTableWidgetItem,
-)
+    QHeaderView, QTableWidget, QTableWidgetItem, QCompleter)
 
 from strategy.strategy_manager import (
     StrategyManager, INDICATOR_DEFAULTS, ENGINE_DEFAULTS, SIGNAL_GROUPS
 )
-# Add this import at the top
 from strategy.indicator_registry import (
     ALL_INDICATORS, INDICATOR_DEFAULT_PARAMS, get_indicator_params,
-    get_param_type, get_param_description, get_indicator_category, INDICATOR_CATEGORIES
+    get_param_type, get_param_description, get_indicator_category,
+    INDICATOR_CATEGORIES, get_indicators_by_category
 )
 
 logger = logging.getLogger(__name__)
@@ -69,43 +70,16 @@ ORANGE   = "#ffa657"
 PURPLE   = "#bc8cff"
 
 SIGNAL_META = {
-    "BUY_CALL":  ("📈", "#3fb950", "Buy Call"),
-    "BUY_PUT":   ("📉", "#58a6ff", "Buy Put"),
-    "SELL_CALL": ("🔴", "#f85149", "Sell Call"),
-    "SELL_PUT":  ("🟠", "#ffa657", "Sell Put"),
-    "HOLD":      ("⏸",  "#d29922", "Hold"),
+    "BUY_CALL":  ("📈", GREEN,  "BUY CALL"),
+    "BUY_PUT":   ("📉", BLUE,   "BUY PUT"),
+    "SELL_CALL": ("🔴", RED,    "SELL CALL"),
+    "SELL_PUT":  ("🟠", ORANGE, "SELL PUT"),
+    "HOLD":      ("⏸",  YELLOW, "HOLD"),
 }
 
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
 SIDE_TYPES = ["indicator", "scalar", "column"]
-INDICATORS = [
-    "rsi", "ema", "sma", "wma", "macd", "bbands", "atr", "adx", "cci",
-    "stoch", "roc", "mom", "willr", "obv", "vwap", "supertrend",
-    "kc", "donchian", "psar", "tema", "dema", "hma", "zlma", "slope", "linreg",
-]
 COLUMNS = ["open", "high", "low", "close", "volume"]
-
-INDICATOR_PARAM_HINTS = {
-    "rsi":        "length=14",
-    "ema":        "length=20",
-    "sma":        "length=20",
-    "wma":        "length=20",
-    "macd":       "fast=12, slow=26, signal=9",
-    "bbands":     "length=20, std=2.0",
-    "atr":        "length=14",
-    "adx":        "length=14",
-    "cci":        "length=20",
-    "stoch":      "k=14, d=3, smooth_k=3",
-    "roc":        "length=10",
-    "mom":        "length=10",
-    "willr":      "length=14",
-    "supertrend": "length=7, multiplier=3.0",
-    "kc":         "length=20, scalar=1.5",
-    "donchian":   "lower_length=20, upper_length=20",
-    "psar":       "af0=0.02, af=0.02, max_af=0.2",
-    "slope":      "length=1",
-    "linreg":     "length=14",
-}
 
 
 def _ss() -> str:
@@ -132,7 +106,12 @@ def _ss() -> str:
         }}
         QLineEdit:focus, QTextEdit:focus {{ border: 2px solid {BLUE}; }}
         QComboBox::drop-down {{ border: none; }}
-        QComboBox QAbstractItemView {{ background: #21262d; color: {TEXT}; selection-background-color: {BG_SEL}; }}
+        QComboBox QAbstractItemView {{ 
+            background: #21262d; 
+            color: {TEXT}; 
+            selection-background-color: {BG_SEL};
+            min-width: 250px;
+        }}
         QCheckBox {{ color: {TEXT}; spacing: 6px; font-size: 10pt; }}
         QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 3px; }}
         QCheckBox::indicator:unchecked {{ background: #21262d; border: 2px solid {BORDER}; }}
@@ -186,6 +165,1466 @@ def _btn(text: str, color: str = "#21262d", hover: str = "#2d333b",
     )
     b.setStyleSheet(style)
     return b
+
+
+# ── Enhanced Indicator ComboBox ──────────────────────────────────────────────
+
+# ── Enhanced Indicator ComboBox ──────────────────────────────────────────────
+
+class IndicatorComboBox(QComboBox):
+    """Comprehensive indicator dropdown with categories and autocomplete"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setMinimumWidth(160)
+        self.setMaxVisibleItems(30)
+
+        # Style - Fixed to show dropdown arrow
+        self.setStyleSheet(f"""
+            QComboBox {{
+                background: #21262d;
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 5px 8px;
+                padding-right: 20px;  /* Make room for arrow */
+                font-size: 9pt;
+                min-width: 150px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {BLUE};
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 16px;
+                border-left: 1px solid {BORDER};
+                background: transparent;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                width: 0px;
+                height: 0px;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {DIM};
+                margin-right: 4px;
+            }}
+            QComboBox::down-arrow:hover {{
+                border-top-color: {TEXT};
+            }}
+            QComboBox QAbstractItemView {{
+                background: #21262d;
+                color: {TEXT};
+                selection-background-color: {BG_SEL};
+                selection-color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                outline: none;
+                min-width: 250px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 6px 10px;
+                min-height: 20px;
+                border-bottom: 1px solid {BORDER}40;
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {BG_SEL};
+                color: {BLUE};
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: #2d333b;
+            }}
+        """)
+
+        self._populate_indicators()
+        self._setup_completer()
+
+    def _populate_indicators(self):
+        """Add indicators grouped by category"""
+        # Store category indices for reference
+        self._category_indices = {}
+
+        # Add a "Select indicator..." placeholder at the top
+        self.addItem("🔍 Select indicator...")
+        idx = self.count() - 1
+        self.model().item(idx).setEnabled(False)
+        font = QFont()
+        font.setItalic(True)
+        self.model().item(idx).setFont(font)
+        self.model().item(idx).setForeground(QColor(DIM))
+
+        for category, indicators in get_indicators_by_category().items():
+            if indicators:
+                # Add category header (non-selectable)
+                self.addItem(f"───── {category} ─────")
+                idx = self.count() - 1
+                self.model().item(idx).setEnabled(False)
+                font = QFont()
+                font.setBold(True)
+                self.model().item(idx).setFont(font)
+                self.model().item(idx).setForeground(QColor(BLUE))
+
+                # Store category start index
+                self._category_indices[category] = idx
+
+                # Add indicators in this category
+                for indicator in sorted(indicators):
+                    display_name = indicator.upper()
+                    self.addItem(display_name)
+                    self.setItemData(self.count() - 1, indicator, Qt.UserRole)
+
+    def _setup_completer(self):
+        """Setup autocomplete with all indicators"""
+        completer = QCompleter([ind.upper() for ind in ALL_INDICATORS], self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        completer.popup().setStyleSheet(f"""
+            QListView {{
+                background: #21262d;
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                font-size: 9pt;
+            }}
+            QListView::item {{
+                padding: 4px 8px;
+            }}
+            QListView::item:selected {{
+                background: {BG_SEL};
+                color: {BLUE};
+            }}
+        """)
+        self.setCompleter(completer)
+
+    def get_indicator_name(self) -> str:
+        """Get the raw indicator name (lowercase)"""
+        text = self.currentText().strip().lower()
+        # Skip placeholder
+        if text == "select indicator..." or text == "🔍 select indicator...":
+            return ""
+        # Check if it's a valid indicator
+        if text in ALL_INDICATORS:
+            return text
+        # Try to find by display name
+        for ind in ALL_INDICATORS:
+            if ind.upper() == text.upper():
+                return ind
+        return text
+
+    def focusInEvent(self, event):
+        """Handle focus events to ensure dropdown works"""
+        super().focusInEvent(event)
+        # Clear selection when focusing
+        self.lineEdit().deselect()
+
+    def mousePressEvent(self, event):
+        """Handle mouse press to show dropdown"""
+        super().mousePressEvent(event)
+        # Show dropdown on click
+        self.showPopup()
+
+# ── Parameter Editor ─────────────────────────────────────────────────────────
+
+class ParameterEditor(QWidget):
+    """Inline editor for indicator parameters"""
+
+    params_changed = pyqtSignal(dict)
+
+    def __init__(self, indicator: str = None, params: Dict = None, parent=None):
+        super().__init__(parent)
+        self._indicator = indicator
+        self._params = params or {}
+        self._param_widgets = {}
+
+        self.setVisible(False)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: #21262d;
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+            }}
+            QLabel {{
+                color: {DIM};
+                font-size: 8pt;
+            }}
+        """)
+
+    def set_indicator(self, indicator: str):
+        """Update editor for new indicator"""
+        self._indicator = indicator
+        self._rebuild()
+
+    def _rebuild(self):
+        """Rebuild parameter editor based on current indicator"""
+        # Clear existing layout
+        if self.layout():
+            QWidget().setLayout(self.layout())
+
+        if not self._indicator or self._indicator not in ALL_INDICATORS:
+            self.setVisible(False)
+            return
+
+        # Get default params for this indicator
+        default_params = get_indicator_params(self._indicator)
+        if not default_params:
+            self.setVisible(False)
+            return
+
+        layout = QFormLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        layout.setLabelAlignment(Qt.AlignRight)
+
+        self._param_widgets.clear()
+
+        for param_name, default_value in default_params.items():
+            param_type = get_param_type(param_name)
+            description = get_param_description(param_name)
+            current_value = self._params.get(param_name, default_value)
+
+            # Create appropriate input widget
+            if param_type == "bool":
+                widget = QCheckBox()
+                widget.setChecked(bool(current_value))
+            elif param_type in ("int", "float"):
+                widget = QLineEdit()
+                widget.setText(str(current_value))
+                if param_type == "int":
+                    widget.setValidator(QIntValidator())
+                else:
+                    widget.setValidator(QDoubleValidator())
+            else:  # string
+                widget = QLineEdit()
+                widget.setText(str(current_value))
+
+            widget.setToolTip(description)
+            widget.setStyleSheet(f"""
+                QLineEdit, QCheckBox {{
+                    font-size: 8pt;
+                    padding: 2px 4px;
+                }}
+            """)
+
+            if param_type != "bool":
+                widget.setFixedWidth(80)
+
+            layout.addRow(QLabel(f"{param_name}:"), widget)
+            self._param_widgets[param_name] = (widget, param_type)
+
+            # Connect change signal
+            if param_type == "bool":
+                widget.stateChanged.connect(self._on_params_changed)
+            else:
+                widget.textChanged.connect(self._on_params_changed)
+
+        self.setVisible(True)
+        self.adjustSize()
+
+    def _on_params_changed(self):
+        """Emit updated parameters"""
+        params = {}
+        for name, (widget, ptype) in self._param_widgets.items():
+            try:
+                if ptype == "bool":
+                    params[name] = widget.isChecked()
+                elif ptype == "int":
+                    params[name] = int(widget.text() or "0")
+                elif ptype == "float":
+                    params[name] = float(widget.text() or "0.0")
+                else:
+                    params[name] = widget.text()
+            except ValueError:
+                # Keep previous value on error
+                if name in self._params:
+                    params[name] = self._params[name]
+
+        self._params = params
+        self.params_changed.emit(params)
+
+    def get_params(self) -> Dict:
+        """Get current parameter values"""
+        return self._params.copy()
+
+
+# ── Rule Editor Row ──────────────────────────────────────────────────────────
+
+class _RuleRow(QWidget):
+    """One editable rule row with complete indicator support"""
+
+    deleted = pyqtSignal(object)
+
+    def __init__(self, rule: Dict = None, parent=None):
+        super().__init__(parent)
+        self._param_editors = {}  # Store parameter editors for each side
+
+        self.setStyleSheet(f"background:{BG_ITEM}; border-radius:5px; border:1px solid {BORDER};")
+
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(8, 6, 8, 6)
+        main_layout.setSpacing(6)
+
+        # Left side container
+        lhs_container = QWidget()
+        lhs_layout = QVBoxLayout(lhs_container)
+        lhs_layout.setContentsMargins(0, 0, 0, 0)
+        lhs_layout.setSpacing(2)
+
+        # LHS main row
+        lhs_row = QHBoxLayout()
+        lhs_row.setSpacing(4)
+
+        self.lhs_type = QComboBox()
+        self.lhs_type.addItems(SIDE_TYPES)
+        self.lhs_type.setFixedWidth(85)
+        self.lhs_type.setStyleSheet("font-size: 9pt;")
+        lhs_row.addWidget(self.lhs_type)
+
+        self.lhs_name = IndicatorComboBox()
+        lhs_row.addWidget(self.lhs_name)
+
+        self.lhs_val = QLineEdit()
+        self.lhs_val.setPlaceholderText("value/params")
+        self.lhs_val.setFixedWidth(120)
+        lhs_row.addWidget(self.lhs_val)
+
+        lhs_layout.addLayout(lhs_row)
+
+        # LHS parameter editor (hidden by default)
+        self.lhs_params = ParameterEditor()
+        lhs_layout.addWidget(self.lhs_params)
+
+        main_layout.addWidget(lhs_container)
+
+        # Operator
+        arrow = QLabel("→")
+        arrow.setStyleSheet(f"color:{DIM}; font-size:11pt; padding:0 4px;")
+        main_layout.addWidget(arrow)
+
+        self.op = QComboBox()
+        self.op.addItems(OPERATORS)
+        self.op.setFixedWidth(110)
+        self.op.setStyleSheet("font-size: 9pt;")
+        main_layout.addWidget(self.op)
+
+        arrow2 = QLabel("→")
+        arrow2.setStyleSheet(f"color:{DIM}; font-size:11pt; padding:0 4px;")
+        main_layout.addWidget(arrow2)
+
+        # Right side container
+        rhs_container = QWidget()
+        rhs_layout = QVBoxLayout(rhs_container)
+        rhs_layout.setContentsMargins(0, 0, 0, 0)
+        rhs_layout.setSpacing(2)
+
+        # RHS main row
+        rhs_row = QHBoxLayout()
+        rhs_row.setSpacing(4)
+
+        self.rhs_type = QComboBox()
+        self.rhs_type.addItems(SIDE_TYPES)
+        self.rhs_type.setFixedWidth(85)
+        self.rhs_type.setStyleSheet("font-size: 9pt;")
+        rhs_row.addWidget(self.rhs_type)
+
+        self.rhs_name = IndicatorComboBox()
+        rhs_row.addWidget(self.rhs_name)
+
+        self.rhs_val = QLineEdit()
+        self.rhs_val.setPlaceholderText("value/params")
+        self.rhs_val.setFixedWidth(120)
+        rhs_row.addWidget(self.rhs_val)
+
+        rhs_layout.addLayout(rhs_row)
+
+        # RHS parameter editor (hidden by default)
+        self.rhs_params = ParameterEditor()
+        rhs_layout.addWidget(self.rhs_params)
+
+        main_layout.addWidget(rhs_container)
+
+        # Delete button
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(28, 28)
+        del_btn.setStyleSheet(
+            f"QPushButton{{background:{RED}33;color:{RED};border:1px solid {RED};border-radius:4px;font-weight:bold;padding:0;}}"
+            f"QPushButton:hover{{background:{RED}66;}}"
+        )
+        del_btn.clicked.connect(lambda: self.deleted.emit(self))
+        main_layout.addWidget(del_btn)
+
+        # Connect signals
+        self.lhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("lhs", t))
+        self.rhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("rhs", t))
+
+        self.lhs_name.currentTextChanged.connect(lambda t: self._on_indicator_changed("lhs", t))
+        self.rhs_name.currentTextChanged.connect(lambda t: self._on_indicator_changed("rhs", t))
+
+        self.lhs_params.params_changed.connect(lambda p: self._on_params_updated("lhs", p))
+        self.rhs_params.params_changed.connect(lambda p: self._on_params_updated("rhs", p))
+
+        # Load rule if provided
+        if rule:
+            self._load(rule)
+        else:
+            # Default: indicator > scalar
+            self.lhs_type.setCurrentText("indicator")
+            self.rhs_type.setCurrentText("scalar")
+            self.rhs_val.setText("0")
+
+    def _update_side_visibility(self, side: str, type_text: str):
+        """Update visibility of name and value fields based on type"""
+        if side == "lhs":
+            name_w = self.lhs_name
+            val_w = self.lhs_val
+            params_w = self.lhs_params
+        else:
+            name_w = self.rhs_name
+            val_w = self.rhs_val
+            params_w = self.rhs_params
+
+        if type_text == "scalar":
+            name_w.setVisible(False)
+            val_w.setVisible(True)
+            params_w.setVisible(False)
+            val_w.setPlaceholderText("numeric value")
+        elif type_text == "column":
+            name_w.setVisible(True)
+            val_w.setVisible(False)
+            params_w.setVisible(False)
+        else:  # indicator
+            name_w.setVisible(True)
+            val_w.setVisible(False)
+            params_w.setVisible(True)
+
+    def _on_indicator_changed(self, side: str, indicator_text: str):
+        """Handle indicator selection change"""
+        if side == "lhs":
+            params_w = self.lhs_params
+            type_w = self.lhs_type
+        else:
+            params_w = self.rhs_params
+            type_w = self.rhs_type
+
+        if type_w.currentText() == "indicator":
+            indicator = indicator_text.lower()
+            if indicator in ALL_INDICATORS:
+                params_w.set_indicator(indicator)
+
+    def _on_params_updated(self, side: str, params: Dict):
+        """Handle parameter updates"""
+        # Parameters are stored in the rule when collecting
+        pass
+
+    def _load(self, rule: Dict):
+        """Load rule data into widgets"""
+        for side, type_w, name_w, val_w, params_w in [
+            ("lhs", self.lhs_type, self.lhs_name, self.lhs_val, self.lhs_params),
+            ("rhs", self.rhs_type, self.rhs_name, self.rhs_val, self.rhs_params),
+        ]:
+            data = rule.get(side, {})
+            t = data.get("type", "indicator")
+            type_w.setCurrentText(t)
+
+            if t == "scalar":
+                val_w.setText(str(data.get("value", "0")))
+            elif t == "column":
+                col = data.get("column", "close")
+                # Skip placeholder in IndicatorComboBox for column type
+                if hasattr(name_w, 'model'):  # It's an IndicatorComboBox
+                    name_w.setEditText(col.upper())
+                else:
+                    idx = name_w.findText(col.upper())
+                    if idx >= 0:
+                        name_w.setCurrentIndex(idx)
+                    else:
+                        name_w.setEditText(col)
+            else:  # indicator
+                ind = data.get("indicator", "rsi")
+                # Skip placeholder for indicator
+                if hasattr(name_w, 'model'):  # It's an IndicatorComboBox
+                    name_w.setEditText(ind.upper())
+                else:
+                    idx = name_w.findText(ind.upper())
+                    if idx >= 0:
+                        name_w.setCurrentIndex(idx)
+                    else:
+                        name_w.setEditText(ind)
+
+                # Load parameters
+                params = data.get("params", {})
+                if ind in ALL_INDICATORS:
+                    params_w.set_indicator(ind)
+                    # Update parameter editor with loaded params
+                    for pname, pwidget in params_w._param_widgets.items():
+                        if pname in params:
+                            widget, ptype = pwidget
+                            if ptype == "bool":
+                                widget.setChecked(bool(params[pname]))
+                            else:
+                                widget.setText(str(params[pname]))
+
+        # Operator
+        op = rule.get("op", ">")
+        idx = self.op.findText(op)
+        if idx >= 0:
+            self.op.setCurrentIndex(idx)
+
+    def collect(self) -> Dict:
+        """Collect rule data as dictionary"""
+        def collect_side(type_w, name_w, val_w, params_w) -> Dict:
+            t = type_w.currentText()
+            if t == "scalar":
+                try:
+                    return {"type": "scalar", "value": float(val_w.text())}
+                except:
+                    return {"type": "scalar", "value": 0}
+            elif t == "column":
+                return {"type": "column", "column": name_w.currentText().lower()}
+            else:  # indicator
+                indicator = name_w.get_indicator_name()
+                params = params_w.get_params() if params_w.isVisible() else {}
+                return {
+                    "type": "indicator",
+                    "indicator": indicator,
+                    "params": params
+                }
+
+        return {
+            "lhs": collect_side(self.lhs_type, self.lhs_name, self.lhs_val, self.lhs_params),
+            "op": self.op.currentText(),
+            "rhs": collect_side(self.rhs_type, self.rhs_name, self.rhs_val, self.rhs_params),
+        }
+
+
+# ── Signal Group Panel ───────────────────────────────────────────────────────
+
+class _SignalGroupPanel(QWidget):
+    """Panel for editing rules of a single signal group (tab content)"""
+
+    rules_changed = pyqtSignal()  # Emitted when rules are added/removed
+
+    def __init__(self, signal: str, parent=None):
+        super().__init__(parent)
+        self.signal = signal
+        emoji, color, label = SIGNAL_META.get(signal, ("⬤", DIM, signal))
+        self._color = color
+        self._rule_rows: List[_RuleRow] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # Header with controls
+        header = self._build_header(color)
+        layout.addLayout(header)
+
+        # Rules container (scrollable)
+        self._build_rules_area()
+        layout.addWidget(self._rules_scroll, 1)
+
+        # Quick actions bar
+        actions = self._build_actions_bar(color)
+        layout.addWidget(actions)
+
+    def _build_header(self, color: str) -> QHBoxLayout:
+        """Build header with logic selector and enabled toggle"""
+        header = QHBoxLayout()
+        header.setSpacing(16)
+
+        # Logic selector
+        logic_group = QHBoxLayout()
+        logic_group.setSpacing(6)
+
+        lbl_logic = QLabel("🔀 Logic:")
+        lbl_logic.setStyleSheet(f"color:{DIM}; font-size:9pt; font-weight:bold;")
+        logic_group.addWidget(lbl_logic)
+
+        self.logic_combo = QComboBox()
+        self.logic_combo.addItems(["AND", "OR"])
+        self.logic_combo.setFixedWidth(80)
+        self.logic_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: #21262d;
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 9pt;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {color};
+            }}
+        """)
+        logic_group.addWidget(self.logic_combo)
+
+        header.addLayout(logic_group)
+
+        # Enabled toggle
+        self.enabled_chk = QCheckBox("✓ Enabled")
+        self.enabled_chk.setChecked(True)
+        self.enabled_chk.setStyleSheet(f"""
+            QCheckBox {{
+                color: {TEXT};
+                font-size: 9pt;
+                font-weight: bold;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+            }}
+            QCheckBox::indicator:unchecked {{
+                background: #21262d;
+                border: 2px solid {BORDER};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {color};
+                border: 2px solid {color};
+            }}
+        """)
+        header.addWidget(self.enabled_chk)
+
+        header.addStretch()
+
+        # Rule count badge
+        self._rule_count_badge = QLabel("0 rules")
+        self._rule_count_badge.setStyleSheet(f"""
+            QLabel {{
+                color: {color};
+                background: {color}22;
+                border: 1px solid {color}55;
+                border-radius: 10px;
+                padding: 2px 8px;
+                font-size: 8pt;
+                font-weight: bold;
+            }}
+        """)
+        header.addWidget(self._rule_count_badge)
+
+        return header
+
+    def _build_rules_area(self):
+        """Build scrollable area for rules"""
+        self._rules_scroll = QScrollArea()
+        self._rules_scroll.setWidgetResizable(True)
+        self._rules_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._rules_scroll.setFrameShape(QFrame.NoFrame)
+
+        self._rules_container = QWidget()
+        self._rules_container.setStyleSheet(f"background: transparent;")
+
+        self._rules_layout = QVBoxLayout(self._rules_container)
+        self._rules_layout.setContentsMargins(0, 0, 0, 0)
+        self._rules_layout.setSpacing(8)
+
+        # Empty state
+        self._empty_lbl = QLabel("  ✨ No rules yet — click '+ Add Rule' to begin")
+        self._empty_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt; padding:20px;")
+        self._empty_lbl.setAlignment(Qt.AlignCenter)
+        self._rules_layout.addWidget(self._empty_lbl)
+
+        self._rules_layout.addStretch()
+        self._rules_scroll.setWidget(self._rules_container)
+
+    def _build_actions_bar(self, color: str) -> QWidget:
+        """Build actions bar with add rule button and presets"""
+        bar = QFrame()
+        bar.setFixedHeight(40)
+        bar.setStyleSheet(f"background: transparent;")
+
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add rule button (prominent)
+        add_btn = QPushButton("＋ Add Rule")
+        add_btn.setFixedHeight(32)
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #21262d;
+                color: {color};
+                border: 1px solid {color};
+                border-radius: 5px;
+                padding: 6px 16px;
+                font-size: 10pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {color}22;
+            }}
+        """)
+        add_btn.clicked.connect(self._add_rule)
+        layout.addWidget(add_btn)
+
+        # Presets dropdown with comprehensive options
+        self._presets_combo = QComboBox()
+
+        # Common presets for all signals
+        common_presets = ["📋 Load Preset"]
+
+        # Signal-specific presets
+        if self.signal == "BUY_CALL":
+            presets = common_presets + [
+                "RSI Oversold",
+                "MACD Crossover",
+                "BB Squeeze",
+                "EMA Cross",
+                "Stochastic Bull",
+                "ADX Strong Trend",
+                "Ichimoku Breakout",
+                "Volume Breakout",
+                "Triple Confirmation",
+                "Bullish Engulfing"
+            ]
+        elif self.signal == "BUY_PUT":
+            presets = common_presets + [
+                "RSI Overbought",
+                "MACD Bear Cross",
+                "Death Cross",
+                "BB Top Rejection",
+                "Bearish Divergence"
+            ]
+        elif self.signal == "SELL_CALL":
+            presets = common_presets + [
+                "RSI Overbought",
+                "Resistance Test"
+            ]
+        elif self.signal == "SELL_PUT":
+            presets = common_presets + [
+                "RSI Oversold",
+                "Support Bounce"
+            ]
+        elif self.signal == "HOLD":
+            presets = common_presets + [
+                "Strong Trend",
+                "Low Volatility"
+            ]
+        else:
+            presets = common_presets
+
+        self._presets_combo.addItems(presets)
+        self._presets_combo.setFixedWidth(180)
+        self._presets_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: #21262d;
+                color: {DIM};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 9pt;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {color};
+            }}
+            QComboBox QAbstractItemView {{
+                background: #21262d;
+                color: {TEXT};
+                selection-background-color: {color}40;
+                selection-color: {TEXT};
+                border: 1px solid {color};
+            }}
+        """)
+        self._presets_combo.currentIndexChanged.connect(self._load_preset)
+        layout.addWidget(self._presets_combo)
+
+        layout.addStretch()
+
+        # Clear all button
+        clear_btn = QPushButton("🗑 Clear All")
+        clear_btn.setFixedHeight(28)
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {RED};
+                border: 1px solid {RED}55;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 9pt;
+            }}
+            QPushButton:hover {{
+                background: {RED}22;
+            }}
+        """)
+        clear_btn.clicked.connect(self._clear_all_rules)
+        layout.addWidget(clear_btn)
+
+        return bar
+
+    def _update_rule_count(self):
+        """Update rule count badge and empty state visibility"""
+        count = len(self._rule_rows)
+        self._rule_count_badge.setText(f"{count} rule{'s' if count != 1 else ''}")
+        self._empty_lbl.setVisible(count == 0)
+
+        # Adjust scroll area height based on number of rules
+        if count > 0:
+            height = min(400, 60 + 70 * count)
+            self._rules_scroll.setMinimumHeight(height)
+        else:
+            self._rules_scroll.setMinimumHeight(100)
+
+        self.rules_changed.emit()
+
+    def _add_rule(self, rule: Dict = None):
+        """Add a new rule row"""
+        row = _RuleRow(rule, parent=self._rules_container)
+        row.deleted.connect(self._remove_rule)
+        self._rule_rows.append(row)
+
+        # Insert before the stretch
+        insert_at = self._rules_layout.count() - 1
+        self._rules_layout.insertWidget(insert_at, row)
+
+        self._update_rule_count()
+
+    def _remove_rule(self, row: _RuleRow):
+        """Remove a rule row"""
+        if row in self._rule_rows:
+            self._rule_rows.remove(row)
+            self._rules_layout.removeWidget(row)
+            row.deleteLater()
+        self._update_rule_count()
+
+    def _clear_all_rules(self):
+        """Remove all rule rows"""
+        for row in list(self._rule_rows):
+            self._remove_rule(row)
+
+    def _load_preset(self, index: int):
+        """Load a preset rule configuration"""
+        if index <= 0:
+            return
+
+        preset = self._presets_combo.currentText()
+        self._presets_combo.setCurrentIndex(0)
+
+        # ========== BUY CALL PRESETS (Bullish) ==========
+        if self.signal == "BUY_CALL":
+
+            # 1. RSI Oversold Bounce
+            if preset == "RSI Oversold":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "<",
+                        "rhs": {"type": "scalar", "value": 30}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "scalar", "value": 30}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 2. MACD Bullish Crossover
+            elif preset == "MACD Crossover":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "macd",
+                                "params": {"fast": 12, "slow": 26, "signal": 9}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "scalar", "value": 0}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "macd",
+                                "params": {"fast": 12, "slow": 26, "signal": 9}},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "macd", "params": {"signal": 9}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 3. Bollinger Band Squeeze Breakout (Bullish)
+            elif preset == "BB Squeeze":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "bbands", "params": {"length": 20, "std": 2}},
+                        "op": ">",
+                        "rhs": {"type": "column", "column": "close"}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "bbands", "params": {"length": 20, "std": 2}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "column", "column": "close"}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 4. EMA Golden Cross (9 above 21)
+            elif preset == "EMA Cross":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 5. Stochastic Bullish Crossover
+            elif preset == "Stochastic Bull":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "stoch", "params": {"k": 14, "d": 3, "smooth_k": 3}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "scalar", "value": 20}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "stoch", "params": {"k": 14, "d": 3, "smooth_k": 3}},
+                        "op": "<",
+                        "rhs": {"type": "scalar", "value": 80}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 6. ADX Strong Trend + DI+ Cross
+            elif preset == "ADX Strong Trend":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "adx", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 25}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "dm", "params": {"length": 14}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "indicator", "indicator": "dm", "params": {"length": 14}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 7. Ichimoku Cloud Breakout
+            elif preset == "Ichimoku Breakout":
+                rules = [
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": "crosses_above",
+                        "rhs": {"type": "indicator", "indicator": "ichimoku",
+                                "params": {"tenkan": 9, "kijun": 26, "senkou": 52}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "ichimoku",
+                                "params": {"tenkan": 9, "kijun": 26, "senkou": 52}},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "ichimoku",
+                                "params": {"tenkan": 9, "kijun": 26, "senkou": 52}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 8. Volume Surge + Price Breakout
+            elif preset == "Volume Breakout":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "obv", "params": {}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "indicator", "indicator": "sma", "params": {"length": 20}}
+                    },
+                    {
+                        "lhs": {"type": "column", "column": "volume"},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "sma", "params": {"length": 20}}
+                    },
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 50}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 9. Triple Confirmation (RSI + MACD + EMA)
+            elif preset == "Triple Confirmation":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 50}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "macd",
+                                "params": {"fast": 12, "slow": 26, "signal": 9}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 0}
+                    },
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 200}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 10. Bullish Engulfing Pattern
+            elif preset == "Bullish Engulfing":
+                rules = [
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "column", "column": "open"}
+                    },
+                    {
+                        "lhs": {"type": "column", "column": "open"},
+                        "op": "<",
+                        "rhs": {"type": "column", "column": "close", "shift": 1}
+                    },
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "column", "column": "open", "shift": 1}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+        # ========== BUY PUT PRESETS (Bearish) ==========
+        elif self.signal == "BUY_PUT":
+
+            # 11. RSI Overbought Reversal
+            if preset == "RSI Overbought":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 70}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "crosses_below",
+                        "rhs": {"type": "scalar", "value": 70}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 12. MACD Bearish Crossover
+            elif preset == "MACD Bear Cross":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "macd",
+                                "params": {"fast": 12, "slow": 26, "signal": 9}},
+                        "op": "crosses_below",
+                        "rhs": {"type": "scalar", "value": 0}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "macd",
+                                "params": {"fast": 12, "slow": 26, "signal": 9}},
+                        "op": "<",
+                        "rhs": {"type": "indicator", "indicator": "macd", "params": {"signal": 9}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 13. Death Cross (50 below 200)
+            elif preset == "Death Cross":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "sma", "params": {"length": 50}},
+                        "op": "crosses_below",
+                        "rhs": {"type": "indicator", "indicator": "sma", "params": {"length": 200}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "sma", "params": {"length": 50}},
+                        "op": "<",
+                        "rhs": {"type": "indicator", "indicator": "sma", "params": {"length": 200}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 14. Bollinger Band Top Rejection
+            elif preset == "BB Top Rejection":
+                rules = [
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "bbands", "params": {"length": 20, "std": 2}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 70}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 15. Bearish Divergence (Price up, RSI down)
+            elif preset == "Bearish Divergence":
+                rules = [
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "column", "column": "close", "shift": 5}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "<",
+                        "rhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}, "shift": 5}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+        # ========== SELL CALL PRESETS (Bearish - for selling calls) ==========
+        elif self.signal == "SELL_CALL":
+
+            # 16. Overbought RSI for Call Selling
+            if preset == "RSI Overbought":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 75}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "crosses_below",
+                        "rhs": {"type": "scalar", "value": 70}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 17. Resistance Level Test
+            elif preset == "Resistance Test":
+                rules = [
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "kc", "params": {"length": 20, "scalar": 2}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 70}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+        # ========== SELL PUT PRESETS (Bullish - for selling puts) ==========
+        elif self.signal == "SELL_PUT":
+
+            # 18. Oversold RSI for Put Selling
+            if preset == "RSI Oversold":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "<",
+                        "rhs": {"type": "scalar", "value": 25}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "scalar", "value": 30}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 19. Support Level Bounce
+            elif preset == "Support Bounce":
+                rules = [
+                    {
+                        "lhs": {"type": "column", "column": "close"},
+                        "op": "<",
+                        "rhs": {"type": "indicator", "indicator": "bbands", "params": {"length": 20, "std": 2}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "stoch", "params": {"k": 14, "d": 3, "smooth_k": 3}},
+                        "op": "crosses_above",
+                        "rhs": {"type": "scalar", "value": 20}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+        # ========== HOLD PRESETS ==========
+        elif self.signal == "HOLD":
+
+            # 20. Strong Trend (ADX > 25)
+            if preset == "Strong Trend":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "adx", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "scalar", "value": 25}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "adx", "params": {"length": 14}},
+                        "op": ">",
+                        "rhs": {"type": "indicator", "indicator": "adx", "params": {"length": 14}, "shift": 1}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+            # 21. Low Volatility Consolidation
+            elif preset == "Low Volatility":
+                rules = [
+                    {
+                        "lhs": {"type": "indicator", "indicator": "atr", "params": {"length": 14}},
+                        "op": "<",
+                        "rhs": {"type": "indicator", "indicator": "sma", "params": {"length": 20}}
+                    },
+                    {
+                        "lhs": {"type": "indicator", "indicator": "bbands", "params": {"length": 20, "std": 2}},
+                        "op": "<",
+                        "rhs": {"type": "indicator", "indicator": "bbands", "params": {"length": 20, "std": 2}}
+                    }
+                ]
+                for rule in rules:
+                    self._add_rule(rule)
+
+    def load(self, group_data: Dict):
+        """Load group data into panel"""
+        # Clear existing rules
+        self._clear_all_rules()
+
+        self.logic_combo.setCurrentText(group_data.get("logic", "AND"))
+        self.enabled_chk.setChecked(bool(group_data.get("enabled", True)))
+
+        for rule in group_data.get("rules", []):
+            self._add_rule(rule)
+
+    def collect(self) -> Dict:
+        """Collect panel data"""
+        return {
+            "logic": self.logic_combo.currentText(),
+            "enabled": self.enabled_chk.isChecked(),
+            "rules": [row.collect() for row in self._rule_rows],
+        }
+
+
+# ── Signal Rules Tab ─────────────────────────────────────────────────────────
+
+class _SignalRulesTab(QWidget):
+    """Signal rules editor with tabs for each signal type"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Conflict resolution header (always visible)
+        header = self._build_header()
+        main_layout.addWidget(header)
+
+        # Tab widget for signal groups
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setDocumentMode(True)
+        self._tab_widget.tabBar().setExpanding(True)
+        self._tab_widget.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: none;
+                background: {BG_PANEL};
+                border-top: 1px solid {BORDER};
+            }}
+            QTabBar::tab {{
+                background: #21262d;
+                color: {DIM};
+                border: 1px solid {BORDER};
+                border-bottom: none;
+                border-radius: 4px 4px 0 0;
+                padding: 8px 16px;
+                margin-right: 2px;
+                font-size: 10pt;
+                font-weight: bold;
+                min-width: 100px;
+            }}
+            QTabBar::tab:selected {{
+                background: {BG_PANEL};
+                color: {TEXT};
+                border-bottom: 2px solid {BLUE};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: #2d333b;
+                color: {TEXT};
+            }}
+        """)
+
+        # Create tabs for each signal type
+        self._panels: Dict[str, _SignalGroupPanel] = {}
+
+        # Define tab order with icons and colors
+        signal_tabs = [
+            ("BUY_CALL", "📈 BUY CALL", GREEN),
+            ("BUY_PUT", "📉 BUY PUT", BLUE),
+            ("SELL_CALL", "🔴 SELL CALL", RED),
+            ("SELL_PUT", "🟠 SELL PUT", ORANGE),
+            ("HOLD", "⏸ HOLD", YELLOW),
+        ]
+
+        for signal, label, color in signal_tabs:
+            panel = _SignalGroupPanel(signal)
+            panel.rules_changed.connect(self._update_stats)
+            self._panels[signal] = panel
+            self._tab_widget.addTab(panel, label)
+
+        main_layout.addWidget(self._tab_widget, 1)
+
+        # Quick stats bar at bottom
+        stats_bar = self._build_stats_bar()
+        main_layout.addWidget(stats_bar)
+
+    def _build_header(self) -> QWidget:
+        """Build header with conflict resolution selector"""
+        header = QWidget()
+        header.setStyleSheet(f"background:{BG_PANEL}; border-bottom:1px solid {BORDER};")
+        header.setFixedHeight(50)
+
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 0, 16, 0)
+
+        cr_lbl = QLabel("⚖️ Conflict Resolution:")
+        cr_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt; font-weight:bold;")
+        layout.addWidget(cr_lbl)
+
+        self.conflict_combo = QComboBox()
+        self.conflict_combo.addItems(["WAIT", "PRIORITY"])
+        self.conflict_combo.setFixedWidth(110)
+        self.conflict_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: #21262d;
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 9pt;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {BLUE};
+            }}
+        """)
+        layout.addWidget(self.conflict_combo)
+
+        help_lbl = QLabel("(when both BUY_CALL and BUY_PUT fire)")
+        help_lbl.setStyleSheet(f"color:{DIM}; font-size:8pt;")
+        layout.addWidget(help_lbl)
+        layout.addStretch()
+
+        return header
+
+    def _build_stats_bar(self) -> QWidget:
+        """Build a stats bar showing total rules across all signals"""
+        bar = QFrame()
+        bar.setFixedHeight(36)
+        bar.setStyleSheet(f"""
+            QFrame {{
+                background: {BG_PANEL};
+                border-top: 1px solid {BORDER};
+            }}
+        """)
+
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 4, 16, 4)
+
+        self._total_rules_lbl = QLabel("📊 Total Rules: 0")
+        self._total_rules_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+        layout.addWidget(self._total_rules_lbl)
+
+        layout.addStretch()
+
+        # Quick enable/disable all toggles
+        self._enable_all_btn = QPushButton("✓ Enable All")
+        self._enable_all_btn.setFixedHeight(24)
+        self._enable_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #21262d;
+                color: {GREEN};
+                border: 1px solid {GREEN}55;
+                border-radius: 3px;
+                padding: 2px 8px;
+                font-size: 8pt;
+            }}
+            QPushButton:hover {{
+                background: {GREEN}22;
+            }}
+        """)
+        self._enable_all_btn.clicked.connect(self._toggle_all_enabled)
+        layout.addWidget(self._enable_all_btn)
+
+        self._disable_all_btn = QPushButton("✗ Disable All")
+        self._disable_all_btn.setFixedHeight(24)
+        self._disable_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #21262d;
+                color: {RED};
+                border: 1px solid {RED}55;
+                border-radius: 3px;
+                padding: 2px 8px;
+                font-size: 8pt;
+            }}
+            QPushButton:hover {{
+                background: {RED}22;
+            }}
+        """)
+        self._disable_all_btn.clicked.connect(self._toggle_all_disabled)
+        layout.addWidget(self._disable_all_btn)
+
+        return bar
+
+    def _update_stats(self):
+        """Update the total rules count"""
+        total = 0
+        for panel in self._panels.values():
+            total += len(panel._rule_rows)
+        self._total_rules_lbl.setText(f"📊 Total Rules: {total}")
+
+    def _toggle_all_enabled(self):
+        """Enable all signal groups"""
+        for panel in self._panels.values():
+            panel.enabled_chk.setChecked(True)
+
+    def _toggle_all_disabled(self):
+        """Disable all signal groups"""
+        for panel in self._panels.values():
+            panel.enabled_chk.setChecked(False)
+
+    def load(self, strategy: Dict):
+        """Load strategy data into tabs"""
+        engine = strategy.get("engine", {})
+        self.conflict_combo.setCurrentText(engine.get("conflict_resolution", "WAIT"))
+
+        for signal, panel in self._panels.items():
+            panel.load(engine.get(signal, {"logic": "AND", "rules": [], "enabled": True}))
+
+        self._update_stats()
+
+    def collect(self) -> Dict:
+        """Collect all signal group data"""
+        result = {}
+        for signal, panel in self._panels.items():
+            result[signal] = panel.collect()
+        result["conflict_resolution"] = self.conflict_combo.currentText()
+        return result
 
 
 # ── Info Tab ─────────────────────────────────────────────────────────────────
@@ -281,12 +1720,11 @@ class _InfoTab(QWidget):
             "description": self.desc_edit.toPlainText().strip(),
         }
 
-# ── Indicators Tab ────────────────────────────────────────────────────────────
+
+# ── Indicators Tab ───────────────────────────────────────────────────────────
 
 class _IndicatorsTab(QScrollArea):
-    """
-    Dynamic Indicators Tab - Shows all indicators organized by category
-    """
+    """Dynamic Indicators Tab - Shows all indicators organized by category"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -325,10 +1763,13 @@ class _IndicatorsTab(QScrollArea):
         search_layout.addWidget(self.search_edit)
         self._layout.addLayout(search_layout)
 
-        # Category tabs
+        # Category sections
         self._category_widgets = {}
 
-        for category in INDICATOR_CATEGORIES.keys():
+        for category, indicators in get_indicators_by_category().items():
+            if not indicators:
+                continue
+
             # Category header
             cat_header = QLabel(f"📁 {category.upper()}")
             cat_header.setStyleSheet(f"""
@@ -345,7 +1786,7 @@ class _IndicatorsTab(QScrollArea):
             grid.setSpacing(8)
 
             row, col = 0, 0
-            for indicator in sorted(INDICATOR_CATEGORIES[category]):
+            for indicator in sorted(indicators):
                 card = self._create_indicator_card(indicator)
                 grid.addWidget(card, row, col)
 
@@ -371,9 +1812,10 @@ class _IndicatorsTab(QScrollArea):
             }}
             QFrame:hover {{
                 border: 1px solid {BLUE};
+                background: {BG_ITEM};
             }}
         """)
-        card.setFixedSize(180, 70)
+        card.setFixedSize(230, 150)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -387,8 +1829,8 @@ class _IndicatorsTab(QScrollArea):
         # Default params preview
         params = get_indicator_params(indicator_name)
         if params:
-            param_text = ", ".join(f"{k}={v}" for k, v in list(params.items())[:2])
-            if len(params) > 2:
+            param_text = ", ".join(f"{k}={v}" for k, v in list(params.items())[:3])
+            if len(params) > 3:
                 param_text += "..."
             param_lbl = QLabel(param_text)
         else:
@@ -411,15 +1853,16 @@ class _IndicatorsTab(QScrollArea):
         for category, container in self._category_widgets.items():
             visible = False
             grid = container.layout()
-            for i in range(grid.count()):
-                card = grid.itemAt(i).widget()
-                if card:
-                    name = card.findChild(QLabel).text().lower()
-                    if text in name or not text:
-                        card.show()
-                        visible = True
-                    else:
-                        card.hide()
+            if grid:
+                for i in range(grid.count()):
+                    card = grid.itemAt(i).widget()
+                    if card:
+                        name = card.findChild(QLabel).text().lower()
+                        if text in name or not text:
+                            card.show()
+                            visible = True
+                        else:
+                            card.hide()
             container.setVisible(visible)
 
     def load(self, strategy: Dict):
@@ -430,380 +1873,8 @@ class _IndicatorsTab(QScrollArea):
         """Read-only tab"""
         return {}
 
-# ── Rule Editor row ───────────────────────────────────────────────────────────
 
-# Add this import at the top
-from strategy.indicator_registry import (
-    ALL_INDICATORS, INDICATOR_DEFAULT_PARAMS, get_indicator_params,
-    get_param_type, get_param_description, get_indicator_category
-)
-
-
-# Update the _RuleRow class to use dynamic indicators
-class _RuleRow(QWidget):
-    """One editable rule row with all pandas_ta indicators"""
-    deleted = pyqtSignal(object)
-
-    def __init__(self, rule: Dict = None, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet(f"background:{BG_ITEM}; border-radius:5px; border:1px solid {BORDER};")
-        h = QHBoxLayout(self)
-        h.setContentsMargins(8, 6, 8, 6)
-        h.setSpacing(6)
-
-        # LHS
-        self.lhs_type = QComboBox();
-        self.lhs_type.addItems(SIDE_TYPES);
-        self.lhs_type.setFixedWidth(95)
-        self.lhs_name = QComboBox();
-        self.lhs_name.addItems(ALL_INDICATORS + COLUMNS)
-        self.lhs_name.setEditable(True)
-        self.lhs_name.setFixedWidth(130)
-        self.lhs_name.setInsertPolicy(QComboBox.InsertAlphabetically)
-
-        self.lhs_val = QLineEdit();
-        self.lhs_val.setPlaceholderText("params e.g. length=14")
-        self.lhs_val.setFixedWidth(150)
-
-        h.addWidget(self.lhs_type);
-        h.addWidget(self.lhs_name);
-        h.addWidget(self.lhs_val)
-
-        # Operator
-        arrow = QLabel("→");
-        arrow.setStyleSheet(f"color:{DIM}; font-size:11pt;")
-        h.addWidget(arrow)
-        self.op = QComboBox();
-        self.op.addItems(OPERATORS);
-        self.op.setFixedWidth(120)
-        h.addWidget(self.op)
-
-        arrow2 = QLabel("→");
-        arrow2.setStyleSheet(f"color:{DIM}; font-size:11pt;")
-        h.addWidget(arrow2)
-
-        # RHS
-        self.rhs_type = QComboBox();
-        self.rhs_type.addItems(SIDE_TYPES);
-        self.rhs_type.setFixedWidth(95)
-        self.rhs_name = QComboBox();
-        self.rhs_name.addItems(ALL_INDICATORS + COLUMNS)
-        self.rhs_name.setEditable(True)
-        self.rhs_name.setFixedWidth(130)
-        self.rhs_name.setInsertPolicy(QComboBox.InsertAlphabetically)
-
-        self.rhs_val = QLineEdit();
-        self.rhs_val.setPlaceholderText("params e.g. length=14")
-        self.rhs_val.setFixedWidth(150)
-
-        h.addWidget(self.rhs_type);
-        h.addWidget(self.rhs_name);
-        h.addWidget(self.rhs_val)
-
-        h.addStretch()
-
-        del_btn = QPushButton("✕")
-        del_btn.setFixedSize(28, 28)
-        del_btn.setStyleSheet(
-            f"QPushButton{{background:{RED}33;color:{RED};border:1px solid {RED};border-radius:4px;font-weight:bold;padding:0;}}"
-            f"QPushButton:hover{{background:{RED}66;}}")
-        del_btn.clicked.connect(lambda: self.deleted.emit(self))
-        h.addWidget(del_btn)
-
-        # Connect type and name changes
-        self.lhs_type.currentTextChanged.connect(self._update_lhs_visibility)
-        self.rhs_type.currentTextChanged.connect(self._update_rhs_visibility)
-        self.lhs_name.currentTextChanged.connect(lambda t: self._update_param_hint("lhs", t))
-        self.rhs_name.currentTextChanged.connect(lambda t: self._update_param_hint("rhs", t))
-
-        # Load rule if provided
-        if rule:
-            self._load(rule)
-        else:
-            self._update_lhs_visibility("indicator")
-            self._update_rhs_visibility("scalar")
-            self.rhs_type.setCurrentText("scalar")
-
-    def _update_param_hint(self, side: str, indicator: str):
-        """Update parameter placeholder with default params for selected indicator"""
-        if side == "lhs":
-            type_w = self.lhs_type
-            val_w = self.lhs_val
-        else:
-            type_w = self.rhs_type
-            val_w = self.rhs_val
-
-        if type_w.currentText() == "indicator" and indicator in ALL_INDICATORS:
-            params = get_indicator_params(indicator)
-            if params:
-                hint = ", ".join(f"{k}={v}" for k, v in params.items())
-                val_w.setPlaceholderText(hint)
-            else:
-                val_w.setPlaceholderText("params e.g. length=14")
-        elif type_w.currentText() == "scalar":
-            val_w.setPlaceholderText("numeric value")
-
-    def _update_lhs_visibility(self, t: str):
-        self.lhs_name.setVisible(t in ("indicator", "column"))
-        self.lhs_val.setVisible(t in ("indicator", "scalar"))
-        if t == "indicator":
-            current_ind = self.lhs_name.currentText()
-            self._update_param_hint("lhs", current_ind)
-        elif t == "scalar":
-            self.lhs_val.setPlaceholderText("numeric value")
-        elif t == "column":
-            self.lhs_val.setVisible(False)
-
-    def _update_rhs_visibility(self, t: str):
-        self.rhs_name.setVisible(t in ("indicator", "column"))
-        self.rhs_val.setVisible(t in ("indicator", "scalar"))
-        if t == "indicator":
-            current_ind = self.rhs_name.currentText()
-            self._update_param_hint("rhs", current_ind)
-        elif t == "scalar":
-            self.rhs_val.setPlaceholderText("numeric value")
-        elif t == "column":
-            self.rhs_val.setVisible(False)
-
-    def _load(self, rule: Dict):
-        for side, type_w, name_w, val_w in [
-            ("lhs", self.lhs_type, self.lhs_name, self.lhs_val),
-            ("rhs", self.rhs_type, self.rhs_name, self.rhs_val),
-        ]:
-            d = rule.get(side, {})
-            t = d.get("type", "indicator")
-            type_w.setCurrentText(t)
-            if t == "scalar":
-                val_w.setText(str(d.get("value", "")))
-            elif t == "column":
-                idx = name_w.findText(d.get("column", "close"))
-                if idx >= 0: name_w.setCurrentIndex(idx)
-            else:  # indicator
-                ind = d.get("indicator", "rsi")
-                idx = name_w.findText(ind)
-                if idx >= 0:
-                    name_w.setCurrentIndex(idx)
-                else:
-                    name_w.setEditText(ind)
-                params = d.get("params", {})
-                val_w.setText(", ".join(f"{k}={v}" for k, v in params.items()))
-
-        op = rule.get("op", ">")
-        idx = self.op.findText(op)
-        if idx >= 0: self.op.setCurrentIndex(idx)
-
-    def _parse_params(self, raw: str, indicator: str = None) -> Dict:
-        """Parse parameters with type conversion based on indicator defaults"""
-        params = {}
-        default_params = get_indicator_params(indicator) if indicator else {}
-
-        for part in raw.split(","):
-            part = part.strip()
-            if "=" in part:
-                k, _, v = part.partition("=")
-                k = k.strip();
-                v = v.strip()
-
-                # Get expected type from defaults
-                param_type = get_param_type(k)
-
-                try:
-                    if param_type == "int":
-                        params[k] = int(v)
-                    elif param_type == "float":
-                        params[k] = float(v)
-                    elif param_type == "bool":
-                        params[k] = v.lower() in ("true", "yes", "1")
-                    else:
-                        params[k] = v
-                except ValueError:
-                    params[k] = v  # keep as string if conversion fails
-
-        # Merge with defaults for missing params
-        for k, default_v in default_params.items():
-            if k not in params:
-                params[k] = default_v
-
-        return params
-
-    def _collect_side(self, type_w, name_w, val_w) -> Dict:
-        t = type_w.currentText()
-        if t == "scalar":
-            try:
-                return {"type": "scalar", "value": float(val_w.text())}
-            except:
-                return {"type": "scalar", "value": 0}
-        elif t == "column":
-            return {"type": "column", "column": name_w.currentText()}
-        else:
-            indicator = name_w.currentText()
-            params = self._parse_params(val_w.text(), indicator)
-            return {"type": "indicator", "indicator": indicator, "params": params}
-
-    def collect(self) -> Dict:
-        return {
-            "lhs": self._collect_side(self.lhs_type, self.lhs_name, self.lhs_val),
-            "op": self.op.currentText(),
-            "rhs": self._collect_side(self.rhs_type, self.rhs_name, self.rhs_val),
-        }
-
-# ── Signal Group Panel ────────────────────────────────────────────────────────
-
-class _SignalGroupPanel(QGroupBox):
-    def __init__(self, signal: str, parent=None):
-        emoji, color, label = SIGNAL_META.get(signal, ("⬤", DIM, signal))
-        super().__init__(f" {emoji} {label} ", parent)
-        self.signal = signal
-        self._color = color
-        self._rule_rows: List[_RuleRow] = []
-
-        self.setStyleSheet(f"""
-            QGroupBox {{
-                background: {BG_PANEL};
-                border: 1px solid {color}55;
-                border-radius: 6px;
-                margin-top: 14px;
-                padding: 8px;
-                font-weight: bold;
-            }}
-            QGroupBox::title {{ color: {color}; subcontrol-origin: margin; left:10px; padding:0 4px; }}
-        """)
-
-        root = QVBoxLayout(self)
-        root.setSpacing(6)
-
-        # Header: logic + enabled
-        header = QHBoxLayout()
-        lbl_logic = QLabel("Logic:")
-        lbl_logic.setStyleSheet(f"color:{DIM}; font-size:9pt;")
-        header.addWidget(lbl_logic)
-        self.logic_combo = QComboBox()
-        self.logic_combo.addItems(["AND", "OR"])
-        self.logic_combo.setFixedWidth(80)
-        header.addWidget(self.logic_combo)
-        header.addSpacing(16)
-        self.enabled_chk = QCheckBox("Enabled")
-        self.enabled_chk.setChecked(True)
-        header.addWidget(self.enabled_chk)
-        header.addStretch()
-        add_btn = _btn(f"+ Add Rule", color="#21262d")
-        add_btn.setFixedHeight(28)
-        add_btn.clicked.connect(self._add_rule)
-        header.addWidget(add_btn)
-        root.addLayout(header)
-
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"QFrame{{border:none; background:{BORDER}; max-height:1px;}}")
-        root.addWidget(sep)
-
-        # Rules container (scrollable)
-        self._rules_scroll = QScrollArea()
-        self._rules_scroll.setWidgetResizable(True)
-        self._rules_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._rules_scroll.setMaximumHeight(220)
-
-        self._rules_container = QWidget()
-        self._rules_container.setStyleSheet(f"background: transparent;")
-        self._rules_vbox = QVBoxLayout(self._rules_container)
-        self._rules_vbox.setContentsMargins(0, 0, 0, 0)
-        self._rules_vbox.setSpacing(5)
-
-        self._empty_lbl = QLabel("  No rules — click '+ Add Rule' to begin.")
-        self._empty_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt; padding:10px;")
-        self._rules_vbox.addWidget(self._empty_lbl)
-        self._rules_vbox.addStretch()
-
-        self._rules_scroll.setWidget(self._rules_container)
-        root.addWidget(self._rules_scroll)
-
-    def _add_rule(self, rule: Dict = None):
-        row = _RuleRow(rule, parent=self._rules_container)
-        row.deleted.connect(self._remove_rule)
-        self._rule_rows.append(row)
-        # Insert before the stretch
-        insert_at = self._rules_vbox.count() - 1
-        self._rules_vbox.insertWidget(insert_at, row)
-        self._empty_lbl.setVisible(False)
-        # Auto-expand height
-        self._rules_scroll.setMaximumHeight(min(220, 50 + 56 * len(self._rule_rows)))
-
-    def _remove_rule(self, row: _RuleRow):
-        if row in self._rule_rows:
-            self._rule_rows.remove(row)
-            self._rules_vbox.removeWidget(row)
-            row.deleteLater()
-        self._empty_lbl.setVisible(len(self._rule_rows) == 0)
-
-    def load(self, group_data: Dict):
-        # Clear existing
-        for row in list(self._rule_rows):
-            self._remove_rule(row)
-        self.logic_combo.setCurrentText(group_data.get("logic", "AND"))
-        self.enabled_chk.setChecked(bool(group_data.get("enabled", True)))
-        for rule in group_data.get("rules", []):
-            self._add_rule(rule)
-
-    def collect(self) -> Dict:
-        return {
-            "logic":   self.logic_combo.currentText(),
-            "enabled": self.enabled_chk.isChecked(),
-            "rules":   [row.collect() for row in self._rule_rows],
-        }
-
-
-# ── Signal Rules Tab ──────────────────────────────────────────────────────────
-
-class _SignalRulesTab(QScrollArea):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        # Conflict resolution
-        cr_row = QHBoxLayout()
-        cr_lbl = QLabel("Conflict Resolution:")
-        cr_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
-        cr_row.addWidget(cr_lbl)
-        self.conflict_combo = QComboBox()
-        self.conflict_combo.addItems(["WAIT", "PRIORITY"])
-        self.conflict_combo.setFixedWidth(110)
-        cr_row.addWidget(self.conflict_combo)
-        help_lbl = QLabel("  (when BUY_CALL and BUY_PUT both fire)")
-        help_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
-        cr_row.addWidget(help_lbl)
-        cr_row.addStretch()
-        layout.addLayout(cr_row)
-
-        # Signal group panels
-        self._panels: Dict[str, _SignalGroupPanel] = {}
-        for sig in SIGNAL_GROUPS:
-            panel = _SignalGroupPanel(sig)
-            self._panels[sig] = panel
-            layout.addWidget(panel)
-
-        layout.addStretch()
-        self.setWidget(container)
-
-    def load(self, strategy: Dict):
-        engine = strategy.get("engine", {})
-        self.conflict_combo.setCurrentText(engine.get("conflict_resolution", "WAIT"))
-        for sig in SIGNAL_GROUPS:
-            self._panels[sig].load(engine.get(sig, {"logic": "AND", "rules": [], "enabled": True}))
-
-    def collect(self) -> Dict:
-        result = {}
-        for sig in SIGNAL_GROUPS:
-            result[sig] = self._panels[sig].collect()
-        result["conflict_resolution"] = self.conflict_combo.currentText()
-        return result
-
-
-# ── Strategy List Panel ───────────────────────────────────────────────────────
+# ── Strategy List Panel ──────────────────────────────────────────────────────
 
 class _StrategyListPanel(QWidget):
     strategy_selected = pyqtSignal(str)   # slug
@@ -839,7 +1910,8 @@ class _StrategyListPanel(QWidget):
         btn_row.addWidget(self.dup_btn)
         root.addLayout(btn_row)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"QFrame{{border:none;background:{BORDER};max-height:1px;}}")
         root.addWidget(sep)
 
@@ -850,7 +1922,8 @@ class _StrategyListPanel(QWidget):
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         root.addWidget(self.list_widget, 1)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
         sep2.setStyleSheet(f"QFrame{{border:none;background:{BORDER};max-height:1px;}}")
         root.addWidget(sep2)
 
@@ -957,12 +2030,12 @@ class _StrategyListPanel(QWidget):
                     self.strategy_selected.emit(self._current_slug)
 
 
-# ── Main Editor Window ────────────────────────────────────────────────────────
+# ── Main Editor Window ───────────────────────────────────────────────────────
 
 class StrategyEditorWindow(QDialog):
     """
     Full-page strategy editor. Non-modal so trading can continue.
-    Emits  strategy_activated(slug)  when the user activates a strategy.
+    Emits strategy_activated(slug) when the user activates a strategy.
     """
     strategy_activated = pyqtSignal(str)  # slug of newly activated strategy
 

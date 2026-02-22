@@ -1,48 +1,133 @@
-from PyQt5.QtWidgets import QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout
-from PyQt5.QtGui import QFont
+from __future__ import annotations
+
+from PyQt5.QtWidgets import (
+    QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout, QHBoxLayout,
+    QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy,
+    QScrollArea,
+)
+from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt
 import threading
-from typing import Optional, Any
+from typing import Optional, Any, Dict, List
 import traceback
 
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG_MAIN   = "#0d1117"
+BG_PANEL  = "#161b22"
+BG_ROW_A  = "#1c2128"
+BG_ROW_B  = "#22272e"
+BORDER    = "#30363d"
+TEXT_MAIN = "#e6edf3"
+TEXT_DIM  = "#8b949e"
+GREEN     = "#3fb950"
+RED       = "#f85149"
+YELLOW    = "#d29922"
+BLUE      = "#58a6ff"
+ORANGE    = "#ffa657"
+GREY_OFF  = "#484f58"
+
+
+
+def _global_ss() -> str:
+    return f"""
+        QWidget, QFrame {{
+            background: {BG_MAIN};
+            color: {TEXT_MAIN};
+            font-family: 'Segoe UI', sans-serif;
+        }}
+        QTabWidget::pane {{
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            background: {BG_PANEL};
+        }}
+        QTabBar::tab {{
+            background: #21262d;
+            color: {TEXT_DIM};
+            border: 1px solid {BORDER};
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            padding: 6px 16px;
+            font-size: 9pt;
+            font-weight: bold;
+        }}
+        QTabBar::tab:selected {{
+            background: {BG_PANEL};
+            color: {TEXT_MAIN};
+            border-bottom: 2px solid {BLUE};
+        }}
+        QTableWidget {{
+            background: {BG_PANEL};
+            gridline-color: {BORDER};
+            border: none;
+            color: {TEXT_MAIN};
+            font-size: 9pt;
+        }}
+        QTableWidget::item {{ padding: 4px 8px; }}
+        QHeaderView::section {{
+            background: #21262d;
+            color: {TEXT_DIM};
+            border: none;
+            border-bottom: 1px solid {BORDER};
+            padding: 4px 8px;
+            font-size: 8pt;
+            font-weight: bold;
+        }}
+        QScrollArea {{ border: none; background: transparent; }}
+        QLabel {{ color: {TEXT_MAIN}; }}
+    """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# StatusCard
+# ─────────────────────────────────────────────────────────────────────────────
 
 class StatusCard(QFrame):
-    """Single status field with a label and a live value."""
+    """Single status field with icon label + live value."""
+
+    _BASE_SS = f"""
+        QFrame {{
+            background: {BG_PANEL};
+            border: 1px solid {BORDER};
+            border-radius: 6px;
+            padding: 4px;
+        }}
+    """
+    _DIM_SS = f"""
+        QFrame {{
+            background: #0f1318;
+            border: 1px solid #1c2230;
+            border-radius: 6px;
+            padding: 4px;
+        }}
+    """
 
     def __init__(self, icon: str, label: str, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("""
-            QFrame {
-                background: #161b22;
-                border: 1px solid #30363d;
-                border-radius: 6px;
-                padding: 4px;
-            }
-        """)
+        self._dimmed = False
+        self.setStyleSheet(self._BASE_SS)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(2)
 
-        title = QLabel(f"{icon}  {label}")
-        title.setFont(QFont("Segoe UI", 8))
-        title.setStyleSheet("color: #8b949e; border: none; background: transparent;")
+        self._title = QLabel(f"{icon}  {label}")
+        self._title.setFont(QFont("Segoe UI", 8))
+        self._title.setStyleSheet(f"color: {TEXT_DIM}; border: none; background: transparent;")
 
         self.value_label = QLabel("—")
         self.value_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        self.value_label.setStyleSheet("color: #e6edf3; border: none; background: transparent;")
+        self.value_label.setStyleSheet(f"color: {TEXT_MAIN}; border: none; background: transparent;")
 
-        # Store last value for change detection
         self._last_value = None
-        self._last_color = "#e6edf3"
+        self._last_color = TEXT_MAIN
 
-        layout.addWidget(title)
+        layout.addWidget(self._title)
         layout.addWidget(self.value_label)
 
-    def set_value(self, text: str, color: str = "#e6edf3"):
-        """# PYQT: Must be called on main thread only"""
-        # Only update if value or color changed
+    def set_value(self, text: str, color: str = TEXT_MAIN):
+        """Must be called on the main thread only."""
         if text == self._last_value and color == self._last_color:
             return
-
         self.value_label.setText(text)
         self.value_label.setStyleSheet(
             f"color: {color}; border: none; background: transparent;"
@@ -50,197 +135,238 @@ class StatusCard(QFrame):
         self._last_value = text
         self._last_color = color
 
+    def set_dimmed(self, dimmed: bool):
+        """Grey out card when it is irrelevant (no active trade)."""
+        if dimmed == self._dimmed:
+            return
+        self._dimmed = dimmed
+        self.setStyleSheet(self._DIM_SS if dimmed else self._BASE_SS)
+        dim_col = GREY_OFF if dimmed else TEXT_DIM
+        self._title.setStyleSheet(
+            f"color: {dim_col}; border: none; background: transparent;"
+        )
+        if dimmed:
+            self.value_label.setText("—")
+            self.value_label.setStyleSheet(
+                f"color: {GREY_OFF}; border: none; background: transparent;"
+            )
+            self._last_value = None   # force repaint when trade reopens
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# StatusPanel  (public API fully preserved)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class StatusPanel(QWidget):
     """
-    # PYQT: Grid of StatusCards — one per live trading field.
-    Updated every 1 second via QTimer on the main thread.
+    Single-tab panel showing live trade status.
+
+    Trade Status tab
+        Grid of StatusCards for position, balance, prices, PnL etc.
+        Trade-specific cards (symbol, buy/current/target/stoploss price, PnL)
+        are automatically greyed out and reset when no trade is active.
+
+    Signal Data (moved to MultiChartWidget tab 3 — "🔬 Signal Data")
+        Previously Tab 2 here; now lives in the chart area where there is
+        sufficient horizontal space for the indicator and rule tables.
+
+    Public API (unchanged):
+        panel.refresh(state, config)
+        panel.pause_refresh()
+        panel.resume_refresh()
+        panel.clear_cache()
     """
 
+    # Cards that only make sense when a trade is open
+    _TRADE_ONLY = frozenset({"symbol", "buy_price", "current_price",
+                              "target_price", "stoploss_price", "pnl"})
+
     FIELDS = [
-        ("position", "🟢", "Position"),
-        ("prev_position", "🔄", "Previous Position"),
-        ("symbol", "💹", "Symbol"),
-        ("buy_price", "🛒", "Buy Price"),
-        ("current_price", "💰", "Current Price"),
-        ("target_price", "🎯", "Target Price"),
+        # Always-visible
+        ("position",       "🟢", "Position"),
+        ("prev_position",  "🔄", "Previous Position"),
+        ("balance",        "🏦", "Balance"),
+        ("derivative",     "📈", "Derivative Price"),
+        # Trade-specific (dimmed when no trade)
+        ("symbol",         "💹", "Symbol"),
+        ("buy_price",      "🛒", "Buy Price"),
+        ("current_price",  "💰", "Current Price"),
+        ("target_price",   "🎯", "Target Price"),
         ("stoploss_price", "🛑", "Stoploss Price"),
-        ("pnl", "💵", "PnL"),
-        ("balance", "🏦", "Balance"),
-        ("derivative", "📈", "Derivative")
+        ("pnl",            "💵", "PnL"),
     ]
 
-    # Default colors
     COLORS = {
-        "positive": "#3fb950",
-        "negative": "#f85149",
-        "neutral": "#8b949e",
-        "normal": "#e6edf3",
-        "accent": "#58a6ff"
+        "positive": GREEN,
+        "negative": RED,
+        "neutral":  TEXT_DIM,
+        "normal":   TEXT_MAIN,
+        "accent":   BLUE,
     }
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lock = threading.Lock()
-        self._last_state = {}  # Cache last state for change detection
-        self._refresh_enabled = True
+        self.setStyleSheet(_global_ss())
 
-        grid = QGridLayout(self)
+        self._lock            = threading.Lock()
+        self._last_state: Dict = {}
+        self._refresh_enabled = True
+        self._trade_active    = False   # tracks last known trade state
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self._tabs = QTabWidget()
+        root.addWidget(self._tabs)
+
+        # ── Tab 1: Trade Status ────────────────────────────────────────────
+        trade_tab   = QWidget()
+        trade_layout = QVBoxLayout(trade_tab)
+        trade_layout.setContentsMargins(6, 6, 6, 6)
+        trade_layout.setSpacing(4)
+
+        # No-trade notice (visible when no trade is open)
+        self._no_trade_lbl = QLabel("⚪  No active trade — trade fields are greyed out")
+        self._no_trade_lbl.setStyleSheet(
+            f"color: {GREY_OFF}; font-size: 8pt; padding: 2px 4px;"
+        )
+        trade_layout.addWidget(self._no_trade_lbl)
+
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
         grid.setSpacing(6)
-        self.cards = {}
+        grid.setContentsMargins(0, 0, 0, 0)
+        self.cards: Dict[str, StatusCard] = {}
 
         for i, (key, icon, label) in enumerate(self.FIELDS):
             card = StatusCard(icon, label)
-            row, col = divmod(i, 2)
-            grid.addWidget(card, row, col)
+            grid.addWidget(card, i // 2, i % 2)
             self.cards[key] = card
 
-    def _safe_get_attr(self, obj: Any, attr: str, default: Any = None) -> Any:
-        """Safely get attribute from object with error handling"""
+        trade_layout.addWidget(grid_widget)
+        trade_layout.addStretch()
+
+        # Start with trade-only cards dimmed
+        for key in self._TRADE_ONLY:
+            self.cards[key].set_dimmed(True)
+
+        self._tabs.addTab(trade_tab, "📊  Trade Status   ")
+
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _safe_get(self, obj: Any, attr: str, default: Any = None) -> Any:
         try:
-            if hasattr(obj, attr):
-                return getattr(obj, attr)
-            return default
+            return getattr(obj, attr) if hasattr(obj, attr) else default
         except Exception:
             return default
 
-    def _format_number(self, value: Any, format_spec: str = ".2f") -> str:
-        """Safely format a number"""
+    def _fmt(self, value: Any, spec: str = ".2f") -> str:
         if value is None:
             return "—"
         try:
-            if isinstance(value, (int, float)):
-                return f"{value:{format_spec}}"
-            # Try to convert to float
-            float_val = float(value)
-            return f"{float_val:{format_spec}}"
+            return f"{float(value):{spec}}"
         except (ValueError, TypeError):
             return str(value)
 
-    def _get_pnl_color(self, pnl: Optional[float]) -> str:
-        """Get color for PnL value"""
-        if pnl is None:
-            return self.COLORS["neutral"]
+    def _pnl_color(self, pnl) -> str:
         try:
-            pnl_float = float(pnl)
-            if pnl_float > 0:
-                return self.COLORS["positive"]
-            elif pnl_float < 0:
-                return self.COLORS["negative"]
-            return self.COLORS["neutral"]
-        except (ValueError, TypeError):
-            return self.COLORS["neutral"]
+            v = float(pnl)
+            if v > 0: return self.COLORS["positive"]
+            if v < 0: return self.COLORS["negative"]
+        except (TypeError, ValueError):
+            pass
+        return self.COLORS["neutral"]
 
-    def _get_position_color(self, position: Optional[str]) -> str:
-        """Get color for position indicator"""
-        if position and str(position).upper() in ["LONG", "SHORT"]:
+    def _pos_color(self, pos) -> str:
+        if pos and str(pos).upper() in ("LONG", "SHORT"):
             return self.COLORS["positive"]
         return self.COLORS["neutral"]
 
+    def _trade_open(self, state) -> bool:
+        pos = self._safe_get(state, "current_position")
+        if pos and str(pos).upper() not in ("NONE", "NO POSITION", ""):
+            return True
+        return bool(self._safe_get(state, "current_trading_symbol"))
+
+    def _set_card(self, key: str, text: str, color: str):
+        """Apply a card update only when the value actually changed."""
+        ck, cc = f"{key}_v", f"{key}_c"
+        with self._lock:
+            if text != self._last_state.get(ck) or color != self._last_state.get(cc):
+                self.cards[key].set_value(text, color)
+                self._last_state[ck] = text
+                self._last_state[cc] = color
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
     def refresh(self, state, config):
         """
-        # PYQT: Called on main thread by QTimer every 1 second.
-        Reads TradeState and updates all status cards with change detection.
+        Called on the main thread by QTimer every second.
+        Reads TradeState and updates both tabs.
         """
         if state is None or not self._refresh_enabled:
             return
-
         try:
-            # Get current values with thread safety
             with self._lock:
-                # Extract all needed values
-                current_position = self._safe_get_attr(state, "current_position")
-                previous_position = self._safe_get_attr(state, "previous_position")
-                symbol = self._safe_get_attr(state, "current_trading_symbol")
-                buy_price = self._safe_get_attr(state, "current_buy_price")
-                current_price = self._safe_get_attr(state, "current_price")
-                target_price = self._safe_get_attr(state, "tp_point")
-                stoploss_price = self._safe_get_attr(state, "stop_loss")
-                pnl = self._safe_get_attr(state, "percentage_change")
-                balance = self._safe_get_attr(state, "account_balance")
-                derivative = self._safe_get_attr(state, "derivative_current_price")
+                pos       = self._safe_get(state, "current_position")
+                prev_pos  = self._safe_get(state, "previous_position")
+                symbol    = self._safe_get(state, "current_trading_symbol")
+                buy_price = self._safe_get(state, "current_buy_price")
+                cur_price = self._safe_get(state, "current_price")
+                tp        = self._safe_get(state, "tp_point")
+                sl        = self._safe_get(state, "stop_loss")
+                pnl       = self._safe_get(state, "percentage_change")
+                balance   = self._safe_get(state, "account_balance")
+                deriv     = self._safe_get(state, "derivative_current_price")
+                pass  # derivative_trend is consumed by chart widget
 
-            # Prepare updates dictionary
-            updates = {}
+            # ── Trade-active state: toggle dimming ─────────────────────────
+            trade_active = self._trade_open(state)
+            if trade_active != self._trade_active:
+                self._trade_active = trade_active
+                for key in self._TRADE_ONLY:
+                    self.cards[key].set_dimmed(not trade_active)
+                self._no_trade_lbl.setVisible(not trade_active)
 
-            # Position
-            pos_text = str(current_position) if current_position else "None"
-            pos_color = self._get_position_color(current_position)
-            updates["position"] = (pos_text, pos_color)
+            # ── Always-visible cards ───────────────────────────────────────
+            self._set_card("position",
+                           str(pos) if pos else "None", self._pos_color(pos))
+            self._set_card("prev_position",
+                           str(prev_pos) if prev_pos else "None", self.COLORS["normal"])
+            self._set_card("balance",    self._fmt(balance),   self.COLORS["normal"])
+            self._set_card("derivative", self._fmt(deriv),     self.COLORS["accent"])
 
-            # Previous Position
-            prev_pos_text = str(previous_position) if previous_position else "None"
-            updates["prev_position"] = (prev_pos_text, self.COLORS["normal"])
-
-            # Symbol
-            symbol_text = str(symbol) if symbol else "No Position"
-            updates["symbol"] = (symbol_text, self.COLORS["normal"])
-
-            # Buy Price
-            updates["buy_price"] = (self._format_number(buy_price), self.COLORS["normal"])
-
-            # Current Price
-            updates["current_price"] = (self._format_number(current_price), self.COLORS["normal"])
-
-            # Target Price
-            updates["target_price"] = (self._format_number(target_price), self.COLORS["positive"])
-
-            # Stoploss Price
-            updates["stoploss_price"] = (self._format_number(stoploss_price), self.COLORS["negative"])
-
-            # PnL
-            if pnl is not None:
+            # ── Trade-specific cards (only update when trade is active) ────
+            if trade_active:
+                self._set_card("symbol",        str(symbol) if symbol else "—",  self.COLORS["normal"])
+                self._set_card("buy_price",     self._fmt(buy_price),             self.COLORS["normal"])
+                self._set_card("current_price", self._fmt(cur_price),             self.COLORS["normal"])
+                self._set_card("target_price",  self._fmt(tp),                    self.COLORS["positive"])
+                self._set_card("stoploss_price",self._fmt(sl),                    self.COLORS["negative"])
                 try:
-                    pnl_float = float(pnl)
-                    pnl_text = f"{pnl_float:.2f}%"
+                    pnl_txt = f"{float(pnl):.2f}%" if pnl is not None else "—"
                 except (ValueError, TypeError):
-                    pnl_text = str(pnl)
-            else:
-                pnl_text = "—"
-            pnl_color = self._get_pnl_color(pnl)
-            updates["pnl"] = (pnl_text, pnl_color)
+                    pnl_txt = str(pnl)
+                self._set_card("pnl", pnl_txt, self._pnl_color(pnl))
 
-            # Balance
-            updates["balance"] = (self._format_number(balance), self.COLORS["normal"])
-
-            # Derivative
-            updates["derivative"] = (self._format_number(derivative), self.COLORS["accent"])
-
-            # Apply updates with change detection
-            for key, (text, color) in updates.items():
-                if key in self.cards:
-                    # Check if value changed
-                    cache_key = f"{key}_value"
-                    cache_color_key = f"{key}_color"
-
-                    with self._lock:
-                        last_text = self._last_state.get(cache_key)
-                        last_color = self._last_state.get(cache_color_key)
-
-                        if text != last_text or color != last_color:
-                            self.cards[key].set_value(text, color)
-                            self._last_state[cache_key] = text
-                            self._last_state[cache_color_key] = color
+            # Signal Data is refreshed by MultiChartWidget (chart tab 3)
 
         except Exception as e:
-            print(f"Error refreshing status panel: {e}")
+            print(f"StatusPanel.refresh error: {e}")
             traceback.print_exc()
 
     def pause_refresh(self):
-        """Pause automatic refresh"""
         self._refresh_enabled = False
 
     def resume_refresh(self):
-        """Resume automatic refresh"""
         self._refresh_enabled = True
 
     def clear_cache(self):
-        """Clear the state cache"""
         with self._lock:
             self._last_state.clear()
 
     def closeEvent(self, event):
-        """Clean up when panel is closed"""
         self.pause_refresh()
         self.clear_cache()
         super().closeEvent(event)
