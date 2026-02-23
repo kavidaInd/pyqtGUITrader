@@ -21,8 +21,6 @@ from gui.DailyTradeSettingGUI import DailyTradeSettingGUI
 from gui.FyersManualLoginPopup import FyersManualLoginPopup
 from gui.ProfitStoplossSetting import ProfitStoplossSetting
 from gui.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
-from gui.StrategySetting import StrategySetting
-from gui.StrategySettingGUI import StrategySettingGUI
 from gui.app_status_bar import AppStatusBar
 from gui.chart_widget import MultiChartWidget
 from gui.log_handler import QtLogHandler
@@ -60,7 +58,6 @@ class TradingGUI(QMainWindow):
         self.brokerage_setting = BrokerageSetting()
         self.daily_setting = DailyTradeSetting()
         self.profit_loss_setting = ProfitStoplossSetting()
-        self.strategy_setting = StrategySetting()
 
         # Runtime state
         self.app_running = False
@@ -625,7 +622,7 @@ class TradingGUI(QMainWindow):
         # Settings menu
         settings_menu = menubar.addMenu("Settings")
         actions = [
-            ("Strategy Settings", self._open_strategy),
+            ("Strategy Settings", self._show_strategy_picker),
             ("Daily Trade Settings", self._open_daily),
             ("Profit & Loss Settings", self._open_pnl),
             ("Brokerage Settings", self._open_brokerage),
@@ -686,10 +683,6 @@ class TradingGUI(QMainWindow):
         if self.strategy_editor:
             self.strategy_editor.close()
 
-    # Settings dialog openers
-    def _open_strategy(self):
-        dlg = StrategySettingGUI(self, self.strategy_setting)
-        dlg.exec_()
 
     def _open_daily(self):
         dlg = DailyTradeSettingGUI(self, daily_setting=self.daily_setting,

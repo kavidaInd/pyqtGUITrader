@@ -198,13 +198,16 @@ def get_param_description(param: str) -> str:
     """Get description for a parameter"""
     return PARAMETER_DESCRIPTIONS.get(param, "No description available")
 
+
 def get_indicators_by_category() -> Dict[str, List[str]]:
     """Return indicators organized by category"""
     return INDICATOR_CATEGORIES.copy()
 
+
 def get_indicator_display_name(indicator: str) -> str:
     """Get a display name with proper formatting"""
     return indicator.upper()
+
 
 def get_indicator_category(indicator: str) -> str:
     """Get the category of an indicator"""

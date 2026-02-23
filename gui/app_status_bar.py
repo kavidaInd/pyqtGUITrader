@@ -1,7 +1,6 @@
 # app_status_bar.py - Status bar for displaying application state
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QFrame, QProgressBar
-from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty
-from PyQt5.QtGui import QFont, QColor, QPalette
+from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QFrame, QProgressBar
 
 
 class AnimatedLabel(QLabel):

@@ -41,26 +41,6 @@ logger = logging.getLogger(__name__)
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
 INDICATOR_DEFAULTS = {
-    "long_st_length":     10,
-    "long_st_multi":      1.5,
-    "short_st_length":    7,
-    "short_st_multi":     1.2,
-    "bb_length":          20,
-    "bb_std":             2.0,
-    "macd_fast":          10,
-    "macd_slow":          20,
-    "macd_signal":        7,
-    "rsi_length":         14,
-    "use_long_st_entry":  False,
-    "use_long_st_exit":   False,
-    "use_short_st_entry": False,
-    "use_short_st_exit":  False,
-    "bb_entry":           False,
-    "bb_exit":            False,
-    "use_macd_entry":     False,
-    "use_macd_exit":      False,
-    "use_rsi_entry":      False,
-    "use_rsi_exit":       False,
 }
 
 SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "SELL_CALL", "SELL_PUT", "HOLD"]

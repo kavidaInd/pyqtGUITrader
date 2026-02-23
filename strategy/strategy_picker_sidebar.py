@@ -50,34 +50,34 @@ from strategy.strategy_manager import StrategyManager, SIGNAL_GROUPS
 logger = logging.getLogger(__name__)
 
 # ── Palette ──────────────────────────────────────────────────────────────────
-BG       = "#0d1117"
+BG = "#0d1117"
 BG_PANEL = "#161b22"
-BG_ITEM  = "#1c2128"
-BG_SEL   = "#1f3d5c"
-BORDER   = "#30363d"
-TEXT     = "#e6edf3"
-DIM      = "#8b949e"
-GREEN    = "#3fb950"
-RED      = "#f85149"
-BLUE     = "#58a6ff"
-YELLOW   = "#d29922"
-ORANGE   = "#ffa657"
+BG_ITEM = "#1c2128"
+BG_SEL = "#1f3d5c"
+BORDER = "#30363d"
+TEXT = "#e6edf3"
+DIM = "#8b949e"
+GREEN = "#3fb950"
+RED = "#f85149"
+BLUE = "#58a6ff"
+YELLOW = "#d29922"
+ORANGE = "#ffa657"
 
 SIGNAL_COLORS = {
-    "BUY_CALL":  GREEN,
-    "BUY_PUT":   BLUE,
+    "BUY_CALL": GREEN,
+    "BUY_PUT": BLUE,
     "SELL_CALL": RED,
-    "SELL_PUT":  ORANGE,
-    "HOLD":      YELLOW,
-    "WAIT":      "#484f58",
+    "SELL_PUT": ORANGE,
+    "HOLD": YELLOW,
+    "WAIT": "#484f58",
 }
 SIGNAL_LABELS = {
-    "BUY_CALL":  "📈 Buy Call",
-    "BUY_PUT":   "📉 Buy Put",
+    "BUY_CALL": "📈 Buy Call",
+    "BUY_PUT": "📉 Buy Put",
     "SELL_CALL": "🔴 Sell Call",
-    "SELL_PUT":  "🟠 Sell Put",
-    "HOLD":      "⏸ Hold",
-    "WAIT":      "⏳ Wait",
+    "SELL_PUT": "🟠 Sell Put",
+    "HOLD": "⏸ Hold",
+    "WAIT": "⏳ Wait",
 }
 
 
@@ -115,6 +115,7 @@ def _ss() -> str:
 
 class _StrategyCard(QFrame):
     """Expanded card showing active strategy details."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"""
@@ -147,13 +148,14 @@ class _StrategyCard(QFrame):
         self._desc_lbl.setWordWrap(True)
         layout.addWidget(self._desc_lbl)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep = QFrame();
+        sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"QFrame{{background:{BORDER};max-height:1px;border:none;}}")
         layout.addWidget(sep)
 
         # Stats row
         stats = QHBoxLayout()
-        self._rules_lbl  = self._stat_lbl("0 rules")
+        self._rules_lbl = self._stat_lbl("0 rules")
         self._updated_lbl = self._stat_lbl("—")
         stats.addWidget(self._rules_lbl)
         stats.addStretch()
@@ -199,8 +201,8 @@ class StrategyPickerSidebar(QDialog):
     Compact floating sidebar for switching active strategy.
     Non-modal — can stay open while trading.
     """
-    strategy_activated  = pyqtSignal(str)   # emitted with slug
-    open_editor_requested = pyqtSignal()    # user wants full editor
+    strategy_activated = pyqtSignal(str)  # emitted with slug
+    open_editor_requested = pyqtSignal()  # user wants full editor
 
     def __init__(self, manager: StrategyManager, trading_app=None, parent=None):
         super().__init__(parent, Qt.Window | Qt.Tool)

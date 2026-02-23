@@ -341,7 +341,7 @@ class Broker:
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 100):
         today = datetime.today().strftime("%Y-%m-%d")
-        from_date = (datetime.today() - relativedelta(days=3 if date.today().weekday() == 6 else 2)).strftime(
+        from_date = (datetime.today() - relativedelta(days=6 if date.today().weekday() == 6 else 4)).strftime(
             "%Y-%m-%d")
         formatted_symbol = self._format_symbol(symbol)
         unit, measurement = Utils.get_interval_unit_and_measurement(interval)
