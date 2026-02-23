@@ -5,7 +5,7 @@
   "lot_size": 65,
   "call_lookback": 0,
   "put_lookback": 0,
-  "history_interval": "1m",
+  "history_interval": "30S",
   "max_num_of_option": 1800,
   "lower_percentage": 1.0,
   "cancel_after": 5,
