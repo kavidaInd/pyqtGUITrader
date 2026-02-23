@@ -1,12 +1,15 @@
 # OptionUtils.py - All option-related methods consolidated here
 import calendar
 import logging
+import logging.handlers
 from datetime import datetime, timedelta
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
+import traceback
 
 import BaseEnums
 from Utils.Utils import Utils
 
+# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
@@ -48,23 +51,34 @@ class OptionUtils:
 
     # Weekday map for expiry days (0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday)
     EXPIRY_WEEKDAY_MAP = {
-        "NIFTY": 3,       # Thursday
-        "BANKNIFTY": 2,   # Wednesday
-        "FINNIFTY": 1,    # Tuesday
+        "NIFTY": 3,  # Thursday
+        "BANKNIFTY": 2,  # Wednesday
+        "FINNIFTY": 1,  # Tuesday
         "MIDCPNIFTY": 0,  # Monday
-        "SENSEX": 4       # Friday
+        "SENSEX": 4  # Friday
     }
 
     @classmethod
     def get_exchange_symbol(cls, symbol: str) -> str:
         """Convert input symbol to exchange symbol"""
-        return cls.SYMBOL_MAP.get(symbol, symbol)
+        try:
+            if symbol is None:
+                logger.warning("get_exchange_symbol called with None symbol")
+                return ""
+            return cls.SYMBOL_MAP.get(symbol, symbol)
+        except Exception as e:
+            logger.error(f"[get_exchange_symbol] Failed for {symbol}: {e}", exc_info=True)
+            return symbol if symbol else ""
 
     @classmethod
     def get_multiplier(cls, symbol: str) -> int:
         """Get strike multiplier for symbol"""
-        exchange_symbol = cls.get_exchange_symbol(symbol)
-        return cls.MULTIPLIER_MAP.get(exchange_symbol, 50)
+        try:
+            exchange_symbol = cls.get_exchange_symbol(symbol)
+            return cls.MULTIPLIER_MAP.get(exchange_symbol, 50)
+        except Exception as e:
+            logger.error(f"[get_multiplier] Failed for {symbol}: {e}", exc_info=True)
+            return 50
 
     @classmethod
     def lookbacks(cls, derivative: str = 'NIFTY', side: str = BaseEnums.CALL, lookback: int = 0) -> int:
@@ -93,106 +107,127 @@ class OptionUtils:
         Get the last occurrence of a given weekday in a month.
         target_weekday: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday
         """
-        last_day = calendar.monthrange(year, month)[1]
-        date = datetime(year, month, last_day)
-        while date.weekday() != target_weekday:
-            date -= timedelta(days=1)
-        return date
+        try:
+            # Input validation
+            if year < 2000 or year > 2100:
+                logger.warning(f"Year {year} out of reasonable range, using current year")
+                year = datetime.now().year
+
+            if month < 1 or month > 12:
+                logger.warning(f"Month {month} out of range, using current month")
+                month = datetime.now().month
+
+            if target_weekday < 0 or target_weekday > 4:
+                logger.warning(f"target_weekday {target_weekday} out of range, defaulting to Thursday")
+                target_weekday = 3
+
+            last_day = calendar.monthrange(year, month)[1]
+            date = datetime(year, month, last_day)
+            while date.weekday() != target_weekday:
+                date -= timedelta(days=1)
+            return date
+        except ValueError as e:
+            logger.error(f"Invalid date parameters: year={year}, month={month}: {e}", exc_info=True)
+            return datetime.now()
+        except Exception as e:
+            logger.error(f"[get_last_expiry_weekday_of_month] Failed: {e}", exc_info=True)
+            return datetime.now()
 
     @classmethod
     def get_last_thursday_of_month(cls, year: int, month: int) -> datetime:
         """Get the last Thursday of a given month (kept for backward compatibility)"""
-        return cls.get_last_expiry_weekday_of_month(year, month, target_weekday=3)
+        try:
+            return cls.get_last_expiry_weekday_of_month(year, month, target_weekday=3)
+        except Exception as e:
+            logger.error(f"[get_last_thursday_of_month] Failed: {e}", exc_info=True)
+            return datetime.now()
 
     @classmethod
     def get_monthly_expiry_date(cls, year: int, month: int, derivative: str = "NIFTY") -> datetime:
         """
         Get the monthly expiry date for the given derivative with holiday adjustment.
-
-        FIX (Bug #5): Previously always used Thursday (hardcoded for NIFTY).
-        Now correctly derives the expiry weekday per derivative:
-          NIFTY      -> last Thursday
-          BANKNIFTY  -> last Wednesday
-          FINNIFTY   -> last Tuesday
-          MIDCPNIFTY -> last Monday
-          SENSEX     -> last Friday
         """
-        exchange_symbol = cls.get_exchange_symbol(derivative)
-        target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 3)  # default Thursday
-        expiry = cls.get_last_expiry_weekday_of_month(year, month, target_weekday)
-        # Adjust backwards for holidays (skip weekends already excluded by weekday logic,
-        # but NSE declared holidays may still fall on weekdays)
-        while Utils.is_holiday(expiry):
-            expiry -= timedelta(days=1)
-        return Utils.get_time_of_day(0, 0, 0, expiry)
+        try:
+            exchange_symbol = cls.get_exchange_symbol(derivative)
+            target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 3)  # default Thursday
+            expiry = cls.get_last_expiry_weekday_of_month(year, month, target_weekday)
+
+            # Adjust backwards for holidays
+            max_adjustments = 10  # Prevent infinite loop
+            adjustments = 0
+            while Utils.is_holiday(expiry) and adjustments < max_adjustments:
+                expiry -= timedelta(days=1)
+                adjustments += 1
+
+            return Utils.get_time_of_day(0, 0, 0, expiry)
+        except Exception as e:
+            logger.error(f"[get_monthly_expiry_date] Failed for {derivative}: {e}", exc_info=True)
+            return datetime.now()
 
     @classmethod
     def get_current_weekly_expiry_date(cls, derivative: str = "NIFTY") -> datetime:
         """
         Get the current (or next upcoming) weekly expiry date for a derivative.
-
-        FIX (Bug #1): Previously, when today IS the expiry day, days_to_add was forced
-        to 7, skipping today's expiry entirely and jumping to next week's. The correct
-        behaviour is to return today if it is the expiry day (and market hasn't closed),
-        or next week's expiry if the market has already closed for the day.
         """
-        exchange_symbol = cls.get_exchange_symbol(derivative)
-        target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 3)
+        try:
+            exchange_symbol = cls.get_exchange_symbol(derivative)
+            target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 3)
 
-        today = datetime.now()
-        days_to_add = (target_weekday - today.weekday() + 7) % 7
+            today = datetime.now()
+            days_to_add = (target_weekday - today.weekday() + 7) % 7
 
-        # FIX: If days_to_add == 0, today IS the expiry weekday.
-        # Only roll forward to next week if the market has already closed today.
-        if days_to_add == 0 and Utils.is_market_closed_for_the_day():
-            days_to_add = 7
+            # FIX: If days_to_add == 0, today IS the expiry weekday.
+            # Only roll forward to next week if the market has already closed today.
+            if days_to_add == 0 and Utils.is_market_closed_for_the_day():
+                days_to_add = 7
 
-        expiry = today + timedelta(days=days_to_add)
+            expiry = today + timedelta(days=days_to_add)
 
-        # Adjust backwards for holidays
-        while Utils.is_holiday(expiry):
-            expiry -= timedelta(days=1)
+            # Adjust backwards for holidays
+            max_adjustments = 10
+            adjustments = 0
+            while Utils.is_holiday(expiry) and adjustments < max_adjustments:
+                expiry -= timedelta(days=1)
+                adjustments += 1
 
-        return Utils.get_time_of_day(0, 0, 0, expiry)
+            return Utils.get_time_of_day(0, 0, 0, expiry)
+        except Exception as e:
+            logger.error(f"[get_current_weekly_expiry_date] Failed for {derivative}: {e}", exc_info=True)
+            return datetime.now()
 
     @classmethod
     def is_monthly_expiry_week(cls, derivative: str = "NIFTY") -> bool:
         """Check if the current week contains the monthly expiry for the given derivative"""
-        today = datetime.now()
-        exchange_symbol = cls.get_exchange_symbol(derivative)
-        monthly_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
+        try:
+            today = datetime.now()
+            exchange_symbol = cls.get_exchange_symbol(derivative)
+            monthly_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
 
-        # Get start of week (Monday) and end of week (Sunday)
-        start_of_week = today - timedelta(days=today.weekday())
-        end_of_week = start_of_week + timedelta(days=6)
+            # Get start of week (Monday) and end of week (Sunday)
+            start_of_week = today - timedelta(days=today.weekday())
+            end_of_week = start_of_week + timedelta(days=6)
 
-        return start_of_week.date() <= monthly_expiry.date() <= end_of_week.date()
+            return start_of_week.date() <= monthly_expiry.date() <= end_of_week.date()
+        except Exception as e:
+            logger.error(f"[is_monthly_expiry_week] Failed for {derivative}: {e}", exc_info=True)
+            return False
 
     @classmethod
     def is_monthly_expiry_today(cls, derivative: str = "NIFTY") -> bool:
         """Check if today is the monthly expiry day for the given derivative"""
-        today = datetime.now()
-        exchange_symbol = cls.get_exchange_symbol(derivative)
-        monthly_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
-        return today.date() == monthly_expiry.date()
+        try:
+            today = datetime.now()
+            exchange_symbol = cls.get_exchange_symbol(derivative)
+            monthly_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
+            return today.date() == monthly_expiry.date()
+        except Exception as e:
+            logger.error(f"[is_monthly_expiry_today] Failed for {derivative}: {e}", exc_info=True)
+            return False
 
     @classmethod
     def should_use_monthly_format(cls, derivative: str = "NIFTY") -> bool:
         """
         Determine if we should use monthly option format.
-
-        The correct rule is simple:
-          - Compute the NEXT upcoming expiry date (same as get_current_weekly_expiry_date).
-          - Compute the monthly expiry for the month that next expiry falls in.
-          - If they are the same date → the upcoming expiry IS the monthly expiry → use monthly format.
-          - Otherwise → use weekly format.
-
-        This correctly handles the edge case where today is AFTER the last weekly expiry of
-        the month but BEFORE the monthly expiry (e.g. Friday Feb 20 when last Thursday=Feb 19
-        was weekly and the next expiry Feb 26 is the monthly). Previous calendar-week-range
-        logic failed here because Feb 26 was not in the current week (Feb 16–22).
-
-        SENSEX is a special case — it only has monthly expiries, so always returns True.
         """
         try:
             exchange_symbol = cls.get_exchange_symbol(derivative)
@@ -204,15 +239,19 @@ class OptionUtils:
             target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 3)
             today = datetime.now()
 
-            # Compute next expiry date (mirrors get_current_weekly_expiry_date logic)
+            # Compute next expiry date
             days_to_add = (target_weekday - today.weekday() + 7) % 7
-            # If today IS the expiry weekday and market is still open, use today
             if days_to_add == 0 and Utils.is_market_closed_for_the_day():
                 days_to_add = 7
+
             next_expiry = today + timedelta(days=days_to_add)
+
             # Adjust backwards for holidays
-            while Utils.is_holiday(next_expiry):
+            max_adjustments = 10
+            adjustments = 0
+            while Utils.is_holiday(next_expiry) and adjustments < max_adjustments:
                 next_expiry -= timedelta(days=1)
+                adjustments += 1
 
             # Get the monthly expiry for the month that next_expiry lands in
             monthly_expiry = cls.get_monthly_expiry_date(
@@ -223,7 +262,7 @@ class OptionUtils:
             return next_expiry.date() == monthly_expiry.date()
 
         except Exception as e:
-            logger.error(f"[should_use_monthly_format] Error: {e}")
+            logger.error(f"[should_use_monthly_format] Error: {e}", exc_info=True)
             return False
 
     # --- Option Symbol Generation ---
@@ -233,15 +272,16 @@ class OptionUtils:
                                       num_months_plus: int = 0) -> Optional[str]:
         """
         Prepare monthly expiry option symbol.
-        Format: {UnderlyingSymbol}{YY}{MMM}{Strike}{Opt_Type}
-        Example: NIFTY26FEB25550CE
-
-        FIX (Bug #3): Parameter renamed from num_weeks_plus to num_months_plus to reflect
-        intent. Previously added weeks to the last-Thursday date, landing mid-month on an
-        arbitrary non-expiry date. Now correctly advances by whole calendar months and
-        recomputes the proper last expiry weekday for that target month.
         """
         try:
+            if not input_symbol:
+                logger.warning("prepare_monthly_expiry_symbol called with empty input_symbol")
+                return None
+
+            if strike is None:
+                logger.warning("prepare_monthly_expiry_symbol called with None strike")
+                return None
+
             today = datetime.now()
             # Advance by the requested number of months
             target_month = today.month + num_months_plus
@@ -259,10 +299,13 @@ class OptionUtils:
                 option_type = 'CE'
 
             # Format strike as integer without decimal
-            strike_int = int(float(strike))
+            try:
+                strike_int = int(float(strike))
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to convert strike {strike} to int: {e}")
+                return None
 
             symbol = f"{input_symbol}{year2d}{month_code}{strike_int}{option_type}"
-            # logger.info(f"[prepare_monthly_expiry_symbol] {symbol}")
             return symbol
         except Exception as e:
             logger.error(f"[prepare_monthly_expiry_symbol] Error: {e}", exc_info=True)
@@ -273,24 +316,26 @@ class OptionUtils:
                                       num_weeks_plus: int = 0) -> Optional[str]:
         """
         Prepare weekly expiry option symbol.
-        Format: {UnderlyingSymbol}{YY}{M}{dd}{Strike}{Opt_Type}
-        Example: NIFTY2631225500CE  (12th March 2026, strike 25500)
-        Month code: 1-9, O=Oct, N=Nov, D=Dec
-
-        FIX (Bug #2): Previously called get_current_weekly_expiry_date(expiry_date) after
-        adding weeks, passing a datetime where a str is expected. The method silently
-        ignored the datetime argument and recomputed from datetime.now(), discarding the
-        week offset entirely. Now the offset is applied directly on the computed expiry
-        date followed by proper holiday adjustment.
         """
         try:
+            if not input_symbol:
+                logger.warning("prepare_weekly_options_symbol called with empty input_symbol")
+                return None
+
+            if strike is None:
+                logger.warning("prepare_weekly_options_symbol called with None strike")
+                return None
+
             expiry_date = cls.get_current_weekly_expiry_date(derivative=input_symbol)
 
             if num_weeks_plus:
                 expiry_date += timedelta(weeks=num_weeks_plus)
                 # Re-apply holiday adjustment for the new date
-                while Utils.is_holiday(expiry_date):
+                max_adjustments = 10
+                adjustments = 0
+                while Utils.is_holiday(expiry_date) and adjustments < max_adjustments:
                     expiry_date -= timedelta(days=1)
+                    adjustments += 1
 
             year2d = str(expiry_date.year)[2:]
             option_type = option_type.upper()
@@ -300,13 +345,17 @@ class OptionUtils:
                 option_type = 'CE'
 
             # Format strike as integer without decimal
-            strike_int = int(float(strike))
+            try:
+                strike_int = int(float(strike))
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to convert strike {strike} to int: {e}")
+                return None
 
             # Weekly format with month code (1-9, O, N, D) and zero-padded day
             month_code = cls.WEEKLY_MONTH_CODES.get(expiry_date.month, str(expiry_date.month))
             day_str = f"{expiry_date.day:02d}"
             symbol = f"{input_symbol}{year2d}{month_code}{day_str}{strike_int}{option_type}"
-            logger.info(f"[prepare_weekly_options_symbol] Weekly format: {symbol}")
+            logger.debug(f"[prepare_weekly_options_symbol] Weekly format: {symbol}")
 
             return symbol
         except Exception as e:
@@ -318,9 +367,12 @@ class OptionUtils:
                           expiry: int = 0) -> Optional[str]:
         """
         Get option symbol using appropriate format based on expiry timing.
-        Uses monthly format during the monthly expiry week, weekly format otherwise.
         """
         try:
+            if not exchange_symbol:
+                logger.warning("get_option_symbol called with empty exchange_symbol")
+                return None
+
             use_monthly = cls.should_use_monthly_format(exchange_symbol)
 
             if use_monthly:
@@ -337,6 +389,14 @@ class OptionUtils:
     def get_nearest_strike_price(cls, price: float, nearest_multiple: int = 50) -> int:
         """Round price to nearest strike multiple"""
         try:
+            if price is None:
+                logger.warning("get_nearest_strike_price called with None price")
+                return 0
+
+            if nearest_multiple <= 0:
+                logger.warning(f"Invalid nearest_multiple {nearest_multiple}, using 50")
+                nearest_multiple = 50
+
             input_price = int(round(price))
             remainder = input_price % nearest_multiple
 
@@ -346,35 +406,25 @@ class OptionUtils:
                 return input_price + (nearest_multiple - remainder)
         except Exception as e:
             logger.error(f"[get_nearest_strike_price] Error: {e}", exc_info=True)
-            return int(price)
+            try:
+                return int(price)
+            except:
+                return 0
 
     @classmethod
     def get_all_option(cls, expiry: int = 0, symbol: str = "NIFTY50", strike: Optional[float] = None,
                        itm: int = 5, otm: int = 5, putorcall: str = "CE") -> List[str]:
         """
-        Get option symbols centred around the ATM strike: `itm` ITM strikes + ATM + `otm` OTM strikes.
-
-        For CE options:
-            ITM strikes are BELOW the ATM (lower strikes = in-the-money for calls)
-            OTM strikes are ABOVE the ATM (higher strikes = out-of-the-money for calls)
-            Order returned: lowest ITM → ATM → highest OTM  (ascending strike order)
-
-        For PE options:
-            ITM strikes are ABOVE the ATM (higher strikes = in-the-money for puts)
-            OTM strikes are BELOW the ATM (lower strikes = out-of-the-money for puts)
-            Order returned: lowest OTM → ATM → highest ITM  (ascending strike order)
-
-        Example with NIFTY spot=25571, itm=5, otm=5, multiplier=50, ATM=25550:
-            CE: 25300, 25350, 25400, 25450, 25500, [25550 ATM], 25600, 25650, 25700, 25750, 25800
-            PE: 25300, 25350, 25400, 25450, 25500, [25550 ATM], 25600, 25650, 25700, 25750, 25800
-            (same strikes, different option type — symmetric around ATM)
-
-        Previously `number` was used with confusing `number * 2` loop semantics. Replaced
-        with explicit `itm` and `otm` parameters for clarity.
+        Get option symbols centred around the ATM strike.
         """
         try:
             if strike is None:
-                raise ValueError("Strike price is required")
+                logger.error("get_all_option called with None strike")
+                return []
+
+            if not symbol:
+                logger.warning("get_all_option called with empty symbol")
+                symbol = "NIFTY50"
 
             exchange_symbol = cls.get_exchange_symbol(symbol)
             multiplier = cls.get_multiplier(exchange_symbol)
@@ -387,22 +437,21 @@ class OptionUtils:
             options = []
             for i in range(total_strikes):
                 current_strike = start_strike + i * multiplier
-                if use_monthly:
-                    option = cls.prepare_monthly_expiry_symbol(
-                        exchange_symbol, current_strike, putorcall, expiry
-                    )
-                else:
-                    option = cls.prepare_weekly_options_symbol(
-                        exchange_symbol, current_strike, putorcall, expiry
-                    )
-                if option:
-                    options.append(option)
+                try:
+                    if use_monthly:
+                        option = cls.prepare_monthly_expiry_symbol(
+                            exchange_symbol, current_strike, putorcall, expiry
+                        )
+                    else:
+                        option = cls.prepare_weekly_options_symbol(
+                            exchange_symbol, current_strike, putorcall, expiry
+                        )
+                    if option:
+                        options.append(option)
+                except Exception as e:
+                    logger.warning(f"Failed to generate option for strike {current_strike}: {e}")
+                    continue
 
-            # logger.info(
-            #     f"[get_all_option] {putorcall} chain for {exchange_symbol} | "
-            #     f"ATM={atm_strike} | {itm} ITM + ATM + {otm} OTM = {len(options)} symbols | "
-            #     f"Range: {start_strike} → {start_strike + (total_strikes-1)*multiplier}"
-            # )
             return options
 
         except Exception as e:
@@ -414,17 +463,19 @@ class OptionUtils:
                             derivative_name: str = 'NIFTY', expiry: int = 0) -> Optional[str]:
         """
         Get option symbol for given price and lookback.
-
-        Example: For NIFTY at 25571.25, lookback=0, op_type='CE' on 20th Feb 2026
-        Should return: NIFTY2631225550CE (weekly format for March expiry)
         """
         try:
-            if not derivative_price:
-                raise ValueError("Invalid derivative price provided.")
+            if not derivative_price or derivative_price <= 0:
+                logger.error(f"Invalid derivative price: {derivative_price}")
+                return None
+
             if op_type not in ['CE', 'PE']:
-                raise ValueError("Option type must be 'CE' or 'PE'.")
+                logger.error(f"Option type must be 'CE' or 'PE', got {op_type}")
+                return None
+
             if not derivative_name:
-                raise ValueError("Derivative name is required.")
+                logger.error("Derivative name is required")
+                return None
 
             exchange_symbol = cls.get_exchange_symbol(derivative_name)
             multiplier = cls.get_multiplier(exchange_symbol)
@@ -439,12 +490,12 @@ class OptionUtils:
                 lookback_strikes = int(lookback / multiplier) if lookback else 0
                 strike = nearest_strike + (lookback_strikes * multiplier)
 
-            logger.info(f"[get_option_at_price] Price: {derivative_price}, Nearest strike: {nearest_strike}, "
-                        f"Lookback: {lookback}, Calculated strike: {strike}")
+            logger.debug(f"[get_option_at_price] Price: {derivative_price}, Nearest strike: {nearest_strike}, "
+                         f"Lookback: {lookback}, Calculated strike: {strike}")
 
             option = cls.get_option_symbol(exchange_symbol, strike, op_type, expiry)
 
-            logger.info(f"[get_option_at_price] Generated option: {option}")
+            logger.debug(f"[get_option_at_price] Generated option: {option}")
             return option
 
         except Exception as e:
@@ -457,16 +508,24 @@ class OptionUtils:
     def get_weekly_expiry_day_date(cls, date_time_obj: Optional[datetime] = None,
                                    derivative: str = "NIFTY") -> datetime:
         """Alias for get_current_weekly_expiry_date - kept for backward compatibility"""
-        return cls.get_current_weekly_expiry_date(derivative)
+        try:
+            return cls.get_current_weekly_expiry_date(derivative)
+        except Exception as e:
+            logger.error(f"[get_weekly_expiry_day_date] Failed: {e}", exc_info=True)
+            return datetime.now()
 
     @classmethod
     def get_monthly_expiry_day_date(cls, datetime_obj: Optional[datetime] = None,
                                     derivative: str = "NIFTY") -> datetime:
         """Alias for get_monthly_expiry_date - kept for backward compatibility"""
-        if datetime_obj is None:
-            datetime_obj = datetime.now()
-        exchange_symbol = cls.get_exchange_symbol(derivative)
-        return cls.get_monthly_expiry_date(datetime_obj.year, datetime_obj.month, derivative=exchange_symbol)
+        try:
+            if datetime_obj is None:
+                datetime_obj = datetime.now()
+            exchange_symbol = cls.get_exchange_symbol(derivative)
+            return cls.get_monthly_expiry_date(datetime_obj.year, datetime_obj.month, derivative=exchange_symbol)
+        except Exception as e:
+            logger.error(f"[get_monthly_expiry_day_date] Failed: {e}", exc_info=True)
+            return datetime.now()
 
     @classmethod
     def is_today_weekly_expiry_day(cls, derivative: str = "NIFTY50") -> bool:
@@ -494,19 +553,34 @@ class OptionUtils:
     def prepare_monthly_expiry_futures_symbol(cls, input_symbol: str) -> Optional[str]:
         """Prepare futures symbol for the current or next monthly expiry"""
         try:
+            if not input_symbol:
+                logger.warning("prepare_monthly_expiry_futures_symbol called with empty input_symbol")
+                return None
+
             exchange_symbol = cls.get_exchange_symbol(input_symbol)
             expiry_date = cls.get_monthly_expiry_day_date(derivative=input_symbol)
+
             if datetime.now() > Utils.get_market_end_time(expiry_date):
                 # Roll to next month
                 expiry_date = cls.get_monthly_expiry_day_date(
                     datetime.now() + timedelta(days=20),
                     derivative=input_symbol
                 )
+
             year2d = str(expiry_date.year)[2:]
             month_short = calendar.month_name[expiry_date.month].upper()[:3]
             symbol = exchange_symbol + year2d + month_short + 'FUT'
-            logger.info(f'[prepare_monthly_expiry_futures_symbol] {input_symbol} => {symbol}')
+            logger.debug(f'[prepare_monthly_expiry_futures_symbol] {input_symbol} => {symbol}')
             return symbol
         except Exception as e:
             logger.error(f"[prepare_monthly_expiry_futures_symbol] Error: {e}", exc_info=True)
             return None
+
+    # Rule 8: Cleanup method
+    @classmethod
+    def cleanup(cls):
+        """Clean up resources (minimal for this class)"""
+        try:
+            logger.info("[OptionUtils] Cleanup completed")
+        except Exception as e:
+            logger.error(f"[OptionUtils.cleanup] Error: {e}", exc_info=True)

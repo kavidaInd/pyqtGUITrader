@@ -35,7 +35,9 @@ Usage (as floating popup from TradingGUI):
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+import logging.handlers
+import traceback
+from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QFont
@@ -47,6 +49,7 @@ from PyQt5.QtWidgets import (
 
 from strategy.strategy_manager import StrategyManager, SIGNAL_GROUPS
 
+# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 # ── Palette ──────────────────────────────────────────────────────────────────
@@ -117,83 +120,122 @@ class _StrategyCard(QFrame):
     """Expanded card showing active strategy details."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: {BG_PANEL};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
-            }}
-        """)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(5)
+        # Rule 2: Safe defaults first
+        self._safe_defaults_init()
 
-        header = QHBoxLayout()
-        badge = QLabel("⚡ ACTIVE")
-        badge.setStyleSheet(f"color:{BLUE}; font-size:8pt; font-weight:bold;")
-        header.addWidget(badge)
-        header.addStretch()
-        self._signal_lbl = QLabel()
-        self._signal_lbl.setStyleSheet(f"color:#484f58; font-size:9pt; font-weight:bold;")
-        header.addWidget(self._signal_lbl)
-        layout.addLayout(header)
+        try:
+            super().__init__(parent)
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background: {BG_PANEL};
+                    border: 1px solid {BORDER};
+                    border-radius: 6px;
+                }}
+            """)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(12, 10, 12, 10)
+            layout.setSpacing(5)
 
-        self._name_lbl = QLabel("—")
-        self._name_lbl.setStyleSheet(f"color:{TEXT}; font-size:12pt; font-weight:bold;")
-        layout.addWidget(self._name_lbl)
+            header = QHBoxLayout()
+            badge = QLabel("⚡ ACTIVE")
+            badge.setStyleSheet(f"color:{BLUE}; font-size:8pt; font-weight:bold;")
+            header.addWidget(badge)
+            header.addStretch()
+            self._signal_lbl = QLabel()
+            self._signal_lbl.setStyleSheet(f"color:#484f58; font-size:9pt; font-weight:bold;")
+            header.addWidget(self._signal_lbl)
+            layout.addLayout(header)
 
-        self._desc_lbl = QLabel()
-        self._desc_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
-        self._desc_lbl.setWordWrap(True)
-        layout.addWidget(self._desc_lbl)
+            self._name_lbl = QLabel("—")
+            self._name_lbl.setStyleSheet(f"color:{TEXT}; font-size:12pt; font-weight:bold;")
+            layout.addWidget(self._name_lbl)
 
-        sep = QFrame();
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"QFrame{{background:{BORDER};max-height:1px;border:none;}}")
-        layout.addWidget(sep)
+            self._desc_lbl = QLabel()
+            self._desc_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+            self._desc_lbl.setWordWrap(True)
+            layout.addWidget(self._desc_lbl)
 
-        # Stats row
-        stats = QHBoxLayout()
-        self._rules_lbl = self._stat_lbl("0 rules")
-        self._updated_lbl = self._stat_lbl("—")
-        stats.addWidget(self._rules_lbl)
-        stats.addStretch()
-        stats.addWidget(self._updated_lbl)
-        layout.addLayout(stats)
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet(f"QFrame{{background:{BORDER};max-height:1px;border:none;}}")
+            layout.addWidget(sep)
+
+            # Stats row
+            stats = QHBoxLayout()
+            self._rules_lbl = self._stat_lbl("0 rules")
+            self._updated_lbl = self._stat_lbl("—")
+            stats.addWidget(self._rules_lbl)
+            stats.addStretch()
+            stats.addWidget(self._updated_lbl)
+            layout.addLayout(stats)
+
+        except Exception as e:
+            logger.error(f"[_StrategyCard.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        self._signal_lbl = None
+        self._name_lbl = None
+        self._desc_lbl = None
+        self._rules_lbl = None
+        self._updated_lbl = None
 
     def _stat_lbl(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet(f"color:{DIM}; font-size:8pt;")
-        return lbl
+        try:
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color:{DIM}; font-size:8pt;")
+            return lbl
+        except Exception as e:
+            logger.error(f"[_StrategyCard._stat_lbl] Failed: {e}", exc_info=True)
+            return QLabel(text)
 
     def update(self, strategy: Dict, current_signal: str = "WAIT"):
-        meta = strategy.get("meta", {})
-        self._name_lbl.setText(meta.get("name", "—"))
-        desc = meta.get("description", "")
-        self._desc_lbl.setText(desc[:100] + ("…" if len(desc) > 100 else ""))
-        self._desc_lbl.setVisible(bool(desc))
+        """Update card with strategy data and current signal"""
+        try:
+            if strategy is None:
+                logger.warning("update called with None strategy")
+                return
 
-        # Rules count
-        engine = strategy.get("engine", {})
-        total = sum(len(engine.get(sig, {}).get("rules", [])) for sig in SIGNAL_GROUPS)
-        self._rules_lbl.setText(f"{total} rule{'s' if total != 1 else ''}")
+            meta = strategy.get("meta", {})
+            if self._name_lbl:
+                self._name_lbl.setText(str(meta.get("name", "—")))
 
-        # Updated
-        upd = meta.get("updated_at", "—")
-        if "T" in upd:
-            upd = upd.replace("T", " ")[:16]
-        self._updated_lbl.setText(f"saved {upd}")
+            desc = meta.get("description", "")
+            if self._desc_lbl:
+                self._desc_lbl.setText(desc[:100] + ("…" if len(desc) > 100 else ""))
+                self._desc_lbl.setVisible(bool(desc))
 
-        # Signal
-        color = SIGNAL_COLORS.get(current_signal, "#484f58")
-        label = SIGNAL_LABELS.get(current_signal, current_signal)
-        self._signal_lbl.setText(label)
-        self._signal_lbl.setStyleSheet(
-            f"color:{color}; font-size:9pt; font-weight:bold;"
-            f" background:{color}22; border:1px solid {color}55;"
-            f" border-radius:4px; padding:2px 7px;"
-        )
+            # Rules count
+            engine = strategy.get("engine", {})
+            total = 0
+            for sig in SIGNAL_GROUPS:
+                group = engine.get(sig, {}) if engine else {}
+                rules = group.get("rules", []) if isinstance(group, dict) else []
+                total += len(rules)
+
+            if self._rules_lbl:
+                self._rules_lbl.setText(f"{total} rule{'s' if total != 1 else ''}")
+
+            # Updated
+            upd = meta.get("updated_at", "—")
+            if upd and "T" in upd:
+                upd = upd.replace("T", " ")[:16]
+            if self._updated_lbl:
+                self._updated_lbl.setText(f"saved {upd}")
+
+            # Signal
+            color = SIGNAL_COLORS.get(current_signal, "#484f58")
+            label = SIGNAL_LABELS.get(current_signal, current_signal)
+            if self._signal_lbl:
+                self._signal_lbl.setText(label)
+                self._signal_lbl.setStyleSheet(
+                    f"color:{color}; font-size:9pt; font-weight:bold;"
+                    f" background:{color}22; border:1px solid {color}55;"
+                    f" border-radius:4px; padding:2px 7px;"
+                )
+        except Exception as e:
+            logger.error(f"[_StrategyCard.update] Failed: {e}", exc_info=True)
 
 
 class StrategyPickerSidebar(QDialog):
@@ -205,148 +247,290 @@ class StrategyPickerSidebar(QDialog):
     open_editor_requested = pyqtSignal()  # user wants full editor
 
     def __init__(self, manager: StrategyManager, trading_app=None, parent=None):
-        super().__init__(parent, Qt.Window | Qt.Tool)
-        self.manager = manager
-        self.trading_app = trading_app
+        # Rule 2: Safe defaults first
+        self._safe_defaults_init()
+
+        try:
+            super().__init__(parent, Qt.Window | Qt.Tool)
+            self.manager = manager
+            self.trading_app = trading_app
+            self._current_signal = "WAIT"
+
+            self.setWindowTitle("⚡ Strategy Picker")
+            self.setFixedWidth(360)
+            self.setMinimumHeight(480)
+            self.setMaximumHeight(800)
+            self.setStyleSheet(_ss())
+
+            self._build_ui()
+            self.refresh()
+
+            # Auto-refresh signal display every 2s
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._refresh_signal)
+            self._timer.start(2000)
+
+            logger.info("StrategyPickerSidebar initialized")
+
+        except Exception as e:
+            logger.critical(f"[StrategyPickerSidebar.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent, Qt.Window | Qt.Tool)
+            self.setWindowTitle("Strategy Picker - ERROR")
+            self.setMinimumWidth(300)
+
+            layout = QVBoxLayout(self)
+            error_label = QLabel(f"Failed to initialize strategy picker:\n{e}")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #f85149; padding: 20px;")
+            layout.addWidget(error_label)
+
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.close)
+            layout.addWidget(close_btn)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        self.manager = None
+        self.trading_app = None
         self._current_signal = "WAIT"
-
-        self.setWindowTitle("⚡ Strategy Picker")
-        self.setFixedWidth(360)
-        self.setMinimumHeight(480)
-        self.setMaximumHeight(800)
-        self.setStyleSheet(_ss())
-
-        self._build_ui()
-        self.refresh()
-
-        # Auto-refresh signal display every 2s
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._refresh_signal)
-        self._timer.start(2000)
+        self._timer = None
+        self._card = None
+        self._list = None
+        self._activate_btn = None
+        self._status_lbl = None
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        """Build the UI components"""
+        try:
+            root = QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(8)
 
-        # Active strategy card
-        self._card = _StrategyCard()
-        root.addWidget(self._card)
+            # Active strategy card
+            self._card = _StrategyCard()
+            root.addWidget(self._card)
 
-        # ── Separator ─────────────────────────────────────────────────────────
-        sep = QLabel("  ALL STRATEGIES")
-        sep.setStyleSheet(f"color:{DIM}; font-size:8pt; font-weight:bold; padding:4px 0 2px 0;")
-        root.addWidget(sep)
+            # ── Separator ─────────────────────────────────────────────────────────
+            sep = QLabel("  ALL STRATEGIES")
+            sep.setStyleSheet(f"color:{DIM}; font-size:8pt; font-weight:bold; padding:4px 0 2px 0;")
+            root.addWidget(sep)
 
-        # Strategy list
-        self._list = QListWidget()
-        self._list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self._list.itemDoubleClicked.connect(self._on_double_click)
-        root.addWidget(self._list, 1)
+            # Strategy list
+            self._list = QListWidget()
+            self._list.setSelectionMode(QAbstractItemView.SingleSelection)
+            self._list.itemDoubleClicked.connect(self._on_double_click)
+            root.addWidget(self._list, 1)
 
-        # ── Activate button ───────────────────────────────────────────────────
-        self._activate_btn = QPushButton("⚡ Activate Selected")
-        self._activate_btn.setStyleSheet(
-            f"QPushButton{{background:#1f6feb;color:#fff;border:1px solid #388bfd;"
-            f"border-radius:5px;padding:9px;font-weight:bold;font-size:11pt;}}"
-            f"QPushButton:hover{{background:#388bfd;}}"
-        )
-        self._activate_btn.clicked.connect(self._on_activate)
-        root.addWidget(self._activate_btn)
+            # ── Activate button ───────────────────────────────────────────────────
+            self._activate_btn = QPushButton("⚡ Activate Selected")
+            self._activate_btn.setStyleSheet(
+                f"QPushButton{{background:#1f6feb;color:#fff;border:1px solid #388bfd;"
+                f"border-radius:5px;padding:9px;font-weight:bold;font-size:11pt;}}"
+                f"QPushButton:hover{{background:#388bfd;}}"
+            )
+            self._activate_btn.clicked.connect(self._on_activate)
+            root.addWidget(self._activate_btn)
 
-        # ── Footer ────────────────────────────────────────────────────────────
-        foot = QHBoxLayout()
-        foot.setSpacing(8)
+            # ── Footer ────────────────────────────────────────────────────────────
+            foot = QHBoxLayout()
+            foot.setSpacing(8)
 
-        open_editor_btn = QPushButton("📋 Open Editor")
-        open_editor_btn.clicked.connect(self._on_open_editor)
-        foot.addWidget(open_editor_btn)
+            open_editor_btn = QPushButton("📋 Open Editor")
+            open_editor_btn.clicked.connect(self._on_open_editor)
+            foot.addWidget(open_editor_btn)
 
-        foot.addStretch()
+            foot.addStretch()
 
-        close_btn = QPushButton("✕ Close")
-        close_btn.clicked.connect(self.close)
-        foot.addWidget(close_btn)
+            close_btn = QPushButton("✕ Close")
+            close_btn.clicked.connect(self.close)
+            foot.addWidget(close_btn)
 
-        root.addLayout(foot)
+            root.addLayout(foot)
 
-        self._status_lbl = QLabel()
-        self._status_lbl.setAlignment(Qt.AlignCenter)
-        self._status_lbl.setStyleSheet(f"color:{GREEN}; font-size:9pt;")
-        root.addWidget(self._status_lbl)
+            self._status_lbl = QLabel()
+            self._status_lbl.setAlignment(Qt.AlignCenter)
+            self._status_lbl.setStyleSheet(f"color:{GREEN}; font-size:9pt;")
+            root.addWidget(self._status_lbl)
+
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._build_ui] Failed: {e}", exc_info=True)
+            raise
 
     def refresh(self):
         """Reload the strategy list from manager."""
-        self._list.blockSignals(True)
-        self._list.clear()
-        strategies = self.manager.list_strategies()
-        active_slug = self.manager.get_active_slug()
+        try:
+            if not self._list or not self.manager:
+                logger.warning("refresh called with None list or manager")
+                return
 
-        for s in strategies:
-            item = QListWidgetItem()
-            is_active = s["is_active"]
-            engine = (self.manager.get(s["slug"]) or {}).get("engine", {})
-            total_rules = sum(len(engine.get(sig, {}).get("rules", [])) for sig in SIGNAL_GROUPS)
+            self._list.blockSignals(True)
+            self._list.clear()
 
-            # Build item text
-            prefix = "⚡" if is_active else "  "
-            item.setText(f"{prefix}  {s['name']}")
-            item.setData(Qt.UserRole, s["slug"])
-            item.setToolTip(
-                f"{s['description']}\n{total_rules} rules | updated {s['updated_at'][:16] if s['updated_at'] else '—'}"
-            )
-            if is_active:
-                item.setForeground(QColor(BLUE))
-                item.setFont(QFont("", -1, QFont.Bold))
-            self._list.addItem(item)
+            strategies = self.manager.list_strategies()
+            active_slug = self.manager.get_active_slug()
 
-        self._list.blockSignals(False)
+            for s in strategies:
+                try:
+                    item = QListWidgetItem()
+                    is_active = s.get("is_active", False)
 
-        # Update active card
-        active_data = self.manager.get_active()
-        if active_data:
-            self._card.update(active_data, self._current_signal)
+                    # Safely get engine data
+                    strategy_data = self.manager.get(s.get("slug", "")) or {}
+                    engine = strategy_data.get("engine", {}) if strategy_data else {}
+
+                    total_rules = 0
+                    for sig in SIGNAL_GROUPS:
+                        group = engine.get(sig, {}) if engine else {}
+                        rules = group.get("rules", []) if isinstance(group, dict) else []
+                        total_rules += len(rules)
+
+                    # Build item text
+                    prefix = "⚡" if is_active else "  "
+                    name = s.get("name", "Unknown")
+                    item.setText(f"{prefix}  {name}")
+                    item.setData(Qt.UserRole, s.get("slug", ""))
+
+                    tooltip = s.get("description", "")
+                    tooltip += f"\n{total_rules} rules | updated {s.get('updated_at', '—')[:16] if s.get('updated_at') else '—'}"
+                    item.setToolTip(tooltip)
+
+                    if is_active:
+                        item.setForeground(QColor(BLUE))
+                        font = QFont()
+                        font.setBold(True)
+                        item.setFont(font)
+
+                    self._list.addItem(item)
+
+                except Exception as e:
+                    logger.warning(f"Failed to add strategy item: {e}")
+                    continue
+
+            self._list.blockSignals(False)
+
+            # Update active card
+            if self._card:
+                active_data = self.manager.get_active()
+                if active_data:
+                    self._card.update(active_data, self._current_signal)
+
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar.refresh] Failed: {e}", exc_info=True)
 
     @pyqtSlot()
     def _refresh_signal(self):
         """Pull current signal from trading_app and update card."""
-        if not self.isVisible():
-            return
         try:
-            state = getattr(self.trading_app, "state", None) if self.trading_app else None
+            if not self.isVisible() or not self._card:
+                return
+
+            if self.trading_app is None:
+                return
+
+            state = getattr(self.trading_app, "state", None)
             if state is None:
                 return
+
             trend = getattr(state, "derivative_trend", None) or {}
             sig_data = trend.get("option_signal", {})
-            self._current_signal = sig_data.get("signal_value", "WAIT")
-            active = self.manager.get_active()
-            if active:
+            self._current_signal = sig_data.get("signal_value", "WAIT") if sig_data else "WAIT"
+
+            active = self.manager.get_active() if self.manager else None
+            if active and self._card:
                 self._card.update(active, self._current_signal)
-        except Exception:
-            pass
+
+        except Exception as e:
+            logger.debug(f"[_refresh_signal] Failed: {e}")
 
     def _on_double_click(self, item):
-        slug = item.data(Qt.UserRole)
-        self._activate(slug)
+        """Handle double-click on strategy item"""
+        try:
+            if item:
+                slug = item.data(Qt.UserRole)
+                self._activate(slug)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._on_double_click] Failed: {e}", exc_info=True)
 
     def _on_activate(self):
-        item = self._list.currentItem()
-        if item:
-            slug = item.data(Qt.UserRole)
-            self._activate(slug)
+        """Handle activate button click"""
+        try:
+            if not self._list:
+                return
+
+            item = self._list.currentItem()
+            if item:
+                slug = item.data(Qt.UserRole)
+                self._activate(slug)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._on_activate] Failed: {e}", exc_info=True)
 
     def _activate(self, slug: str):
-        ok = self.manager.activate(slug)
-        if ok:
-            self.refresh()
-            self.strategy_activated.emit(slug)
-            name = (self.manager.get(slug) or {}).get("meta", {}).get("name", slug)
-            self._status_lbl.setText(f"✓ Activated: {name}")
-            QTimer.singleShot(3000, self._status_lbl.clear)
+        """Activate a strategy by slug"""
+        try:
+            if not self.manager:
+                logger.warning("Cannot activate: manager is None")
+                return
+
+            if not slug:
+                logger.warning("Cannot activate: empty slug")
+                return
+
+            ok = self.manager.activate(slug)
+            if ok:
+                self.refresh()
+                self.strategy_activated.emit(slug)
+
+                strategy_data = self.manager.get(slug) or {}
+                meta = strategy_data.get("meta", {}) if strategy_data else {}
+                name = meta.get("name", slug)
+
+                if self._status_lbl:
+                    self._status_lbl.setText(f"✓ Activated: {name}")
+                    QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
+
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._activate] Failed for {slug}: {e}", exc_info=True)
 
     def _on_open_editor(self):
-        self.open_editor_requested.emit()
+        """Emit signal to open editor"""
+        try:
+            self.open_editor_requested.emit()
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._on_open_editor] Failed: {e}", exc_info=True)
+
+    # Rule 8: Cleanup method
+    def cleanup(self):
+        """Clean up resources before closing"""
+        try:
+            logger.info("[StrategyPickerSidebar] Starting cleanup")
+
+            # Stop timer
+            if self._timer:
+                try:
+                    if self._timer.isActive():
+                        self._timer.stop()
+                    self._timer = None
+                except Exception as e:
+                    logger.warning(f"Error stopping timer: {e}")
+
+            # Clear references
+            self.manager = None
+            self.trading_app = None
+            self._card = None
+            self._list = None
+            self._activate_btn = None
+            self._status_lbl = None
+
+            logger.info("[StrategyPickerSidebar] Cleanup completed")
+
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar.cleanup] Error: {e}", exc_info=True)
 
     def closeEvent(self, event):
-        self._timer.stop()
-        super().closeEvent(event)
+        """Handle close event with cleanup"""
+        try:
+            self.cleanup()
+            super().closeEvent(event)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar.closeEvent] Failed: {e}", exc_info=True)
+            super().closeEvent(event)

@@ -1,0 +1,10 @@
+{
+    "mode": "Simulation",
+    "paper_balance": 100000,
+    "allow_live_trading": false,
+    "confirm_live_trades": true,
+    "simulate_slippage": true,
+    "slippage_percent": 0.05,
+    "simulate_delay": true,
+    "delay_ms": 500
+}
