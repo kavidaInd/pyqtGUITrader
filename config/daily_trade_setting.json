@@ -7,7 +7,7 @@
   "put_lookback": 0,
   "history_interval": "1m",
   "max_num_of_option": 1800,
-  "lower_percentage": 0.5,
+  "lower_percentage": 1.0,
   "cancel_after": 5,
   "capital_reserve": 0,
   "sideway_zone_trade": true

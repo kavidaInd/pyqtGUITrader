@@ -29,6 +29,8 @@ from gui.popups.logs_popup import LogPopup
 from gui.popups.stats_popup import StatsPopup
 from gui.popups.trade_history_popup import TradeHistoryPopup
 from gui.status_panel import StatusPanel
+from gui.unified_settings_GUI import UnifiedSettingsGUI
+from models.settings_manager import SettingsManager
 from new_main import TradingApp
 from strategy.strategy_editor_window import StrategyEditorWindow
 from strategy.strategy_manager import StrategyManager
@@ -55,9 +57,11 @@ class TradingGUI(QMainWindow):
 
         # Settings objects
         self.config = Config()
-        self.brokerage_setting = BrokerageSetting()
-        self.daily_setting = DailyTradeSetting()
-        self.profit_loss_setting = ProfitStoplossSetting()
+        self.settings_manager = SettingsManager()
+        # Replace the individual setting objects with the manager's instances
+        self.brokerage_setting = self.settings_manager.brokerage
+        self.daily_setting = self.settings_manager.daily
+        self.profit_loss_setting = self.settings_manager.profit
 
         # Runtime state
         self.app_running = False
@@ -430,6 +434,9 @@ class TradingGUI(QMainWindow):
                 config=self.config,
                 broker_setting=self.brokerage_setting,
             )
+            if hasattr(self.trading_app, 'state'):
+                self.settings_manager.register_state(self.trading_app.state)
+
             # Wire up chart config + signal engine
             try:
                 engine = getattr(
@@ -683,10 +690,14 @@ class TradingGUI(QMainWindow):
         if self.strategy_editor:
             self.strategy_editor.close()
 
-
     def _open_daily(self):
-        dlg = DailyTradeSettingGUI(self, daily_setting=self.daily_setting,
-                                   app=self.trading_app)
+        dlg = UnifiedSettingsGUI(
+            self,
+            brokerage_setting=self.brokerage_setting,
+            daily_setting=self.daily_setting,
+            profit_stoploss_setting=self.profit_loss_setting,
+            app=self.trading_app,
+        )
         dlg.exec_()
 
     def _open_pnl(self):
@@ -802,7 +813,6 @@ class TradingGUI(QMainWindow):
     def _on_strategy_editor_closed(self):
         """Clean up reference when editor is closed"""
         self.strategy_editor = None
-
 
     def _on_strategy_changed(self, slug: str):
         self._apply_active_strategy()
