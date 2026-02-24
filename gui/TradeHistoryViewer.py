@@ -105,7 +105,7 @@ class TradeHistoryViewer(ttk.Frame):
     def load_data(self) -> None:
         """Load only today's trade data from the daily CSV file."""
         try:
-            # Rule 6: Check if tree exists
+            # Rule 6: Check if tree exists (already correct - explicit None check)
             if self.tree is None:
                 logger.error("Cannot load data: tree is None")
                 return
@@ -204,16 +204,17 @@ class TradeHistoryViewer(ttk.Frame):
         except Exception as e:
             logger.error(f"Error loading today's trades: {e}", exc_info=True)
             try:
-                if self.tree:
+                # FIXED: Use explicit None check
+                if self.tree is not None:
                     self.tree.insert("", "end",
                                      values=[f"Error loading data: {str(e)}", "", "", "", "", "", "", "", "", "", "",
                                              "", "", ""])
             except Exception:
                 pass
 
-        # Configure tag colors
+        # Configure tag colors - FIXED: Use explicit None check
         try:
-            if self.tree:
+            if self.tree is not None:
                 self.tree.tag_configure("profit", background="#d0f0c0")  # light green
                 self.tree.tag_configure("loss", background="#f8d7da")  # light red
         except Exception as e:
@@ -227,6 +228,7 @@ class TradeHistoryViewer(ttk.Frame):
                 logger.warning(f"sort_by called with non-string col: {col}")
                 return
 
+            # FIXED: Use explicit None check (this was already correct)
             if self.tree is None:
                 logger.warning("Cannot sort: tree is None")
                 return
@@ -399,8 +401,8 @@ class TradeHistoryViewer(ttk.Frame):
         try:
             logger.info("[TradeHistoryViewer] Starting cleanup")
 
-            # Clear tree
-            if self.tree:
+            # Clear tree - FIXED: Use explicit None check
+            if self.tree is not None:
                 try:
                     for item in self.tree.get_children():
                         self.tree.delete(item)

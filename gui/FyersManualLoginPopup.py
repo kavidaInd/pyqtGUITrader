@@ -515,10 +515,11 @@ class FyersManualLoginPopup(QDialog):
 
             self.login_url = self.fyers.generate_login_url()
 
-            if self.url_text:
+            # FIXED: Use explicit None checks
+            if self.url_text is not None:
                 self.url_text.setText(self.login_url)
 
-            if self.status_label:
+            if self.status_label is not None:
                 self.status_label.setText("✅ Login URL generated successfully")
 
             logger.info("Login URL generated successfully")
@@ -536,7 +537,8 @@ class FyersManualLoginPopup(QDialog):
     def _handle_login_url_error(self, error_msg: str):
         """Handle login URL generation error"""
         try:
-            if self.status_label:
+            # FIXED: Use explicit None check
+            if self.status_label is not None:
                 self.status_label.setText(f"❌ {error_msg}")
 
             QMessageBox.critical(self, "Error", error_msg)
@@ -548,11 +550,13 @@ class FyersManualLoginPopup(QDialog):
     def copy_url_to_clipboard(self):
         """Copy login URL to clipboard"""
         try:
-            if self.login_url:
+            # FIXED: Use explicit check for login_url
+            if self.login_url is not None:
                 QApplication.clipboard().setText(self.login_url)
-                if self.status_label:
+                # FIXED: Use explicit None check
+                if self.status_label is not None:
                     self.status_label.setText("📋 URL copied to clipboard")
-                    QTimer.singleShot(2000, lambda: self.status_label.setText("") if self.status_label else None)
+                    QTimer.singleShot(2000, lambda: self.status_label.setText("") if self.status_label is not None else None)
             else:
                 QMessageBox.warning(self, "Warning", "No URL to copy")
 
@@ -565,7 +569,7 @@ class FyersManualLoginPopup(QDialog):
         try:
             if self.login_url:
                 webbrowser.open(self.login_url)
-                if self.status_label:
+                if self.status_label is not None:
                     self.status_label.setText("🌐 Browser opened")
             else:
                 QMessageBox.critical(self, "Error", "Login URL is unavailable.")
@@ -577,7 +581,8 @@ class FyersManualLoginPopup(QDialog):
     def clear_code_entry(self):
         """Clear the code entry field"""
         try:
-            if self.code_entry:
+            # FIXED: Use explicit None check
+            if self.code_entry is not None:
                 self.code_entry.clear()
         except Exception as e:
             logger.error(f"[clear_code_entry] Failed: {e}", exc_info=True)
@@ -639,7 +644,8 @@ class FyersManualLoginPopup(QDialog):
                 logger.warning("Exchange already in progress")
                 return
 
-            if not self.code_entry:
+            # FIXED: Use explicit None check
+            if self.code_entry is None:
                 logger.error("Code entry widget not initialized")
                 return
 
@@ -666,15 +672,15 @@ class FyersManualLoginPopup(QDialog):
             self._exchange_in_progress = True
             self.operation_started.emit()
 
-            # Disable UI
-            if self.login_btn:
+            # Disable UI - FIXED: Use explicit None checks
+            if self.login_btn is not None:
                 self.login_btn.setEnabled(False)
-            if self.clear_btn:
+            if self.clear_btn is not None:
                 self.clear_btn.setEnabled(False)
-            if self.progress_bar:
+            if self.progress_bar is not None:
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(10)
-            if self.status_label:
+            if self.status_label is not None:
                 self.status_label.setText("⏳ Processing authentication…")
 
             # Create and start worker
@@ -696,9 +702,10 @@ class FyersManualLoginPopup(QDialog):
     def update_progress(self, percentage: int, message: str):
         """Update progress bar and status"""
         try:
-            if self.progress_bar:
+            # FIXED: Use explicit None checks
+            if self.progress_bar is not None:
                 self.progress_bar.setValue(percentage)
-            if self.status_label:
+            if self.status_label is not None:
                 self.status_label.setText(f"⏳ {message}")
         except Exception as e:
             logger.error(f"[update_progress] Failed: {e}", exc_info=True)
@@ -722,7 +729,8 @@ class FyersManualLoginPopup(QDialog):
 
             if error:
                 logger.error(f"Token exchange failed: {error}")
-                if self.status_label:
+                # FIXED: Use explicit None check
+                if self.status_label is not None:
                     self.status_label.setText(f"❌ Login failed: {error}")
                 QMessageBox.critical(
                     self, "Login Failed",
@@ -733,9 +741,10 @@ class FyersManualLoginPopup(QDialog):
 
             if token:
                 logger.info("✓ Token received successfully")
-                if self.status_label:
+                # FIXED: Use explicit None checks
+                if self.status_label is not None:
                     self.status_label.setText("✅ Login successful!")
-                if self.progress_bar:
+                if self.progress_bar is not None:
                     self.progress_bar.setValue(100)
 
                 self.login_completed.emit(token)
@@ -748,7 +757,8 @@ class FyersManualLoginPopup(QDialog):
                 # Close dialog after short delay
                 QTimer.singleShot(500, self.accept)
             else:
-                if self.status_label:
+                # FIXED: Use explicit None check
+                if self.status_label is not None:
                     self.status_label.setText("❌ Failed to retrieve token")
                 QMessageBox.critical(
                     self, "Error",
@@ -767,14 +777,15 @@ class FyersManualLoginPopup(QDialog):
     def reset_ui(self):
         """Reset UI to initial state"""
         try:
-            if self.login_btn:
+            # FIXED: Use explicit None checks
+            if self.login_btn is not None:
                 self.login_btn.setEnabled(True)
-            if self.clear_btn:
+            if self.clear_btn is not None:
                 self.clear_btn.setEnabled(True)
-            if self.progress_bar:
+            if self.progress_bar is not None:
                 self.progress_bar.setVisible(False)
                 self.progress_bar.setValue(0)
-            if self.status_label and self.status_label.text().startswith("⏳"):
+            if self.status_label is not None and self.status_label.text().startswith("⏳"):
                 self.status_label.setText("")
 
         except Exception as e:

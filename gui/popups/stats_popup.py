@@ -142,8 +142,8 @@ class StatsPopup(QDialog):
         try:
             logger.info("[StatsPopup] Starting cleanup")
 
-            # Stop timer
-            if self.refresh_timer:
+            # Stop timer - FIXED: Use explicit None check
+            if self.refresh_timer is not None:
                 try:
                     if self.refresh_timer.isActive():
                         self.refresh_timer.stop()
@@ -151,8 +151,8 @@ class StatsPopup(QDialog):
                 except Exception as e:
                     logger.warning(f"Error stopping timer: {e}")
 
-            # Clear stats tab
-            if self.stats_tab:
+            # Clear stats tab - FIXED: Use explicit None check
+            if self.stats_tab is not None:
                 try:
                     if hasattr(self.stats_tab, 'cleanup'):
                         self.stats_tab.cleanup()

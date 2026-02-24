@@ -375,11 +375,11 @@ class _GroupPanel(QGroupBox):
                indicator_cache: Dict = None):
         try:
             # Logic label
-            if self._logic_lbl:
+            if self._logic_lbl is not None:
                 self._logic_lbl.setText(f"Logic: {logic}")
 
             # Enabled
-            if self._enabled_lbl:
+            if self._enabled_lbl is not None:
                 if enabled:
                     self._enabled_lbl.setText("✓ enabled")
                     self._enabled_lbl.setStyleSheet(f"color: {GREEN}; font-size: 8pt;")
@@ -388,7 +388,7 @@ class _GroupPanel(QGroupBox):
                     self._enabled_lbl.setStyleSheet(f"color: {RED}; font-size: 8pt;")
 
             # Fired
-            if self._fired_lbl:
+            if self._fired_lbl is not None:
                 if fired:
                     self._fired_lbl.setText("⬤  FIRED")
                     self._fired_lbl.setStyleSheet(f"color: {self._color}; font-size: 9pt; font-weight: bold;")
@@ -396,18 +396,18 @@ class _GroupPanel(QGroupBox):
                     self._fired_lbl.setText("⬤  NOT FIRED")
                     self._fired_lbl.setStyleSheet(f"color: {GREY_OFF}; font-size: 9pt; font-weight: bold;")
 
-            if not rule_results or not self._table:
-                if self._table:
+            if not rule_results or self._table is None:
+                if self._table is not None:
                     self._table.hide()
-                if self._no_rules_lbl:
+                if self._no_rules_lbl is not None:
                     self._no_rules_lbl.show()
-                if self._table:
+                if self._table is not None:
                     self._table.setRowCount(0)
                 return
 
-            if self._no_rules_lbl:
+            if self._no_rules_lbl is not None:
                 self._no_rules_lbl.hide()
-            if self._table:
+            if self._table is not None:
                 self._table.show()
                 self._table.setRowCount(len(rule_results))
 
@@ -456,7 +456,7 @@ class _GroupPanel(QGroupBox):
                     logger.warning(f"Failed to update rule row {i}: {e}", exc_info=True)
                     continue
 
-            if self._table:
+            if self._table is not None:
                 self._table.setFixedHeight(30 * len(rule_results) + 30)
 
         except Exception as e:
@@ -485,7 +485,7 @@ def _parse_rule_display(rule_str: str, cache: Dict = None) -> Tuple[str, str, st
                 rhs_val = _lookup_cache(rhs_name, cache)
 
                 # If we couldn't find values, try to extract the raw numbers from the rule string
-                if lhs_val == lhs_name and cache:
+                if lhs_val == lhs_name and cache is not None:
                     # Try to extract from cache by indicator name without params
                     lhs_base = lhs_name.split('(')[0].lower()
                     for key, series in cache.items():
@@ -502,7 +502,7 @@ def _parse_rule_display(rule_str: str, cache: Dict = None) -> Tuple[str, str, st
                             except Exception:
                                 pass
 
-                if rhs_val == rhs_name and cache and rhs_name not in ["?", "scalar"]:
+                if rhs_val == rhs_name and cache is not None and rhs_name not in ["?", "scalar"]:
                     rhs_base = rhs_name.split('(')[0].lower()
                     for key, series in cache.items():
                         if key.startswith(rhs_base + '_'):
@@ -649,7 +649,7 @@ class _IndicatorCachePanel(QWidget):
     def _render_rows(self, rows):
         """Shared table-population helper."""
         try:
-            if not self._table:
+            if self._table is None:
                 logger.warning("_render_rows called with None table")
                 return
 
@@ -973,13 +973,13 @@ class DynamicSignalDebugPopup(QDialog):
         """Pull the latest option_signal from trading_app.state and update UI."""
         try:
             if self.trading_app is None:
-                if self._status_lbl:
+                if self._status_lbl is not None:
                     self._status_lbl.setText("⚠  trading_app is None")
                 return
 
             state = getattr(self.trading_app, "state", None)
             if state is None:
-                if self._status_lbl:
+                if self._status_lbl is not None:
                     self._status_lbl.setText("⚠  trading_app.state is None")
                 return
 
@@ -988,30 +988,30 @@ class DynamicSignalDebugPopup(QDialog):
             option_signal = trend_data.get("option_signal")
 
             if option_signal is None:
-                if self._status_lbl:
+                if self._status_lbl is not None:
                     self._status_lbl.setText("⚠  No option_signal in state.derivative_trend yet.")
                 return
 
             if not option_signal.get("available", False):
                 if not option_signal.get("fired"):
-                    if self._status_lbl:
+                    if self._status_lbl is not None:
                         self._status_lbl.setText("ℹ  Engine available but no rules configured.")
                 else:
-                    if self._status_lbl:
+                    if self._status_lbl is not None:
                         self._status_lbl.setText("ℹ  DynamicSignalEngine not available.")
                 return
 
             # ── Update header ────────────────────────────────────────────────
             signal_val = option_signal.get("signal_value", "WAIT")
-            if self._signal_badge:
+            if self._signal_badge is not None:
                 self._signal_badge.update_signal(signal_val)
 
             conflict = option_signal.get("conflict", False)
-            if self._lbl_conflict:
+            if self._lbl_conflict is not None:
                 self._lbl_conflict.setText("⚠ YES" if conflict else "No")
                 self._lbl_conflict.setStyleSheet(f"color: {RED if conflict else GREEN}; font-weight: bold; font-size: 9pt;")
 
-            if self._lbl_available:
+            if self._lbl_available is not None:
                 self._lbl_available.setText("Yes")
                 self._lbl_available.setStyleSheet(f"color: {GREEN}; font-weight: bold; font-size: 9pt;")
 
@@ -1019,17 +1019,17 @@ class DynamicSignalDebugPopup(QDialog):
             symbol = trend_data.get("name", "—")
             close_list = trend_data.get("close") or []
             last_close = close_list[-1] if close_list else "—"
-            if self._lbl_symbol:
+            if self._lbl_symbol is not None:
                 self._lbl_symbol.setText(str(symbol))
-            if self._lbl_last_close:
+            if self._lbl_last_close is not None:
                 self._lbl_last_close.setText(str(last_close))
 
             # Bars
-            if self._lbl_bars:
+            if self._lbl_bars is not None:
                 self._lbl_bars.setText(str(len(close_list)))
 
             # Timestamp
-            if self._lbl_timestamp:
+            if self._lbl_timestamp is not None:
                 self._lbl_timestamp.setText(datetime.now().strftime("%H:%M:%S"))
 
             # ── Fired pills ──────────────────────────────────────────────────
@@ -1082,7 +1082,7 @@ class DynamicSignalDebugPopup(QDialog):
                             getattr(self.trading_app, "trend_detector", None),
                             "signal_engine", None
                         )
-                        if engine:
+                        if engine is not None:
                             logic = engine.get_logic(sig)
                             enabled = engine.is_enabled(sig)
                     except Exception as e:
@@ -1097,7 +1097,7 @@ class DynamicSignalDebugPopup(QDialog):
             # ── Indicator values tab ─────────────────────────────────────────
             # Prefer the pre-computed indicator_values dict emitted by evaluate()
             indicator_values = option_signal.get("indicator_values", {})
-            if self._cache_panel:
+            if self._cache_panel is not None:
                 try:
                     if indicator_values:
                         self._cache_panel.update_from_values(indicator_values)
@@ -1108,24 +1108,24 @@ class DynamicSignalDebugPopup(QDialog):
                     logger.warning(f"Failed to update cache panel: {e}")
 
             # ── Raw JSON tab ─────────────────────────────────────────────────
-            if self._json_panel:
+            if self._json_panel is not None:
                 try:
                     self._json_panel.update_result(option_signal)
                 except Exception as e:
                     logger.warning(f"Failed to update JSON panel: {e}")
 
-            if self._status_lbl:
+            if self._status_lbl is not None:
                 self._status_lbl.setText(f"✓  Last update: {datetime.now().strftime('%H:%M:%S')}")
 
         except Exception as e:
             logger.error(f"DynamicSignalDebugPopup.refresh error: {e}", exc_info=True)
-            if self._status_lbl:
+            if self._status_lbl is not None:
                 self._status_lbl.setText(f"⚠  Refresh error: {e}")
 
     def closeEvent(self, event):
         """Handle close event with cleanup"""
         try:
-            if self._timer:
+            if self._timer is not None:
                 self._timer.stop()
             super().closeEvent(event)
         except Exception as e:

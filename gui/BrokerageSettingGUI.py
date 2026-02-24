@@ -1,13 +1,11 @@
-# PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
 import logging
 import threading
-from typing import Optional, Dict, Any
 
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QVBoxLayout, QLabel,
                              QWidget, QTabWidget, QFrame, QScrollArea)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -178,9 +176,9 @@ class BrokerageSettingGUI(QDialog):
             form.setVerticalSpacing(3)
             form.setLabelAlignment(Qt.AlignRight)
 
-            # Client ID
+            # Client ID - FIXED: Use explicit None check
             initial_client_id = ""
-            if self.brokerage_setting and hasattr(self.brokerage_setting, 'client_id'):
+            if self.brokerage_setting is not None and hasattr(self.brokerage_setting, 'client_id'):
                 initial_client_id = self.brokerage_setting.client_id
 
             self.client_id_edit = QLineEdit(initial_client_id)
@@ -189,9 +187,9 @@ class BrokerageSettingGUI(QDialog):
             client_id_hint = QLabel("Unique identifier for your registered brokerage app.")
             client_id_hint.setStyleSheet("color:#484f58; font-size:8pt;")
 
-            # Secret Key
+            # Secret Key - FIXED: Use explicit None check
             initial_secret = ""
-            if self.brokerage_setting and hasattr(self.brokerage_setting, 'secret_key'):
+            if self.brokerage_setting is not None and hasattr(self.brokerage_setting, 'secret_key'):
                 initial_secret = self.brokerage_setting.secret_key
 
             self.secret_key_edit = QLineEdit(initial_secret)
@@ -201,9 +199,9 @@ class BrokerageSettingGUI(QDialog):
             secret_key_hint = QLabel("Private key used to authenticate API requests. Keep it safe.")
             secret_key_hint.setStyleSheet("color:#484f58; font-size:8pt;")
 
-            # Redirect URI
+            # Redirect URI - FIXED: Use explicit None check
             initial_redirect = ""
-            if self.brokerage_setting and hasattr(self.brokerage_setting, 'redirect_uri'):
+            if self.brokerage_setting is not None and hasattr(self.brokerage_setting, 'redirect_uri'):
                 initial_redirect = self.brokerage_setting.redirect_uri
 
             self.redirect_edit = QLineEdit(initial_redirect)
@@ -319,8 +317,9 @@ class BrokerageSettingGUI(QDialog):
         try:
             self.status_label.setText(message)
             self.status_label.setStyleSheet("color:#3fb950; font-size:9pt; font-weight:bold;")
-            original_text = self.save_btn.text() if self.save_btn else "Save"
-            if self.save_btn:
+            original_text = self.save_btn.text() if self.save_btn is not None else "Save"
+            # FIXED: Use explicit None check
+            if self.save_btn is not None:
                 self.save_btn.setText("✓ Saved!")
                 self.save_btn.setStyleSheet(
                     "QPushButton { background:#2ea043; color:#fff; border-radius:4px; padding:10px; }"
@@ -337,7 +336,8 @@ class BrokerageSettingGUI(QDialog):
         try:
             self.status_label.setText(f"✗ {error_msg}")
             self.status_label.setStyleSheet("color:#f85149; font-size:9pt; font-weight:bold;")
-            if self.save_btn:
+            # FIXED: Use explicit None check
+            if self.save_btn is not None:
                 self.save_btn.setStyleSheet(
                     "QPushButton { background:#f85149; color:#fff; border-radius:4px; padding:10px; }"
                 )
@@ -351,7 +351,8 @@ class BrokerageSettingGUI(QDialog):
     def reset_save_button(self, text):
         """Reset save button to normal state"""
         try:
-            if self.save_btn:
+            # FIXED: Use explicit None check
+            if self.save_btn is not None:
                 self.save_btn.setText(text)
                 self.save_btn.setStyleSheet("""
                     QPushButton { background:#238636; color:#fff; border-radius:4px; padding:10px; }
@@ -369,17 +370,17 @@ class BrokerageSettingGUI(QDialog):
                 logger.warning("Save already in progress")
                 return
 
-            # Get values with validation
+            # Get values with validation - FIXED: Use explicit None checks
             client_id = ""
-            if self.client_id_edit:
+            if self.client_id_edit is not None:
                 client_id = self.client_id_edit.text().strip()
 
             secret_key = ""
-            if self.secret_key_edit:
+            if self.secret_key_edit is not None:
                 secret_key = self.secret_key_edit.text().strip()
 
             redirect_uri = ""
-            if self.redirect_edit:
+            if self.redirect_edit is not None:
                 redirect_uri = self.redirect_edit.text().strip()
 
             # Validate required fields
@@ -393,7 +394,8 @@ class BrokerageSettingGUI(QDialog):
 
             if missing_fields:
                 error_msg = f"Missing required fields: {', '.join(missing_fields)}"
-                if self.tabs:
+                # FIXED: Use explicit None check
+                if self.tabs is not None:
                     self.tabs.setCurrentIndex(0)  # jump back to Settings tab on error
                 self.show_error_feedback("All fields are required")
                 logger.warning(error_msg)
@@ -403,11 +405,13 @@ class BrokerageSettingGUI(QDialog):
             self._save_in_progress = True
             self.operation_started.emit()
 
-            if self.save_btn:
+            # FIXED: Use explicit None check
+            if self.save_btn is not None:
                 self.save_btn.setEnabled(False)
                 self.save_btn.setText("⏳ Saving...")
 
-            if self.status_label:
+            # FIXED: Use explicit None check
+            if self.status_label is not None:
                 self.status_label.setText("")
 
             # Save in background thread
@@ -426,7 +430,7 @@ class BrokerageSettingGUI(QDialog):
     def _threaded_save(self, client_id: str, secret_key: str, redirect_uri: str):
         """Threaded save operation"""
         try:
-            # Rule 6: Validate brokerage setting
+            # Rule 6: Validate brokerage setting (already correct - explicit None check)
             if self.brokerage_setting is None:
                 raise ValueError("Brokerage setting object is None")
 
@@ -467,12 +471,14 @@ class BrokerageSettingGUI(QDialog):
         try:
             if success:
                 self.show_success_feedback()
-                if self.save_btn:
+                # FIXED: Use explicit None check
+                if self.save_btn is not None:
                     self.save_btn.setEnabled(True)
                 QTimer.singleShot(1500, self.accept)
             else:
                 self.show_error_feedback(f"Failed to save: {message}")
-                if self.save_btn:
+                # FIXED: Use explicit None check
+                if self.save_btn is not None:
                     self.save_btn.setEnabled(True)
 
         except Exception as e:
@@ -483,7 +489,8 @@ class BrokerageSettingGUI(QDialog):
         try:
             logger.error(f"Error signal received: {error_msg}")
             self.show_error_feedback(error_msg)
-            if self.save_btn:
+            # FIXED: Use explicit None check
+            if self.save_btn is not None:
                 self.save_btn.setEnabled(True)
             self._save_in_progress = False
         except Exception as e:
@@ -511,8 +518,8 @@ class BrokerageSettingGUI(QDialog):
         try:
             logger.info("[BrokerageSettingGUI] Starting cleanup")
 
-            # Cancel any pending timers
-            if hasattr(self, '_save_timer') and self._save_timer:
+            # Cancel any pending timers - FIXED: Use explicit None check
+            if hasattr(self, '_save_timer') and self._save_timer is not None:
                 try:
                     if self._save_timer.isActive():
                         self._save_timer.stop()

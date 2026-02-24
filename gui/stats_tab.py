@@ -357,7 +357,7 @@ class StatsTab(QWidget):
         self._updating = True
 
         try:
-            # Check if table exists
+            # Check if table exists - This is already correct (explicit None check)
             if self.table is None:
                 logger.warning("Refresh called with None table")
                 return
@@ -386,7 +386,7 @@ class StatsTab(QWidget):
                     formatted = self._format_value(val)
                     current_item = self.table.item(i, 1)
 
-                    if current_item and current_item.text() != formatted:
+                    if current_item is not None and current_item.text() != formatted:
                         current_item.setText(formatted)
 
                     # Store for next comparison
@@ -398,7 +398,7 @@ class StatsTab(QWidget):
                     logger.error(f"Error updating row {i}: {e}", exc_info=True)
                     try:
                         item = self.table.item(i, 1)
-                        if item:
+                        if item is not None:
                             item.setText(f"<Update Error>")
                     except:
                         pass
@@ -474,9 +474,10 @@ class StatsTab(QWidget):
             logger.debug(f"Copied {key} to clipboard: {val}")
 
             # Visual feedback - briefly highlight the cell
-            if self.table:
+            # FIXED: Use explicit None check
+            if self.table is not None:
                 item = self.table.item(row, col)
-                if item:
+                if item is not None:
                     original_bg = item.background()
                     item.setBackground(QColor("#238636"))
                     QTimer.singleShot(200, lambda: self._reset_cell_background(item, original_bg))
@@ -487,7 +488,8 @@ class StatsTab(QWidget):
     def _reset_cell_background(self, item: QTableWidgetItem, original_bg):
         """Reset cell background after copy feedback"""
         try:
-            if item and not self._closing:
+            # FIXED: Use explicit None check
+            if item is not None and not self._closing:
                 item.setBackground(original_bg)
         except Exception as e:
             logger.error(f"Failed to reset cell background: {e}", exc_info=True)

@@ -1,9 +1,7 @@
 import json
-import os
-import logging
 import logging.handlers
+import os
 from typing import Dict, Any, Optional
-import traceback
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -425,8 +423,8 @@ class BrokerageSettingContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            # Restore backup
-            if self.settings and self._backup is not None:
+            # Restore backup - FIXED: Use explicit None check
+            if self.settings is not None and self._backup is not None:
                 self.settings.from_dict(self._backup)
                 logger.debug("BrokerageSettingContext restored backup")
 

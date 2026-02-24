@@ -97,8 +97,9 @@ class TradingApp:
             if not hasattr(self.state, "confirmed_orders"):
                 self.state.confirmed_orders = []
 
-            # Add should_stop flag for graceful shutdown
+            # Add should_stop flag and event for graceful shutdown
             self.should_stop = False
+            self._stop_event = threading.Event()
 
             logger.info("TradingApp initialized successfully")
 
@@ -127,6 +128,7 @@ class TradingApp:
         self._chain_itm = 5
         self._chain_otm = 5
         self.should_stop = False
+        self._stop_event = threading.Event()
         self._cleanup_done = False
 
     def _create_signal_engine(self) -> DynamicSignalEngine:
@@ -180,6 +182,15 @@ class TradingApp:
             self.initialize_market_state()
             self.subscribe_market_data()
 
+            # Keep the trading thread alive while WebSocket runs in background.
+            # The WebSocket connect() is non-blocking, so without this loop the
+            # thread would exit immediately, causing the app to auto-stop.
+            logger.info("Trading thread entering keep-alive loop (WebSocket running in background)")
+            while not self.should_stop:
+                self._stop_event.wait(timeout=1.0)
+
+            logger.info("Trading thread keep-alive loop exited (should_stop=True)")
+
         except TokenExpiredError as e:
             logger.error(f"Token expired during run: {e}", exc_info=True)
             raise
@@ -214,11 +225,11 @@ class TradingApp:
                 return
 
             spot = self.state.derivative_current_price
-            expiry = getattr(self.state, "expiry", None)
+            expiry = getattr(self.state, "expiry", 0)
             derivative = getattr(self.state, "derivative", None)
 
-            if not expiry or not derivative:
-                logger.warning(f"Missing expiry ({expiry}) or derivative ({derivative})")
+            if not derivative:
+                logger.warning(f"Missing derivative ({derivative})")
                 return
 
             # ATM options (used for trade execution & history)
@@ -264,7 +275,6 @@ class TradingApp:
                 self.symbol_full(self.state.derivative),
                 *chain_symbols
             ]))
-
             # Connect WebSocket
             if self.ws:
                 self.ws.symbols = self.state.all_symbols
@@ -469,7 +479,7 @@ class TradingApp:
 
                     try:
                         self.state.last_index_updated = \
-                            self.state.derivative_history_df["Time"].iloc[-1]
+                            self.state.derivative_history_df["time"].iloc[-1]
                     except (KeyError, IndexError, AttributeError) as e:
                         logger.error(f"Failed to get last index time: {e}", exc_info=True)
 
@@ -940,6 +950,8 @@ class TradingApp:
 
             logger.info("Cleaning up TradingApp resources...")
             self.should_stop = True
+            if hasattr(self, '_stop_event') and self._stop_event:
+                self._stop_event.set()  # Wake up the keep-alive loop immediately
 
             # WebSocket cleanup
             if hasattr(self, 'ws') and self.ws:

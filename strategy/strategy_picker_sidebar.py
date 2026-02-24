@@ -359,8 +359,9 @@ class StrategyPickerSidebar(QDialog):
     def refresh(self):
         """Reload the strategy list from manager."""
         try:
-            if not self._list or not self.manager:
-                logger.warning("refresh called with None list or manager")
+            # Use explicit `is None` — never use truthiness on QWidget or
+            # custom objects, as an empty QListWidget is falsy (len == 0).
+            if self._list is None or self.manager is None:
                 return
 
             self._list.blockSignals(True)
@@ -409,9 +410,9 @@ class StrategyPickerSidebar(QDialog):
             self._list.blockSignals(False)
 
             # Update active card
-            if self._card:
+            if self._card is not None:
                 active_data = self.manager.get_active()
-                if active_data:
+                if active_data is not None:
                     self._card.update(active_data, self._current_signal)
 
         except Exception as e:
@@ -421,7 +422,7 @@ class StrategyPickerSidebar(QDialog):
     def _refresh_signal(self):
         """Pull current signal from trading_app and update card."""
         try:
-            if not self.isVisible() or not self._card:
+            if not self.isVisible() or self._card is None:
                 return
 
             if self.trading_app is None:
@@ -435,8 +436,8 @@ class StrategyPickerSidebar(QDialog):
             sig_data = trend.get("option_signal", {})
             self._current_signal = sig_data.get("signal_value", "WAIT") if sig_data else "WAIT"
 
-            active = self.manager.get_active() if self.manager else None
-            if active and self._card:
+            active = self.manager.get_active() if self.manager is not None else None
+            if active is not None and self._card is not None:
                 self._card.update(active, self._current_signal)
 
         except Exception as e:
@@ -454,7 +455,7 @@ class StrategyPickerSidebar(QDialog):
     def _on_activate(self):
         """Handle activate button click"""
         try:
-            if not self._list:
+            if self._list is None:
                 return
 
             item = self._list.currentItem()
@@ -467,7 +468,7 @@ class StrategyPickerSidebar(QDialog):
     def _activate(self, slug: str):
         """Activate a strategy by slug"""
         try:
-            if not self.manager:
+            if self.manager is None:
                 logger.warning("Cannot activate: manager is None")
                 return
 
@@ -500,7 +501,7 @@ class StrategyPickerSidebar(QDialog):
 
     # Rule 8: Cleanup method
     def cleanup(self):
-        """Clean up resources before closing"""
+        """Clean up resources — call only when permanently destroying the widget."""
         try:
             logger.info("[StrategyPickerSidebar] Starting cleanup")
 
@@ -527,10 +528,25 @@ class StrategyPickerSidebar(QDialog):
             logger.error(f"[StrategyPickerSidebar.cleanup] Error: {e}", exc_info=True)
 
     def closeEvent(self, event):
-        """Handle close event with cleanup"""
+        """
+        Hide the sidebar instead of destroying it so it can be re-shown later.
+        Call cleanup() explicitly only when the parent window is closing.
+        """
         try:
-            self.cleanup()
-            super().closeEvent(event)
+            # Pause the timer while hidden to avoid wasted work
+            if self._timer and self._timer.isActive():
+                self._timer.stop()
+            self.hide()
+            event.ignore()   # Do NOT close/destroy — just hide
         except Exception as e:
             logger.error(f"[StrategyPickerSidebar.closeEvent] Failed: {e}", exc_info=True)
-            super().closeEvent(event)
+            event.ignore()
+
+    def showEvent(self, event):
+        """Resume the refresh timer whenever the sidebar becomes visible."""
+        try:
+            super().showEvent(event)
+            if self._timer and not self._timer.isActive():
+                self._timer.start(2000)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar.showEvent] Failed: {e}", exc_info=True)

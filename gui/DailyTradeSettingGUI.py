@@ -1,15 +1,13 @@
-# PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
 import logging
 import threading
-from typing import Optional, Dict, Any, Tuple, List
-import traceback
+from typing import Optional, Dict, Any, Tuple
 
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QVBoxLayout, QLabel,
                              QWidget, QTabWidget, QFrame, QScrollArea,
                              QComboBox, QCheckBox)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
 
 from gui import DailyTradeSetting
 
@@ -274,9 +272,9 @@ class DailyTradeSettingGUI(QDialog):
                     edit.setPlaceholderText(placeholder)
                     edit.setToolTip(tooltip)
 
-                    # Safely get value from settings
+                    # Safely get value from settings - FIXED: Use explicit None check
                     val = ""
-                    if self.daily_setting and hasattr(self.daily_setting, 'data'):
+                    if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                         val = self.daily_setting.data.get(key, "")
                     edit.setText(str(val))
 
@@ -304,7 +302,8 @@ class DailyTradeSettingGUI(QDialog):
                     self.interval_combo.addItem(display, value)
 
                 current_val = "2m"
-                if self.daily_setting and hasattr(self.daily_setting, 'data'):
+                # FIXED: Use explicit None check
+                if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                     current_val = self.daily_setting.data.get("history_interval", "2m")
 
                 found = False
@@ -339,7 +338,8 @@ class DailyTradeSettingGUI(QDialog):
                 self.sideway_check = QCheckBox("Enable trading during sideways market (12:00–14:00)")
 
                 checked = False
-                if self.daily_setting and hasattr(self.daily_setting, 'data'):
+                # FIXED: Use explicit None check
+                if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                     checked = self.daily_setting.data.get("sideway_zone_trade", False)
                 self.sideway_check.setChecked(checked)
 
@@ -567,8 +567,9 @@ class DailyTradeSettingGUI(QDialog):
             self.save_btn.setStyleSheet(
                 "QPushButton { background:#2ea043; color:#fff; border-radius:4px; padding:12px; }"
             )
+            # FIXED: Use explicit None checks in loop
             for entry in self.entries.values():
-                if entry:
+                if entry is not None:
                     entry.setStyleSheet(
                         "QLineEdit { background:#2d4a2d; color:#e6edf3; border:2px solid #3fb950;"
                         "            border-radius:4px; padding:8px; }"
@@ -598,15 +599,17 @@ class DailyTradeSettingGUI(QDialog):
     def reset_styles(self):
         """Reset all styles to normal"""
         try:
+            # FIXED: Use explicit None checks
             for entry in self.entries.values():
-                if entry:
+                if entry is not None:
                     entry.setStyleSheet(
                         "QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;"
                         "            border-radius:4px; padding:8px; }"
                         "QLineEdit:focus { border:2px solid #58a6ff; }"
                     )
 
-            if self.interval_combo:
+            # FIXED: Use explicit None check
+            if self.interval_combo is not None:
                 self.interval_combo.setStyleSheet(
                     "QComboBox { background:#21262d; color:#e6edf3; border:1px solid #30363d;"
                     "            border-radius:4px; padding:8px; font-size:10pt; }"
@@ -644,6 +647,7 @@ class DailyTradeSettingGUI(QDialog):
             # Validate all fields
             for key, (edit, typ) in self.vars.items():
                 try:
+                    # FIXED: Use explicit None check
                     if edit is None:
                         logger.warning(f"Edit widget for {key} is None")
                         continue
@@ -655,7 +659,7 @@ class DailyTradeSettingGUI(QDialog):
                         data_to_save[key] = value
                     else:
                         validation_errors.append(error or f"Invalid value for {key}")
-                        if edit:
+                        if edit is not None:
                             edit.setStyleSheet(
                                 "QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149;"
                                 "            border-radius:4px; padding:8px; }"
@@ -665,7 +669,8 @@ class DailyTradeSettingGUI(QDialog):
                     validation_errors.append(f"Validation error for {key}")
 
             if validation_errors:
-                if self.tabs:
+                # FIXED: Use explicit None check
+                if self.tabs is not None:
                     self.tabs.setCurrentIndex(0)
                 self.show_error_feedback(validation_errors[0])
                 self.save_btn.setEnabled(True)
@@ -673,11 +678,11 @@ class DailyTradeSettingGUI(QDialog):
                 self.operation_finished.emit()
                 return
 
-            # Add combo box and checkbox values
-            if self.interval_combo:
+            # Add combo box and checkbox values - FIXED: Use explicit None checks
+            if self.interval_combo is not None:
                 data_to_save["history_interval"] = self.interval_combo.currentData()
 
-            if self.sideway_check:
+            if self.sideway_check is not None:
                 data_to_save["sideway_zone_trade"] = self.sideway_check.isChecked()
 
             # Save in background thread
@@ -697,7 +702,7 @@ class DailyTradeSettingGUI(QDialog):
     def _threaded_save(self, data_to_save: Dict[str, Any]):
         """Threaded save operation"""
         try:
-            # Rule 6: Validate daily setting
+            # Rule 6: Validate daily setting (already correct - explicit None check)
             if self.daily_setting is None:
                 raise ValueError("Daily setting object is None")
 
@@ -741,7 +746,7 @@ class DailyTradeSettingGUI(QDialog):
                 self.save_btn.setEnabled(True)
 
                 # Refresh app if available
-                if self.app and hasattr(self.app, "refresh_settings_live"):
+                if self.app is not None and hasattr(self.app, "refresh_settings_live"):
                     try:
                         self.app.refresh_settings_live()
                         logger.debug("App settings refreshed")
@@ -788,8 +793,8 @@ class DailyTradeSettingGUI(QDialog):
         try:
             logger.info("[DailyTradeSettingGUI] Starting cleanup")
 
-            # Cancel any pending timers
-            if hasattr(self, '_save_timer') and self._save_timer:
+            # Cancel any pending timers - FIXED: Use explicit None check
+            if hasattr(self, '_save_timer') and self._save_timer is not None:
                 try:
                     if self._save_timer.isActive():
                         self._save_timer.stop()

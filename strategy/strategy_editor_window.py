@@ -8,32 +8,29 @@ Enhanced with expanded cards, clear labels, and import/export functionality.
 from __future__ import annotations
 
 import json
-import logging
 import logging.handlers
-import traceback
-from copy import deepcopy
-from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
+from typing import Dict, List, Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator, QClipboard
+from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QDialogButtonBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+    QFormLayout, QFrame, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
-    QHeaderView, QTableWidget, QTableWidgetItem, QCompleter,
-    QStackedWidget, QFileDialog, QMenu, QToolButton)
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
+    QCompleter,
+    QStackedWidget, QFileDialog)
 
-from strategy.strategy_manager import (
-    StrategyManager, INDICATOR_DEFAULTS, ENGINE_DEFAULTS, SIGNAL_GROUPS
-)
 from strategy.indicator_registry import (
-    ALL_INDICATORS, INDICATOR_DEFAULT_PARAMS, get_indicator_params,
+    ALL_INDICATORS, get_indicator_params,
     get_param_type, get_param_description, get_indicator_category,
-    INDICATOR_CATEGORIES, get_indicators_by_category
+    get_indicators_by_category
 )
+from strategy.strategy_manager import (
+    StrategyManager, SIGNAL_GROUPS
+)
+from strategy.strategy_presets import get_preset_names, get_preset_rules
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -1615,46 +1612,7 @@ class _SignalGroupPanel(QWidget):
 
             # Presets dropdown
             self._presets_combo = QComboBox()
-            common_presets = ["📋 Load Preset"]
-
-            if self.signal == "BUY_CALL":
-                presets = common_presets + [
-                    "RSI Oversold",
-                    "MACD Crossover",
-                    "BB Squeeze",
-                    "EMA Cross",
-                    "Stochastic Bull",
-                    "ADX Strong Trend",
-                    "Ichimoku Breakout",
-                    "Volume Breakout",
-                    "Triple Confirmation",
-                    "Bullish Engulfing"
-                ]
-            elif self.signal == "BUY_PUT":
-                presets = common_presets + [
-                    "RSI Overbought",
-                    "MACD Bear Cross",
-                    "Death Cross",
-                    "BB Top Rejection",
-                    "Bearish Divergence"
-                ]
-            elif self.signal == "SELL_CALL":
-                presets = common_presets + [
-                    "RSI Overbought",
-                    "Resistance Test"
-                ]
-            elif self.signal == "SELL_PUT":
-                presets = common_presets + [
-                    "RSI Oversold",
-                    "Support Bounce"
-                ]
-            elif self.signal == "HOLD":
-                presets = common_presets + [
-                    "Strong Trend",
-                    "Low Volatility"
-                ]
-            else:
-                presets = common_presets
+            presets = ["📋 Load Preset"] + get_preset_names(self.signal)
 
             self._presets_combo.addItems(presets)
             self._presets_combo.setFixedWidth(200)
@@ -1734,7 +1692,7 @@ class _SignalGroupPanel(QWidget):
     def _add_rule(self, rule: Dict = None):
         """Add a new rule row"""
         try:
-            if not self._rules_container or not self._rules_layout:
+            if self._rules_container is None or self._rules_layout is None:
                 return
 
             row = _RuleRow(rule, parent=self._rules_container)
@@ -1771,32 +1729,20 @@ class _SignalGroupPanel(QWidget):
             logger.error(f"[_SignalGroupPanel._clear_all_rules] Failed: {e}", exc_info=True)
 
     def _load_preset(self, index: int):
-        """Load a preset rule configuration"""
-        try:
-            if index <= 0 or not self._presets_combo:
-                return
+        """Load a preset rule configuration from strategy_presets.py"""
+        if index <= 0:
+            return
 
-            preset = self._presets_combo.currentText()
-            self._presets_combo.setCurrentIndex(0)
+        preset = self._presets_combo.currentText()
+        self._presets_combo.setCurrentIndex(0)
 
-            # Preset definitions - simplified for brevity
-            if self.signal == "BUY_CALL" and preset == "RSI Oversold":
-                rules = [
-                    {
-                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
-                        "op": "<",
-                        "rhs": {"type": "scalar", "value": 30}
-                    },
-                    {
-                        "lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
-                        "op": "crosses_above",
-                        "rhs": {"type": "scalar", "value": 30}
-                    }
-                ]
-                for rule in rules:
-                    self._add_rule(rule)
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._load_preset] Failed: {e}", exc_info=True)
+        rules = get_preset_rules(self.signal, preset)
+        if not rules:
+            logger.warning(f"[_load_preset] No rules found for signal={self.signal!r}, preset={preset!r}")
+            return
+
+        for rule in rules:
+            self._add_rule(rule)
 
     def load(self, group_data: Dict):
         """Load group data into panel"""
@@ -2470,7 +2416,7 @@ class _StrategyListPanel(QWidget):
     def refresh(self):
         """Refresh the list of strategies"""
         try:
-            if not self.list_widget or not self.manager:
+            if self.list_widget is None or self.manager is None:
                 return
 
             self.list_widget.blockSignals(True)
@@ -2536,7 +2482,7 @@ class _StrategyListPanel(QWidget):
     def _on_dup(self):
         """Duplicate current strategy"""
         try:
-            if not self._current_slug or not self.manager:
+            if not self._current_slug or self.manager is None:
                 return
 
             src = self.manager.get(self._current_slug)
@@ -2564,7 +2510,7 @@ class _StrategyListPanel(QWidget):
     def _on_activate_slug(self, slug: str):
         """Activate strategy by slug"""
         try:
-            if not self.manager:
+            if self.manager is None:
                 return
 
             self.manager.activate(slug)
@@ -2576,7 +2522,7 @@ class _StrategyListPanel(QWidget):
     def _on_delete(self):
         """Delete current strategy"""
         try:
-            if not self._current_slug or not self.manager:
+            if not self._current_slug or self.manager is None:
                 return
 
             s = self.manager.get(self._current_slug)
@@ -2831,20 +2777,20 @@ class StrategyEditorWindow(QDialog):
                 if ans == QMessageBox.No:
                     return
 
-            if not self.manager:
+            if self.manager is None:
                 return
 
             strategy = self.manager.get(slug)
-            if not strategy:
+            if strategy is None:
                 return
 
             self._current_slug = slug
 
-            if self._info_tab:
+            if self._info_tab is not None:
                 self._info_tab.load(strategy)
-            if self._ind_tab:
+            if self._ind_tab is not None:
                 self._ind_tab.load(strategy)
-            if self._rules_tab:
+            if self._rules_tab is not None:
                 self._rules_tab.load(strategy)
 
             self._set_dirty(False)
@@ -2853,7 +2799,7 @@ class StrategyEditorWindow(QDialog):
             if self._title_lbl:
                 self._title_lbl.setText(name)
 
-            is_active = self.manager.get_active_slug() == slug if self.manager else False
+            is_active = self.manager.get_active_slug() == slug if self.manager is not None else False
             if is_active and self._active_badge:
                 self._active_badge.setText("  ⚡ ACTIVE  ")
                 self._active_badge.setStyleSheet(
@@ -2918,10 +2864,10 @@ class StrategyEditorWindow(QDialog):
                     if not self._do_save():
                         return
 
-            if self.manager:
+            if self.manager is not None:
                 self.manager.activate(self._current_slug)
 
-            if self._list_panel:
+            if self._list_panel is not None:
                 self._list_panel.refresh()
 
             if self._active_badge:
@@ -2958,10 +2904,10 @@ class StrategyEditorWindow(QDialog):
     def _do_save(self) -> bool:
         """Perform save operation"""
         try:
-            if not self._current_slug or not self.manager:
+            if not self._current_slug or self.manager is None:
                 return False
 
-            if not self._info_tab:
+            if self._info_tab is None:
                 return False
 
             name = self._info_tab.collect()["name"]
@@ -2982,7 +2928,7 @@ class StrategyEditorWindow(QDialog):
                 self._set_dirty(False)
                 if self._title_lbl:
                     self._title_lbl.setText(name)
-                if self._list_panel:
+                if self._list_panel is not None:
                     self._list_panel.refresh()
                 if self.status_lbl:
                     self.status_lbl.setText("✓ Saved")
@@ -3014,18 +2960,18 @@ class StrategyEditorWindow(QDialog):
                 )
                 if ok and new_name and new_name.strip():
                     # Create new strategy with imported data
-                    if self.manager:
+                    if self.manager is not None:
                         ok2, slug = self.manager.create(new_name.strip())
                         if ok2:
                             # Update with imported data
                             strategy = self.manager.get(slug)
-                            if strategy:
+                            if strategy is not None:
                                 strategy['meta']['description'] = data.get('meta', {}).get('description', '')
                                 strategy['engine'] = data.get('engine', {})
                                 self.manager.save(slug, strategy)
 
                             self._current_slug = slug
-                            if self._list_panel:
+                            if self._list_panel is not None:
                                 self._list_panel.refresh()
                             self._load_strategy(slug)
 
@@ -3037,12 +2983,12 @@ class StrategyEditorWindow(QDialog):
     def _on_export(self):
         """Export current strategy to JSON"""
         try:
-            if not self._current_slug or not self.manager:
+            if not self._current_slug or self.manager is None:
                 QMessageBox.warning(self, "No Strategy", "Please select a strategy to export.")
                 return
 
             strategy = self.manager.get(self._current_slug)
-            if strategy:
+            if strategy is not None:
                 dlg = ImportExportDialog('export', strategy, self)
                 dlg.exec_()
         except Exception as e:

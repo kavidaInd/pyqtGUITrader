@@ -1527,7 +1527,8 @@ class MultiChartWidget(QWidget):
         """Call once at startup and after every strategy change."""
         try:
             for chart in (self._spot_chart, self._call_chart, self._put_chart):
-                if chart:
+                # FIXED: Use explicit None check
+                if chart is not None:
                     chart.set_config(config, signal_engine)
             # _signal_tab needs no config — it reads from spot_data["option_signal"]
         except Exception as e:
@@ -1544,18 +1545,21 @@ class MultiChartWidget(QWidget):
         Pass None / {} for tabs whose data is not yet available.
         """
         try:
-            if spot_data and self._spot_chart:
+            # FIXED: Use explicit None checks and proper dict validation
+            if spot_data and self._spot_chart is not None:
                 self._spot_chart.update_chart(spot_data)
                 # Feed the Signal Data tab from spot_data["option_signal"]
                 option_signal = (spot_data.get("option_signal")
                                  if isinstance(spot_data, dict) else None)
-                if self._signal_tab:
+                if self._signal_tab is not None:
                     self._signal_tab.refresh(option_signal)
 
-            if call_data and self._call_chart:
+            # FIXED: Use explicit None checks
+            if call_data and self._call_chart is not None:
                 self._call_chart.update_chart(call_data)
 
-            if put_data and self._put_chart:
+            # FIXED: Use explicit None checks
+            if put_data and self._put_chart is not None:
                 self._put_chart.update_chart(put_data)
 
         except Exception as e:
@@ -1576,10 +1580,12 @@ class MultiChartWidget(QWidget):
     def clear_cache(self):
         try:
             for c in (self._spot_chart, self._call_chart, self._put_chart):
-                if c:
+                # FIXED: Use explicit None check
+                if c is not None:
                     c.clear_cache()
             # Signal tab has no cache to clear but reset its display
-            if self._signal_tab:
+            # FIXED: Use explicit None check
+            if self._signal_tab is not None:
                 self._signal_tab.refresh(None)
         except Exception as e:
             logger.error(f"[MultiChartWidget.clear_cache] Failed: {e}", exc_info=True)

@@ -473,7 +473,8 @@ class ProfitStoplossSettingGUI(QDialog):
         if success:
             self.show_success_feedback()
             self.save_btn.setEnabled(True)
-            if self.app and hasattr(self.app, "refresh_settings_live"):
+            # FIXED: Use explicit None check for app object
+            if self.app is not None and hasattr(self.app, "refresh_settings_live"):
                 try:
                     self.app.refresh_settings_live()
                 except Exception as e:

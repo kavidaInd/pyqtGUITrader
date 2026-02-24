@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-import logging
 import logging.handlers
-import traceback
 import threading
-from typing import Optional, Any, Dict, List, Set
-from functools import wraps
+from typing import Any, Dict, Set
 
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy,
-    QScrollArea,
-)
-from PyQt5.QtGui import QFont, QColor
-from PyQt5.QtCore import Qt, QTimer
+    QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout, QTabWidget, )
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -162,7 +155,8 @@ class StatusCard(QFrame):
                 logger.warning(f"set_value called with non-string color: {color}")
                 color = TEXT_MAIN
 
-            if not self.value_label:
+            # FIXED: Use explicit None check
+            if self.value_label is None:
                 logger.warning("set_value called with None value_label")
                 return
 
@@ -195,13 +189,15 @@ class StatusCard(QFrame):
             self.setStyleSheet(self._DIM_SS if dimmed else self._BASE_SS)
             dim_col = GREY_OFF if dimmed else TEXT_DIM
 
-            if self._title:
+            # FIXED: Use explicit None check
+            if self._title is not None:
                 self._title.setStyleSheet(
                     f"color: {dim_col}; border: none; background: transparent;"
                 )
 
+            # FIXED: Use explicit None check
             if dimmed:
-                if self.value_label:
+                if self.value_label is not None:
                     self.value_label.setText("—")
                     self.value_label.setStyleSheet(
                         f"color: {GREY_OFF}; border: none; background: transparent;"
@@ -485,7 +481,8 @@ class StatusPanel(QWidget):
                 for key in self._TRADE_ONLY:
                     if key in self.cards:
                         self.cards[key].set_dimmed(not trade_active)
-                if self._no_trade_lbl:
+                # FIXED: Use explicit None check
+                if self._no_trade_lbl is not None:
                     self._no_trade_lbl.setVisible(not trade_active)
 
             # ── Always-visible cards ───────────────────────────────────────

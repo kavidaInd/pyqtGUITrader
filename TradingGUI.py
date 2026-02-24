@@ -174,8 +174,8 @@ class TradingGUI(QMainWindow):
         """Handle error signals"""
         try:
             logger.error(f"Error signal received: {message}")
-            # Update status bar if available
-            if hasattr(self, 'app_status_bar') and self.app_status_bar:
+            # Update status bar if available - FIXED: Use explicit None check
+            if hasattr(self, 'app_status_bar') and self.app_status_bar is not None:
                 self.app_status_bar.update_status(
                     {'status': f'Error: {message[:50]}...'},
                     getattr(self, 'trading_mode', 'algo'),
@@ -451,11 +451,11 @@ class TradingGUI(QMainWindow):
             state = self.trading_app.state
             self.status_panel.refresh(state, self.config)
 
-            # Update popups if they're open
-            if self.stats_popup and self.stats_popup.isVisible():
+            # Update popups if they're open - FIXED: Use explicit None checks
+            if self.stats_popup is not None and self.stats_popup.isVisible():
                 self.stats_popup.refresh()
 
-            if self.signal_debug_popup and self.signal_debug_popup.isVisible():
+            if self.signal_debug_popup is not None and self.signal_debug_popup.isVisible():
                 self.signal_debug_popup.refresh()
 
             self._update_button_states()
@@ -806,8 +806,8 @@ class TradingGUI(QMainWindow):
     def _append_log(self, message: str):
         """# PYQT: Connected to QtLogHandler signal — always on main thread"""
         try:
-            # Also append to popup if it's open
-            if self.log_popup and self.log_popup.isVisible():
+            # Also append to popup if it's open - FIXED: Use explicit None check
+            if self.log_popup is not None and self.log_popup.isVisible():
                 self.log_popup.append_log(message)
         except Exception as e:
             logger.error(f"[TradingGUI._append_log] Failed: {e}", exc_info=True)
@@ -870,15 +870,13 @@ class TradingGUI(QMainWindow):
                 ("Profit & Loss Settings", self._open_pnl),
                 ("Brokerage Settings", self._open_brokerage),
                 ("Manual Fyers Login", self._open_login),
+                ("Trading Mode Settings",self._open_trading_mode)
             ]
             for label, slot in actions:
                 act = QAction(label, self)
                 act.triggered.connect(slot)
                 settings_menu.addAction(act)
 
-            mode_act = QAction("🎮 Trading Mode Settings", self)
-            mode_act.triggered.connect(self._open_trading_mode)
-            settings_menu.addAction(mode_act)
             # Help menu
             help_menu = menubar.addMenu("Help")
             about_act = QAction("About", self)
@@ -935,8 +933,8 @@ class TradingGUI(QMainWindow):
             mode = self.trading_mode_setting.mode.value if self.trading_mode_setting else "algo"
             color = "#f85149" if (self.trading_mode_setting and self.trading_mode_setting.is_live()) else "#2ea043"
 
-            # Add mode indicator to status bar or somewhere visible
-            if hasattr(self, 'mode_label') and self.mode_label:
+            # Add mode indicator to status bar or somewhere visible - FIXED: Use explicit None check
+            if hasattr(self, 'mode_label') and self.mode_label is not None:
                 self.mode_label.setText(f"Mode: {mode}")
                 self.mode_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         except Exception as e:
@@ -960,17 +958,18 @@ class TradingGUI(QMainWindow):
     def _close_all_popups(self):
         """Close all popup windows"""
         try:
-            if self.log_popup:
+            # FIXED: Use explicit None checks for all popups
+            if self.log_popup is not None:
                 self.log_popup.close()
-            if self.history_popup:
+            if self.history_popup is not None:
                 self.history_popup.close()
-            if self.stats_popup:
+            if self.stats_popup is not None:
                 self.stats_popup.close()
-            if self.signal_debug_popup:
+            if self.signal_debug_popup is not None:
                 self.signal_debug_popup.close()
-            if self.strategy_picker:
+            if self.strategy_picker is not None:
                 self.strategy_picker.close()
-            if self.strategy_editor:
+            if self.strategy_editor is not None:
                 self.strategy_editor.close()
         except Exception as e:
             logger.error(f"[TradingGUI._close_all_popups] Failed: {e}", exc_info=True)
@@ -1011,7 +1010,8 @@ class TradingGUI(QMainWindow):
             if not self.trading_app:
                 QMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
                 return
-            if not self.signal_debug_popup:
+            # FIXED: Use explicit None check
+            if self.signal_debug_popup is None:
                 self.signal_debug_popup = DynamicSignalDebugPopup(self.trading_app, self)
             self.signal_debug_popup.show()
             self.signal_debug_popup.raise_()
@@ -1059,8 +1059,8 @@ class TradingGUI(QMainWindow):
                 if current_mtime != self._trade_file_mtime:
                     self._trade_file_mtime = current_mtime
 
-                    # If history popup exists and is visible, update it
-                    if self.history_popup and self.history_popup.isVisible():
+                    # If history popup exists and is visible, update it - FIXED: Use explicit None check
+                    if self.history_popup is not None and self.history_popup.isVisible():
                         self.history_popup.load_trades_for_date()
 
             except (OSError, IOError) as e:
@@ -1193,20 +1193,20 @@ class TradingGUI(QMainWindow):
         try:
             logger.info("[TradingGUI] Starting cleanup")
 
-            # Stop timers
-            if hasattr(self, 'timer_fast') and self.timer_fast:
+            # Stop timers - FIXED: Use explicit None checks
+            if hasattr(self, 'timer_fast') and self.timer_fast is not None:
                 try:
                     self.timer_fast.stop()
                 except Exception as e:
                     logger.warning(f"Fast timer stop error: {e}")
 
-            if hasattr(self, 'timer_chart') and self.timer_chart:
+            if hasattr(self, 'timer_chart') and self.timer_chart is not None:
                 try:
                     self.timer_chart.stop()
                 except Exception as e:
                     logger.warning(f"Chart timer stop error: {e}")
 
-            if hasattr(self, 'timer_app_status') and self.timer_app_status:
+            if hasattr(self, 'timer_app_status') and self.timer_app_status is not None:
                 try:
                     self.timer_app_status.stop()
                 except Exception as e:
@@ -1215,8 +1215,8 @@ class TradingGUI(QMainWindow):
             # Close popups
             self._close_all_popups()
 
-            # Stop trading thread
-            if hasattr(self, 'trading_thread') and self.trading_thread:
+            # Stop trading thread - FIXED: Use explicit None check
+            if hasattr(self, 'trading_thread') and self.trading_thread is not None:
                 if self.trading_thread.isRunning():
                     try:
                         self.trading_thread.request_stop()

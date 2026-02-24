@@ -698,7 +698,7 @@ class Broker:
             logger.error(f"Exception in get_balance: {e!r}", exc_info=True)
             return 0.0
 
-    def get_history(self, symbol: str, interval: str = "2", length: int = 100):
+    def get_history(self, symbol: str, interval: str = "2", length: int = 400):
         """Get historical data"""
         try:
             # Rule 6: Input validation
@@ -749,7 +749,7 @@ class Broker:
             )
 
             if response and response.get("s") == self.OK and "candles" in response:
-                df = pd.DataFrame(response['candles'], columns=["Time", "open", "high", "low", "close", "volume"])
+                df = pd.DataFrame(response['candles'], columns=["time", "open", "high", "low", "close", "volume"])
                 return df.tail(length)
             else:
                 logger.warning(f"Failed to get history for {symbol}: {response}")

@@ -305,8 +305,8 @@ class TradeHistoryPopup(QDialog):
         try:
             logger.info("[TradeHistoryPopup] Starting cleanup")
 
-            # Clear table
-            if self.table:
+            # Clear table - FIXED: Use explicit None check
+            if self.table is not None:
                 try:
                     self.table.setRowCount(0)
                 except Exception as e:

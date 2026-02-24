@@ -296,8 +296,8 @@ class AppStatusBar(QFrame):
             self._current_mode = mode
             self._app_running = app_running
 
-            # Update mode indicator with safety checks
-            if self.mode_label:
+            # Update mode indicator with safety checks - FIXED: Use explicit None check
+            if self.mode_label is not None:
                 try:
                     if mode == "algo":
                         self.mode_label.setText("MODE: ALGO")
@@ -308,8 +308,8 @@ class AppStatusBar(QFrame):
                 except Exception as e:
                     logger.error(f"Failed to update mode label: {e}")
 
-            # Update status text
-            if 'status' in status_info and self.status_label:
+            # Update status text - FIXED: Use explicit None check
+            if 'status' in status_info and self.status_label is not None:
                 try:
                     status_text = status_info['status']
                     if isinstance(status_text, str):
@@ -319,20 +319,20 @@ class AppStatusBar(QFrame):
                     logger.error(f"Failed to update status label: {e}")
 
             # Update status icon color with safety checks
-            if self.status_icon:
+            if self.status_icon is not None:
                 try:
                     if app_running:
                         if status_info.get('fetching_history', False):
                             self.status_icon.setStyleSheet("color: #f0883e; font-size: 12px;")  # Orange
-                            if self.status_label:
+                            if self.status_label is not None:
                                 self.status_label.setText("Fetching history...")
                         elif status_info.get('processing', False):
                             self.status_icon.setStyleSheet("color: #58a6ff; font-size: 12px;")  # Blue
-                            if self.status_label:
+                            if self.status_label is not None:
                                 self.status_label.setText("Processing...")
                         elif status_info.get('order_pending', False):
                             self.status_icon.setStyleSheet("color: #d29922; font-size: 12px;")  # Yellow
-                            if self.status_label:
+                            if self.status_label is not None:
                                 self.status_label.setText("Order pending...")
                         else:
                             self.status_icon.setStyleSheet("color: #3fb950; font-size: 12px;")  # Green
@@ -358,8 +358,8 @@ class AppStatusBar(QFrame):
                                       bool(status_info.get('has_position', False)),
                                       "#3fb950")
 
-            # Show/hide progress bar for long operations
-            if self.progress_bar:
+            # Show/hide progress bar for long operations - FIXED: Use explicit None check
+            if self.progress_bar is not None:
                 try:
                     if status_info.get('fetching_history', False):
                         self.progress_bar.setVisible(True)
@@ -369,8 +369,8 @@ class AppStatusBar(QFrame):
                 except Exception as e:
                     logger.error(f"Failed to update progress bar: {e}")
 
-            # Start blinking for important states
-            if self.blink_label:
+            # Start blinking for important states - FIXED: Use explicit None check
+            if self.blink_label is not None:
                 try:
                     if status_info.get('order_pending', False) or status_info.get('processing', False):
                         if not self.blink_label.isVisible():
@@ -391,7 +391,8 @@ class AppStatusBar(QFrame):
     def _schedule_safety_update(self):
         """Schedule a safety update to ensure UI consistency"""
         try:
-            if self._update_timer and not self._update_timer.isActive():
+            # FIXED: Use explicit None check
+            if self._update_timer is not None and not self._update_timer.isActive():
                 self._update_timer.start(5000)  # 5 second safety timeout
         except Exception as e:
             logger.error(f"Failed to schedule safety update: {e}")
@@ -400,8 +401,8 @@ class AppStatusBar(QFrame):
         """Safety update to ensure UI doesn't get stuck in wrong state"""
         try:
             logger.debug("Running safety update")
-            # If blink label is visible but shouldn't be, hide it
-            if self.blink_label and self.blink_label.isVisible():
+            # If blink label is visible but shouldn't be, hide it - FIXED: Use explicit None check
+            if self.blink_label is not None and self.blink_label.isVisible():
                 if not (self._current_status in ["Processing...", "Order pending..."]):
                     logger.warning("Safety update: hiding stuck blink label")
                     self.blink_label.stop_blink()
@@ -454,7 +455,8 @@ class AppStatusBar(QFrame):
                 logger.warning(f"show_progress called with non-numeric value: {value}")
                 return
 
-            if self.progress_bar:
+            # FIXED: Use explicit None check
+            if self.progress_bar is not None:
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setRange(0, 100)
 
@@ -473,7 +475,8 @@ class AppStatusBar(QFrame):
     def hide_progress(self) -> None:
         """Hide progress bar"""
         try:
-            if self.progress_bar:
+            # FIXED: Use explicit None check
+            if self.progress_bar is not None:
                 self.progress_bar.setVisible(False)
                 logger.debug("Progress bar hidden")
         except Exception as e:
@@ -485,15 +488,15 @@ class AppStatusBar(QFrame):
         try:
             logger.info("[AppStatusBar] Starting cleanup")
 
-            # Stop animations
-            if self.blink_label:
+            # Stop animations - FIXED: Use explicit None check
+            if self.blink_label is not None:
                 try:
                     self.blink_label.stop_blink()
                 except Exception as e:
                     logger.warning(f"Error stopping blink animation: {e}")
 
-            # Stop timer
-            if self._update_timer:
+            # Stop timer - FIXED: Use explicit None check
+            if self._update_timer is not None:
                 try:
                     if self._update_timer.isActive():
                         self._update_timer.stop()

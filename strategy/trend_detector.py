@@ -236,9 +236,9 @@ class TrendDetector:
 
             # Store timestamps so the chart can show real times (HH:MM)
             try:
-                if "Time" in df.columns and not df["Time"].empty:
-                    results["timestamps"] = df["Time"].tolist()
-                elif df.index.name == "Time" or hasattr(df.index, 'to_list'):
+                if "time" in df.columns and not df["time"].empty:
+                    results["timestamps"] = df["time"].tolist()
+                elif df.index.name == "time" or hasattr(df.index, 'to_list'):
                     try:
                         results["timestamps"] = df.index.to_list()
                     except Exception as e:
