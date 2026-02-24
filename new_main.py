@@ -130,6 +130,7 @@ class TradingApp:
         self.should_stop = False
         self._stop_event = threading.Event()
         self._cleanup_done = False
+        self._token_expired_error = None  # Set by thread-pool workers on TokenExpiredError
 
     def _create_signal_engine(self) -> DynamicSignalEngine:
         """Create signal engine with active strategy config"""
@@ -173,6 +174,7 @@ class TradingApp:
 
     def run(self) -> None:
         # logger.info("Starting trading app with dynamic signals...")
+        self._token_expired_error = None  # Reset on each run
         try:
             # Check if we should stop before starting
             if self.should_stop:
@@ -190,6 +192,11 @@ class TradingApp:
                 self._stop_event.wait(timeout=1.0)
 
             logger.info("Trading thread keep-alive loop exited (should_stop=True)")
+
+            # If a thread-pool worker set _token_expired_error, re-raise it so
+            # TradingThread catches it and emits the dedicated token_expired signal.
+            if self._token_expired_error is not None:
+                raise self._token_expired_error
 
         except TokenExpiredError as e:
             logger.error(f"Token expired during run: {e}", exc_info=True)
@@ -209,11 +216,15 @@ class TradingApp:
                         getattr(self.state, "derivative", None)
                     )
                     # logger.info(f"Initial price for {self.state.derivative}: {self.state.derivative_current_price}")
+                except TokenExpiredError:
+                    raise
                 except Exception as price_error:
                     logger.error(f"Failed to get initial price: {price_error!r}", exc_info=True)
             else:
                 logger.warning("Broker doesn't support get_option_current_price")
 
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"[TradingApp.initialize_market_state] Failed: {e!r}", exc_info=True)
 
@@ -344,6 +355,8 @@ class TradingApp:
             if hasattr(self, 'monitor') and self.monitor:
                 try:
                     self.monitor.update_trailing_sl_tp(self.broker, self.state)
+                except TokenExpiredError:
+                    raise
                 except Exception as monitor_error:
                     logger.error(f"Error in monitor.update_trailing_sl_tp: {monitor_error}", exc_info=True)
 
@@ -437,6 +450,8 @@ class TradingApp:
             if hasattr(self, 'executor') and self.executor:
                 self.execute_based_on_trend()
 
+        except TokenExpiredError:
+            raise
         except Exception as trend_error:
             logger.info(f"Trend detection or decision logic error: {trend_error!r}", exc_info=True)
 
@@ -455,6 +470,8 @@ class TradingApp:
                         symbol=getattr(self.state, "derivative", None),
                         interval=getattr(self.state, "interval", None)
                     )
+                except TokenExpiredError:
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to fetch derivative history: {e}", exc_info=True)
 
@@ -463,6 +480,8 @@ class TradingApp:
                         symbol=getattr(self.state, "call_option", None),
                         interval=getattr(self.state, "interval", None)
                     )
+                except TokenExpiredError:
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to fetch call data: {e}", exc_info=True)
 
@@ -471,6 +490,8 @@ class TradingApp:
                         symbol=getattr(self.state, "put_option", None),
                         interval=getattr(self.state, "interval", None)
                     )
+                except TokenExpiredError:
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to fetch put data: {e}", exc_info=True)
 
@@ -512,6 +533,12 @@ class TradingApp:
                         if logger.isEnabledFor(logging.DEBUG):
                             self._log_signal_details()
 
+        except TokenExpiredError as e:
+            logger.critical(f"Token expired in history fetch: {e}", exc_info=True)
+            self._token_expired_error = e
+            self.should_stop = True
+            if hasattr(self, '_stop_event') and self._stop_event:
+                self._stop_event.set()
         except Exception as e:
             logger.error(f"Error in _fetch_history_and_detect: {e!r}", exc_info=True)
         finally:
@@ -560,12 +587,12 @@ class TradingApp:
 
             # === EXIT Conditions ===
             if current_pos == BaseEnums.CALL:
-                if signal_value in ['SELL_CALL', 'BUY_PUT']:
+                if signal_value in ['EXIT_CALL', 'BUY_PUT']:
                     trend = BaseEnums.EXIT_CALL
                     self.state.reason_to_exit = self._get_exit_reason('CALL')
 
             elif current_pos == BaseEnums.PUT:
-                if signal_value in ['SELL_PUT', 'BUY_CALL']:
+                if signal_value in ['EXIT_PUT', 'BUY_CALL']:
                     trend = BaseEnums.EXIT_PUT
                     self.state.reason_to_exit = self._get_exit_reason('PUT')
 
@@ -587,11 +614,11 @@ class TradingApp:
 
             # === RESET Condition ===
             elif current_pos is None and previous_pos in {BaseEnums.CALL, BaseEnums.PUT}:
-                if previous_pos == BaseEnums.CALL and signal_value in ['BUY_PUT', 'SELL_PUT']:
+                if previous_pos == BaseEnums.CALL and signal_value in ['BUY_PUT', 'EXIT_PUT']:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous CALL trade flag - opposite signal detected")
 
-                elif previous_pos == BaseEnums.PUT and signal_value in ['BUY_CALL', 'SELL_CALL']:
+                elif previous_pos == BaseEnums.PUT and signal_value in ['BUY_CALL', 'EXIT_CALL']:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous PUT trade flag - opposite signal detected")
 
@@ -612,7 +639,7 @@ class TradingApp:
 
             rule_results = self.state.option_signal_result.get('rule_results', {})
 
-            sell_signal = 'SELL_CALL' if position_type == 'CALL' else 'SELL_PUT'
+            sell_signal = 'EXIT_CALL' if position_type == 'CALL' else 'EXIT_PUT'
             if sell_signal in rule_results:
                 for rule in rule_results[sell_signal]:
                     if rule.get('result'):
@@ -652,6 +679,8 @@ class TradingApp:
                                 success = self.executor.exit_position(self.state)
                                 if not success:
                                     logger.error("Exit failed near market close")
+                            except TokenExpiredError:
+                                raise
                             except Exception as e:
                                 logger.error(f"Exit error near market close: {e}", exc_info=True)
                         return
@@ -665,6 +694,8 @@ class TradingApp:
                                 success = self.executor.exit_position(self.state)
                                 if not success:
                                     logger.error("Exit failed for PUT")
+                            except TokenExpiredError:
+                                raise
                             except Exception as e:
                                 logger.error(f"PUT exit error: {e}", exc_info=True)
 
@@ -675,6 +706,8 @@ class TradingApp:
                                 success = self.executor.exit_position(self.state)
                                 if not success:
                                     logger.error("Exit failed for PUT (safety)")
+                            except TokenExpiredError:
+                                raise
                             except Exception as e:
                                 logger.error(f"PUT safety exit error: {e}", exc_info=True)
 
@@ -686,6 +719,8 @@ class TradingApp:
                                 success = self.executor.exit_position(self.state)
                                 if not success:
                                     logger.error("Exit failed for CALL")
+                            except TokenExpiredError:
+                                raise
                             except Exception as e:
                                 logger.error(f"CALL exit error: {e}", exc_info=True)
 
@@ -696,6 +731,8 @@ class TradingApp:
                                 success = self.executor.exit_position(self.state)
                                 if not success:
                                     logger.error("Exit failed for CALL (safety)")
+                            except TokenExpiredError:
+                                raise
                             except Exception as e:
                                 logger.error(f"CALL safety exit error: {e}", exc_info=True)
 
@@ -717,6 +754,8 @@ class TradingApp:
                         logger.info(f"Cancel pending CALL - {getattr(self.state, 'option_signal', None)}")
                         self.cancel_pending_trade()
 
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error monitoring active trade status: {e!r}", exc_info=True)
 
@@ -740,6 +779,8 @@ class TradingApp:
                         success = self.executor.exit_position(self.state)
                         if not success:
                             logger.error(f"Exit failed for stop loss at {stop_loss}")
+                    except TokenExpiredError:
+                        raise
                     except Exception as e:
                         logger.error(f"Stop loss exit error: {e}", exc_info=True)
 
@@ -750,9 +791,13 @@ class TradingApp:
                         success = self.executor.exit_position(self.state)
                         if not success:
                             logger.error(f"Exit failed for take profit at {tp_point}")
+                    except TokenExpiredError:
+                        raise
                     except Exception as e:
                         logger.error(f"Take profit exit error: {e}", exc_info=True)
 
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error monitoring profit/loss status: {e!r}", exc_info=True)
 
@@ -783,6 +828,8 @@ class TradingApp:
                         success = self.executor.buy_option(self.state, option_type=BaseEnums.CALL)
                         if success and self.state.call_option not in (self.state.all_symbols or []):
                             self.subscribe_market_data()
+                    except TokenExpiredError:
+                        raise
                     except Exception as e:
                         logger.error(f"Failed to execute CALL: {e}", exc_info=True)
 
@@ -792,6 +839,8 @@ class TradingApp:
                         success = self.executor.buy_option(self.state, option_type=BaseEnums.PUT)
                         if success and self.state.put_option not in (self.state.all_symbols or []):
                             self.subscribe_market_data()
+                    except TokenExpiredError:
+                        raise
                     except Exception as e:
                         logger.error(f"Failed to execute PUT: {e}", exc_info=True)
 
@@ -810,6 +859,8 @@ class TradingApp:
                         logger.warning(
                             f"Position PUT but signal is {getattr(self.state, 'option_signal', None)} - will exit soon")
 
+        except TokenExpiredError:
+            raise
         except Exception as exec_error:
             logger.error(f"Order execution failed: {exec_error!r}", exc_info=True)
 
@@ -842,6 +893,8 @@ class TradingApp:
                         self.broker.cancel_order(order_id=order_id)
                         logger.info(f"Cancelled order ID: {order_id}")
 
+                except TokenExpiredError:
+                    raise
                 except Exception as e:
                     logger.error(f"❌ Failed to cancel order ID {order_id}: {e}", exc_info=True)
                     remaining_orders.append(order)
@@ -861,6 +914,8 @@ class TradingApp:
 
             logger.info("🧹 Pending order cancellation process complete.")
 
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"🔥 Error in cancel_pending_trade: {e}", exc_info=True)
 
@@ -886,6 +941,10 @@ class TradingApp:
             self.reload_signal_engine()
             logger.info("Signal engine configuration reloaded")
 
+        except TokenExpiredError:
+            raise
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"[TradingApp.refresh_settings_live] Failed: {e}", exc_info=True)
 
@@ -918,6 +977,8 @@ class TradingApp:
                     else:
                         logger.warning(
                             f"Balance returned {balance}. Keeping existing value: {self.state.account_balance}")
+                except TokenExpiredError:
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to get balance: {e}", exc_info=True)
 
@@ -937,6 +998,8 @@ class TradingApp:
                         f"Lot size: {self.state.lot_size}, TP: {self.state.tp_percentage}%, "
                         f"SL: {self.state.stoploss_percentage}%")
 
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"[TradingApp.apply_settings_to_state] Failed: {e}", exc_info=True)
 

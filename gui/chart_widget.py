@@ -824,8 +824,8 @@ class ChartWidget(QWebEngineView):
             _SIG = {
                 "BUY_CALL": ("#a6e3a1", "📈"),
                 "BUY_PUT": ("#89b4fa", "📉"),
-                "SELL_CALL": ("#f38ba8", "🔴"),
-                "SELL_PUT": ("#fab387", "🔵"),
+                "EXIT_CALL": ("#f38ba8", "🔴"),
+                "EXIT_PUT": ("#fab387", "🔵"),
                 "HOLD": ("#f9e2af", "⏸"),
             }
             if signal_value in _SIG:
@@ -927,15 +927,15 @@ _SD_GREY = "#484f58"
 
 _SIG_COLORS = {
     "BUY_CALL": "#3fb950", "BUY_PUT": "#58a6ff",
-    "SELL_CALL": "#f85149", "SELL_PUT": "#ffa657",
+    "EXIT_CALL": "#f85149", "EXIT_PUT": "#ffa657",
     "HOLD": "#d29922", "WAIT": "#484f58",
 }
 _SIG_LABELS = {
     "BUY_CALL": "📈  Buy Call", "BUY_PUT": "📉  Buy Put",
-    "SELL_CALL": "🔴  Sell Call", "SELL_PUT": "🟠  Sell Put",
+    "EXIT_CALL": "🔴  Exit Call", "EXIT_PUT": "🟠  Exit Put",
     "HOLD": "⏸   Hold", "WAIT": "⏳  Wait",
 }
-_SIG_GROUPS = ["BUY_CALL", "BUY_PUT", "SELL_CALL", "SELL_PUT", "HOLD"]
+_SIG_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 
 class _SignalDataTab(QWidget):

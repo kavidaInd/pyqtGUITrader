@@ -92,8 +92,8 @@ def _default_signal_result() -> Dict[str, Any]:
             'fired': {
                 'BUY_CALL': False,
                 'BUY_PUT': False,
-                'SELL_CALL': False,
-                'SELL_PUT': False,
+                'EXIT_CALL': False,
+                'EXIT_PUT': False,
                 'HOLD': False,
             },
             'rule_results': {},
@@ -1112,7 +1112,7 @@ class TradeState:
 
     @property
     def option_signal(self) -> str:
-        """Resolved signal string: BUY_CALL | BUY_PUT | SELL_CALL | SELL_PUT | HOLD | WAIT."""
+        """Resolved signal string: BUY_CALL | BUY_PUT | EXIT_CALL | EXIT_PUT | HOLD | WAIT."""
         try:
             with self._lock:
                 r = self._option_signal_result
@@ -1142,7 +1142,7 @@ class TradeState:
     @property
     def should_sell_call(self) -> bool:
         try:
-            return self.option_signal == "SELL_CALL"
+            return self.option_signal == "EXIT_CALL"
         except Exception as e:
             logger.error(f"[should_sell_call] Failed: {e}", exc_info=True)
             return False
@@ -1150,7 +1150,7 @@ class TradeState:
     @property
     def should_sell_put(self) -> bool:
         try:
-            return self.option_signal == "SELL_PUT"
+            return self.option_signal == "EXIT_PUT"
         except Exception as e:
             logger.error(f"[should_sell_put] Failed: {e}", exc_info=True)
             return False

@@ -48,7 +48,7 @@ INDICATOR_DEFAULTS = {
     # Empty dict is fine
 }
 
-SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "SELL_CALL", "SELL_PUT", "HOLD"]
+SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 ENGINE_DEFAULTS: Dict[str, Any] = {
     sig: {"logic": "AND", "rules": [], "enabled": True}

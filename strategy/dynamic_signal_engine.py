@@ -1,6 +1,6 @@
 """
 DynamicSignalEngine for option trading.
-Signals: BUY_CALL, BUY_PUT, SELL_CALL, SELL_PUT, HOLD, WAIT
+Signals: BUY_CALL, BUY_PUT, EXIT_CALL, EXIT_PUT, HOLD, WAIT
 """
 from __future__ import annotations
 import json
@@ -28,8 +28,8 @@ except ImportError:
 class OptionSignal(str, Enum):
     BUY_CALL = "BUY_CALL"
     BUY_PUT = "BUY_PUT"
-    SELL_CALL = "SELL_CALL"
-    SELL_PUT = "SELL_PUT"
+    EXIT_CALL = "EXIT_CALL"
+    EXIT_PUT = "EXIT_PUT"
     HOLD = "HOLD"
     WAIT = "WAIT"
 
@@ -44,16 +44,16 @@ class OptionSignal(str, Enum):
             return cls.WAIT
 
 
-SIGNAL_GROUPS = [OptionSignal.BUY_CALL, OptionSignal.BUY_PUT, OptionSignal.SELL_CALL, OptionSignal.SELL_PUT,
+SIGNAL_GROUPS = [OptionSignal.BUY_CALL, OptionSignal.BUY_PUT, OptionSignal.EXIT_CALL, OptionSignal.EXIT_PUT,
                  OptionSignal.HOLD]
 
 SIGNAL_LABELS: Dict[str, str] = {
     "BUY_CALL": "📈  Buy Call", "BUY_PUT": "📉  Buy Put",
-    "SELL_CALL": "🔴  Sell Call", "SELL_PUT": "🔵  Sell Put", "HOLD": "⏸   Hold",
+    "EXIT_CALL": "🔴  Exit Call", "EXIT_PUT": "🔵  Exit Put", "HOLD": "⏸   Hold",
 }
 SIGNAL_COLORS: Dict[str, str] = {
-    "BUY_CALL": "#a6e3a1", "BUY_PUT": "#89b4fa", "SELL_CALL": "#f38ba8",
-    "SELL_PUT": "#fab387", "HOLD": "#f9e2af", "WAIT": "#585b70",
+    "BUY_CALL": "#a6e3a1", "BUY_PUT": "#89b4fa", "EXIT_CALL": "#f38ba8",
+    "EXIT_PUT": "#fab387", "HOLD": "#f9e2af", "WAIT": "#585b70",
 }
 
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
@@ -712,16 +712,16 @@ class DynamicSignalEngine:
         try:
             bc = fired.get("BUY_CALL", False)
             bp = fired.get("BUY_PUT", False)
-            sc = fired.get("SELL_CALL", False)
-            sp = fired.get("SELL_PUT", False)
+            sc = fired.get("EXIT_CALL", False)
+            sp = fired.get("EXIT_PUT", False)
             h = fired.get("HOLD", False)
 
             if sc and sp:
-                return OptionSignal.SELL_CALL
+                return OptionSignal.EXIT_CALL
             if sc:
-                return OptionSignal.SELL_CALL
+                return OptionSignal.EXIT_CALL
             if sp:
-                return OptionSignal.SELL_PUT
+                return OptionSignal.EXIT_PUT
             if h:
                 return OptionSignal.HOLD
             if bc and bp:
@@ -794,13 +794,13 @@ def build_example_config() -> Dict[str, Any]:
                 {"lhs": {"type": "indicator", "indicator": "macd", "params": {"fast": 12, "slow": 26, "signal": 9}},
                  "op": "<", "rhs": {"type": "scalar", "value": 0}},
             ]},
-            "SELL_CALL": {"logic": "OR", "enabled": True, "rules": [
+            "EXIT_CALL": {"logic": "OR", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": ">",
                  "rhs": {"type": "scalar", "value": 75}},
                 {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_below",
                  "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}},
             ]},
-            "SELL_PUT": {"logic": "OR", "enabled": True, "rules": [
+            "EXIT_PUT": {"logic": "OR", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": "<",
                  "rhs": {"type": "scalar", "value": 25}},
                 {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_above",

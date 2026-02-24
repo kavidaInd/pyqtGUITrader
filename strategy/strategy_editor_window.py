@@ -53,8 +53,8 @@ PURPLE   = "#bc8cff"
 SIGNAL_META = {
     "BUY_CALL":  ("📈", GREEN,  "BUY CALL"),
     "BUY_PUT":   ("📉", BLUE,   "BUY PUT"),
-    "SELL_CALL": ("🔴", RED,    "SELL CALL"),
-    "SELL_PUT":  ("🟠", ORANGE, "SELL PUT"),
+    "EXIT_CALL": ("🔴", RED,    "SELL CALL"),
+    "EXIT_PUT":  ("🟠", ORANGE, "SELL PUT"),
     "HOLD":      ("⏸",  YELLOW, "HOLD"),
 }
 
@@ -1830,8 +1830,8 @@ class _SignalRulesTab(QWidget):
             signal_tabs = [
                 ("BUY_CALL", "📈 BUY CALL", GREEN),
                 ("BUY_PUT", "📉 BUY PUT", BLUE),
-                ("SELL_CALL", "🔴 SELL CALL", RED),
-                ("SELL_PUT", "🟠 SELL PUT", ORANGE),
+                ("EXIT_CALL", "🔴 SELL CALL", RED),
+                ("EXIT_PUT", "🟠 SELL PUT", ORANGE),
                 ("HOLD", "⏸ HOLD", YELLOW),
             ]
 

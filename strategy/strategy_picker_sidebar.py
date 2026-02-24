@@ -69,16 +69,16 @@ ORANGE = "#ffa657"
 SIGNAL_COLORS = {
     "BUY_CALL": GREEN,
     "BUY_PUT": BLUE,
-    "SELL_CALL": RED,
-    "SELL_PUT": ORANGE,
+    "EXIT_CALL": RED,
+    "EXIT_PUT": ORANGE,
     "HOLD": YELLOW,
     "WAIT": "#484f58",
 }
 SIGNAL_LABELS = {
     "BUY_CALL": "📈 Buy Call",
     "BUY_PUT": "📉 Buy Put",
-    "SELL_CALL": "🔴 Sell Call",
-    "SELL_PUT": "🟠 Sell Put",
+    "EXIT_CALL": "🔴 Exit Call",
+    "EXIT_PUT": "🟠 Exit Put",
     "HOLD": "⏸ Hold",
     "WAIT": "⏳ Wait",
 }

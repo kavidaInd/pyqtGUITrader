@@ -1,0 +1,75 @@
+{
+  "BUY_CALL": {
+    "logic": "AND",
+    "rules": [
+      {
+        "lhs": {
+          "type": "indicator",
+          "indicator": "cci",
+          "params": {
+            "length": 20
+          }
+        },
+        "op": ">",
+        "rhs": {
+          "type": "indicator",
+          "indicator": "mom",
+          "params": {
+            "length": 10
+          }
+        }
+      },
+      {
+        "lhs": {
+          "type": "indicator",
+          "indicator": "slope",
+          "params": {
+            "length": 1
+          }
+        },
+        "op": ">",
+        "rhs": {
+          "type": "scalar",
+          "value": 3.0
+        }
+      },
+      {
+        "lhs": {
+          "type": "indicator",
+          "indicator": "bbands",
+          "params": {
+            "length": 20,
+            "std": 2.0
+          }
+        },
+        "op": "!=",
+        "rhs": {
+          "type": "column",
+          "column": "close"
+        }
+      }
+    ],
+    "enabled": true
+  },
+  "BUY_PUT": {
+    "logic": "AND",
+    "rules": [],
+    "enabled": true
+  },
+  "EXIT_CALL": {
+    "logic": "AND",
+    "rules": [],
+    "enabled": true
+  },
+  "EXIT_PUT": {
+    "logic": "AND",
+    "rules": [],
+    "enabled": true
+  },
+  "HOLD": {
+    "logic": "AND",
+    "rules": [],
+    "enabled": true
+  },
+  "conflict_resolution": "WAIT"
+}

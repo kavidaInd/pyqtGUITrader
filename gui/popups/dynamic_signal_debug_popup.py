@@ -73,8 +73,8 @@ GREY_OFF = "#484f58"
 SIGNAL_COLORS = {
     "BUY_CALL": "#3fb950",
     "BUY_PUT": "#58a6ff",
-    "SELL_CALL": "#f85149",
-    "SELL_PUT": "#ffa657",
+    "EXIT_CALL": "#f85149",
+    "EXIT_PUT": "#ffa657",
     "HOLD": "#d29922",
     "WAIT": "#484f58",
 }
@@ -82,13 +82,13 @@ SIGNAL_COLORS = {
 SIGNAL_LABELS = {
     "BUY_CALL": "📈  Buy Call",
     "BUY_PUT": "📉  Buy Put",
-    "SELL_CALL": "🔴  Sell Call",
-    "SELL_PUT": "🟠  Sell Put",
+    "EXIT_CALL": "🔴  Exit Call",
+    "EXIT_PUT": "🟠  Exit Put",
     "HOLD": "⏸   Hold",
     "WAIT": "⏳  Wait",
 }
 
-SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "SELL_CALL", "SELL_PUT", "HOLD"]
+SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 
 def _style_sheet() -> str:

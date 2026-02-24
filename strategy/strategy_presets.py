@@ -6,7 +6,7 @@ Centralised preset rule definitions for the Strategy Editor.
 Structure
 ---------
 PRESETS is a dict keyed by signal type:
-    "BUY_CALL" | "BUY_PUT" | "SELL_CALL" | "SELL_PUT" | "HOLD"
+    "BUY_CALL" | "BUY_PUT" | "EXIT_CALL" | "EXIT_PUT" | "HOLD"
 
 Each value is a list of preset dicts:
     {
@@ -216,7 +216,7 @@ PRESETS: Dict[str, List[Dict]] = {
     # =========================================================================
     # SELL CALL  (Bearish — premium selling)
     # =========================================================================
-    "SELL_CALL": [
+    "EXIT_CALL": [
 
         {
             "name": "RSI Overbought",
@@ -235,14 +235,14 @@ PRESETS: Dict[str, List[Dict]] = {
         },
 
         # ------------------------------------------------------------------ #
-        # Add more SELL_CALL presets below                                    #
+        # Add more EXIT_CALL presets below                                    #
         # ------------------------------------------------------------------ #
     ],
 
     # =========================================================================
     # SELL PUT  (Bullish — premium selling)
     # =========================================================================
-    "SELL_PUT": [
+    "EXIT_PUT": [
 
         {
             "name": "RSI Oversold",
@@ -265,7 +265,7 @@ PRESETS: Dict[str, List[Dict]] = {
         },
 
         # ------------------------------------------------------------------ #
-        # Add more SELL_PUT presets below                                     #
+        # Add more EXIT_PUT presets below                                     #
         # ------------------------------------------------------------------ #
     ],
 

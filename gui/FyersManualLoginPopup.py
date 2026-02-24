@@ -104,21 +104,22 @@ class FyersManualLoginPopup(QDialog):
     operation_started = pyqtSignal()
     operation_finished = pyqtSignal()
 
-    def __init__(self, parent, brokerage_setting):
+    def __init__(self, parent, brokerage_setting, reason: str = None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
             self.brokerage_setting = brokerage_setting
+            self._reason = reason  # Optional context message (e.g. token expired)
 
             # Rule 6: Input validation
             if brokerage_setting is None:
                 logger.error("FyersManualLoginPopup initialized with None brokerage_setting")
 
-            self.setWindowTitle("Fyers Manual Login")
-            self.setMinimumSize(750, 600)
-            self.resize(750, 600)
+            self.setWindowTitle("Fyers Manual Login — Re-authentication Required" if reason else "Fyers Manual Login")
+            self.setMinimumSize(750, 640 if reason else 600)
+            self.resize(750, 640 if reason else 600)
             self.setModal(True)
 
             # EXACT stylesheet preservation - no changes
@@ -190,6 +191,37 @@ class FyersManualLoginPopup(QDialog):
             header.setStyleSheet("color:#e6edf3; padding:4px;")
             header.setAlignment(Qt.AlignCenter)
             root.addWidget(header)
+
+            # Token-expiry / reason banner (shown only when reason is set)
+            if self._reason:
+                banner = QFrame()
+                banner.setStyleSheet("""
+                    QFrame {
+                        background: #3d1f1f;
+                        border: 1px solid #f85149;
+                        border-radius: 6px;
+                        padding: 4px;
+                    }
+                """)
+                banner_layout = QHBoxLayout(banner)
+                banner_layout.setContentsMargins(12, 8, 12, 8)
+                banner_layout.setSpacing(10)
+
+                icon_lbl = QLabel("⚠️")
+                icon_lbl.setFont(QFont("Segoe UI", 14))
+                icon_lbl.setStyleSheet("background: transparent; border: none;")
+
+                msg_lbl = QLabel(
+                    f"<b style='color:#f85149;'>Session expired — re-login required</b><br>"
+                    f"<span style='color:#ffa657; font-size:9pt;'>{self._reason}</span>"
+                )
+                msg_lbl.setWordWrap(True)
+                msg_lbl.setStyleSheet("background: transparent; border: none;")
+                msg_lbl.setTextFormat(Qt.RichText)
+
+                banner_layout.addWidget(icon_lbl, 0, Qt.AlignTop)
+                banner_layout.addWidget(msg_lbl, 1)
+                root.addWidget(banner)
 
             # Tabs
             self.tabs = QTabWidget()
@@ -272,6 +304,7 @@ class FyersManualLoginPopup(QDialog):
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.brokerage_setting = None
+        self._reason = None
         self.tabs = None
         self.url_text = None
         self.code_entry = None

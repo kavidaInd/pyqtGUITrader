@@ -621,10 +621,19 @@ class TradingGUI(QMainWindow):
 
         except Exception as e:
             logger.critical(f"Failed to create TradingApp: {e}", exc_info=True)
-            self.error_occurred.emit(f"Failed to connect to broker: {e}")
-            QMessageBox.critical(self, "Init Error",
-                                 f"Could not connect to broker:\n{e}\n\n"
-                                 "Check credentials via Settings → Brokerage Settings.")
+            error_str = str(e)
+            # Check if this is a token expiry error at startup
+            if "Token expired" in error_str or "token" in error_str.lower() and "expir" in error_str.lower():
+                logger.warning("Token expiry detected during init, prompting re-authentication")
+                self.error_occurred.emit(f"Token expired: {e}")
+                # Use singleShot so the main window is fully visible before the popup appears
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(500, lambda: self._open_login_for_token_expiry(str(e)))
+            else:
+                self.error_occurred.emit(f"Failed to connect to broker: {e}")
+                QMessageBox.critical(self, "Init Error",
+                                     f"Could not connect to broker:\n{e}\n\n"
+                                     "Check credentials via Settings → Brokerage Settings.")
 
     @pyqtSlot()
     def _start_app(self):
@@ -638,6 +647,7 @@ class TradingGUI(QMainWindow):
             # PYQT: Run trading engine on QThread — never on main thread
             self.trading_thread = TradingThread(self.trading_app)
             self.trading_thread.error_occurred.connect(self._on_engine_error)
+            self.trading_thread.token_expired.connect(self._on_token_expired)
             self.trading_thread.finished.connect(self._on_engine_finished)
             self.trading_thread.start()
             self.app_running = True
@@ -696,26 +706,31 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._on_engine_finished] Failed: {e}", exc_info=True)
 
     @pyqtSlot(str)
+    def _on_token_expired(self, message: str):
+        """# PYQT: Slot — called ONLY for TokenExpiredError from the trading thread."""
+        try:
+            self.app_running = False
+            self.app_status_bar.update_status(
+                {'status': '🔐 Token expired — re-login required'},
+                self.trading_mode, False
+            )
+            self._update_button_states()
+            logger.warning(f"Token expired signal received: {message}")
+            # Open re-authentication popup automatically
+            self._open_login_for_token_expiry(message)
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_token_expired] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(str)
     def _on_engine_error(self, message: str):
-        """# PYQT: Slot — always called on main thread"""
+        """# PYQT: Slot — called for all non-token engine errors."""
         try:
             self.app_running = False
             self.app_status_bar.update_status({'status': f'Error: {message[:50]}...'}, self.trading_mode, False)
             self._update_button_states()
-
-            # FIX: Show specific message for token expiration
-            if "Token expired" in message:
-                QMessageBox.critical(
-                    self,
-                    "Token Expired",
-                    f"{message}\n\nPlease go to Settings → Manual Fyers Login to re-authenticate."
-                )
-            else:
-                QMessageBox.critical(self, "Engine Error", f"Trading engine crashed:\n{message}")
-
+            QMessageBox.critical(self, "Engine Error", f"Trading engine crashed:\n{message}")
             logger.error(f"Engine error: {message}")
             self.error_occurred.emit(message)
-
         except Exception as e:
             logger.error(f"[TradingGUI._on_engine_error] Failed to handle error: {e}", exc_info=True)
 
@@ -996,6 +1011,25 @@ class TradingGUI(QMainWindow):
             dlg.exec_()
         except Exception as e:
             logger.error(f"[TradingGUI._open_brokerage] Failed: {e}", exc_info=True)
+
+    def _open_login_for_token_expiry(self, reason: str = None):
+        """Open the Fyers login popup specifically because the token has expired."""
+        try:
+            logger.info("Opening FyersManualLoginPopup due to token expiry")
+            reason_msg = reason or "Your Fyers access token has expired or is invalid."
+            dlg = FyersManualLoginPopup(self, self.brokerage_setting, reason=reason_msg)
+            dlg.login_completed.connect(lambda _: self._reload_broker())
+            result = dlg.exec_()
+            if result == FyersManualLoginPopup.Accepted:
+                logger.info("Re-authentication completed successfully")
+            else:
+                logger.warning("Re-authentication dialog was cancelled by user")
+                self.app_status_bar.update_status(
+                    {'status': '⚠️ Token expired — login required to resume'},
+                    self.trading_mode, False
+                )
+        except Exception as e:
+            logger.error(f"[TradingGUI._open_login_for_token_expiry] Failed: {e}", exc_info=True)
 
     def _open_login(self):
         try:

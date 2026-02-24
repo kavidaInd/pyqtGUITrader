@@ -1,5 +1,6 @@
 import os
 import logging
+from pathlib import Path
 from typing import Dict, Any, Set, List, Optional
 
 # Rule 4: Structured logging
@@ -88,10 +89,10 @@ VALID_OPTION_TYPES: Set[str] = {CALL, PUT}
 # ============================================================================
 # Stop Loss and Trailing Types
 # ============================================================================
-TRAILING = 1
-STOP = 2
+TRAILING = "TRAILING"
+STOP = "STOP"
 
-VALID_STOP_TYPES: Set[int] = {TRAILING, STOP}
+VALID_STOP_TYPES: Set[str] = {TRAILING, STOP}
 
 # ============================================================================
 # Response Status
@@ -202,7 +203,6 @@ except Exception as e:
 # ============================================================================
 try:
     CONFIG_PATH = os.path.join(os.getcwd(), 'config')
-    # Ensure the directory exists (optional, but helpful)
     os.makedirs(CONFIG_PATH, exist_ok=True)
 except Exception as e:
     # Rule 1: Log errors but don't crash

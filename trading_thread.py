@@ -22,6 +22,7 @@ class TradingThread(QThread):
     started = pyqtSignal()
     finished = pyqtSignal()
     error_occurred = pyqtSignal(str)
+    token_expired = pyqtSignal(str)   # Dedicated signal: emitted ONLY on TokenExpiredError
     status_update = pyqtSignal(str)  # For general status messages
     position_closed = pyqtSignal(str, float)  # symbol, pnl
 
@@ -89,12 +90,12 @@ class TradingThread(QThread):
             self.trading_app.run()
 
         except TokenExpiredError as e:
-            # FIX: Handle token expiration gracefully
-            error_msg = f"Token expired — please re-login via Settings → Fyers Login. Details: {e}"
-            logger.error(error_msg, exc_info=True)
-            # Emit error signal (safe because it's a Qt signal)
-            self.error_occurred.emit(error_msg)
-            self.status_update.emit("Trading stopped: Token expired")
+            # FIX: Emit dedicated token_expired signal so the GUI can open the
+            # re-authentication popup directly, without fragile string-matching.
+            error_msg = f"Token expired or invalid — re-authentication required. Details: {e}"
+            logger.critical(error_msg, exc_info=True)
+            self.token_expired.emit(error_msg)        # ← dedicated signal
+            self.status_update.emit("Trading stopped: Token expired — please re-login")
 
         except AttributeError as e:
             error_msg = f"TradingThread attribute error: {e}"
@@ -203,10 +204,10 @@ class TradingThread(QThread):
                             self.position_closed.emit(str(current_position), float(pnl))
                             logger.info(f"Position closed with P&L: {pnl}")
                     except TokenExpiredError as e:
-                        # Handle token expiration during exit
-                        logger.error(f"Token expired while exiting position: {e}", exc_info=True)
-                        self.error_occurred.emit(
-                            f"Token expired during exit - please re-login via Settings → Fyers Login"
+                        # Emit dedicated signal so GUI opens login popup immediately
+                        logger.critical(f"Token expired while exiting position: {e}", exc_info=True)
+                        self.token_expired.emit(
+                            f"Token expired during position exit — re-authentication required. Details: {e}"
                         )
                     except AttributeError as e:
                         logger.error(f"Executor attribute error during exit: {e}", exc_info=True)
