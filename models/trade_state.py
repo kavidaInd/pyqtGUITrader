@@ -65,18 +65,7 @@ def _default_trend_dict() -> Dict[str, Any]:
     """Factory for the option_trend / derivative_trend defaults."""
     try:
         return {
-            'name': None, 'close': None,
-            'super_trend_short': {'trend': None, 'direction': None},
-            'super_trend_long': {'trend': None, 'direction': None},
-            'macd': {
-                'histo': None, 'macd': None,
-                'signal': None, 'direction': None,
-            },
-            'bb': {'lower': None, 'middle': None, 'upper': None},
-            'rsi': None,
-            'macd_bottoming': False, 'macd_topping': False,
-            'macd_cross_up': False, 'macd_cross_down': False,
-            'rsi_bottoming': False, 'rsi_topping': False,
+            'name': None, 'close': None
         }
     except Exception as e:
         logger.error(f"[_default_trend_dict] Failed: {e}", exc_info=True)
@@ -84,7 +73,10 @@ def _default_trend_dict() -> Dict[str, Any]:
 
 
 def _default_signal_result() -> Dict[str, Any]:
-    """Factory for a neutral / unavailable option_signal_result."""
+    """
+    Factory for a neutral / unavailable option_signal_result.
+    FEATURE 3: Added confidence and explanation fields.
+    """
     try:
         return {
             'signal': 'WAIT',
@@ -99,6 +91,11 @@ def _default_signal_result() -> Dict[str, Any]:
             'rule_results': {},
             'conflict': False,
             'available': False,
+            # FEATURE 3: Confidence scores
+            'confidence': {},  # Dict mapping group -> confidence float
+            'explanation': '',  # Human-readable explanation
+            'threshold': 0.6,   # Minimum confidence threshold
+            'indicator_values': {},  # Dict mapping indicator -> {last, prev}
         }
     except Exception as e:
         logger.error(f"[_default_signal_result] Failed: {e}", exc_info=True)
@@ -153,7 +150,7 @@ class TradeState:
             self._derivative_trend: Dict[str, Any] = _default_trend_dict()
             self._call_trend: Dict[str, Any] = _default_trend_dict()
             self._put_trend: Dict[str, Any] = _default_trend_dict()
-            self.option_chain = {}
+            self._option_chain = {}
 
             # ── Auth ────────────────────────────────────────────────────
             self._token: Optional[str] = None
@@ -231,6 +228,16 @@ class TradeState:
             self._percentage_change: Optional[float] = None
             self._current_pnl: Optional[float] = None
             self._reason_to_exit: Optional[str] = None
+
+            # ── FEATURE 2: Smart order execution fields ───────────────────
+            self._last_slippage: Optional[float] = None  # Slippage from last fill
+            self._order_attempts: int = 0  # Number of order attempts
+            self._last_order_attempt_time: Optional[datetime] = None
+
+            # ── FEATURE 6: Multi-timeframe filter fields ──────────────────
+            self._last_mtf_summary: Optional[str] = None  # MTF filter result summary
+            self._mtf_allowed: bool = True  # Last MTF filter decision
+            self._mtf_results: Dict[str, str] = {}  # {'1': 'BULLISH', '5': 'NEUTRAL', ...}
 
             # ── Misc market state ────────────────────────────────────────
             self._market_trend: Optional[int] = None
@@ -981,6 +988,77 @@ class TradeState:
         self._set("_reason_to_exit", value)
 
     # ------------------------------------------------------------------
+    # FEATURE 2: Smart order execution fields
+    # ------------------------------------------------------------------
+
+    @property
+    def last_slippage(self) -> Optional[float]:
+        """Slippage from last order fill (positive = worse price)"""
+        return self._get("_last_slippage")
+
+    @last_slippage.setter
+    def last_slippage(self, value: Optional[float]) -> None:
+        self._set("_last_slippage", value)
+
+    @property
+    def order_attempts(self) -> int:
+        """Number of order attempts made (for metrics)"""
+        return self._get("_order_attempts")
+
+    @order_attempts.setter
+    def order_attempts(self, value: int) -> None:
+        self._set("_order_attempts", int(value))
+
+    @property
+    def last_order_attempt_time(self) -> Optional[datetime]:
+        """Timestamp of last order attempt"""
+        return self._get("_last_order_attempt_time")
+
+    @last_order_attempt_time.setter
+    def last_order_attempt_time(self, value: Optional[datetime]) -> None:
+        self._set("_last_order_attempt_time", value)
+
+    # ------------------------------------------------------------------
+    # FEATURE 6: Multi-timeframe filter fields
+    # ------------------------------------------------------------------
+
+    @property
+    def last_mtf_summary(self) -> Optional[str]:
+        """Human-readable summary of last MTF filter decision"""
+        return self._get("_last_mtf_summary")
+
+    @last_mtf_summary.setter
+    def last_mtf_summary(self, value: Optional[str]) -> None:
+        self._set("_last_mtf_summary", value)
+
+    @property
+    def mtf_allowed(self) -> bool:
+        """Whether last MTF filter allowed entry"""
+        return self._get("_mtf_allowed")
+
+    @mtf_allowed.setter
+    def mtf_allowed(self, value: bool) -> None:
+        self._set("_mtf_allowed", bool(value))
+
+    @property
+    def mtf_results(self) -> Dict[str, str]:
+        """Detailed MTF results per timeframe: {'1': 'BULLISH', '5': 'NEUTRAL', ...}"""
+        try:
+            with self._lock:
+                return dict(self._mtf_results) if self._mtf_results else {}
+        except Exception as e:
+            logger.error(f"[mtf_results getter] Failed: {e}", exc_info=True)
+            return {}
+
+    @mtf_results.setter
+    def mtf_results(self, value: Dict[str, str]) -> None:
+        try:
+            with self._lock:
+                self._mtf_results = dict(value) if value is not None else {}
+        except Exception as e:
+            logger.error(f"[mtf_results setter] Failed: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Misc market state
     # ------------------------------------------------------------------
 
@@ -1082,6 +1160,41 @@ class TradeState:
     @current_pcr_vol.setter
     def current_pcr_vol(self, value: Optional[float]) -> None:
         self._set("_current_pcr_vol", value)
+
+    # ------------------------------------------------------------------
+    # Option chain
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Option chain
+    # ------------------------------------------------------------------
+
+    @property
+    def option_chain(self) -> Dict[str, Any]:
+        """Option chain data (bid/ask for calculating mid-price)"""
+        try:
+            with self._lock:
+                # Use object.__getattribute__ to bypass property getter
+                chain = object.__getattribute__(self, "_option_chain")
+                return copy.copy(chain) if chain else {}
+        except AttributeError:
+            # If _option_chain doesn't exist yet, return empty dict
+            return {}
+        except Exception as e:
+            logger.error(f"[option_chain getter] Failed: {e}", exc_info=True)
+            return {}
+
+    @option_chain.setter
+    def option_chain(self, value: Dict[str, Any]) -> None:
+        try:
+            with self._lock:
+                # Use object.__setattr__ to bypass property setter
+                object.__setattr__(self, "_option_chain", value)
+        except AttributeError:
+            # If _option_chain doesn't exist yet, create it
+            object.__setattr__(self, "_option_chain", value)
+        except Exception as e:
+            logger.error(f"[option_chain setter] Failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Dynamic signal result
@@ -1193,6 +1306,31 @@ class TradeState:
             logger.error(f"[dynamic_signals_active] Failed: {e}", exc_info=True)
             return False
 
+    # FEATURE 3: Signal confidence properties
+    @property
+    def signal_confidence(self) -> Dict[str, float]:
+        """Confidence scores for each signal group."""
+        try:
+            with self._lock:
+                if not self._option_signal_result:
+                    return {}
+                return dict(self._option_signal_result.get("confidence", {}))
+        except Exception as e:
+            logger.error(f"[signal_confidence] Failed: {e}", exc_info=True)
+            return {}
+
+    @property
+    def signal_explanation(self) -> str:
+        """Human-readable explanation of last signal."""
+        try:
+            with self._lock:
+                if not self._option_signal_result:
+                    return ""
+                return str(self._option_signal_result.get("explanation", ""))
+        except Exception as e:
+            logger.error(f"[signal_explanation] Failed: {e}", exc_info=True)
+            return ""
+
     # ==================================================================
     # ATOMIC COMPOSITE READS
     # Use these in Stage-2 instead of N individual property reads so
@@ -1239,6 +1377,11 @@ class TradeState:
                     "reason_to_exit": self._reason_to_exit,
                     "option_signal": signal_value,
                     "signal_conflict": bool(r and r.get("conflict", False)),
+                    # FEATURE 2 fields
+                    "last_slippage": self._last_slippage,
+                    # FEATURE 6 fields
+                    "last_mtf_summary": self._last_mtf_summary,
+                    "mtf_allowed": self._mtf_allowed,
                 }
         except Exception as e:
             logger.error(f"[get_position_snapshot] Failed: {e}", exc_info=True)
@@ -1272,6 +1415,8 @@ class TradeState:
 
                 r = self._option_signal_result
                 sig = (r.get("signal_value", "WAIT") if r and r.get("available") else "WAIT")
+                confidence = r.get("confidence", {}) if r else {}
+                explanation = r.get("explanation", "") if r else ""
 
                 return {
                     # Identifiers
@@ -1331,6 +1476,14 @@ class TradeState:
                     "current_trade_started_time": self._current_trade_started_time,
                     "last_status_check": self._last_status_check,
                     "last_index_updated": self._last_index_updated,
+                    # FEATURE 2 fields
+                    "last_slippage": self._last_slippage,
+                    "order_attempts": self._order_attempts,
+                    "last_order_attempt_time": self._last_order_attempt_time,
+                    # FEATURE 6 fields
+                    "last_mtf_summary": self._last_mtf_summary,
+                    "mtf_allowed": self._mtf_allowed,
+                    "mtf_results": dict(self._mtf_results) if self._mtf_results else {},
                     # PCR
                     "calculated_pcr": self._calculated_pcr,
                     "current_pcr": self._current_pcr,
@@ -1343,6 +1496,9 @@ class TradeState:
                     "option_signal": sig,
                     "signal_conflict": bool(r and r.get("conflict", False)),
                     "dynamic_signals_active": bool(r and r.get("available", False)),
+                    # FEATURE 3: Signal confidence
+                    "signal_confidence": dict(confidence) if confidence else {},
+                    "signal_explanation": explanation,
                     # DataFrame summaries (not full data)
                     "derivative_history_df": _df_repr(self._derivative_history_df),
                     "option_history_df": _df_repr(self._option_history_df),
@@ -1388,6 +1544,9 @@ class TradeState:
                     "percentage_change": self._percentage_change,
                     "confirmed": self._current_trade_confirmed,
                     "reason_to_exit": self._reason_to_exit,
+                    # FEATURE 2 fields
+                    "last_slippage": self._last_slippage,
+                    "order_attempts": self._order_attempts,
                 }
 
                 # ── Reset all trade-lifecycle fields atomically ───────────
@@ -1414,6 +1573,14 @@ class TradeState:
                 self._current_pnl = None
                 self._percentage_change = None
                 self._reason_to_exit = None
+                # FEATURE 2 fields
+                self._last_slippage = None
+                self._order_attempts = 0
+                self._last_order_attempt_time = None
+                # FEATURE 6 fields
+                self._last_mtf_summary = None
+                self._mtf_allowed = True
+                self._mtf_results = {}
                 # NOTE: option_signal_result is refreshed every bar — do NOT clear here
 
             # ── Log outside the lock so no I/O is done while holding it ──
@@ -1460,7 +1627,8 @@ class TradeState:
                 self._orders.clear()
                 self._confirmed_orders.clear()
                 self._all_symbols.clear()
-                self.option_chain.clear()
+                self._mtf_results.clear()
+                object.__setattr__(self, "option_chain", {})
 
                 # Clear DataFrames
                 self._derivative_history_df = None
@@ -1483,6 +1651,13 @@ class TradeState:
                 self._highest_current_price = None
                 self._put_current_close = None
                 self._call_current_close = None
+                # FEATURE 2 fields
+                self._last_slippage = None
+                self._order_attempts = 0
+                self._last_order_attempt_time = None
+                # FEATURE 6 fields
+                self._last_mtf_summary = None
+                self._mtf_allowed = True
 
             logger.info("[TradeState] Cleanup completed")
 

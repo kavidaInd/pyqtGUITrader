@@ -2,6 +2,10 @@
 TradingModeSetting_db.py
 ========================
 Database-backed trading mode settings using the SQLite database.
+
+Enhanced with support for:
+- FEATURE 6: Multi-Timeframe Filter
+- FEATURE 1: Risk Management
 """
 
 import logging
@@ -35,12 +39,14 @@ class TradingModeSetting:
     """
     Database-backed trading mode settings using the trading_mode_setting table.
 
+    Enhanced with additional fields for new features.
     This is a drop-in replacement for the JSON-based TradingModeSetting class,
     maintaining the same interface while using the database.
     """
 
-    # Rule 2: Class-level defaults
+    # Rule 2: Class-level defaults with new features
     DEFAULTS = {
+        # Original fields
         "mode": TradingMode.SIM,
         "paper_balance": 100000.0,
         "allow_live_trading": False,
@@ -48,11 +54,27 @@ class TradingModeSetting:
         "simulate_slippage": True,
         "slippage_percent": 0.05,
         "simulate_delay": True,
-        "delay_ms": 500
+        "delay_ms": 500,
+
+        # FEATURE 6: Multi-Timeframe Filter
+        "use_mtf_filter": False,
+        "mtf_timeframes": "1,5,15",
+        "mtf_ema_fast": 9,
+        "mtf_ema_slow": 21,
+        "mtf_agreement_required": 2,
+
+        # FEATURE 1: Risk Management
+        "max_daily_loss": -5000.0,
+        "max_trades_per_day": 10,
+        "daily_target": 5000.0,
+
+        # FEATURE 3: Signal Confidence
+        "min_confidence": 0.6,
     }
 
     # Type mapping for validation
     FIELD_TYPES = {
+        # Original fields
         "mode": str,
         "paper_balance": float,
         "allow_live_trading": bool,
@@ -60,14 +82,43 @@ class TradingModeSetting:
         "simulate_slippage": bool,
         "slippage_percent": float,
         "simulate_delay": bool,
-        "delay_ms": int
+        "delay_ms": int,
+
+        # FEATURE 6: Multi-Timeframe Filter
+        "use_mtf_filter": bool,
+        "mtf_timeframes": str,
+        "mtf_ema_fast": int,
+        "mtf_ema_slow": int,
+        "mtf_agreement_required": int,
+
+        # FEATURE 1: Risk Management
+        "max_daily_loss": float,
+        "max_trades_per_day": int,
+        "daily_target": float,
+
+        # FEATURE 3: Signal Confidence
+        "min_confidence": float,
     }
 
     # Validation ranges
     VALIDATION_RANGES = {
+        # Original fields
         "paper_balance": (0, 10_000_000),  # 0 to 10 million
         "slippage_percent": (0, 100),      # 0% to 100%
-        "delay_ms": (0, 60000)              # 0 to 60 seconds
+        "delay_ms": (0, 60000),             # 0 to 60 seconds
+
+        # FEATURE 6: Multi-Timeframe Filter
+        "mtf_ema_fast": (1, 50),
+        "mtf_ema_slow": (5, 200),
+        "mtf_agreement_required": (1, 3),
+
+        # FEATURE 1: Risk Management
+        "max_daily_loss": (-1_000_000, 0),  # Negative values only
+        "max_trades_per_day": (1, 100),
+        "daily_target": (0, 10_000_000),
+
+        # FEATURE 3: Signal Confidence
+        "min_confidence": (0.0, 1.0),
     }
 
     def __init__(self):
@@ -94,6 +145,22 @@ class TradingModeSetting:
         self.slippage_percent = 0.05
         self.simulate_delay = True
         self.delay_ms = 500
+
+        # FEATURE 6: Multi-Timeframe Filter
+        self.use_mtf_filter = False
+        self.mtf_timeframes = "1,5,15"
+        self.mtf_ema_fast = 9
+        self.mtf_ema_slow = 21
+        self.mtf_agreement_required = 2
+
+        # FEATURE 1: Risk Management
+        self.max_daily_loss = -5000.0
+        self.max_trades_per_day = 10
+        self.daily_target = 5000.0
+
+        # FEATURE 3: Signal Confidence
+        self.min_confidence = 0.6
+
         self._loaded = False
 
     def _set_defaults(self):
@@ -107,6 +174,22 @@ class TradingModeSetting:
             self.slippage_percent = 0.05
             self.simulate_delay = True
             self.delay_ms = 500
+
+            # FEATURE 6
+            self.use_mtf_filter = False
+            self.mtf_timeframes = "1,5,15"
+            self.mtf_ema_fast = 9
+            self.mtf_ema_slow = 21
+            self.mtf_agreement_required = 2
+
+            # FEATURE 1
+            self.max_daily_loss = -5000.0
+            self.max_trades_per_day = 10
+            self.daily_target = 5000.0
+
+            # FEATURE 3
+            self.min_confidence = 0.6
+
         except Exception as e:
             logger.error(f"[TradingModeSetting._set_defaults] Failed: {e}", exc_info=True)
 
@@ -238,6 +321,84 @@ class TradingModeSetting:
                     logger.warning(f"Invalid delay_ms value: {e}")
                     self.delay_ms = 500
 
+                # ==================================================================
+                # FEATURE 6: Multi-Timeframe Filter
+                # ==================================================================
+                try:
+                    self.use_mtf_filter = self._to_bool(data.get("use_mtf_filter", False))
+                except Exception as e:
+                    logger.warning(f"Invalid use_mtf_filter value: {e}")
+                    self.use_mtf_filter = False
+
+                try:
+                    val = str(data.get("mtf_timeframes", "1,5,15"))
+                    self.mtf_timeframes = val
+                except Exception as e:
+                    logger.warning(f"Invalid mtf_timeframes value: {e}")
+                    self.mtf_timeframes = "1,5,15"
+
+                try:
+                    val = int(float(str(data.get("mtf_ema_fast", 9))))
+                    min_val, max_val = self.VALIDATION_RANGES["mtf_ema_fast"]
+                    self.mtf_ema_fast = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid mtf_ema_fast value: {e}")
+                    self.mtf_ema_fast = 9
+
+                try:
+                    val = int(float(str(data.get("mtf_ema_slow", 21))))
+                    min_val, max_val = self.VALIDATION_RANGES["mtf_ema_slow"]
+                    self.mtf_ema_slow = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid mtf_ema_slow value: {e}")
+                    self.mtf_ema_slow = 21
+
+                try:
+                    val = int(float(str(data.get("mtf_agreement_required", 2))))
+                    min_val, max_val = self.VALIDATION_RANGES["mtf_agreement_required"]
+                    self.mtf_agreement_required = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid mtf_agreement_required value: {e}")
+                    self.mtf_agreement_required = 2
+
+                # ==================================================================
+                # FEATURE 1: Risk Management
+                # ==================================================================
+                try:
+                    val = float(data.get("max_daily_loss", -5000.0))
+                    min_val, max_val = self.VALIDATION_RANGES["max_daily_loss"]
+                    self.max_daily_loss = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid max_daily_loss value: {e}")
+                    self.max_daily_loss = -5000.0
+
+                try:
+                    val = int(float(str(data.get("max_trades_per_day", 10))))
+                    min_val, max_val = self.VALIDATION_RANGES["max_trades_per_day"]
+                    self.max_trades_per_day = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid max_trades_per_day value: {e}")
+                    self.max_trades_per_day = 10
+
+                try:
+                    val = float(data.get("daily_target", 5000.0))
+                    min_val, max_val = self.VALIDATION_RANGES["daily_target"]
+                    self.daily_target = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid daily_target value: {e}")
+                    self.daily_target = 5000.0
+
+                # ==================================================================
+                # FEATURE 3: Signal Confidence
+                # ==================================================================
+                try:
+                    val = float(data.get("min_confidence", 0.6))
+                    min_val, max_val = self.VALIDATION_RANGES["min_confidence"]
+                    self.min_confidence = max(min_val, min(max_val, val))
+                except Exception as e:
+                    logger.warning(f"Invalid min_confidence value: {e}")
+                    self.min_confidence = 0.6
+
                 self._loaded = True
                 logger.debug("Trading mode settings loaded from database")
                 return True
@@ -278,6 +439,7 @@ class TradingModeSetting:
         """Convert settings to dictionary."""
         try:
             return {
+                # Original fields
                 "mode": self.mode.value if self.mode else TradingMode.SIM.value,
                 "paper_balance": float(self.paper_balance) if self.paper_balance is not None else 100000.0,
                 "allow_live_trading": bool(self.allow_live_trading),
@@ -285,7 +447,22 @@ class TradingModeSetting:
                 "simulate_slippage": bool(self.simulate_slippage),
                 "slippage_percent": float(self.slippage_percent) if self.slippage_percent is not None else 0.05,
                 "simulate_delay": bool(self.simulate_delay),
-                "delay_ms": int(self.delay_ms) if self.delay_ms is not None else 500
+                "delay_ms": int(self.delay_ms) if self.delay_ms is not None else 500,
+
+                # FEATURE 6
+                "use_mtf_filter": bool(self.use_mtf_filter),
+                "mtf_timeframes": str(self.mtf_timeframes) if self.mtf_timeframes else "1,5,15",
+                "mtf_ema_fast": int(self.mtf_ema_fast) if self.mtf_ema_fast is not None else 9,
+                "mtf_ema_slow": int(self.mtf_ema_slow) if self.mtf_ema_slow is not None else 21,
+                "mtf_agreement_required": int(self.mtf_agreement_required) if self.mtf_agreement_required is not None else 2,
+
+                # FEATURE 1
+                "max_daily_loss": float(self.max_daily_loss) if self.max_daily_loss is not None else -5000.0,
+                "max_trades_per_day": int(self.max_trades_per_day) if self.max_trades_per_day is not None else 10,
+                "daily_target": float(self.daily_target) if self.daily_target is not None else 5000.0,
+
+                # FEATURE 3
+                "min_confidence": float(self.min_confidence) if self.min_confidence is not None else 0.6,
             }
         except Exception as e:
             logger.error(f"[TradingModeSetting.to_dict] Failed: {e}", exc_info=True)
@@ -297,7 +474,16 @@ class TradingModeSetting:
                 "simulate_slippage": True,
                 "slippage_percent": 0.05,
                 "simulate_delay": True,
-                "delay_ms": 500
+                "delay_ms": 500,
+                "use_mtf_filter": False,
+                "mtf_timeframes": "1,5,15",
+                "mtf_ema_fast": 9,
+                "mtf_ema_slow": 21,
+                "mtf_agreement_required": 2,
+                "max_daily_loss": -5000.0,
+                "max_trades_per_day": 10,
+                "daily_target": 5000.0,
+                "min_confidence": 0.6,
             }
 
     def from_dict(self, data: Optional[Dict[str, Any]]) -> None:
@@ -355,12 +541,89 @@ class TradingModeSetting:
                 logger.warning(f"Invalid delay_ms value: {e}")
                 self.delay_ms = 500
 
+            # ==================================================================
+            # FEATURE 6: Multi-Timeframe Filter
+            # ==================================================================
+            self.use_mtf_filter = self._to_bool(data.get("use_mtf_filter", False))
+
+            try:
+                self.mtf_timeframes = str(data.get("mtf_timeframes", "1,5,15"))
+            except Exception as e:
+                logger.warning(f"Invalid mtf_timeframes value: {e}")
+                self.mtf_timeframes = "1,5,15"
+
+            try:
+                val = int(float(str(data.get("mtf_ema_fast", 9))))
+                min_val, max_val = self.VALIDATION_RANGES["mtf_ema_fast"]
+                self.mtf_ema_fast = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid mtf_ema_fast value: {e}")
+                self.mtf_ema_fast = 9
+
+            try:
+                val = int(float(str(data.get("mtf_ema_slow", 21))))
+                min_val, max_val = self.VALIDATION_RANGES["mtf_ema_slow"]
+                self.mtf_ema_slow = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid mtf_ema_slow value: {e}")
+                self.mtf_ema_slow = 21
+
+            try:
+                val = int(float(str(data.get("mtf_agreement_required", 2))))
+                min_val, max_val = self.VALIDATION_RANGES["mtf_agreement_required"]
+                self.mtf_agreement_required = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid mtf_agreement_required value: {e}")
+                self.mtf_agreement_required = 2
+
+            # ==================================================================
+            # FEATURE 1: Risk Management
+            # ==================================================================
+            try:
+                val = float(data.get("max_daily_loss", -5000.0))
+                min_val, max_val = self.VALIDATION_RANGES["max_daily_loss"]
+                self.max_daily_loss = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid max_daily_loss value: {e}")
+                self.max_daily_loss = -5000.0
+
+            try:
+                val = int(float(str(data.get("max_trades_per_day", 10))))
+                min_val, max_val = self.VALIDATION_RANGES["max_trades_per_day"]
+                self.max_trades_per_day = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid max_trades_per_day value: {e}")
+                self.max_trades_per_day = 10
+
+            try:
+                val = float(data.get("daily_target", 5000.0))
+                min_val, max_val = self.VALIDATION_RANGES["daily_target"]
+                self.daily_target = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid daily_target value: {e}")
+                self.daily_target = 5000.0
+
+            # ==================================================================
+            # FEATURE 3: Signal Confidence
+            # ==================================================================
+            try:
+                val = float(data.get("min_confidence", 0.6))
+                min_val, max_val = self.VALIDATION_RANGES["min_confidence"]
+                self.min_confidence = max(min_val, min(max_val, val))
+            except Exception as e:
+                logger.warning(f"Invalid min_confidence value: {e}")
+                self.min_confidence = 0.6
+
             self._loaded = True
             logger.debug("Trading mode settings loaded from dict")
 
         except Exception as e:
             logger.error(f"[TradingModeSetting.from_dict] Failed: {e}", exc_info=True)
             self._set_defaults()
+
+    # ==================================================================
+    # Helper methods for mode checking
+    # ==================================================================
 
     def is_live(self) -> bool:
         """Check if live trading mode is active."""
@@ -393,6 +656,42 @@ class TradingModeSetting:
         except Exception as e:
             logger.error(f"[TradingModeSetting.get_mode_name] Failed: {e}", exc_info=True)
             return TradingMode.SIM.value
+
+    # ==================================================================
+    # FEATURE 6: Multi-Timeframe Filter helpers
+    # ==================================================================
+
+    def get_mtf_timeframes_list(self) -> list:
+        """Get MTF timeframes as list of strings."""
+        try:
+            if self.mtf_timeframes:
+                return [t.strip() for t in self.mtf_timeframes.split(',') if t.strip()]
+            return ['1', '5', '15']
+        except Exception as e:
+            logger.error(f"[TradingModeSetting.get_mtf_timeframes_list] Failed: {e}", exc_info=True)
+            return ['1', '5', '15']
+
+    # ==================================================================
+    # FEATURE 1: Risk Management helpers
+    # ==================================================================
+
+    def get_risk_summary(self) -> Dict[str, Any]:
+        """Get risk management summary."""
+        try:
+            return {
+                'max_daily_loss': self.max_daily_loss,
+                'max_trades_per_day': self.max_trades_per_day,
+                'daily_target': self.daily_target,
+                'min_confidence': self.min_confidence,
+            }
+        except Exception as e:
+            logger.error(f"[TradingModeSetting.get_risk_summary] Failed: {e}", exc_info=True)
+            return {
+                'max_daily_loss': -5000.0,
+                'max_trades_per_day': 10,
+                'daily_target': 5000.0,
+                'min_confidence': 0.6,
+            }
 
     def __repr__(self) -> str:
         """String representation of TradingModeSetting."""

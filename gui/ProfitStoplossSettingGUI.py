@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QScrollArea, QComboBox, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QLocale
 from PyQt5.QtGui import QFont, QDoubleValidator
-from BaseEnums import STOP, TRAILING
+from BaseEnums import STOP, TRAILING, logger
 import threading
 
 from gui import ProfitStoplossSetting
@@ -14,118 +14,212 @@ from gui import ProfitStoplossSetting
 class ProfitStoplossSettingGUI(QDialog):
     save_completed = pyqtSignal(bool, str)
 
+    # Rule 3: Additional signals
+    error_occurred = pyqtSignal(str)
+    operation_started = pyqtSignal()
+    operation_finished = pyqtSignal()
+
     VALIDATION_RANGES = {
-        "tp_percentage":         (0.1,  100.0, "Take Profit"),
-        "stoploss_percentage":   (0.1,   50.0, "Stoploss"),
-        "trailing_first_profit": (0.1,   50.0, "Trailing First Profit"),
-        "max_profit":            (0.1,  200.0, "Max Profit"),
-        "profit_step":           (0.1,   20.0, "Profit Step"),
-        "loss_step":             (0.1,   20.0, "Loss Step"),
+        "tp_percentage": (0.1, 100.0, "Take Profit"),
+        "stoploss_percentage": (0.1, 50.0, "Stoploss"),  # Positive range
+        "trailing_first_profit": (0.1, 50.0, "Trailing First Profit"),
+        "max_profit": (0.1, 200.0, "Max Profit"),
+        "profit_step": (0.1, 20.0, "Profit Step"),
+        "loss_step": (0.1, 20.0, "Loss Step"),
     }
 
     def __init__(self, parent, profit_stoploss_setting: ProfitStoplossSetting, app=None):
-        super().__init__(parent)
-        self.profit_stoploss_setting = profit_stoploss_setting
-        self.app = app
-        self.setWindowTitle("Profit & Stoploss Settings")
-        self.setModal(True)
-        self.setMinimumSize(750, 650)
-        self.resize(750, 650)
-        self.setStyleSheet("""
-            QDialog { background:#161b22; color:#e6edf3; }
-            QLabel  { color:#8b949e; }
-            QTabWidget::pane {
-                border: 1px solid #30363d;
-                border-radius: 6px;
-                background: #161b22;
-            }
-            QTabBar::tab {
-                background: #21262d;
-                color: #8b949e;
-                padding: 8px 20px;
-                min-width: 130px;
-                border: 1px solid #30363d;
-                border-bottom: none;
-                border-radius: 4px 4px 0 0;
-                font-size: 10pt;
-            }
-            QTabBar::tab:selected {
-                background: #161b22;
-                color: #e6edf3;
-                border-bottom: 2px solid #58a6ff;
-                font-weight: bold;
-            }
-            QTabBar::tab:hover:!selected { background:#30363d; color:#e6edf3; }
-            QGroupBox {
-                color:#e6edf3; border:1px solid #30363d; border-radius:6px;
-                margin-top:1em; padding-top:14px; font-weight:bold;
-            }
-            QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 8px; }
-            QLineEdit, QComboBox {
-                background:#21262d; color:#e6edf3; border:1px solid #30363d;
-                border-radius:4px; padding:8px; font-size:10pt;
-            }
-            QLineEdit:focus, QComboBox:focus { border:2px solid #58a6ff; }
-            QLineEdit:disabled { background:#1a1f26; color:#6e7681; }
-            QPushButton {
-                background:#238636; color:#fff; border-radius:4px; padding:12px;
-                font-weight:bold; font-size:10pt;
-            }
-            QPushButton:hover    { background:#2ea043; }
-            QPushButton:pressed  { background:#1e7a2f; }
-            QPushButton:disabled { background:#21262d; color:#484f58; }
-            QScrollArea { border:none; background:transparent; }
-            QFrame#infoCard {
-                background:#21262d;
-                border:1px solid #30363d;
-                border-radius:6px;
-            }
-        """)
+        # Rule 2: Safe defaults
+        self._safe_defaults_init()
 
-        # Root layout
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        try:
+            super().__init__(parent)
+            self.profit_stoploss_setting = profit_stoploss_setting
+            self.app = app
+            self.setWindowTitle("Profit & Stoploss Settings")
+            self.setModal(True)
+            self.setMinimumSize(750, 650)
+            self.resize(750, 650)
 
-        # Header
-        header = QLabel("💹 Profit & Stoploss Configuration")
-        header.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        header.setStyleSheet("color:#e6edf3; padding:4px;")
-        header.setAlignment(Qt.AlignCenter)
-        root.addWidget(header)
+            # Apply dark theme
+            self.setStyleSheet("""
+                QDialog { background:#161b22; color:#e6edf3; }
+                QLabel  { color:#8b949e; }
+                QTabWidget::pane {
+                    border: 1px solid #30363d;
+                    border-radius: 6px;
+                    background: #161b22;
+                }
+                QTabBar::tab {
+                    background: #21262d;
+                    color: #8b949e;
+                    padding: 8px 20px;
+                    min-width: 130px;
+                    border: 1px solid #30363d;
+                    border-bottom: none;
+                    border-radius: 4px 4px 0 0;
+                    font-size: 10pt;
+                }
+                QTabBar::tab:selected {
+                    background: #161b22;
+                    color: #e6edf3;
+                    border-bottom: 2px solid #58a6ff;
+                    font-weight: bold;
+                }
+                QTabBar::tab:hover:!selected { background:#30363d; color:#e6edf3; }
+                QGroupBox {
+                    color:#e6edf3; border:1px solid #30363d; border-radius:6px;
+                    margin-top:1em; padding-top:14px; font-weight:bold;
+                }
+                QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 8px; }
+                QLineEdit, QComboBox {
+                    background:#21262d; color:#e6edf3; border:1px solid #30363d;
+                    border-radius:4px; padding:8px; font-size:10pt;
+                }
+                QLineEdit:focus, QComboBox:focus { border:2px solid #58a6ff; }
+                QLineEdit:disabled { background:#1a1f26; color:#6e7681; }
+                QPushButton {
+                    background:#238636; color:#fff; border-radius:4px; padding:12px;
+                    font-weight:bold; font-size:10pt;
+                }
+                QPushButton:hover    { background:#2ea043; }
+                QPushButton:pressed  { background:#1e7a2f; }
+                QPushButton:disabled { background:#21262d; color:#484f58; }
+                QScrollArea { border:none; background:transparent; }
+                QFrame#infoCard {
+                    background:#21262d;
+                    border:1px solid #30363d;
+                    border-radius:6px;
+                }
+                QLabel#warning {
+                    color: #d29922;
+                    font-size: 9pt;
+                }
+            """)
 
-        # Tabs
-        self.tabs = QTabWidget()
-        root.addWidget(self.tabs)
-        self.tabs.addTab(self._build_settings_tab(), "⚙️ Settings")
-        self.tabs.addTab(self._build_info_tab(),     "ℹ️ Information")
+            # Root layout
+            root = QVBoxLayout(self)
+            root.setContentsMargins(16, 16, 16, 16)
+            root.setSpacing(12)
 
-        # Status label (always visible)
-        self.status_label = QLabel("")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("color:#3fb950; font-size:9pt; font-weight:bold;")
-        root.addWidget(self.status_label)
+            # Header
+            header = QLabel("💹 Profit & Stoploss Configuration")
+            header.setFont(QFont("Segoe UI", 14, QFont.Bold))
+            header.setStyleSheet("color:#e6edf3; padding:4px;")
+            header.setAlignment(Qt.AlignCenter)
+            root.addWidget(header)
 
-        # Save + Cancel buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
+            # BUG #1 Warning Banner
+            warning_banner = QFrame()
+            warning_banner.setStyleSheet("""
+                QFrame {
+                    background: #3d2e1f;
+                    border: 1px solid #d29922;
+                    border-radius: 6px;
+                }
+            """)
+            warning_layout = QHBoxLayout(warning_banner)
+            warning_layout.setContentsMargins(12, 8, 12, 8)
 
-        self.save_btn = QPushButton("💾 Save Settings")
-        self.save_btn.clicked.connect(self.save)
+            warning_icon = QLabel("⚠️")
+            warning_icon.setFont(QFont("Segoe UI", 12))
+            warning_layout.addWidget(warning_icon)
 
-        self.cancel_btn = QPushButton("❌ Cancel")
-        self.cancel_btn.clicked.connect(self.reject)
-        self.cancel_btn.setStyleSheet("""
-            QPushButton { background:#da3633; color:#fff; border-radius:4px; padding:12px; }
-            QPushButton:hover { background:#f85149; }
-        """)
+            warning_text = QLabel(
+                "<b>Note:</b> Stop-loss is applied BELOW entry price for long positions "
+                "(CALL/PUT buyers). Enter the percentage as a positive number."
+            )
+            warning_text.setWordWrap(True)
+            warning_text.setStyleSheet("color: #d29922; font-size: 9pt;")
+            warning_layout.addWidget(warning_text, 1)
 
-        btn_layout.addWidget(self.save_btn)
-        btn_layout.addWidget(self.cancel_btn)
-        root.addLayout(btn_layout)
+            root.addWidget(warning_banner)
 
-        self.save_completed.connect(self.on_save_completed)
-        self._on_profit_type_change()
+            # Tabs
+            self.tabs = QTabWidget()
+            root.addWidget(self.tabs)
+            self.tabs.addTab(self._build_settings_tab(), "⚙️ Settings")
+            self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
+
+            # Status label (always visible)
+            self.status_label = QLabel("")
+            self.status_label.setAlignment(Qt.AlignCenter)
+            self.status_label.setStyleSheet("color:#3fb950; font-size:9pt; font-weight:bold;")
+            root.addWidget(self.status_label)
+
+            # Save + Cancel buttons
+            btn_layout = QHBoxLayout()
+            btn_layout.setSpacing(10)
+
+            self.save_btn = QPushButton("💾 Save Settings")
+            self.save_btn.clicked.connect(self.save)
+
+            self.cancel_btn = QPushButton("❌ Cancel")
+            self.cancel_btn.clicked.connect(self.reject)
+            self.cancel_btn.setStyleSheet("""
+                QPushButton { background:#da3633; color:#fff; border-radius:4px; padding:12px; }
+                QPushButton:hover { background:#f85149; }
+            """)
+
+            btn_layout.addWidget(self.save_btn)
+            btn_layout.addWidget(self.cancel_btn)
+            root.addLayout(btn_layout)
+
+            self.save_completed.connect(self.on_save_completed)
+
+            # Connect internal signals
+            self._connect_signals()
+
+            # Initialize UI
+            self._on_profit_type_change()
+
+            logger.info("ProfitStoplossSettingGUI initialized")
+
+        except Exception as e:
+            logger.critical(f"[ProfitStoplossSettingGUI.__init__] Failed: {e}", exc_info=True)
+            self._create_error_dialog(parent)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        self.profit_stoploss_setting = None
+        self.app = None
+        self.tabs = None
+        self.profit_type_combo = None
+        self.vars = {}
+        self.entries = {}
+        self.status_label = None
+        self.save_btn = None
+        self.cancel_btn = None
+        self._save_in_progress = False
+
+    def _connect_signals(self):
+        """Connect internal signals"""
+        try:
+            self.error_occurred.connect(self._on_error)
+            self.operation_started.connect(self._on_operation_started)
+            self.operation_finished.connect(self._on_operation_finished)
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSettingGUI._connect_signals] Failed: {e}", exc_info=True)
+
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Profit & Stoploss Settings - ERROR")
+            self.setMinimumSize(400, 200)
+
+            layout = QVBoxLayout(self)
+            error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
+            layout.addWidget(error_label)
+
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn)
+
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
 
     # ── Settings Tab ──────────────────────────────────────────────────────────
     def _build_settings_tab(self):
@@ -174,22 +268,22 @@ class ProfitStoplossSettingGUI(QDialog):
         values_layout.setVerticalSpacing(3)
         values_layout.setLabelAlignment(Qt.AlignRight)
 
-        self.vars    = {}
+        self.vars = {}
         self.entries = {}
 
         # (label, key, icon, placeholder, hint, tooltip)
         fields = [
             (
-                "Take Profit (%)",          "tp_percentage",
+                "Take Profit (%)", "tp_percentage",
                 "💰", "e.g. 2.5",
                 "Exit the trade when profit reaches this % (0.1–100).",
                 "The position is closed automatically once unrealised P&L hits this percentage."
             ),
             (
-                "Stoploss (%)",             "stoploss_percentage",
+                "Stoploss (%)", "stoploss_percentage",
                 "🛑", "e.g. 1.0",
-                "Exit the trade when loss reaches this % (0.1–50).",
-                "Stored internally as a negative value. Enter the absolute magnitude here."
+                "Exit the trade when loss reaches this % (0.1–50). Enter as positive number.",
+                "BUG #1 FIX: This is applied BELOW entry price for long positions. Enter the absolute value."
             ),
             (
                 "Trailing First Profit (%)", "trailing_first_profit",
@@ -198,19 +292,19 @@ class ProfitStoplossSettingGUI(QDialog):
                 "The trailing mechanism only kicks in once this initial profit level is reached."
             ),
             (
-                "Max Profit (%)",           "max_profit",
+                "Max Profit (%)", "max_profit",
                 "🏆", "e.g. 10.0  (TRAILING only)",
                 "Upper profit ceiling; trailing stop range ends here (TRAILING only).",
                 "Must be greater than Trailing First Profit. Acts as the profit ladder's top rung."
             ),
             (
-                "Profit Step (%)",          "profit_step",
+                "Profit Step (%)", "profit_step",
                 "➕", "e.g. 0.5  (TRAILING only)",
                 "How much profit must increase to move the trailing stop up (TRAILING only).",
                 "Smaller steps = tighter trailing, locks in more gains but risks early exit."
             ),
             (
-                "Loss Step (%)",            "loss_step",
+                "Loss Step (%)", "loss_step",
                 "➖", "e.g. 0.5  (TRAILING only)",
                 "How far price can fall back from peak before the stop triggers (TRAILING only).",
                 "Larger steps = more room to breathe, but gives back more open profit."
@@ -223,6 +317,7 @@ class ProfitStoplossSettingGUI(QDialog):
             edit.setPlaceholderText(placeholder)
             edit.setToolTip(tooltip)
 
+            # BUG #1 FIX: Always show stoploss as positive
             if key == "stoploss_percentage":
                 val = abs(getattr(self.profit_stoploss_setting, key, 0))
             else:
@@ -235,7 +330,7 @@ class ProfitStoplossSettingGUI(QDialog):
             values_layout.addRow(f"{icon} {label}:", edit)
             values_layout.addRow("", hint_lbl)
 
-            self.vars[key]    = edit
+            self.vars[key] = edit
             self.entries[key] = edit
 
         values_group.setLayout(values_layout)
@@ -273,11 +368,11 @@ class ProfitStoplossSettingGUI(QDialog):
                 "• Valid range: 0.1 – 100."
             ),
             (
-                "🛑  Stoploss (%)",
+                "🛑  Stoploss (%) — BUG #1 FIX",
                 "The maximum loss percentage tolerated before the position is force-closed.\n\n"
-                "• Protects capital by cutting losing trades early.\n"
-                "• Enter the absolute value here (e.g. 1.5 for a 1.5% stop). "
-                "It is stored internally as a negative number.\n"
+                "• **IMPORTANT**: For long positions (CALL/PUT buyers), this is applied BELOW the entry price.\n"
+                "• Enter the percentage as a **positive number** (e.g., 1.5 for a 1.5% stop).\n"
+                "• The system automatically applies the correct sign based on position type.\n"
                 "• Valid range: 0.1 – 50."
             ),
             (
@@ -368,12 +463,20 @@ class ProfitStoplossSettingGUI(QDialog):
         try:
             val = float(value)
             min_val, max_val, name = self.VALIDATION_RANGES[key]
+
+            # BUG #1 FIX: Ensure stoploss is positive
+            if key == "stoploss_percentage":
+                val = abs(val)
+
             if not (min_val <= val <= max_val):
                 return False, None, f"{name} must be between {min_val} and {max_val}"
+
+            # Special validation for trailing values
             if key == "max_profit":
                 trailing_first = float(self.entries["trailing_first_profit"].text() or "0")
                 if val <= trailing_first:
                     return False, None, "Max Profit must be greater than Trailing First Profit"
+
             return True, val, None
         except ValueError:
             return False, None, f"{self.VALIDATION_RANGES[key][2]} must be a valid number"
@@ -423,14 +526,22 @@ class ProfitStoplossSettingGUI(QDialog):
 
     # ── Save logic ────────────────────────────────────────────────────────────
     def save(self):
+        # Prevent multiple saves
+        if self._save_in_progress:
+            logger.warning("Save already in progress")
+            return
+
+        self._save_in_progress = True
+        self.operation_started.emit()
+
         self.save_btn.setEnabled(False)
         self.save_btn.setText("⏳ Validating...")
         self.status_label.setText("")
 
-        data_to_save      = {}
+        data_to_save = {}
         validation_errors = []
 
-        profit_type     = self.profit_type_combo.currentData()
+        profit_type = self.profit_type_combo.currentData()
         required_fields = ["tp_percentage", "stoploss_percentage"]
         if profit_type == TRAILING:
             required_fields.extend(["trailing_first_profit", "max_profit", "profit_step", "loss_step"])
@@ -451,6 +562,8 @@ class ProfitStoplossSettingGUI(QDialog):
             self.tabs.setCurrentIndex(0)
             self.show_error_feedback(validation_errors[0])
             self.save_btn.setEnabled(True)
+            self._save_in_progress = False
+            self.operation_finished.emit()
             return
 
         data_to_save["profit_type"] = profit_type
@@ -461,11 +574,14 @@ class ProfitStoplossSettingGUI(QDialog):
                     setattr(self.profit_stoploss_setting, key, value)
                 success = self.profit_stoploss_setting.save()
                 if success:
-                    self.save_completed.emit(True,  "Settings saved successfully!")
+                    self.save_completed.emit(True, "Settings saved successfully!")
                 else:
                     self.save_completed.emit(False, "Failed to save settings to file")
             except Exception as e:
                 self.save_completed.emit(False, str(e))
+            finally:
+                self._save_in_progress = False
+                self.operation_finished.emit()
 
         threading.Thread(target=_save, daemon=True).start()
 
@@ -473,13 +589,62 @@ class ProfitStoplossSettingGUI(QDialog):
         if success:
             self.show_success_feedback()
             self.save_btn.setEnabled(True)
-            # FIXED: Use explicit None check for app object
+            # Refresh app if available
             if self.app is not None and hasattr(self.app, "refresh_settings_live"):
                 try:
                     self.app.refresh_settings_live()
                 except Exception as e:
-                    print(f"Failed to refresh app: {e}")
+                    logger.error(f"Failed to refresh app: {e}")
             QTimer.singleShot(2000, self.accept)
         else:
             self.show_error_feedback(message)
             self.save_btn.setEnabled(True)
+
+    def _on_error(self, error_msg: str):
+        """Handle error signal"""
+        try:
+            logger.error(f"Error signal received: {error_msg}")
+            self.show_error_feedback(error_msg)
+            self.save_btn.setEnabled(True)
+            self._save_in_progress = False
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSettingGUI._on_error] Failed: {e}", exc_info=True)
+
+    def _on_operation_started(self):
+        """Handle operation started signal"""
+        pass
+
+    def _on_operation_finished(self):
+        """Handle operation finished signal"""
+        pass
+
+    # Rule 8: Cleanup method
+    def cleanup(self):
+        """Clean up resources before closing"""
+        try:
+            logger.info("[ProfitStoplossSettingGUI] Starting cleanup")
+
+            # Clear references
+            self.profit_stoploss_setting = None
+            self.app = None
+            self.vars.clear()
+            self.entries.clear()
+            self.profit_type_combo = None
+            self.status_label = None
+            self.save_btn = None
+            self.cancel_btn = None
+            self.tabs = None
+
+            logger.info("[ProfitStoplossSettingGUI] Cleanup completed")
+
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSettingGUI.cleanup] Error: {e}", exc_info=True)
+
+    def closeEvent(self, event):
+        """Handle close event with cleanup"""
+        try:
+            self.cleanup()
+            super().closeEvent(event)
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSettingGUI.closeEvent] Failed: {e}", exc_info=True)
+            super().closeEvent(event)

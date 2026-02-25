@@ -3,10 +3,12 @@ indicator_registry.py
 =====================
 Registry of all available pandas_ta indicators with their parameters and metadata.
 This provides a single source of truth for indicator definitions used throughout the app.
+
+FEATURE 3: Added support for rule weights and confidence scoring metadata.
 """
 
 import logging.handlers
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 try:
     import pandas_ta as ta
@@ -202,6 +204,90 @@ PARAMETER_DESCRIPTIONS = {
     "kc_scalar": "Keltner Channel multiplier",
     "mom_length": "Momentum length",
     "mom_smooth": "Momentum smoothing",
+}
+
+# ==================================================================
+# FEATURE 3: Confidence Scoring Metadata
+# ==================================================================
+
+# Recommended weights for different indicator types
+# Higher weights for more reliable indicators
+INDICATOR_WEIGHT_SUGGESTIONS = {
+    # Momentum (medium-high reliability)
+    "rsi": 1.5,
+    "stoch": 1.2,
+    "macd": 1.8,
+    "cci": 1.3,
+    "tsi": 1.4,
+    "uo": 1.3,
+    "ao": 1.1,
+    "kama": 1.2,
+    "roc": 1.1,
+    "rvi": 1.4,
+    "trix": 1.3,
+    "willr": 1.2,
+    "dm": 1.2,
+    "psl": 1.1,
+
+    # Trend (high reliability for trend-following)
+    "ema": 1.5,
+    "sma": 1.5,
+    "wma": 1.5,
+    "hma": 1.6,
+    "dema": 1.6,
+    "tema": 1.7,
+    "trima": 1.5,
+    "vidya": 1.4,
+    "adx": 2.0,  # High reliability for trend strength
+    "aroon": 1.8,
+    "amat": 1.7,
+    "chop": 1.4,
+    "cksp": 1.3,
+    "psar": 1.6,
+    "qstick": 1.2,
+    "supertrend": 2.0,  # High reliability
+    "trendflex": 1.4,
+
+    # Volatility (medium reliability)
+    "bbands": 1.5,
+    "kc": 1.4,
+    "dona": 1.3,
+    "atr": 1.5,
+    "natr": 1.5,
+    "massi": 1.3,
+
+    # Volume (low-medium reliability, depends on market)
+    "ad": 1.2,
+    "adosc": 1.3,
+    "obv": 1.4,
+    "cmf": 1.4,
+    "efi": 1.3,
+    "eom": 1.2,
+    "kvo": 1.3,
+    "mfi": 1.5,
+    "nvi": 1.2,
+    "pvi": 1.2,
+    "pvt": 1.3,
+
+    # Default weight for unspecified indicators
+    "default": 1.0,
+}
+
+# Signal group importance (for overall confidence)
+SIGNAL_GROUP_WEIGHTS = {
+    "BUY_CALL": 1.0,
+    "BUY_PUT": 1.0,
+    "EXIT_CALL": 1.2,  # Exits slightly more important
+    "EXIT_PUT": 1.2,
+    "HOLD": 0.8,  # Hold signals less important
+}
+
+# Confidence threshold suggestions
+CONFIDENCE_THRESHOLD_SUGGESTIONS = {
+    "conservative": 0.7,
+    "moderate": 0.6,
+    "aggressive": 0.5,
+    "very_aggressive": 0.4,
 }
 
 
@@ -402,6 +488,152 @@ def get_indicator_help(indicator: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[get_indicator_help] Failed for {indicator}: {e}", exc_info=True)
         return {}
+
+
+# ==================================================================
+# FEATURE 3: New helper functions for confidence scoring
+# ==================================================================
+
+def get_suggested_weight(indicator: str) -> float:
+    """
+    Get suggested weight for an indicator based on its reliability.
+
+    Args:
+        indicator: Indicator name
+
+    Returns:
+        Suggested weight (default 1.0)
+    """
+    try:
+        if indicator is None:
+            return 1.0
+        return INDICATOR_WEIGHT_SUGGESTIONS.get(indicator.lower(),
+                                                INDICATOR_WEIGHT_SUGGESTIONS.get("default", 1.0))
+    except Exception as e:
+        logger.error(f"[get_suggested_weight] Failed for {indicator}: {e}", exc_info=True)
+        return 1.0
+
+
+def get_signal_group_weight(signal_group: str) -> float:
+    """
+    Get weight for a signal group (for overall confidence calculation).
+
+    Args:
+        signal_group: Signal group name (BUY_CALL, BUY_PUT, etc.)
+
+    Returns:
+        Signal group weight (default 1.0)
+    """
+    try:
+        return SIGNAL_GROUP_WEIGHTS.get(signal_group, 1.0)
+    except Exception as e:
+        logger.error(f"[get_signal_group_weight] Failed for {signal_group}: {e}", exc_info=True)
+        return 1.0
+
+
+def get_threshold_suggestion(profile: str = "moderate") -> float:
+    """
+    Get confidence threshold suggestion based on risk profile.
+
+    Args:
+        profile: 'conservative', 'moderate', 'aggressive', 'very_aggressive'
+
+    Returns:
+        Suggested confidence threshold
+    """
+    try:
+        return CONFIDENCE_THRESHOLD_SUGGESTIONS.get(profile, 0.6)
+    except Exception as e:
+        logger.error(f"[get_threshold_suggestion] Failed for {profile}: {e}", exc_info=True)
+        return 0.6
+
+
+def calculate_rule_confidence(rule_results: List[Dict[str, Any]]) -> float:
+    """
+    Calculate confidence score from a list of rule results.
+
+    Args:
+        rule_results: List of rule result dicts with 'result' and 'weight' keys
+
+    Returns:
+        Confidence score (0.0 to 1.0)
+    """
+    try:
+        if not rule_results:
+            return 0.0
+
+        total_weight = 0.0
+        passed_weight = 0.0
+
+        for rule in rule_results:
+            weight = rule.get('weight', 1.0)
+            total_weight += weight
+            if rule.get('result', False):
+                passed_weight += weight
+
+        return passed_weight / total_weight if total_weight > 0 else 0.0
+
+    except Exception as e:
+        logger.error(f"[calculate_rule_confidence] Failed: {e}", exc_info=True)
+        return 0.0
+
+
+def get_rule_weight_range() -> Dict[str, Any]:
+    """
+    Get valid range for rule weights.
+
+    Returns:
+        Dict with min, max, default, and step values
+    """
+    try:
+        return {
+            "min": 0.1,
+            "max": 5.0,
+            "default": 1.0,
+            "step": 0.1,
+            "description": "Rule weight (higher = more important in confidence calculation)"
+        }
+    except Exception as e:
+        logger.error(f"[get_rule_weight_range] Failed: {e}", exc_info=True)
+        return {"min": 0.1, "max": 5.0, "default": 1.0, "step": 0.1}
+
+
+def get_confidence_display_info(confidence: float, threshold: float) -> Dict[str, Any]:
+    """
+    Get display information for a confidence value.
+
+    Args:
+        confidence: Confidence score (0.0 to 1.0)
+        threshold: Confidence threshold
+
+    Returns:
+        Dict with color, label, and status
+    """
+    try:
+        if confidence >= threshold:
+            return {
+                "color": "#3fb950",  # Green
+                "label": "PASS",
+                "status": "passed",
+                "percent": f"{confidence*100:.0f}%"
+            }
+        elif confidence >= threshold * 0.7:
+            return {
+                "color": "#d29922",  # Yellow
+                "label": "NEAR",
+                "status": "near",
+                "percent": f"{confidence*100:.0f}%"
+            }
+        else:
+            return {
+                "color": "#f85149",  # Red
+                "label": "FAIL",
+                "status": "failed",
+                "percent": f"{confidence*100:.0f}%"
+            }
+    except Exception as e:
+        logger.error(f"[get_confidence_display_info] Failed: {e}", exc_info=True)
+        return {"color": "#8b949e", "label": "UNKNOWN", "status": "unknown", "percent": "0%"}
 
 
 # Rule 8: Cleanup function

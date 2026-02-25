@@ -10,6 +10,7 @@ Shows:
   - Active strategy stats (name, rules count, last updated)
   - "Open Editor" button to launch StrategyEditorWindow
   - Live indicator: current signal from active strategy
+  - FEATURE 3: Confidence scores for current signal
 
 Embed in TradingGUI as a pinned sidebar OR show as a floating popup.
 
@@ -41,6 +42,7 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView, QDialog, QFrame, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QGridLayout, QProgressBar, QGroupBox
 )
 
 from strategy.strategy_manager import strategy_manager
@@ -65,6 +67,7 @@ RED = "#f85149"
 BLUE = "#58a6ff"
 YELLOW = "#d29922"
 ORANGE = "#ffa657"
+PURPLE = "#bc8cff"
 
 SIGNAL_COLORS = {
     "BUY_CALL": GREEN,
@@ -90,6 +93,33 @@ def _ss() -> str:
             background: {BG}; color: {TEXT}; font-size: 10pt;
         }}
         QLabel {{ color: {TEXT}; }}
+        QGroupBox {{
+            background: {BG_PANEL};
+            border: 1px solid {BORDER};
+            border-radius: 6px;
+            margin-top: 10px;
+            font-weight: bold;
+            color: {TEXT};
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: {BLUE};
+        }}
+        QProgressBar {{
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            background: {BG_PANEL};
+            text-align: center;
+            color: {TEXT};
+            font-size: 8pt;
+            min-height: 12px;
+        }}
+        QProgressBar::chunk {{
+            background: {BLUE};
+            border-radius: 4px;
+        }}
         QPushButton {{
             background: #21262d; color: {TEXT};
             border: 1px solid {BORDER}; border-radius: 5px;
@@ -114,6 +144,58 @@ def _ss() -> str:
         QScrollArea {{ border: none; background: transparent; }}
         QFrame {{ background: transparent; }}
     """
+
+
+class _ConfidenceBar(QWidget):
+    """FEATURE 3: Confidence bar for signal groups"""
+
+    def __init__(self, signal: str, parent=None):
+        super().__init__(parent)
+        self.signal = signal
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.label = QLabel(SIGNAL_LABELS.get(signal, signal))
+        self.label.setFixedWidth(80)
+        self.label.setStyleSheet(f"color: {DIM}; font-size: 8pt;")
+        layout.addWidget(self.label)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedHeight(12)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress, 1)
+
+        self.value = QLabel("0%")
+        self.value.setFixedWidth(40)
+        self.value.setStyleSheet(f"color: {TEXT}; font-size: 8pt; font-weight: bold;")
+        layout.addWidget(self.value)
+
+    def set_confidence(self, confidence: float, threshold: float = 0.6):
+        """Set confidence value"""
+        try:
+            percent = int(confidence * 100)
+            self.progress.setValue(percent)
+            self.value.setText(f"{percent}%")
+
+            # Color based on threshold
+            if confidence >= threshold:
+                self.progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background: {GREEN}; }}
+                """)
+            elif confidence >= threshold * 0.7:
+                self.progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background: {YELLOW}; }}
+                """)
+            else:
+                self.progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background: {RED}; }}
+                """)
+        except Exception as e:
+            logger.error(f"[_ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
 
 
 class _StrategyCard(QFrame):
@@ -169,6 +251,11 @@ class _StrategyCard(QFrame):
             stats.addWidget(self._updated_lbl)
             layout.addLayout(stats)
 
+            # FEATURE 3: Confidence threshold display
+            self._threshold_lbl = QLabel("Threshold: 60%")
+            self._threshold_lbl.setStyleSheet(f"color:{YELLOW}; font-size:8pt; font-weight:bold;")
+            layout.addWidget(self._threshold_lbl)
+
         except Exception as e:
             logger.error(f"[_StrategyCard.__init__] Failed: {e}", exc_info=True)
             super().__init__(parent)
@@ -180,6 +267,7 @@ class _StrategyCard(QFrame):
         self._desc_lbl = None
         self._rules_lbl = None
         self._updated_lbl = None
+        self._threshold_lbl = None
 
     def _stat_lbl(self, text: str) -> QLabel:
         try:
@@ -190,7 +278,7 @@ class _StrategyCard(QFrame):
             logger.error(f"[_StrategyCard._stat_lbl] Failed: {e}", exc_info=True)
             return QLabel(text)
 
-    def update(self, strategy: Dict, current_signal: str = "WAIT"):
+    def update(self, strategy: Dict, current_signal: str = "WAIT", threshold: float = 0.6):
         """Update card with strategy data and current signal"""
         try:
             if strategy is None:
@@ -223,6 +311,11 @@ class _StrategyCard(QFrame):
             if self._updated_lbl:
                 self._updated_lbl.setText(f"saved {upd}")
 
+            # FEATURE 3: Update threshold
+            if self._threshold_lbl:
+                threshold_pct = int(threshold * 100)
+                self._threshold_lbl.setText(f"Min Confidence: {threshold_pct}%")
+
             # Signal
             color = SIGNAL_COLORS.get(current_signal, "#484f58")
             label = SIGNAL_LABELS.get(current_signal, current_signal)
@@ -241,6 +334,8 @@ class StrategyPickerSidebar(QDialog):
     """
     Compact floating sidebar for switching active strategy.
     Non-modal — can stay open while trading. Uses database-backed strategy manager.
+
+    FEATURE 3: Displays confidence scores for signal groups.
     """
     strategy_activated = pyqtSignal(str)  # emitted with slug
     open_editor_requested = pyqtSignal()  # user wants full editor
@@ -253,11 +348,13 @@ class StrategyPickerSidebar(QDialog):
             super().__init__(parent, Qt.Window | Qt.Tool)
             self.trading_app = trading_app
             self._current_signal = "WAIT"
+            self._current_threshold = 0.6
+            self._confidence_bars = {}
 
             self.setWindowTitle("⚡ Strategy Picker")
-            self.setFixedWidth(360)
-            self.setMinimumHeight(480)
-            self.setMaximumHeight(800)
+            self.setFixedWidth(400)  # Slightly wider for confidence bars
+            self.setMinimumHeight(600)
+            self.setMaximumHeight(900)
             self.setStyleSheet(_ss())
 
             self._build_ui()
@@ -265,10 +362,10 @@ class StrategyPickerSidebar(QDialog):
 
             # Auto-refresh signal display every 2s
             self._timer = QTimer(self)
-            self._timer.timeout.connect(self._refresh_signal)
+            self._timer.timeout.connect(self._refresh_data)
             self._timer.start(2000)
 
-            logger.info("StrategyPickerSidebar (database) initialized")
+            logger.info("StrategyPickerSidebar (database) initialized with Feature 3")
 
         except Exception as e:
             logger.critical(f"[StrategyPickerSidebar.__init__] Failed: {e}", exc_info=True)
@@ -290,11 +387,14 @@ class StrategyPickerSidebar(QDialog):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.trading_app = None
         self._current_signal = "WAIT"
+        self._current_threshold = 0.6
+        self._confidence_bars = {}
         self._timer = None
         self._card = None
         self._list = None
         self._activate_btn = None
         self._status_lbl = None
+        self._confidence_group = None
 
     def _build_ui(self):
         """Build the UI components"""
@@ -306,6 +406,20 @@ class StrategyPickerSidebar(QDialog):
             # Active strategy card
             self._card = _StrategyCard()
             root.addWidget(self._card)
+
+            # FEATURE 3: Confidence scores group
+            self._confidence_group = QGroupBox("Signal Confidence")
+            confidence_layout = QVBoxLayout(self._confidence_group)
+            confidence_layout.setSpacing(4)
+
+            # Create confidence bars for each signal group
+            signal_groups = ['BUY_CALL', 'BUY_PUT', 'EXIT_CALL', 'EXIT_PUT', 'HOLD']
+            for signal in signal_groups:
+                bar = _ConfidenceBar(signal)
+                confidence_layout.addWidget(bar)
+                self._confidence_bars[signal] = bar
+
+            root.addWidget(self._confidence_group)
 
             # ── Separator ─────────────────────────────────────────────────────────
             sep = QLabel("  ALL STRATEGIES")
@@ -394,6 +508,11 @@ class StrategyPickerSidebar(QDialog):
                     if updated and "T" in updated:
                         updated = updated.replace("T", " ")[:16]
                     tooltip += f"\n{total_rules} rules | updated {updated}"
+
+                    # FEATURE 3: Add confidence info to tooltip
+                    if is_active:
+                        tooltip += f"\nMin confidence: {engine.get('min_confidence', 0.6)*100:.0f}%"
+
                     item.setToolTip(tooltip)
 
                     if is_active:
@@ -410,39 +529,55 @@ class StrategyPickerSidebar(QDialog):
 
             self._list.blockSignals(False)
 
-            # Update active card
-            if self._card is not None:
-                active_data = strategy_manager.get_active()
-                if active_data is not None:
-                    self._card.update(active_data, self._current_signal)
+            # Update active card and confidence bars
+            self._update_active_display()
 
         except Exception as e:
             logger.error(f"[StrategyPickerSidebar.refresh] Failed: {e}", exc_info=True)
 
     @pyqtSlot()
-    def _refresh_signal(self):
-        """Pull current signal from trading_app and update card."""
+    def _refresh_data(self):
+        """Pull current data from trading_app and update UI."""
         try:
-            if not self.isVisible() or self._card is None:
+            if not self.isVisible():
                 return
 
-            if self.trading_app is None:
-                return
-
-            state = getattr(self.trading_app, "state", None)
-            if state is None:
-                return
-
-            trend = getattr(state, "derivative_trend", None) or {}
-            sig_data = trend.get("option_signal", {})
-            self._current_signal = sig_data.get("signal_value", "WAIT") if sig_data else "WAIT"
-
-            active = strategy_manager.get_active()
-            if active is not None and self._card is not None:
-                self._card.update(active, self._current_signal)
+            self._update_active_display()
 
         except Exception as e:
-            logger.debug(f"[_refresh_signal] Failed: {e}")
+            logger.debug(f"[_refresh_data] Failed: {e}")
+
+    def _update_active_display(self):
+        """Update active strategy card and confidence bars"""
+        try:
+            # Get current signal from trading app
+            if self.trading_app is not None:
+                state = getattr(self.trading_app, "state", None)
+                if state is not None:
+                    trend = getattr(state, "derivative_trend", None) or {}
+                    sig_data = trend.get("option_signal", {})
+                    self._current_signal = sig_data.get("signal_value", "WAIT") if sig_data else "WAIT"
+
+                    # FEATURE 3: Get confidence scores
+                    confidence = sig_data.get("confidence", {}) if sig_data else {}
+                    threshold = sig_data.get("threshold", 0.6)
+
+            # Update active strategy
+            active = strategy_manager.get_active()
+            if active is not None:
+                engine = active.get("engine", {})
+                threshold = engine.get("min_confidence", 0.6)
+
+                if self._card is not None:
+                    self._card.update(active, self._current_signal, threshold)
+
+                # Update confidence bars
+                for signal, bar in self._confidence_bars.items():
+                    conf = confidence.get(signal, 0.0)
+                    bar.set_confidence(conf, threshold)
+
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._update_active_display] Failed: {e}", exc_info=True)
 
     def _on_double_click(self, item):
         """Handle double-click on strategy item"""
@@ -516,6 +651,8 @@ class StrategyPickerSidebar(QDialog):
             self._list = None
             self._activate_btn = None
             self._status_lbl = None
+            self._confidence_group = None
+            self._confidence_bars.clear()
 
             logger.info("[StrategyPickerSidebar] Cleanup completed")
 

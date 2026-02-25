@@ -2,6 +2,9 @@
 ProfitStoplossSetting_db.py
 ===========================
 Database-backed profit/stoploss settings using the SQLite database.
+
+BUG #1 FIX: Stop-loss is now stored as a positive percentage (absolute value)
+            The sign is applied in the order executor (negative for buyers).
 """
 
 import logging
@@ -18,14 +21,14 @@ class ProfitStoplossSetting:
     """
     Database-backed profit/stoploss settings using the profit_stoploss_setting table.
 
-    This is a drop-in replacement for the JSON-based ProfitStoplossSetting class,
-    maintaining the same interface while using the database.
+    BUG #1 FIX: stoploss_percentage is stored as positive value (absolute).
+                The sign is applied by the order executor when calculating actual stop price.
     """
 
     DEFAULTS = {
-        "profit_type": "STOP",  # Will be replaced with actual enum values
+        "profit_type": "STOP",  # STOP, TRAILING, FIXED
         "tp_percentage": 15.0,
-        "stoploss_percentage": 7.0,
+        "stoploss_percentage": 7.0,  # Stored as positive absolute value
         "trailing_first_profit": 3.0,
         "max_profit": 30.0,
         "profit_step": 2.0,
@@ -46,7 +49,7 @@ class ProfitStoplossSetting:
     # Validation ranges
     VALIDATION_RANGES = {
         "tp_percentage": (0.1, 100.0),
-        "stoploss_percentage": (0.1, 50.0),
+        "stoploss_percentage": (0.1, 50.0),  # Positive range
         "trailing_first_profit": (0.1, 50.0),
         "max_profit": (0.1, 200.0),
         "profit_step": (0.1, 20.0),
@@ -101,6 +104,11 @@ class ProfitStoplossSetting:
                         # Try to convert through string
                         val = float(str(value))
 
+                    # BUG #1 FIX: Ensure stoploss_percentage is stored as positive
+                    if key == "stoploss_percentage":
+                        val = abs(val)
+                        logger.debug(f"Stoploss percentage converted to positive: {val}")
+
                     # Apply range validation if defined
                     if key in self.VALIDATION_RANGES:
                         min_val, max_val = self.VALIDATION_RANGES[key]
@@ -112,7 +120,6 @@ class ProfitStoplossSetting:
                     # For profit_type, ensure it's a valid value
                     if key == "profit_type":
                         str_value = str(value)
-                        # Import your enums or define valid values
                         VALID_TYPES = ["STOP", "TRAILING", "FIXED"]
                         if str_value not in VALID_TYPES:
                             logger.warning(f"Invalid profit_type '{str_value}', using default")
@@ -246,7 +253,10 @@ class ProfitStoplossSetting:
             logger.error(f"[ProfitStoplossSetting.__repr__] Failed: {e}", exc_info=True)
             return "<ProfitStoplossSetting Error>"
 
+    # ------------------------------------------------------------------
     # Property accessors with validation and error handling
+    # ------------------------------------------------------------------
+
     @property
     def tp_percentage(self) -> float:
         """Get take profit percentage."""
@@ -274,16 +284,26 @@ class ProfitStoplossSetting:
 
     @property
     def stoploss_percentage(self) -> float:
-        """Get stop loss percentage."""
+        """
+        Get stop loss percentage (always positive).
+
+        BUG #1 FIX: Always returns positive value. The sign is applied
+                    by order executor based on position type.
+        """
         try:
             val = self.data.get("stoploss_percentage", self.DEFAULTS["stoploss_percentage"])
-            return float(val) if val is not None else self.DEFAULTS["stoploss_percentage"]
+            return abs(float(val)) if val is not None else self.DEFAULTS["stoploss_percentage"]
         except Exception as e:
             logger.error(f"[ProfitStoplossSetting.stoploss_percentage getter] Failed: {e}", exc_info=True)
             return self.DEFAULTS["stoploss_percentage"]
 
     @stoploss_percentage.setter
     def stoploss_percentage(self, value):
+        """
+        Set stop loss percentage (automatically converts to positive).
+
+        BUG #1 FIX: Always store as positive value.
+        """
         try:
             if value is None:
                 self.data["stoploss_percentage"] = self.DEFAULTS["stoploss_percentage"]

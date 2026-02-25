@@ -34,11 +34,24 @@ logger = logging.getLogger(__name__)
 
 
 class Utils:
-    """# REFACTORED: All option-related methods moved to OptionUtils.py"""
+    """# REFACTORED: All option-related methods moved to OptionUtils.py
+
+    BUG #4 FIX: Market start time corrected to 9:15 AM (was 9:30)
+    FEATURE 1: Added risk management helpers
+    FEATURE 4: Added notification helpers
+    FEATURE 5: Added P&L tracking helpers
+    FEATURE 6: Added MTF filter helpers
+    """
 
     DATE_FORMAT = "%Y-%m-%d"
     TIME_FORMAT = "%H:%M:%S"
     DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+    # Market hours constants (BUG #4 FIX)
+    MARKET_OPEN_HOUR = 9
+    MARKET_OPEN_MINUTE = 15
+    MARKET_CLOSE_HOUR = 15
+    MARKET_CLOSE_MINUTE = 30
 
     # --- Config loading ---
     @staticmethod
@@ -178,13 +191,16 @@ class Utils:
 
     @classmethod
     def get_market_start_time(cls, dt_obj: Optional[datetime] = None) -> datetime:
-        """Market opens at 9:15 AM."""
+        """
+        BUG #4 FIX: Market opens at 9:15 AM (was 9:30)
+        """
         try:
             if dt_obj is None:
                 dt_obj = datetime.now()
 
             if not cls.is_market_closed_for_the_day():
-                return cls.get_time_of_day(9, 30, 0, dt_obj)
+                # BUG #4 FIX: Changed from 9:30 to 9:15
+                return cls.get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, dt_obj)
 
             next_day = dt_obj + timedelta(days=1)
             max_days = 30  # Prevent infinite loop
@@ -194,17 +210,18 @@ class Utils:
                 next_day += timedelta(days=1)
                 days_checked += 1
 
-            return cls.get_time_of_day(9, 30, 0, next_day)
+            # BUG #4 FIX: Changed from 9:30 to 9:15
+            return cls.get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, next_day)
         except Exception as e:
             logger.error(f"[get_market_start_time] Failed: {e}", exc_info=True)
             return datetime.now()
 
     @staticmethod
     def get_market_end_time(dt_obj: Optional[datetime] = None) -> datetime:
-        """Market closes at 3:29 PM."""
+        """Market closes at 3:30 PM."""
         try:
             dt_obj = dt_obj or datetime.now()
-            return Utils.get_time_of_day(15, 25, 0, dt_obj)
+            return Utils.get_time_of_day(15, 30, 0, dt_obj)
         except Exception as e:
             logger.error(f"[get_market_end_time] Failed: {e}", exc_info=True)
             return datetime.now()
@@ -216,7 +233,12 @@ class Utils:
         """
         try:
             now = datetime.now().time()
-            return now >= (dt_time(15, 30 - buffer_minutes // 1))
+            close_time = dt_time(15, 30)
+            buffer_time = (close_time.hour * 60 + close_time.minute - buffer_minutes)
+            buffer_hour = buffer_time // 60
+            buffer_min = buffer_time % 60
+            buffer_dt = dt_time(buffer_hour, buffer_min)
+            return now >= buffer_dt
         except Exception as e:
             logger.error(f"Error in is_near_market_close: {e}", exc_info=True)
             return False
@@ -664,6 +686,228 @@ class Utils:
             return start_time <= now <= end_time
         except Exception as e:
             logger.error(f"Error in check sideways time: {e}", exc_info=True)
+            return False
+
+    # ==================================================================
+    # FEATURE 1: Risk Management Helpers
+    # ==================================================================
+
+    @staticmethod
+    def calculate_drawdown(peak: float, current: float) -> float:
+        """
+        Calculate drawdown percentage from peak.
+
+        Args:
+            peak: Peak value
+            current: Current value
+
+        Returns:
+            Drawdown percentage (positive number)
+        """
+        try:
+            if peak is None or current is None or peak == 0:
+                return 0.0
+            return max(0, (peak - current) / peak * 100)
+        except Exception as e:
+            logger.error(f"[calculate_drawdown] Failed: {e}", exc_info=True)
+            return 0.0
+
+    @staticmethod
+    def calculate_risk_per_trade(account_balance: float, risk_percent: float, stop_loss_percent: float) -> float:
+        """
+        Calculate position size based on risk per trade.
+
+        Args:
+            account_balance: Total account balance
+            risk_percent: Percentage of account to risk per trade (e.g., 2 for 2%)
+            stop_loss_percent: Stop loss percentage (positive number)
+
+        Returns:
+            Position size in rupees
+        """
+        try:
+            if account_balance <= 0 or risk_percent <= 0 or stop_loss_percent <= 0:
+                return 0.0
+            risk_amount = account_balance * (risk_percent / 100)
+            return risk_amount / (stop_loss_percent / 100)
+        except Exception as e:
+            logger.error(f"[calculate_risk_per_trade] Failed: {e}", exc_info=True)
+            return 0.0
+
+    # ==================================================================
+    # FEATURE 4: Notification Helpers
+    # ==================================================================
+
+    @staticmethod
+    def format_currency(amount: float, include_symbol: bool = True) -> str:
+        """
+        Format amount as currency.
+
+        Args:
+            amount: Amount to format
+            include_symbol: Whether to include ₹ symbol
+
+        Returns:
+            Formatted string (e.g., "₹1,234.56" or "1,234.56")
+        """
+        try:
+            if amount is None:
+                amount = 0.0
+
+            if abs(amount) >= 1000:
+                formatted = f"{amount:,.2f}"
+            else:
+                formatted = f"{amount:.2f}"
+
+            return f"₹{formatted}" if include_symbol else formatted
+        except Exception as e:
+            logger.error(f"[format_currency] Failed: {e}", exc_info=True)
+            return f"₹{amount:.2f}" if amount else "₹0.00"
+
+    @staticmethod
+    def format_percentage(value: float, include_sign: bool = True) -> str:
+        """
+        Format as percentage.
+
+        Args:
+            value: Value to format (e.g., 0.15 for 15%)
+            include_sign: Whether to include +/-
+
+        Returns:
+            Formatted string (e.g., "+15.0%" or "15.0%")
+        """
+        try:
+            percent = value * 100
+            if include_sign and percent > 0:
+                return f"+{percent:.1f}%"
+            return f"{percent:.1f}%"
+        except Exception as e:
+            logger.error(f"[format_percentage] Failed: {e}", exc_info=True)
+            return f"{value:.1f}%"
+
+    # ==================================================================
+    # FEATURE 5: P&L Tracking Helpers
+    # ==================================================================
+
+    @staticmethod
+    def calculate_pnl(entry_price: float, exit_price: float, quantity: int) -> float:
+        """
+        Calculate profit/loss.
+
+        Args:
+            entry_price: Entry price
+            exit_price: Exit price
+            quantity: Quantity traded
+
+        Returns:
+            P&L amount
+        """
+        try:
+            if entry_price is None or exit_price is None or quantity is None:
+                return 0.0
+            return (exit_price - entry_price) * quantity
+        except Exception as e:
+            logger.error(f"[calculate_pnl] Failed: {e}", exc_info=True)
+            return 0.0
+
+    @staticmethod
+    def calculate_pnl_percentage(entry_price: float, exit_price: float) -> float:
+        """
+        Calculate P&L as percentage.
+
+        Args:
+            entry_price: Entry price
+            exit_price: Exit price
+
+        Returns:
+            P&L percentage (e.g., 0.15 for 15%)
+        """
+        try:
+            if entry_price is None or exit_price is None or entry_price == 0:
+                return 0.0
+            return (exit_price - entry_price) / entry_price
+        except Exception as e:
+            logger.error(f"[calculate_pnl_percentage] Failed: {e}", exc_info=True)
+            return 0.0
+
+    @staticmethod
+    def get_trade_duration(start_time: datetime, end_time: Optional[datetime] = None) -> str:
+        """
+        Get human-readable trade duration.
+
+        Args:
+            start_time: Trade start time
+            end_time: Trade end time (defaults to now)
+
+        Returns:
+            Duration string (e.g., "2h 15m")
+        """
+        try:
+            if start_time is None:
+                return "0m"
+
+            end = end_time or datetime.now()
+            duration = end - start_time
+
+            hours = duration.seconds // 3600
+            minutes = (duration.seconds % 3600) // 60
+
+            if hours > 0:
+                return f"{hours}h {minutes}m"
+            return f"{minutes}m"
+        except Exception as e:
+            logger.error(f"[get_trade_duration] Failed: {e}", exc_info=True)
+            return "0m"
+
+    # ==================================================================
+    # FEATURE 6: MTF Filter Helpers
+    # ==================================================================
+
+    @staticmethod
+    def get_mtf_history_days(timeframe: str) -> int:
+        """
+        Get recommended history days for a timeframe.
+
+        Args:
+            timeframe: Timeframe string (e.g., "1", "5", "15")
+
+        Returns:
+            Number of days of history needed
+        """
+        try:
+            # Default recommendations
+            days_map = {
+                "1": 2,
+                "5": 5,
+                "15": 15,
+                "30": 30,
+                "60": 60,
+            }
+            return days_map.get(str(timeframe), 30)
+        except Exception as e:
+            logger.error(f"[get_mtf_history_days] Failed: {e}", exc_info=True)
+            return 30
+
+    @staticmethod
+    def validate_timeframe(timeframe: str) -> bool:
+        """
+        Validate a timeframe string.
+
+        Args:
+            timeframe: Timeframe to validate
+
+        Returns:
+            True if valid
+        """
+        try:
+            if not timeframe:
+                return False
+            if timeframe.isdigit():
+                tf_int = int(timeframe)
+                return 1 <= tf_int <= 1440
+            return False
+        except Exception as e:
+            logger.error(f"[validate_timeframe] Failed: {e}", exc_info=True)
             return False
 
     @staticmethod

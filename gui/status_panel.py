@@ -10,7 +10,7 @@ from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import (
     QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout, QTabWidget,
     QHBoxLayout, QPushButton, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QFormLayout
+    QHeaderView, QFormLayout, QProgressBar
 )
 
 # Import Utils for market status
@@ -137,6 +137,18 @@ def _global_ss() -> str:
             font-weight: bold;
             padding: 2px 8px;
         }}
+        QProgressBar {{
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            background: {BG_PANEL};
+            text-align: center;
+            color: {TEXT_MAIN};
+            font-size: 8pt;
+        }}
+        QProgressBar::chunk {{
+            background: {BLUE};
+            border-radius: 4px;
+        }}
     """
 
 
@@ -251,7 +263,63 @@ class StatusCard(QFrame):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# StatusPanel - ENHANCED WITH TABS + SIGNAL CARD + MARKET STATUS
+# ConfidenceBar - FEATURE 3
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ConfidenceBar(QWidget):
+    """FEATURE 3: Confidence bar for signal groups"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.label = QLabel("BUY_CALL")
+        self.label.setFixedWidth(70)
+        self.label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8pt;")
+        layout.addWidget(self.label)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedHeight(12)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress, 1)
+
+        self.value = QLabel("0%")
+        self.value.setFixedWidth(40)
+        self.value.setStyleSheet(f"color: {TEXT_MAIN}; font-size: 8pt; font-weight: bold;")
+        layout.addWidget(self.value)
+
+    def set_confidence(self, signal: str, confidence: float, threshold: float = 0.6):
+        """Set confidence value for a signal"""
+        try:
+            self.label.setText(signal.replace('_', ' '))
+
+            percent = int(confidence * 100)
+            self.progress.setValue(percent)
+            self.value.setText(f"{percent}%")
+
+            # Color based on threshold
+            if confidence >= threshold:
+                self.progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background: {GREEN}; }}
+                """)
+            elif confidence >= threshold * 0.7:
+                self.progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background: {YELLOW}; }}
+                """)
+            else:
+                self.progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background: {RED}; }}
+                """)
+        except Exception as e:
+            logger.error(f"[ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# StatusPanel - ENHANCED WITH ALL FEATURES
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StatusPanel(QWidget):
@@ -259,7 +327,9 @@ class StatusPanel(QWidget):
     Enhanced status panel with:
     - Signal in its own card
     - Market status connected to Utils
-    - Additional tabs for performance, positions, account
+    - FEATURE 1: Risk management display
+    - FEATURE 3: Signal confidence bars
+    - FEATURE 6: Multi-timeframe filter status
     """
 
     # Cards that only make sense when a trade is open
@@ -268,13 +338,16 @@ class StatusPanel(QWidget):
         "stoploss_price", "pnl"
     })
 
-    # Updated FIELDS - REPLACED prev_position with signal
+    # Updated FIELDS with new cards
     FIELDS = [
         # Always-visible
         ("position", "🟢", "Position"),
-        ("signal", "📊", "Signal"),  # ← REPLACED prev_position with signal
+        ("signal", "📊", "Signal"),
         ("balance", "🏦", "Balance"),
         ("derivative", "📈", "Index"),
+        # FEATURE 1: Risk cards
+        ("daily_pnl", "📉", "Daily P&L"),
+        ("trades_today", "🎯", "Trades"),
         # Trade-specific (dimmed when no trade)
         ("symbol", "💹", "Symbol"),
         ("buy_price", "🛒", "Entry"),
@@ -339,16 +412,22 @@ class StatusPanel(QWidget):
             # Tab widget
             self._tabs = QTabWidget()
 
-            # Tab 1: Trade Status (YOUR CARD LAYOUT WITH SIGNAL CARD)
+            # Tab 1: Trade Status (YOUR CARD LAYOUT)
             self._create_trade_tab()
 
-            # Tab 2: Performance
+            # Tab 2: Performance (Enhanced with win rate)
             self._create_performance_tab()
 
-            # Tab 3: Positions
+            # Tab 3: FEATURE 3 - Signal Confidence
+            self._create_confidence_tab()
+
+            # Tab 4: FEATURE 6 - MTF Filter
+            self._create_mtf_tab()
+
+            # Tab 5: Positions
             self._create_positions_tab()
 
-            # Tab 4: Account
+            # Tab 6: Account
             self._create_account_tab()
 
             root.addWidget(self._tabs)
@@ -358,7 +437,7 @@ class StatusPanel(QWidget):
             self._market_timer.timeout.connect(self._update_market_status)
             self._market_timer.start(60000)  # Update every minute
 
-            logger.info("Enhanced StatusPanel initialized with Signal Card")
+            logger.info("Enhanced StatusPanel initialized with all features")
 
         except Exception as e:
             logger.critical(f"[StatusPanel.__init__] Failed: {e}", exc_info=True)
@@ -380,6 +459,8 @@ class StatusPanel(QWidget):
         self.cards = {}
         self._perf_labels = {}
         self._account_labels = {}
+        self._confidence_bars = {}
+        self._mtf_labels = {}
         self.positions_table = None
         self.recent_table = None
         self.exit_btn = None
@@ -388,6 +469,8 @@ class StatusPanel(QWidget):
         self.timestamp = None
         self.conn_status = None
         self.market_status = None
+        self.conflict_label = None
+        self.daily_pnl_progress = None
 
     def _create_header(self) -> QWidget:
         """Create header with timestamp and market status from Utils"""
@@ -437,20 +520,13 @@ class StatusPanel(QWidget):
             logger.error(f"[StatusPanel._update_market_status_display] Failed: {e}")
 
     def _create_trade_tab(self):
-        """Tab 1: Trade Status - YOUR CARD LAYOUT WITH SIGNAL CARD"""
+        """Tab 1: Trade Status - YOUR CARD LAYOUT"""
         trade_tab = QWidget()
         trade_layout = QVBoxLayout(trade_tab)
         trade_layout.setContentsMargins(6, 6, 6, 6)
         trade_layout.setSpacing(8)
 
-        # No-trade notice (visible when no trade is open)
-        self._no_trade_lbl = QLabel("⚪  No active trade — trade fields are greyed out")
-        self._no_trade_lbl.setStyleSheet(
-            f"color: {GREY_OFF}; font-size: 8pt; padding: 2px 4px; height:30px;width:100%"
-        )
-        # trade_layout.addWidget(self._no_trade_lbl)
-
-        # YOUR ORIGINAL CARD GRID - 2 columns, 5 rows (now with signal card)
+        # YOUR ORIGINAL CARD GRID - 2 columns, 6 rows (now with new cards)
         grid_widget = QWidget()
         grid = QGridLayout(grid_widget)
         grid.setSpacing(6)
@@ -468,7 +544,18 @@ class StatusPanel(QWidget):
 
         trade_layout.addWidget(grid_widget)
 
-        # Conflict indicator (small, below signal card)
+        # FEATURE 1: Daily P&L Progress Bar
+        pnl_progress_group = QGroupBox("Daily Progress")
+        pnl_progress_layout = QVBoxLayout()
+        self.daily_pnl_progress = QProgressBar()
+        self.daily_pnl_progress.setRange(-5000, 5000)
+        self.daily_pnl_progress.setValue(0)
+        self.daily_pnl_progress.setFormat("%v / 5000")
+        pnl_progress_layout.addWidget(self.daily_pnl_progress)
+        pnl_progress_group.setLayout(pnl_progress_layout)
+        trade_layout.addWidget(pnl_progress_group)
+
+        # Conflict indicator
         self.conflict_label = QLabel("")
         self.conflict_label.setAlignment(Qt.AlignCenter)
         self.conflict_label.setVisible(False)
@@ -505,7 +592,7 @@ class StatusPanel(QWidget):
         self._tabs.addTab(trade_tab, "📊 Trade")
 
     def _create_performance_tab(self):
-        """Tab 2: Performance metrics"""
+        """Tab 2: Performance metrics with win rate"""
         perf_tab = QWidget()
         layout = QVBoxLayout(perf_tab)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -581,8 +668,108 @@ class StatusPanel(QWidget):
 
         self._tabs.addTab(perf_tab, "📈 Performance")
 
+    def _create_confidence_tab(self):
+        """
+        FEATURE 3: Signal confidence tab
+        """
+        conf_tab = QWidget()
+        layout = QVBoxLayout(conf_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Explanation label
+        self.conf_explanation = QLabel("No signal evaluation yet")
+        self.conf_explanation.setWordWrap(True)
+        self.conf_explanation.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 8pt; padding: 8px; background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
+        layout.addWidget(self.conf_explanation)
+
+        # Confidence bars for each signal group
+        signal_groups = ['BUY_CALL', 'BUY_PUT', 'EXIT_CALL', 'EXIT_PUT', 'HOLD']
+
+        for signal in signal_groups:
+            bar = ConfidenceBar()
+            bar.set_confidence(signal, 0.0)
+            layout.addWidget(bar)
+            self._confidence_bars[signal] = bar
+
+        # Threshold indicator
+        threshold_group = QGroupBox("Threshold")
+        threshold_layout = QHBoxLayout()
+        self.threshold_label = QLabel("Min Confidence: 60%")
+        self.threshold_label.setStyleSheet(f"color: {YELLOW}; font-weight: bold;")
+        threshold_layout.addWidget(self.threshold_label)
+        threshold_layout.addStretch()
+        threshold_group.setLayout(threshold_layout)
+        layout.addWidget(threshold_group)
+
+        layout.addStretch()
+        self._tabs.addTab(conf_tab, "🎯 Confidence")
+
+    def _create_mtf_tab(self):
+        """
+        FEATURE 6: Multi-Timeframe Filter tab
+        """
+        mtf_tab = QWidget()
+        layout = QVBoxLayout(mtf_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Status group
+        status_group = QGroupBox("MTF Filter Status")
+        status_layout = QFormLayout()
+        status_layout.setSpacing(6)
+
+        self.mtf_enabled = QLabel("Disabled")
+        self.mtf_enabled.setObjectName("value")
+        status_layout.addRow("Enabled:", self.mtf_enabled)
+
+        self.mtf_decision = QLabel("No decision")
+        self.mtf_decision.setObjectName("value")
+        status_layout.addRow("Last Decision:", self.mtf_decision)
+
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+
+        # Timeframe directions
+        tf_group = QGroupBox("Timeframe Directions")
+        tf_layout = QFormLayout()
+        tf_layout.setSpacing(6)
+
+        self.mtf_1m = QLabel("NEUTRAL")
+        self.mtf_1m.setObjectName("value")
+        tf_layout.addRow("1 Minute:", self.mtf_1m)
+
+        self.mtf_5m = QLabel("NEUTRAL")
+        self.mtf_5m.setObjectName("value")
+        tf_layout.addRow("5 Minute:", self.mtf_5m)
+
+        self.mtf_15m = QLabel("NEUTRAL")
+        self.mtf_15m.setObjectName("value")
+        tf_layout.addRow("15 Minute:", self.mtf_15m)
+
+        self.mtf_agreement = QLabel("0/3")
+        self.mtf_agreement.setObjectName("value")
+        tf_layout.addRow("Agreement:", self.mtf_agreement)
+
+        tf_group.setLayout(tf_layout)
+        layout.addWidget(tf_group)
+
+        # Summary
+        summary_group = QGroupBox("Summary")
+        summary_layout = QVBoxLayout()
+        self.mtf_summary = QLabel("No MTF evaluation yet")
+        self.mtf_summary.setWordWrap(True)
+        self.mtf_summary.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8pt;")
+        summary_layout.addWidget(self.mtf_summary)
+        summary_group.setLayout(summary_layout)
+        layout.addWidget(summary_group)
+
+        layout.addStretch()
+        self._tabs.addTab(mtf_tab, "📈 MTF Filter")
+
     def _create_positions_tab(self):
-        """Tab 3: Active positions"""
+        """Tab 5: Active positions"""
         pos_tab = QWidget()
         layout = QVBoxLayout(pos_tab)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -599,7 +786,7 @@ class StatusPanel(QWidget):
         self._tabs.addTab(pos_tab, "📋 Positions")
 
     def _create_account_tab(self):
-        """Tab 4: Account info"""
+        """Tab 6: Account info"""
         account_tab = QWidget()
         layout = QFormLayout(account_tab)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -736,7 +923,7 @@ class StatusPanel(QWidget):
                 cur_price = self._safe_get(state, "current_price")
                 tp = self._safe_get(state, "tp_point")
                 sl = self._safe_get(state, "stop_loss")
-                pnl = self._safe_get(state, "percentage_change")
+                pnl_pct = self._safe_get(state, "percentage_change")
                 pnl_abs = self._safe_get(state, "current_pnl")
                 balance = self._safe_get(state, "account_balance")
                 deriv = self._safe_get(state, "derivative_current_price")
@@ -759,8 +946,6 @@ class StatusPanel(QWidget):
                 for key in self._TRADE_ONLY:
                     if key in self.cards:
                         self.cards[key].set_dimmed(not trade_active)
-                if self._no_trade_lbl is not None:
-                    self._no_trade_lbl.setVisible(not trade_active)
 
                 # Update button states
                 if hasattr(self, 'exit_btn') and self.exit_btn:
@@ -796,8 +981,8 @@ class StatusPanel(QWidget):
                 self._set_card("target_price", self._fmt(tp), self.COLORS["positive"])
                 self._set_card("stoploss_price", self._fmt(sl), self.COLORS["negative"])
 
-                pnl_txt = self._fmt_percent(pnl) if pnl is not None else "—"
-                self._set_card("pnl", pnl_txt, self._pnl_color(pnl))
+                pnl_txt = self._fmt_percent(pnl_pct) if pnl_pct is not None else "—"
+                self._set_card("pnl", pnl_txt, self._pnl_color(pnl_pct))
 
             # Update positions table
             self._update_positions_table(trade_active, symbol, pos, lots, lot_size, pnl_abs)
@@ -810,8 +995,158 @@ class StatusPanel(QWidget):
             if "m2m" in self._account_labels:
                 self._account_labels["m2m"].setText(self._fmt_currency(pnl_abs))
 
+            # FEATURE 1: Update risk cards
+            self._update_risk_cards(state, config)
+
+            # FEATURE 3: Update confidence tab
+            self._update_confidence_tab(state)
+
+            # FEATURE 6: Update MTF tab
+            self._update_mtf_tab(state)
+
         except Exception as e:
             logger.error(f"StatusPanel.refresh error: {e}", exc_info=True)
+
+    def _update_risk_cards(self, state, config):
+        """
+        FEATURE 1: Update risk management cards
+        """
+        try:
+            # Try to get risk summary from state
+            daily_pnl = 0.0
+            trades_today = 0
+            max_loss = -5000
+            daily_target = 5000
+
+            if hasattr(state, 'get_risk_summary'):
+                try:
+                    risk_summary = state.get_risk_summary(state)
+                    daily_pnl = risk_summary.get('pnl_today', 0)
+                    trades_today = risk_summary.get('trades_today', 0)
+                    max_loss = risk_summary.get('max_loss', -5000)
+                    daily_target = risk_summary.get('daily_target', 5000)
+                except:
+                    pass
+
+            # Update cards
+            if "daily_pnl" in self.cards:
+                pnl_color = GREEN if daily_pnl > 0 else RED if daily_pnl < 0 else TEXT_MAIN
+                self.cards["daily_pnl"].set_value(self._fmt_currency(daily_pnl), pnl_color)
+
+            if "trades_today" in self.cards:
+                self.cards["trades_today"].set_value(str(trades_today), TEXT_MAIN)
+
+            # Update progress bar
+            if self.daily_pnl_progress:
+                self.daily_pnl_progress.setRange(int(max_loss), int(daily_target))
+                self.daily_pnl_progress.setValue(int(daily_pnl))
+
+                # Color based on P&L
+                if daily_pnl >= 0:
+                    self.daily_pnl_progress.setStyleSheet(f"""
+                        QProgressBar::chunk {{ background: {GREEN}; }}
+                    """)
+                else:
+                    self.daily_pnl_progress.setStyleSheet(f"""
+                        QProgressBar::chunk {{ background: {RED}; }}
+                    """)
+
+        except Exception as e:
+            logger.error(f"[StatusPanel._update_risk_cards] Failed: {e}", exc_info=True)
+
+    def _update_confidence_tab(self, state):
+        """
+        FEATURE 3: Update confidence tab
+        """
+        try:
+            confidence = {}
+            explanation = ""
+            threshold = 0.6
+
+            if hasattr(state, 'signal_confidence'):
+                confidence = state.signal_confidence
+            if hasattr(state, 'signal_explanation'):
+                explanation = state.signal_explanation
+            if hasattr(state, 'option_signal_result'):
+                result = state.option_signal_result
+                if result:
+                    threshold = result.get('threshold', 0.6)
+
+            # Update explanation
+            if self.conf_explanation:
+                self.conf_explanation.setText(explanation or "No signal evaluation yet")
+
+            # Update threshold
+            threshold_pct = int(threshold * 100)
+            self.threshold_label.setText(f"Min Confidence: {threshold_pct}%")
+
+            # Update confidence bars
+            for signal, bar in self._confidence_bars.items():
+                conf = confidence.get(signal, 0.0)
+                bar.set_confidence(signal, conf, threshold)
+
+        except Exception as e:
+            logger.error(f"[StatusPanel._update_confidence_tab] Failed: {e}", exc_info=True)
+
+    def _update_mtf_tab(self, state):
+        """
+        FEATURE 6: Update MTF filter tab
+        """
+        try:
+            # Get MTF results from state
+            mtf_results = {}
+            if hasattr(state, 'mtf_results'):
+                mtf_results = state.mtf_results
+
+            # Update timeframe directions
+            self.mtf_1m.setText(mtf_results.get('1', 'NEUTRAL'))
+            self.mtf_5m.setText(mtf_results.get('5', 'NEUTRAL'))
+            self.mtf_15m.setText(mtf_results.get('15', 'NEUTRAL'))
+
+            # Color based on direction
+            self._set_mtf_direction_color(self.mtf_1m, mtf_results.get('1', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_5m, mtf_results.get('5', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_15m, mtf_results.get('15', 'NEUTRAL'))
+
+            # Count agreement
+            target = 'BULLISH' if getattr(state, 'option_signal', '') == 'BUY_CALL' else 'BEARISH'
+            matches = sum(1 for d in mtf_results.values() if d == target)
+            self.mtf_agreement.setText(f"{matches}/3")
+
+            # Update enabled status
+            enabled = False
+            if hasattr(state, 'mtf_allowed'):
+                enabled = state.mtf_allowed
+            self.mtf_enabled.setText("Yes" if enabled else "No")
+            self.mtf_enabled.setStyleSheet(f"color: {GREEN if enabled else RED}; font-weight: bold;")
+
+            # Update decision
+            if hasattr(state, 'last_mtf_summary'):
+                summary = state.last_mtf_summary or "No decision yet"
+                self.mtf_summary.setText(summary)
+
+                # Color based on decision
+                if "ALLOWED" in summary:
+                    self.mtf_decision.setText("ALLOWED")
+                    self.mtf_decision.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
+                elif "BLOCKED" in summary:
+                    self.mtf_decision.setText("BLOCKED")
+                    self.mtf_decision.setStyleSheet(f"color: {RED}; font-weight: bold;")
+                else:
+                    self.mtf_decision.setText(summary)
+                    self.mtf_decision.setStyleSheet(f"color: {TEXT_DIM}; font-weight: bold;")
+
+        except Exception as e:
+            logger.error(f"[StatusPanel._update_mtf_tab] Failed: {e}", exc_info=True)
+
+    def _set_mtf_direction_color(self, label: QLabel, direction: str):
+        """Set color for MTF direction label"""
+        if direction == 'BULLISH':
+            label.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
+        elif direction == 'BEARISH':
+            label.setStyleSheet(f"color: {RED}; font-weight: bold;")
+        else:
+            label.setStyleSheet(f"color: {GREY_OFF}; font-weight: bold;")
 
     def _update_positions_table(self, trade_active: bool, symbol: str, pos: str,
                                 lots: int, lot_size: int, pnl: float):
@@ -936,6 +1271,8 @@ class StatusPanel(QWidget):
             self.clear_cache()
             self.cards.clear()
             self._recent_trades.clear()
+            self._confidence_bars.clear()
+            self._mtf_labels.clear()
 
             if self._market_timer and self._market_timer.isActive():
                 self._market_timer.stop()

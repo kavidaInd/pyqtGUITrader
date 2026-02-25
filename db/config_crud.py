@@ -17,8 +17,40 @@ logger = logging.getLogger(__name__)
 class ConfigCRUD:
     """CRUD for configuration stored in app_kv table."""
 
-    # Default configuration values
-    DEFAULTS: Dict[str, Any] = {}
+    # Default configuration values with all new features
+    DEFAULTS: Dict[str, Any] = {
+        # Feature 1 - Risk Manager
+        "max_daily_loss": -5000,
+        "max_trades_per_day": 10,
+
+        # Feature 3 - Signal Confidence
+        "min_confidence": 0.6,
+
+        # Feature 4 - Telegram Notifications
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+
+        # Feature 5 - Daily P&L Panel
+        "daily_target": 5000,
+
+        # Feature 6 - Multi-Timeframe Filter
+        "use_mtf_filter": False,
+
+        # Feature 7 - Trade History
+        "history_retention_days": 30,
+
+        # Bug #4 Fix - Market hours
+        "market_open_time": "09:15",
+        "market_close_time": "15:30",
+
+        # Existing defaults
+        "broker_api_key": "",
+        "broker_secret": "",
+        "broker_redirect_uri": "",
+        "bot_type": "PAPER",
+        "log_level": "INFO",
+        "log_retention_days": 7,
+    }
 
     def __init__(self):
         self._ensure_defaults()
@@ -32,6 +64,7 @@ class ConfigCRUD:
             for key, value in self.DEFAULTS.items():
                 if key not in existing:
                     kv.set(key, value, db)
+                    logger.debug(f"Set default config: {key} = {value}")
         except Exception as e:
             logger.error(f"[ConfigCRUD._ensure_defaults] Failed: {e}", exc_info=True)
 
@@ -133,6 +166,84 @@ class ConfigCRUD:
     def reload(self, db: DatabaseConnector = None) -> bool:
         """Reload configuration (no-op for database, just returns current state)."""
         return True
+
+    # ------------------------------------------------------------------
+    # NEW: Convenience methods for feature-specific config
+    # ------------------------------------------------------------------
+
+    def get_risk_config(self, db: DatabaseConnector = None) -> Dict[str, Any]:
+        """Get all risk-related configuration in one dict."""
+        try:
+            return {
+                'max_daily_loss': self.get('max_daily_loss', -5000, db),
+                'max_trades_per_day': self.get('max_trades_per_day', 10, db),
+                'daily_target': self.get('daily_target', 5000, db),
+            }
+        except Exception as e:
+            logger.error(f"[ConfigCRUD.get_risk_config] Failed: {e}", exc_info=True)
+            return {
+                'max_daily_loss': -5000,
+                'max_trades_per_day': 10,
+                'daily_target': 5000,
+            }
+
+    def get_telegram_config(self, db: DatabaseConnector = None) -> Dict[str, str]:
+        """Get all Telegram-related configuration."""
+        try:
+            return {
+                'telegram_bot_token': self.get('telegram_bot_token', '', db),
+                'telegram_chat_id': self.get('telegram_chat_id', '', db),
+            }
+        except Exception as e:
+            logger.error(f"[ConfigCRUD.get_telegram_config] Failed: {e}", exc_info=True)
+            return {'telegram_bot_token': '', 'telegram_chat_id': ''}
+
+    def get_mtf_config(self, db: DatabaseConnector = None) -> Dict[str, Any]:
+        """Get multi-timeframe filter configuration."""
+        try:
+            return {
+                'use_mtf_filter': self.get('use_mtf_filter', False, db),
+            }
+        except Exception as e:
+            logger.error(f"[ConfigCRUD.get_mtf_config] Failed: {e}", exc_info=True)
+            return {'use_mtf_filter': False}
+
+    def get_signal_config(self, db: DatabaseConnector = None) -> Dict[str, Any]:
+        """Get signal engine configuration."""
+        try:
+            return {
+                'min_confidence': self.get('min_confidence', 0.6, db),
+            }
+        except Exception as e:
+            logger.error(f"[ConfigCRUD.get_signal_config] Failed: {e}", exc_info=True)
+            return {'min_confidence': 0.6}
+
+    def is_market_open(self, current_time=None, db: DatabaseConnector = None) -> bool:
+        """Check if market is currently open (9:15 AM to 3:30 PM)."""
+        try:
+            from datetime import datetime, time
+
+            if current_time is None:
+                current_time = datetime.now()
+
+            # Get market hours from config
+            open_str = self.get('market_open_time', '09:15', db)
+            close_str = self.get('market_close_time', '15:30', db)
+
+            # Parse times
+            open_hour, open_min = map(int, open_str.split(':'))
+            close_hour, close_min = map(int, close_str.split(':'))
+
+            market_open = time(open_hour, open_min)
+            market_close = time(close_hour, close_min)
+
+            current_t = current_time.time()
+
+            return market_open <= current_t <= market_close
+
+        except Exception as e:
+            logger.error(f"[ConfigCRUD.is_market_open] Failed: {e}", exc_info=True)
+            return False
 
 
 # Singleton instance

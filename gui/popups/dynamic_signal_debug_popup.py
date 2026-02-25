@@ -3,7 +3,7 @@ dynamic_signal_debug_popup_db.py
 =================================
 A live-updating popup that shows every detail of the DynamicSignalEngine
 evaluation: indicator values, rule-by-rule results, group fired/not-fired
-status, conflict detection, and the final resolved signal.
+status, conflict detection, confidence scores, and the final resolved signal.
 Works with database-backed signal engine.
 """
 
@@ -14,12 +14,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFont, QLinearGradient
 from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView, QGroupBox,
-    QGridLayout, QTabWidget, QTextEdit,
+    QGridLayout, QTabWidget, QTextEdit, QProgressBar,
 )
 
 from strategy.dynamic_signal_engine import SIGNAL_COLORS, SIGNAL_LABELS, SIGNAL_GROUPS
@@ -123,6 +123,18 @@ def _style_sheet() -> str:
             font-family: 'Consolas', 'Menlo', monospace;
             font-size: 9pt;
         }}
+        QProgressBar {{
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            background: {BG_PANEL};
+            text-align: center;
+            color: {TEXT_MAIN};
+        }}
+        QProgressBar::chunk {{
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                        stop: 0 #58a6ff, stop: 1 #bc8cff);
+            border-radius: 4px;
+        }}
     """
 
 
@@ -200,7 +212,7 @@ class _SignalBadge(QLabel):
 
 
 class _RuleRow:
-    """One row in a rule table: rule expression | current values | result."""
+    """One row in a rule table: rule expression | current values | result | weight."""
 
     def __init__(self, table: QTableWidget, row: int):
         try:
@@ -210,18 +222,25 @@ class _RuleRow:
             logger.error(f"[_RuleRow.__init__] Failed: {e}", exc_info=True)
 
     def set(self, rule_str: str, lhs_val: str, op: str, rhs_val: str, result: bool,
-            error: str = "", is_blocker: bool = False):
+            weight: float = 1.0, error: str = "", is_blocker: bool = False):
+        """
+        FEATURE 3: Added weight parameter to display rule weights.
+        """
         try:
             # Annotate the rule expression with a BLOCKER tag when it is the
             # first False rule in an AND chain that prevents the group firing.
             display_rule = f"⚠ {rule_str}  [► BLOCKER]" if is_blocker else rule_str
+
+            # Add weight indicator
+            if weight != 1.0:
+                display_rule += f"  (w={weight:.1f})"
 
             items = [
                 (display_rule, YELLOW if is_blocker else TEXT_MAIN),
                 (lhs_val, BLUE),
                 (op, YELLOW),
                 (rhs_val, ORANGE),
-                ("✅  TRUE" if result else "❌  FALSE", GREEN if result else RED),
+                (f"✅  TRUE (w={weight:.1f})" if result else f"❌  FALSE (w={weight:.1f})", GREEN if result else RED),
             ]
             if error:
                 items[-1] = (f"⚠ {error[:40]}", YELLOW)
@@ -242,10 +261,59 @@ class _RuleRow:
             logger.error(f"[_RuleRow.set] Failed: {e}", exc_info=True)
 
 
+class _ConfidenceBar(QLabel):
+    """
+    FEATURE 3: Progress bar showing confidence percentage.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(16)
+        self.setMinimumWidth(80)
+
+    def set_confidence(self, confidence: float, threshold: float = 0.6):
+        """
+        Set confidence value (0.0 to 1.0) and threshold.
+        """
+        try:
+            percent = int(confidence * 100)
+            threshold_pct = int(threshold * 100)
+
+            # Color based on confidence relative to threshold
+            if confidence >= threshold:
+                color = GREEN
+            elif confidence >= threshold * 0.7:
+                color = YELLOW
+            else:
+                color = RED
+
+            self.setStyleSheet(f"""
+                QLabel {{
+                    background: {BG_PANEL};
+                    border: 1px solid {BORDER};
+                    border-radius: 3px;
+                    color: {TEXT_MAIN};
+                    font-size: 8pt;
+                    font-weight: bold;
+                    padding: 1px 4px;
+                }}
+            """)
+
+            # Create bar using Unicode block characters
+            bar_length = 20
+            filled = int(percent * bar_length / 100)
+            bar = "█" * filled + "░" * (bar_length - filled)
+
+            self.setText(f"{bar}  {percent}% (threshold: {threshold_pct}%)")
+
+        except Exception as e:
+            logger.error(f"[_ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
+
+
 class _GroupPanel(QGroupBox):
     """
     Panel for one signal group (BUY_CALL, BUY_PUT, etc.).
-    Shows logic mode, fired status, and a per-rule table.
+    Shows logic mode, fired status, confidence score, and a per-rule table.
+    FEATURE 3: Added confidence display.
     """
 
     def __init__(self, signal: str, parent=None):
@@ -272,6 +340,8 @@ class _GroupPanel(QGroupBox):
         self._logic_lbl = None
         self._fired_lbl = None
         self._enabled_lbl = None
+        self._confidence_lbl = None
+        self._confidence_bar = None
         self._table = None
         self._no_rules_lbl = None
 
@@ -281,12 +351,22 @@ class _GroupPanel(QGroupBox):
             root.setContentsMargins(8, 12, 8, 8)
             root.setSpacing(6)
 
-            # Top row: logic + fired indicator
+            # Top row: logic + fired indicator + confidence
             top = QHBoxLayout()
             top.setSpacing(10)
 
             self._logic_lbl = _header_label("Logic: AND", TEXT_DIM)
             top.addWidget(self._logic_lbl)
+            top.addStretch()
+
+            # FEATURE 3: Confidence display
+            confidence_container = QHBoxLayout()
+            self._confidence_lbl = _header_label("Confidence:", TEXT_DIM, 8)
+            self._confidence_bar = _ConfidenceBar()
+            confidence_container.addWidget(self._confidence_lbl)
+            confidence_container.addWidget(self._confidence_bar)
+            top.addLayout(confidence_container)
+
             top.addStretch()
 
             self._fired_lbl = QLabel("⬤  NOT FIRED")
@@ -325,7 +405,10 @@ class _GroupPanel(QGroupBox):
             logger.error(f"[_GroupPanel._setup_ui] Failed: {e}", exc_info=True)
 
     def update(self, rule_results: List[Dict], fired: bool, logic: str, enabled: bool,
-               indicator_cache: Dict = None):
+               confidence: float = 0.0, threshold: float = 0.6, indicator_cache: Dict = None):
+        """
+        FEATURE 3: Added confidence and threshold parameters.
+        """
         try:
             # Logic label
             if self._logic_lbl is not None:
@@ -348,6 +431,10 @@ class _GroupPanel(QGroupBox):
                 else:
                     self._fired_lbl.setText("⬤  NOT FIRED")
                     self._fired_lbl.setStyleSheet(f"color: {GREY_OFF}; font-size: 9pt; font-weight: bold;")
+
+            # FEATURE 3: Update confidence bar
+            if self._confidence_bar is not None:
+                self._confidence_bar.set_confidence(confidence, threshold)
 
             if not rule_results or self._table is None:
                 if self._table is not None:
@@ -380,6 +467,9 @@ class _GroupPanel(QGroupBox):
                     error = entry.get("error", "")
                     is_blocker = (i == first_blocker_idx)
 
+                    # FEATURE 3: Get rule weight
+                    weight = entry.get("weight", 1.0)
+
                     # --- Use pre-computed values from dynamic_signal_engine (new fields) ---
                     lhs_raw = entry.get("lhs_value")  # float or None
                     rhs_raw = entry.get("rhs_value")  # float or None
@@ -403,7 +493,7 @@ class _GroupPanel(QGroupBox):
                             op = _op
                             break
 
-                    _RuleRow(self._table, i).set(rule_str, lhs_val, op, rhs_val, result, error, is_blocker)
+                    _RuleRow(self._table, i).set(rule_str, lhs_val, op, rhs_val, result, weight, error, is_blocker)
 
                 except Exception as e:
                     logger.warning(f"Failed to update rule row {i}: {e}", exc_info=True)
@@ -621,6 +711,78 @@ class _IndicatorCachePanel(QWidget):
             logger.error(f"[_IndicatorCachePanel._render_rows] Failed: {e}", exc_info=True)
 
 
+class _ConfidencePanel(QWidget):
+    """
+    FEATURE 3: Tab showing confidence scores for all signal groups.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+
+        # Header
+        header = _header_label("Signal Group Confidence Scores", BLUE, 10)
+        layout.addWidget(header)
+
+        # Explanation label
+        self._explanation_lbl = QLabel("No signal evaluation yet")
+        self._explanation_lbl.setWordWrap(True)
+        self._explanation_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9pt; padding: 8px; background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
+        layout.addWidget(self._explanation_lbl)
+
+        # Confidence bars for each group
+        self._confidence_bars = {}
+        for sig in SIGNAL_GROUPS:
+            group_box = QGroupBox(SIGNAL_LABELS.get(sig, sig))
+            group_layout = QVBoxLayout(group_box)
+
+            # Confidence bar
+            bar_layout = QHBoxLayout()
+            bar_layout.addWidget(QLabel("Confidence:"))
+            bar = _ConfidenceBar()
+            bar.set_confidence(0.0)
+            bar_layout.addWidget(bar)
+            group_layout.addLayout(bar_layout)
+
+            # Threshold line
+            threshold_layout = QHBoxLayout()
+            threshold_layout.addWidget(QLabel("Threshold:"))
+            self._threshold_lbl = QLabel("0.60")
+            self._threshold_lbl.setStyleSheet(f"color: {YELLOW}; font-weight: bold;")
+            threshold_layout.addWidget(self._threshold_lbl)
+            threshold_layout.addStretch()
+            group_layout.addLayout(threshold_layout)
+
+            layout.addWidget(group_box)
+            self._confidence_bars[sig] = bar
+
+        layout.addStretch()
+
+    def update_confidence(self, confidence_dict: Dict[str, float], threshold: float = 0.6, explanation: str = ""):
+        """
+        Update confidence scores for all groups.
+        """
+        try:
+            # Update explanation
+            if explanation:
+                self._explanation_lbl.setText(explanation)
+            else:
+                self._explanation_lbl.setText("No explanation available")
+
+            # Update threshold display
+            threshold_pct = int(threshold * 100)
+            self._threshold_lbl.setText(f"{threshold_pct}%")
+
+            # Update bars
+            for sig, bar in self._confidence_bars.items():
+                conf = confidence_dict.get(sig, 0.0)
+                bar.set_confidence(conf, threshold)
+
+        except Exception as e:
+            logger.error(f"[_ConfidencePanel.update_confidence] Failed: {e}", exc_info=True)
+
+
 class _RawJsonPanel(QTextEdit):
     """Tab showing the raw evaluate() result dict as JSON."""
 
@@ -659,6 +821,7 @@ class DynamicSignalDebugPopup(QDialog):
     Non-modal popup that lives alongside the main TradingGUI window.
     Call  refresh()  every second (or from _tick_fast) to keep it live.
     Works with database-backed signal engine.
+    FEATURE 3: Added confidence display tab.
     """
 
     def __init__(self, trading_app, parent=None):
@@ -678,6 +841,8 @@ class DynamicSignalDebugPopup(QDialog):
             self._auto_refresh = True
             self._indicator_cache: Dict = {}
             self._current_strategy_slug: Optional[str] = None
+            self._last_confidence: Dict[str, float] = {}
+            self._last_threshold: float = 0.6
 
             self._build_ui()
 
@@ -713,6 +878,8 @@ class DynamicSignalDebugPopup(QDialog):
         self._auto_refresh = True
         self._indicator_cache = {}
         self._current_strategy_slug = None
+        self._last_confidence = {}
+        self._last_threshold = 0.6
         self._timer = None
         self._signal_badge = None
         self._lbl_conflict = None
@@ -726,6 +893,7 @@ class DynamicSignalDebugPopup(QDialog):
         self._group_panels = {}
         self._cache_panel = None
         self._json_panel = None
+        self._confidence_panel = None
         self._tabs = None
         self._groups_layout = None
         self._status_lbl = None
@@ -754,6 +922,10 @@ class DynamicSignalDebugPopup(QDialog):
             # Tab 2: Indicator cache
             self._cache_panel = _IndicatorCachePanel()
             self._tabs.addTab(self._cache_panel, "📊  Indicator Values")
+
+            # FEATURE 3: Confidence tab
+            self._confidence_panel = _ConfidencePanel()
+            self._tabs.addTab(self._confidence_panel, "📈  Confidence Scores")
 
             # Tab 3: Raw JSON
             self._json_panel = _RawJsonPanel()
@@ -994,10 +1166,10 @@ class DynamicSignalDebugPopup(QDialog):
             # Active strategy - new in database version
             if self._lbl_strategy is not None:
                 try:
-                    if hasattr(self.trading_app, "trend_detector") and \
-                       hasattr(self.trading_app.trend_detector, "signal_engine") and \
-                       self.trading_app.trend_detector.signal_engine is not None:
-                        engine = self.trading_app.trend_detector.signal_engine
+                    if hasattr(self.trading_app, "detector") and \
+                       hasattr(self.trading_app.detector, "signal_engine") and \
+                       self.trading_app.detector.signal_engine is not None:
+                        engine = self.trading_app.detector.signal_engine
                         strategy_slug = getattr(engine, "strategy_slug", None)
                         if strategy_slug:
                             self._lbl_strategy.setText(strategy_slug)
@@ -1034,13 +1206,22 @@ class DynamicSignalDebugPopup(QDialog):
             # ── Group panels ─────────────────────────────────────────────────
             rule_results = option_signal.get("rule_results", {})
 
+            # FEATURE 3: Get confidence scores
+            confidence_dict = option_signal.get("confidence", {})
+            explanation = option_signal.get("explanation", "")
+            threshold = option_signal.get("threshold", 0.6)
+
+            # Store for other tabs
+            self._last_confidence = confidence_dict
+            self._last_threshold = threshold
+
             # Try to get engine's indicator cache for richer display
             indicator_cache = {}
             try:
-                if hasattr(self.trading_app, "trend_detector") and \
-                        hasattr(self.trading_app.trend_detector, "signal_engine") and \
-                        self.trading_app.trend_detector.signal_engine is not None:
-                    engine = self.trading_app.trend_detector.signal_engine
+                if hasattr(self.trading_app, "detector") and \
+                        hasattr(self.trading_app.detector, "signal_engine") and \
+                        self.trading_app.detector.signal_engine is not None:
+                    engine = self.trading_app.detector.signal_engine
                     # Access last cache if stored
                     indicator_cache = getattr(engine, "_last_cache", {})
             except Exception as e:
@@ -1055,10 +1236,11 @@ class DynamicSignalDebugPopup(QDialog):
                     is_fired = fired_map.get(sig, False)
                     logic = "AND"
                     enabled = True
+                    confidence = confidence_dict.get(sig, 0.0)
 
                     try:
                         engine = getattr(
-                            getattr(self.trading_app, "trend_detector", None),
+                            getattr(self.trading_app, "detector", None),
                             "signal_engine", None
                         )
                         if engine is not None:
@@ -1067,7 +1249,8 @@ class DynamicSignalDebugPopup(QDialog):
                     except Exception as e:
                         logger.debug(f"Failed to get engine settings for {sig}: {e}")
 
-                    panel.update(rules_for_sig, is_fired, logic, enabled, indicator_cache)
+                    panel.update(rules_for_sig, is_fired, logic, enabled,
+                                confidence, threshold, indicator_cache)
 
                 except Exception as e:
                     logger.warning(f"Failed to update group panel for {sig}: {e}")
@@ -1085,6 +1268,13 @@ class DynamicSignalDebugPopup(QDialog):
                         self._cache_panel.update_cache(indicator_cache)
                 except Exception as e:
                     logger.warning(f"Failed to update cache panel: {e}")
+
+            # FEATURE 3: Update confidence panel
+            if self._confidence_panel is not None:
+                try:
+                    self._confidence_panel.update_confidence(confidence_dict, threshold, explanation)
+                except Exception as e:
+                    logger.warning(f"Failed to update confidence panel: {e}")
 
             # ── Raw JSON tab ─────────────────────────────────────────────────
             if self._json_panel is not None:

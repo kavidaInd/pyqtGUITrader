@@ -2,6 +2,11 @@
 DailyTradeSetting_db.py
 =======================
 Database-backed daily trade settings using the SQLite database.
+
+Enhanced with support for:
+- FEATURE 6: Multi-Timeframe Filter settings
+- Risk management defaults
+- Improved validation
 """
 
 import logging
@@ -19,11 +24,13 @@ class DailyTradeSetting:
     """
     Database-backed daily trade settings using the daily_trade_setting table.
 
+    Enhanced with additional fields for new features.
     This is a drop-in replacement for the JSON-based DailyTradeSetting class,
     maintaining the same interface while using the database.
     """
 
     DEFAULTS = {
+        # Original fields
         "exchange": "NSE",
         "week": 0,
         "derivative": "NIFTY50",
@@ -35,11 +42,31 @@ class DailyTradeSetting:
         "lower_percentage": 0,
         "cancel_after": 5,
         "capital_reserve": 0,
-        "sideway_zone_trade": False
+        "sideway_zone_trade": False,
+
+        # FEATURE 6: Multi-Timeframe Filter settings
+        "use_mtf_filter": False,
+        "mtf_timeframes": "1,5,15",
+        "mtf_ema_fast": 9,
+        "mtf_ema_slow": 21,
+        "mtf_agreement_required": 2,
+
+        # FEATURE 1: Risk limits (moved from config)
+        "max_daily_loss": -5000,
+        "max_trades_per_day": 10,
+        "daily_target": 5000,
+
+        # FEATURE 3: Signal confidence
+        "min_confidence": 0.6,
+
+        # Market hours (BUG #4 fix)
+        "market_open_time": "09:15",
+        "market_close_time": "15:30",
     }
 
     # Type mapping for validation
     FIELD_TYPES = {
+        # Original fields
         "exchange": str,
         "week": int,
         "derivative": str,
@@ -51,7 +78,26 @@ class DailyTradeSetting:
         "lower_percentage": float,
         "cancel_after": int,
         "capital_reserve": int,
-        "sideway_zone_trade": bool
+        "sideway_zone_trade": bool,
+
+        # FEATURE 6: Multi-Timeframe Filter
+        "use_mtf_filter": bool,
+        "mtf_timeframes": str,
+        "mtf_ema_fast": int,
+        "mtf_ema_slow": int,
+        "mtf_agreement_required": int,
+
+        # FEATURE 1: Risk limits
+        "max_daily_loss": float,
+        "max_trades_per_day": int,
+        "daily_target": float,
+
+        # FEATURE 3: Signal confidence
+        "min_confidence": float,
+
+        # Market hours
+        "market_open_time": str,
+        "market_close_time": str,
     }
 
     def __init__(self):
@@ -139,15 +185,18 @@ class DailyTradeSetting:
         try:
             db = get_db()
             data = daily_trade.get(db)
+
+            # Always start with defaults
+            self.data = dict(self.DEFAULTS)
+
             if data:
-                for k, default_value in self.DEFAULTS.items():
-                    if k in data:
-                        self.data[k] = self._validate_and_convert(k, data[k])
+                # Update with loaded values
+                for k, v in data.items():
+                    if k in self.DEFAULTS:
+                        self.data[k] = self._validate_and_convert(k, v)
                     else:
-                        self.data[k] = default_value
-            else:
-                # No data found, use defaults
-                self.data = dict(self.DEFAULTS)
+                        # Unknown key - ignore but log
+                        logger.debug(f"Ignoring unknown key in database: {k}")
 
             self._loaded = True
             logger.debug("Daily trade settings loaded from database")
@@ -167,7 +216,15 @@ class DailyTradeSetting:
         """
         try:
             db = get_db()
-            success = daily_trade.save(self.data, db)
+
+            # Filter to only keys that exist in database table
+            # (daily_trade table may not have all our new fields)
+            save_data = {}
+            for k in daily_trade.DEFAULTS.keys():
+                if k in self.data:
+                    save_data[k] = self.data[k]
+
+            success = daily_trade.save(save_data, db)
 
             if success:
                 logger.debug("Daily trade settings saved to database")
@@ -180,7 +237,10 @@ class DailyTradeSetting:
             logger.error(f"[DailyTradeSetting.save] Failed: {e}", exc_info=True)
             return False
 
-    # Property accessors with validation and error handling
+    # ------------------------------------------------------------------
+    # Original property accessors (preserved)
+    # ------------------------------------------------------------------
+
     @property
     def exchange(self) -> str:
         """Get exchange setting."""
@@ -434,6 +494,301 @@ class DailyTradeSetting:
             self.data["sideway_zone_trade"] = bool(value)
         except Exception as e:
             logger.error(f"[DailyTradeSetting.sideway_zone_trade setter] Failed: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # FEATURE 6: Multi-Timeframe Filter properties
+    # ------------------------------------------------------------------
+
+    @property
+    def use_mtf_filter(self) -> bool:
+        """Get whether MTF filter is enabled."""
+        try:
+            val = self.data.get("use_mtf_filter", self.DEFAULTS["use_mtf_filter"])
+            return bool(val) if val is not None else self.DEFAULTS["use_mtf_filter"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.use_mtf_filter getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["use_mtf_filter"]
+
+    @use_mtf_filter.setter
+    def use_mtf_filter(self, value: bool):
+        try:
+            self.data["use_mtf_filter"] = bool(value)
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.use_mtf_filter setter] Failed: {e}", exc_info=True)
+
+    @property
+    def mtf_timeframes(self) -> str:
+        """Get MTF timeframes as comma-separated string."""
+        try:
+            return str(self.data.get("mtf_timeframes", self.DEFAULTS["mtf_timeframes"]))
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_timeframes getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["mtf_timeframes"]
+
+    @mtf_timeframes.setter
+    def mtf_timeframes(self, value: str):
+        try:
+            # Validate format (comma-separated numbers)
+            if value:
+                parts = [p.strip() for p in value.split(',')]
+                # Check if all parts are valid numbers
+                for p in parts:
+                    if p and not p.isdigit():
+                        logger.warning(f"Invalid timeframe format: {p}")
+                        return
+                self.data["mtf_timeframes"] = value
+            else:
+                self.data["mtf_timeframes"] = self.DEFAULTS["mtf_timeframes"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_timeframes setter] Failed: {e}", exc_info=True)
+
+    def get_mtf_timeframes_list(self) -> list:
+        """Get MTF timeframes as list of strings."""
+        try:
+            tf_str = self.mtf_timeframes
+            if tf_str:
+                return [t.strip() for t in tf_str.split(',') if t.strip()]
+            return ['1', '5', '15']
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.get_mtf_timeframes_list] Failed: {e}", exc_info=True)
+            return ['1', '5', '15']
+
+    @property
+    def mtf_ema_fast(self) -> int:
+        """Get MTF fast EMA period."""
+        try:
+            val = self.data.get("mtf_ema_fast", self.DEFAULTS["mtf_ema_fast"])
+            return int(val) if val is not None else self.DEFAULTS["mtf_ema_fast"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_ema_fast getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["mtf_ema_fast"]
+
+    @mtf_ema_fast.setter
+    def mtf_ema_fast(self, value: int):
+        try:
+            if value is None:
+                self.data["mtf_ema_fast"] = self.DEFAULTS["mtf_ema_fast"]
+            else:
+                val = int(float(str(value)))
+                self.data["mtf_ema_fast"] = max(1, val)  # Ensure positive
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid mtf_ema_fast value {value!r}: {e}")
+            self.data["mtf_ema_fast"] = self.DEFAULTS["mtf_ema_fast"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_ema_fast setter] Failed: {e}", exc_info=True)
+
+    @property
+    def mtf_ema_slow(self) -> int:
+        """Get MTF slow EMA period."""
+        try:
+            val = self.data.get("mtf_ema_slow", self.DEFAULTS["mtf_ema_slow"])
+            return int(val) if val is not None else self.DEFAULTS["mtf_ema_slow"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_ema_slow getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["mtf_ema_slow"]
+
+    @mtf_ema_slow.setter
+    def mtf_ema_slow(self, value: int):
+        try:
+            if value is None:
+                self.data["mtf_ema_slow"] = self.DEFAULTS["mtf_ema_slow"]
+            else:
+                val = int(float(str(value)))
+                self.data["mtf_ema_slow"] = max(1, val)  # Ensure positive
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid mtf_ema_slow value {value!r}: {e}")
+            self.data["mtf_ema_slow"] = self.DEFAULTS["mtf_ema_slow"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_ema_slow setter] Failed: {e}", exc_info=True)
+
+    @property
+    def mtf_agreement_required(self) -> int:
+        """Get number of timeframes required to agree."""
+        try:
+            val = self.data.get("mtf_agreement_required", self.DEFAULTS["mtf_agreement_required"])
+            return int(val) if val is not None else self.DEFAULTS["mtf_agreement_required"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_agreement_required getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["mtf_agreement_required"]
+
+    @mtf_agreement_required.setter
+    def mtf_agreement_required(self, value: int):
+        try:
+            if value is None:
+                self.data["mtf_agreement_required"] = self.DEFAULTS["mtf_agreement_required"]
+            else:
+                val = int(float(str(value)))
+                # Clamp between 1 and 3 (max timeframes)
+                self.data["mtf_agreement_required"] = max(1, min(3, val))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid mtf_agreement_required value {value!r}: {e}")
+            self.data["mtf_agreement_required"] = self.DEFAULTS["mtf_agreement_required"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.mtf_agreement_required setter] Failed: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # FEATURE 1: Risk limit properties
+    # ------------------------------------------------------------------
+
+    @property
+    def max_daily_loss(self) -> float:
+        """Get maximum daily loss limit."""
+        try:
+            val = self.data.get("max_daily_loss", self.DEFAULTS["max_daily_loss"])
+            return float(val) if val is not None else self.DEFAULTS["max_daily_loss"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.max_daily_loss getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["max_daily_loss"]
+
+    @max_daily_loss.setter
+    def max_daily_loss(self, value: float):
+        try:
+            if value is None:
+                self.data["max_daily_loss"] = self.DEFAULTS["max_daily_loss"]
+            else:
+                val = float(value)
+                # Ensure it's negative (loss limit)
+                if val > 0:
+                    val = -val
+                self.data["max_daily_loss"] = val
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid max_daily_loss value {value!r}: {e}")
+            self.data["max_daily_loss"] = self.DEFAULTS["max_daily_loss"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.max_daily_loss setter] Failed: {e}", exc_info=True)
+
+    @property
+    def max_trades_per_day(self) -> int:
+        """Get maximum trades per day."""
+        try:
+            val = self.data.get("max_trades_per_day", self.DEFAULTS["max_trades_per_day"])
+            return int(val) if val is not None else self.DEFAULTS["max_trades_per_day"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.max_trades_per_day getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["max_trades_per_day"]
+
+    @max_trades_per_day.setter
+    def max_trades_per_day(self, value: int):
+        try:
+            if value is None:
+                self.data["max_trades_per_day"] = self.DEFAULTS["max_trades_per_day"]
+            else:
+                val = int(float(str(value)))
+                self.data["max_trades_per_day"] = max(1, val)  # Ensure positive
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid max_trades_per_day value {value!r}: {e}")
+            self.data["max_trades_per_day"] = self.DEFAULTS["max_trades_per_day"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.max_trades_per_day setter] Failed: {e}", exc_info=True)
+
+    @property
+    def daily_target(self) -> float:
+        """Get daily profit target."""
+        try:
+            val = self.data.get("daily_target", self.DEFAULTS["daily_target"])
+            return float(val) if val is not None else self.DEFAULTS["daily_target"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.daily_target getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["daily_target"]
+
+    @daily_target.setter
+    def daily_target(self, value: float):
+        try:
+            if value is None:
+                self.data["daily_target"] = self.DEFAULTS["daily_target"]
+            else:
+                val = float(value)
+                self.data["daily_target"] = max(0, val)  # Ensure non-negative
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid daily_target value {value!r}: {e}")
+            self.data["daily_target"] = self.DEFAULTS["daily_target"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.daily_target setter] Failed: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # FEATURE 3: Signal confidence property
+    # ------------------------------------------------------------------
+
+    @property
+    def min_confidence(self) -> float:
+        """Get minimum confidence threshold."""
+        try:
+            val = self.data.get("min_confidence", self.DEFAULTS["min_confidence"])
+            return float(val) if val is not None else self.DEFAULTS["min_confidence"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.min_confidence getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["min_confidence"]
+
+    @min_confidence.setter
+    def min_confidence(self, value: float):
+        try:
+            if value is None:
+                self.data["min_confidence"] = self.DEFAULTS["min_confidence"]
+            else:
+                val = float(value)
+                # Clamp between 0 and 1
+                self.data["min_confidence"] = max(0, min(1, val))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid min_confidence value {value!r}: {e}")
+            self.data["min_confidence"] = self.DEFAULTS["min_confidence"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.min_confidence setter] Failed: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Market hours (BUG #4 fix)
+    # ------------------------------------------------------------------
+
+    @property
+    def market_open_time(self) -> str:
+        """Get market open time (HH:MM format)."""
+        try:
+            return str(self.data.get("market_open_time", self.DEFAULTS["market_open_time"]))
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.market_open_time getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["market_open_time"]
+
+    @market_open_time.setter
+    def market_open_time(self, value: str):
+        try:
+            # Validate time format
+            if value and ':' in value:
+                parts = value.split(':')
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    self.data["market_open_time"] = value
+                else:
+                    logger.warning(f"Invalid time format: {value}")
+            else:
+                self.data["market_open_time"] = self.DEFAULTS["market_open_time"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.market_open_time setter] Failed: {e}", exc_info=True)
+
+    @property
+    def market_close_time(self) -> str:
+        """Get market close time (HH:MM format)."""
+        try:
+            return str(self.data.get("market_close_time", self.DEFAULTS["market_close_time"]))
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.market_close_time getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["market_close_time"]
+
+    @market_close_time.setter
+    def market_close_time(self, value: str):
+        try:
+            # Validate time format
+            if value and ':' in value:
+                parts = value.split(':')
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    self.data["market_close_time"] = value
+                else:
+                    logger.warning(f"Invalid time format: {value}")
+            else:
+                self.data["market_close_time"] = self.DEFAULTS["market_close_time"]
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting.market_close_time setter] Failed: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Utility methods
+    # ------------------------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert settings to dictionary."""

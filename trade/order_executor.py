@@ -6,8 +6,10 @@ Database-backed order executor that stores trades and orders in SQLite database.
 
 import logging.handlers
 import random
+import threading
+import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import BaseEnums
 from Utils.OptionUtils import OptionUtils
@@ -33,6 +35,18 @@ class OrderExecutor:
             self.api = broker_api
             self.config = config
 
+            # Feature 2: Order lock to prevent duplicate orders
+            self._order_lock = threading.Lock()
+
+            # Feature 4: Notifier (injected by TradingApp)
+            self.notifier = None
+
+            # Feature 1: Risk manager (injected by TradingApp)
+            self.risk_manager = None
+
+            # Feature 5: Trade closed callback for DailyPnLWidget
+            self.on_trade_closed_callback = None
+
             logger.info("OrderExecutor (database) initialized")
 
         except Exception as e:
@@ -44,10 +58,16 @@ class OrderExecutor:
         """Rule 2: Initialize all attributes with safe defaults"""
         self.api = None
         self.config = None
+        self._order_lock = None
+        self.notifier = None
+        self.risk_manager = None
+        self.on_trade_closed_callback = None
 
     def buy_option(self, state, option_type):
         """
         Attempt to buy an option (CALL or PUT) as per state and config.
+        Feature 2: Smart order execution with mid-price -> LTP retry -> MARKET fallback
+        Feature 1: Risk manager integration
         """
         try:
             # Rule 6: Input validation
@@ -59,113 +79,330 @@ class OrderExecutor:
                 logger.error(f"Invalid option_type: {option_type}")
                 return False
 
-            if state.current_position is not None:
-                logger.info("[BUY] Position already open. Exiting buy.")
-                return False
-
-            if not state.order_pending:
-                state.order_pending = True
-
-                # Select option name and price
-                option_name = state.call_option if option_type == BaseEnums.CALL else state.put_option
-                market_price = state.call_current_close if option_type == BaseEnums.CALL else state.put_current_close
-
-                if market_price is None:
-                    logger.warning(f"{option_type} market price missing, fetching live price for {option_name}")
-                    if self.api:
-                        try:
-                            market_price = self.api.get_option_current_price(option_name)
-                        except Exception as e:
-                            logger.error(f"Failed to fetch live price: {e}", exc_info=True)
-                            market_price = None
-                    else:
-                        logger.error("API not available")
-                        market_price = None
-
-                    if market_price is None:
-                        logger.error(f"Failed to fetch live price for {option_name}")
-                        state.order_pending = False
-                        return False
-
-                try:
-                    shares = Utils.calculate_shares_to_buy(
-                        price=market_price,
-                        balance=state.account_balance,
-                        lot_size=state.lot_size
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to calculate shares: {e}", exc_info=True)
-                    state.order_pending = False
+            # Feature 1: Risk manager check
+            if self.risk_manager:
+                allowed, reason = self.risk_manager.should_allow_trade(state, self.config)
+                if not allowed:
+                    logger.warning(f"[RiskManager] Trade blocked: {reason}")
                     return False
 
-                logger.info(f"Buying {option_type}: {option_name}, Market Price: {market_price}, Shares: {shares}")
+            # Feature 2: Acquire lock to prevent duplicate orders
+            if self._order_lock and not self._order_lock.acquire(blocking=False):
+                logger.warning('[BUY] Duplicate order attempt blocked by lock')
+                return False
 
-                if shares < state.lot_size:
-                    shares = self.adjust_positions(state=state, shares=shares, side=option_type)
+            try:
+                if state.current_position is not None:
+                    logger.info("[BUY] Position already open. Exiting buy.")
+                    return False
+
+                if not state.order_pending:
+                    state.order_pending = True
+
+                    # Select option name and price
                     option_name = state.call_option if option_type == BaseEnums.CALL else state.put_option
-
-                    if self.api:
-                        try:
-                            market_price = self.api.get_option_current_price(option_name)
-                        except Exception as e:
-                            logger.error(f"Failed to fetch adjusted price: {e}", exc_info=True)
-                            market_price = None
-                    else:
-                        market_price = None
+                    market_price = state.call_current_close if option_type == BaseEnums.CALL else state.put_current_close
 
                     if market_price is None:
-                        logger.error(f"Failed to fetch live price for {option_name} after adjustment")
+                        logger.warning(f"{option_type} market price missing, fetching live price for {option_name}")
+                        if self.api:
+                            try:
+                                market_price = self.api.get_option_current_price(option_name)
+                            except Exception as e:
+                                logger.error(f"Failed to fetch live price: {e}", exc_info=True)
+                                market_price = None
+                        else:
+                            logger.error("API not available")
+                            market_price = None
+
+                        if market_price is None:
+                            logger.error(f"Failed to fetch live price for {option_name}")
+                            state.order_pending = False
+                            return False
+
+                    try:
+                        shares = Utils.calculate_shares_to_buy(
+                            price=market_price,
+                            balance=state.account_balance,
+                            lot_size=state.lot_size
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to calculate shares: {e}", exc_info=True)
                         state.order_pending = False
                         return False
 
-                if shares < state.lot_size:
-                    logger.warning("Insufficient balance even after adjusting positions.")
+                    logger.info(f"Buying {option_type}: {option_name}, Market Price: {market_price}, Shares: {shares}")
+
+                    if shares < state.lot_size:
+                        shares = self.adjust_positions(state=state, shares=shares, side=option_type)
+                        option_name = state.call_option if option_type == BaseEnums.CALL else state.put_option
+
+                        if self.api:
+                            try:
+                                market_price = self.api.get_option_current_price(option_name)
+                            except Exception as e:
+                                logger.error(f"Failed to fetch adjusted price: {e}", exc_info=True)
+                                market_price = None
+                        else:
+                            market_price = None
+
+                        if market_price is None:
+                            logger.error(f"Failed to fetch live price for {option_name} after adjustment")
+                            state.order_pending = False
+                            return False
+
+                    if shares < state.lot_size:
+                        logger.warning("Insufficient balance even after adjusting positions.")
+                        state.order_pending = False
+                        return False
+
+                    # Feature 2: Smart order execution - Start with mid-price
+                    success = self._smart_order_execution(state, option_type, option_name, shares, market_price)
+
+                    if success:
+                        logger.info(f"{option_type} position entered successfully.")
+
                     state.order_pending = False
+                    return success
+                else:
+                    logger.warning("Order already pending")
                     return False
 
-                try:
-                    limit_price = Utils.percentage_above_or_below(
-                        market_price,
-                        state.lower_percentage,
-                        BaseEnums.NEGATIVE
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to calculate limit price: {e}", exc_info=True)
+            except AttributeError as e:
+                logger.error(f"Attribute error in buy_option: {e}", exc_info=True)
+                if state:
                     state.order_pending = False
-                    return False
-
-                logger.info(f"Limit price for order: {limit_price:.2f}")
-                orders = self.place_orders(option_name, shares, limit_price, state)
-
-                if not orders:
-                    logger.warning("No orders were placed. Aborting buy.")
+                return False
+            except Exception as e:
+                logger.exception(f"Exception in buy_option: {e}")
+                if state:
                     state.order_pending = False
-                    return False
+                return False
+            finally:
+                # Feature 2: Always release the lock
+                if self._order_lock and self._order_lock.locked():
+                    self._order_lock.release()
 
-                try:
-                    self.record_trade_state(state, option_type, option_name, limit_price, shares, orders)
-                except Exception as e:
-                    logger.error(f"Failed to record trade state: {e}", exc_info=True)
-                    state.order_pending = False
-                    return False
-
-                logger.info(f"{option_type} position entered at {limit_price} for {shares} shares.")
+        except Exception as e:
+            logger.exception(f"Unhandled exception in buy_option: {e}")
+            if state:
                 state.order_pending = False
-                return True
-            else:
-                logger.warning("Order already pending")
+            return False
+
+    def _smart_order_execution(self, state, option_type, option_name, shares, market_price):
+        """
+        Feature 2: Smart order execution with three attempts:
+        1. LIMIT at mid-price (based on bid/ask)
+        2. LIMIT at LTP (retry)
+        3. MARKET order (fallback)
+        """
+        try:
+            # Step 1: Calculate mid-price from option chain if available
+            mid_price = self._calculate_mid_price(state, option_name, market_price)
+
+            # Attempt 1: LIMIT at mid-price
+            logger.info(f"[ORDER] Attempt 1/3: LIMIT at mid-price ₹{mid_price:.2f}")
+            orders = self.place_orders(option_name, shares, mid_price, state)
+
+            if not orders:
+                logger.warning("[ORDER] No orders placed in attempt 1")
                 return False
 
-        except AttributeError as e:
-            logger.error(f"Attribute error in buy_option: {e}", exc_info=True)
-            if state:
-                state.order_pending = False
+            confirmed = self._wait_for_fill(orders, state, timeout_seconds=3)
+            if confirmed:
+                slippage = (state.current_buy_price or mid_price) - mid_price
+                logger.info(f'[FILL] Mid-price fill. Slippage: ₹{slippage:+.2f}')
+                state.last_slippage = slippage
+
+                # Feature 4: Send Telegram notification
+                if self.notifier:
+                    self.notifier.notify_entry(
+                        symbol=option_name,
+                        direction=option_type,
+                        price=state.current_buy_price,
+                        sl=state.stop_loss or 0,
+                        tp=state.tp_point or 0
+                    )
+                return True
+
+            # Attempt 2: Cancel unconfirmed orders and retry at LTP
+            logger.warning("[ORDER] Attempt 1 failed. Cancelling orders and retrying at LTP.")
+            self._cancel_unconfirmed_orders(orders, state)
+
+            ltp_price = Utils.round_to_nse_price(market_price)
+            logger.info(f"[ORDER] Attempt 2/3: LIMIT at LTP ₹{ltp_price:.2f}")
+            orders = self.place_orders(option_name, shares, ltp_price, state)
+
+            if not orders:
+                logger.warning("[ORDER] No orders placed in attempt 2")
+                return False
+
+            confirmed = self._wait_for_fill(orders, state, timeout_seconds=3)
+            if confirmed:
+                slippage = (state.current_buy_price or ltp_price) - mid_price
+                logger.info(f'[FILL] LTP retry fill. Slippage: ₹{slippage:+.2f}')
+                state.last_slippage = slippage
+
+                # Feature 4: Send Telegram notification
+                if self.notifier:
+                    self.notifier.notify_entry(
+                        symbol=option_name,
+                        direction=option_type,
+                        price=state.current_buy_price,
+                        sl=state.stop_loss or 0,
+                        tp=state.tp_point or 0
+                    )
+                return True
+
+            # Attempt 3: MARKET order fallback (live trading only)
+            logger.warning("[ORDER] Attempt 2 failed. Using MARKET order fallback.")
+            self._cancel_unconfirmed_orders(orders, state)
+
+            if self.api and BaseEnums.BOT_TYPE == BaseEnums.LIVE:
+                logger.info(f"[ORDER] Attempt 3/3: MARKET order for {shares} shares")
+                try:
+                    # Get Broker constants (assuming they're defined)
+                    side_buy = getattr(self.api, 'SIDE_BUY', 1)
+                    market_order_type = getattr(self.api, 'MARKET_ORDER_TYPE', 2)
+
+                    market_broker_id = self.api.place_order(
+                        symbol=option_name,
+                        qty=shares,
+                        side=side_buy,
+                        order_type=market_order_type
+                    )
+
+                    if market_broker_id:
+                        # Record at LTP as fill price approximation
+                        self.record_trade_state(state, option_type, option_name, ltp_price, shares,
+                                               [{'id': 0, 'broker_id': market_broker_id,
+                                                 'qty': shares, 'symbol': option_name, 'price': ltp_price}])
+
+                        slippage = ltp_price - mid_price
+                        logger.info(f'[FILL] MARKET order fill. Slippage: ₹{slippage:+.2f}')
+                        state.last_slippage = slippage
+
+                        # Feature 4: Send Telegram notification
+                        if self.notifier:
+                            self.notifier.notify_entry(
+                                symbol=option_name,
+                                direction=option_type,
+                                price=ltp_price,
+                                sl=state.stop_loss or 0,
+                                tp=state.tp_point or 0
+                            )
+                        return True
+                except Exception as e:
+                    logger.error(f"[ORDER] MARKET order failed: {e}", exc_info=True)
+            else:
+                logger.warning("[ORDER] MARKET order not available (paper trading or API missing)")
+
+            logger.error('[ORDER] All order attempts failed. No position entered.')
             return False
+
         except Exception as e:
-            logger.exception(f"Exception in buy_option: {e}")
-            if state:
-                state.order_pending = False
+            logger.exception(f"[_smart_order_execution] Failed: {e}")
             return False
+
+    def _calculate_mid_price(self, state, option_name, market_price):
+        """
+        Calculate mid-price from option chain data.
+        Falls back to market_price * 0.999 if bid not available.
+        """
+        try:
+            chain_data = {}
+            if hasattr(state, 'option_chain') and state.option_chain:
+                # Try to get full symbol (may need mapping)
+                full_sym = option_name
+                if hasattr(self, 'symbol_full'):
+                    full_sym = self.symbol_full(option_name)
+                chain_data = state.option_chain.get(full_sym, {})
+
+            ask = chain_data.get('ask') or market_price
+            bid = chain_data.get('bid')
+
+            if bid and bid > 0:
+                mid_price = round((ask + bid) / 2, 2)
+            else:
+                # Estimate if no bid (use 0.1% below market price)
+                mid_price = round(market_price * 0.999, 2)
+
+            # Round to NSE price (nearest 0.05)
+            mid_price = Utils.round_to_nse_price(mid_price)
+            return max(mid_price, 0.05)  # Ensure minimum price
+
+        except Exception as e:
+            logger.warning(f"[_calculate_mid_price] Failed, using market price: {e}")
+            return Utils.round_to_nse_price(market_price * 0.999)
+
+    def _wait_for_fill(self, orders, state, timeout_seconds=3) -> bool:
+        """
+        Feature 2: Poll order status every 0.5s for up to timeout_seconds.
+        Returns True if all orders reach ORDER_STATUS_EXECUTED (status code 2).
+        """
+        if not orders or not self.api:
+            return False
+
+        start_time = time.time()
+        all_filled = False
+
+        while time.time() - start_time < timeout_seconds:
+            try:
+                all_filled = True
+                for order in orders:
+                    broker_id = order.get('broker_id')
+                    if not broker_id:
+                        all_filled = False
+                        continue
+
+                    # Get order status from broker
+                    status = self.api.get_current_order_status(broker_id)
+
+                    # Status code 2 typically means executed/filled
+                    if status != 2:  # Not filled
+                        all_filled = False
+                        break
+
+                if all_filled:
+                    # All orders filled - update state
+                    if orders and not state.current_buy_price:
+                        # Use first order's price as entry price
+                        state.current_buy_price = orders[0].get('price')
+                    return True
+
+                time.sleep(0.5)  # Poll every 500ms
+
+            except Exception as e:
+                logger.debug(f"[_wait_for_fill] Poll error: {e}")
+                time.sleep(0.5)
+
+        return False
+
+    def _cancel_unconfirmed_orders(self, orders, state):
+        """
+        Feature 2: Cancel each unconfirmed order via broker API.
+        Update DB status via orders_crud.cancel().
+        """
+        if not orders or not self.api:
+            return
+
+        for order in orders:
+            try:
+                order_id = order.get('id')
+                broker_id = order.get('broker_id')
+
+                if broker_id:
+                    # Cancel with broker
+                    self.api.cancel_order(order_id=broker_id)
+                    logger.info(f"[CANCEL] Cancelled order {broker_id}")
+
+                # Update database
+                if order_id:
+                    db = get_db()
+                    orders_crud.cancel(order_id, "Unfilled - switched to better price", db)
+
+            except Exception as e:
+                logger.error(f"[_cancel_unconfirmed_orders] Failed to cancel order: {e}", exc_info=True)
 
     def place_orders(self, symbol, shares, price, state):
         """
@@ -292,6 +529,8 @@ class OrderExecutor:
     def record_trade_state(state, option_type, symbol, price, shares, orders):
         """
         Update trading state after a buy.
+
+        BUG #1 FIX: Stop-loss now set BELOW entry for long options (was above entry)
         """
         try:
             # Rule 6: Input validation
@@ -313,37 +552,6 @@ class OrderExecutor:
             state.current_trade_confirmed = False
             state.positions_hold = shares
 
-            # Safely extract index stop loss - it's optional, so don't abort if missing
-            try:
-                # Get the trend list safely, default to empty list if any key is missing
-                derivative_trend = getattr(state, 'derivative_trend', {})
-                if derivative_trend:
-                    super_trend_short = derivative_trend.get("super_trend_short", {})
-                    if super_trend_short:
-                        trend_list = super_trend_short.get("trend") or []
-
-                        # Set index_stop_loss to the last value if list exists and is not empty
-                        if trend_list and len(trend_list) > 0:
-                            try:
-                                state.index_stop_loss = float(trend_list[-1])
-                                logger.debug(f"[record_trade_state] Index stop loss set to: {state.index_stop_loss}")
-                            except (ValueError, TypeError) as e:
-                                logger.warning(f"Failed to convert index stop loss: {e}")
-                                state.index_stop_loss = None
-                        else:
-                            state.index_stop_loss = None
-                            logger.debug("[record_trade_state] Index stop loss not available")
-                    else:
-                        state.index_stop_loss = None
-                else:
-                    state.index_stop_loss = None
-
-            except (AttributeError, KeyError, IndexError, ValueError, TypeError) as e:
-                # Catch any unexpected errors and set to None
-                state.index_stop_loss = None
-                logger.warning(f"[record_trade_state] Failed to set index stop loss: {e} - continuing without it")
-
-            # Calculate TP and SL points
             try:
                 state.tp_point = price * (1 + float(state.tp_percentage) / 100)
             except (ValueError, TypeError) as e:
@@ -351,7 +559,7 @@ class OrderExecutor:
                 state.tp_point = None
 
             try:
-                state.stop_loss = price * (1 + float(state.stoploss_percentage) / 100)
+                state.stop_loss = price * (1 - float(state.stoploss_percentage) / 100)
             except (ValueError, TypeError) as e:
                 logger.warning(f"Failed to calculate SL point: {e}")
                 state.stop_loss = None
@@ -451,6 +659,9 @@ class OrderExecutor:
         - Cancels all unconfirmed orders.
         - Updates orders in database.
         - Resets trade state.
+
+        Feature 4: Telegram notification on exit
+        Feature 5: Trade closed callback for DailyPnLWidget
         """
         try:
             # Rule 6: Input validation
@@ -476,6 +687,9 @@ class OrderExecutor:
                 orders = getattr(state, "orders", [])
                 db = get_db()
 
+                total_pnl = 0.0
+                total_qty = 0
+
                 # 1. Sell and update orders
                 for order in orders:
                     try:
@@ -487,10 +701,12 @@ class OrderExecutor:
                         symbol = order.get("symbol")
                         qty = order.get("qty", 0)
                         broker_id = order.get("broker_id")
+                        total_qty += qty
 
                         # Calculate P&L for this order
                         buy_price = order.get("price", 0.0)
                         pnl = (sell_price - buy_price) * qty
+                        total_pnl += pnl
 
                         if self.api and broker_id:
                             try:
@@ -515,6 +731,24 @@ class OrderExecutor:
 
                 logger.info(f"[EXIT] Completed exit for {state.current_position}. Reason: {exit_reason}")
                 state.previous_position = state.current_position
+
+                # Feature 4: Send Telegram notification
+                if self.notifier and state.current_buy_price:
+                    self.notifier.notify_exit(
+                        symbol=state.current_trading_symbol,
+                        direction=state.current_position,
+                        entry_price=state.current_buy_price,
+                        exit_price=sell_price,
+                        pnl=total_pnl,
+                        reason=exit_reason or 'Signal'
+                    )
+
+                # Feature 5: Call trade closed callback for DailyPnLWidget
+                if self.on_trade_closed_callback and total_qty > 0:
+                    try:
+                        self.on_trade_closed_callback(total_pnl, total_pnl > 0)
+                    except Exception as e:
+                        logger.error(f"[EXIT] Trade closed callback failed: {e}", exc_info=True)
 
                 # Update balance
                 if self.api:
@@ -712,9 +946,19 @@ class OrderExecutor:
         try:
             logger.info("[OrderExecutor] Starting cleanup")
 
-            # Clear any pending state
+            # Release lock if held
+            if self._order_lock and self._order_lock.locked():
+                try:
+                    self._order_lock.release()
+                except:
+                    pass
+
+            # Clear references
             self.api = None
             self.config = None
+            self.notifier = None
+            self.risk_manager = None
+            self.on_trade_closed_callback = None
 
             logger.info("[OrderExecutor] Cleanup completed")
 

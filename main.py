@@ -12,6 +12,9 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from TradingGUI import TradingGUI
 
+# Import database installer
+from db.db_installer import run_startup_check
+
 # Rule 4: Structured logging - setup at module level
 logger = logging.getLogger(__name__)
 
@@ -100,6 +103,57 @@ def setup_logging():
         return False
 
 
+def initialize_database():
+    """
+    Initialize the database on startup.
+    Creates tables and seeds default data if needed.
+    """
+    try:
+        logger.info("=" * 60)
+        logger.info("Checking database installation...")
+
+        # Run the database installer
+        result = run_startup_check()
+
+        if result.ok:
+            logger.info("✅ Database check passed successfully")
+            if result.db_created:
+                logger.info("   New database created with all tables")
+            if result.tables_created:
+                logger.info(f"   Tables created: {', '.join(result.tables_created)}")
+            if result.warnings:
+                for warning in result.warnings:
+                    logger.warning(f"   ⚠ {warning}")
+            return True
+        else:
+            logger.error("❌ Database check FAILED")
+            logger.error(f"   Errors: {result.errors}")
+            logger.error(f"   Missing tables: {result.missing_tables}")
+            if result.missing_columns:
+                for table, cols in result.missing_columns.items():
+                    logger.error(f"   Table '{table}' missing columns: {cols}")
+
+            # Show error dialog
+            error_msg = (
+                f"Database initialization failed!\n\n"
+                f"Missing tables: {', '.join(result.missing_tables) if result.missing_tables else 'None'}\n"
+                f"Errors: {', '.join(result.errors) if result.errors else 'Unknown'}\n\n"
+                f"Please check the logs and ensure the database is accessible."
+            )
+            QMessageBox.critical(None, "Database Error", error_msg)
+
+            return False
+
+    except Exception as e:
+        logger.critical(f"Database initialization error: {e}", exc_info=True)
+        QMessageBox.critical(
+            None,
+            "Database Error",
+            f"Failed to initialize database:\n{e}\n\nApplication will exit."
+        )
+        return False
+
+
 def handle_exception(exc_type, exc_value, exc_traceback):
     """
     Rule 1: Global exception handler for unhandled exceptions.
@@ -140,6 +194,13 @@ def main():
         sys.excepthook = handle_exception
 
         logger.info("Starting PyQt5 application...")
+
+        # ==================================================================
+        # DATABASE INITIALIZATION - Run before anything else
+        # ==================================================================
+        if not initialize_database():
+            logger.critical("Database initialization failed - exiting")
+            return 1
 
         # PYQT: High-DPI support - preserve exact attributes
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

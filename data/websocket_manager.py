@@ -88,6 +88,10 @@ class WebSocketManager:
             self._error_count = 0
             self._reconnect_count = 0
 
+            # FEATURE 4: Callbacks for Telegram notifications
+            self.on_disconnect_callback = None
+            self.on_reconnect_callback = None
+
             logger.info("WebSocketManager initialized")
 
         except Exception as e:
@@ -120,6 +124,8 @@ class WebSocketManager:
         self._error_count = 0
         self._reconnect_count = 0
         self._cleanup_done = False
+        self.on_disconnect_callback = None
+        self.on_reconnect_callback = None
 
     def _dummy_callback(self, message):
         """Dummy callback to prevent crashes when no callback provided"""
@@ -353,6 +359,14 @@ class WebSocketManager:
                 if self._state == ConnectionState.CONNECTED and not self._manual_stop:
                     logger.info("Handling stale connection...")
                     self._state = ConnectionState.DISCONNECTED
+
+                    # FEATURE 4: Call disconnect callback
+                    if self.on_disconnect_callback:
+                        try:
+                            self.on_disconnect_callback()
+                        except Exception as e:
+                            logger.error(f"Error in disconnect callback: {e}", exc_info=True)
+
                     self._schedule_reconnect()
             except Exception as e:
                 logger.error(f"Error handling stale connection: {e}", exc_info=True)
@@ -364,6 +378,14 @@ class WebSocketManager:
                 if self._state == ConnectionState.CONNECTED and not self._manual_stop:
                     logger.info("Handling network disconnection...")
                     self._state = ConnectionState.DISCONNECTED
+
+                    # FEATURE 4: Call disconnect callback
+                    if self.on_disconnect_callback:
+                        try:
+                            self.on_disconnect_callback()
+                        except Exception as e:
+                            logger.error(f"Error in disconnect callback: {e}", exc_info=True)
+
                     self._schedule_reconnect()
             except Exception as e:
                 logger.error(f"Error handling network disconnection: {e}", exc_info=True)
@@ -434,25 +456,34 @@ class WebSocketManager:
                 logger.error(f"Failed to unsubscribe: {e!r}", exc_info=True)
 
     def on_connect(self):
-        """Handle successful connection"""
+        """
+        BUG #5 FIX: Handle successful connection and force re-subscription.
+        Called by FyersDataSocket when connection is established.
+        """
         with self._connection_lock:
             try:
-                logger.info("WebSocket connected successfully.")
+                logger.info("WebSocket connected.")
                 self._state = ConnectionState.CONNECTED
                 self._retries = 0
-                self._last_message_time = time.time()  # Reset message timer
+                self._last_message_time = time.time()
 
-                # Auto-subscribe to symbols
+                # BUG #5 FIX: Always force re-subscription on connect
                 if self.socket and self.symbols:
-                    try:
-                        self.socket.subscribe(symbols=self.symbols, data_type="OnOrders")
-                    except Exception as e:
-                        logger.error(f"Subscription to OnOrders during on_connect failed: {e!r}")
+                    for data_type in ['SymbolUpdate', 'OnOrders']:
+                        try:
+                            self.socket.subscribe(symbols=self.symbols, data_type=data_type)
+                            logger.info(f"Re-subscribed {len(self.symbols)} symbols ({data_type})")
+                        except Exception as e:
+                            logger.error(f"Re-subscribe failed {data_type}: {e}", exc_info=True)
+                else:
+                    logger.warning("No symbols to subscribe after connect")
 
+                # FEATURE 4: Call reconnect callback
+                if self.on_reconnect_callback:
                     try:
-                        self.socket.subscribe(symbols=self.symbols, data_type="SymbolUpdate")
+                        self.on_reconnect_callback()
                     except Exception as e:
-                        logger.error(f"Subscription to SymbolUpdate during on_connect failed: {e!r}")
+                        logger.error(f"Error in reconnect callback: {e}", exc_info=True)
 
             except Exception as e:
                 logger.error(f"Error in on_connect handler: {e}", exc_info=True)
@@ -468,6 +499,14 @@ class WebSocketManager:
 
                 if not self._manual_stop and self._state != ConnectionState.CLOSING:
                     logger.info("Connection closed unexpectedly. Will attempt to reconnect.")
+
+                    # FEATURE 4: Call disconnect callback
+                    if self.on_disconnect_callback:
+                        try:
+                            self.on_disconnect_callback()
+                        except Exception as e:
+                            logger.error(f"Error in disconnect callback: {e}", exc_info=True)
+
                     self._schedule_reconnect()
                 else:
                     logger.info("WebSocket closed intentionally by user. No reconnection.")
@@ -486,6 +525,14 @@ class WebSocketManager:
                     self._state = ConnectionState.DISCONNECTED
 
                 if not self._manual_stop:
+
+                    # FEATURE 4: Call disconnect callback
+                    if self.on_disconnect_callback:
+                        try:
+                            self.on_disconnect_callback()
+                        except Exception as e:
+                            logger.error(f"Error in disconnect callback: {e}", exc_info=True)
+
                     self._schedule_reconnect()
 
             except Exception as e:
@@ -700,6 +747,8 @@ class WebSocketManager:
             self._heartbeat_thread = None
             self._network_monitor_thread = None
             self._reconnect_thread = None
+            self.on_disconnect_callback = None
+            self.on_reconnect_callback = None
 
             self._cleanup_done = True
             logger.info("[WebSocketManager] Cleanup completed")

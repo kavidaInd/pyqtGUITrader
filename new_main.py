@@ -2,26 +2,32 @@
 """
 Main trading application with support for LIVE, PAPER, and BACKTEST modes.
 """
+
 import concurrent.futures
 import logging
 import logging.handlers
 import threading
+import queue
+import time
 from typing import Optional, Any, Dict, List, Union
 from datetime import datetime
 
 import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
+from Utils.notifier import Notifier
 from broker.Broker import Broker, TokenExpiredError
 from data.websocket_manager import WebSocketManager
 from gui.DailyTradeSetting import DailyTradeSetting
 from gui.ProfitStoplossSetting import ProfitStoplossSetting
 from models.trade_state import TradeState
 from strategy.dynamic_signal_engine import DynamicSignalEngine
+from strategy.multi_tf_filter import MultiTimeframeFilter
 from strategy.strategy_manager import StrategyManager
 from strategy.trend_detector import TrendDetector
 from trade.order_executor import OrderExecutor
 from trade.position_monitor import PositionMonitor
+from trade.risk_manager import RiskManager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -65,6 +71,23 @@ class TradingApp:
             self.executor = OrderExecutor(broker_api=self.broker, config=self.config)
             self.monitor = PositionMonitor()
 
+            # FEATURE 1: Risk Manager
+            self.risk_manager = RiskManager()
+            self.risk_manager.risk_breach.connect(
+                lambda reason: (self.stop(), self.notifier.notify_risk_breach(reason))
+            )
+
+            # FEATURE 4: Telegram Notifier
+            self.notifier = Notifier(self.config)
+
+            # FEATURE 6: Multi-Timeframe Filter
+            self.mtf_filter = MultiTimeframeFilter(self.broker)
+
+            # Inject dependencies into executor
+            self.executor.risk_manager = self.risk_manager
+            self.executor.notifier = self.notifier
+            self.executor.on_trade_closed_callback = self._on_trade_closed
+
             # Safe WebSocket initialization
             client_id = ""
             if broker_setting and hasattr(broker_setting, "client_id"):
@@ -76,14 +99,26 @@ class TradingApp:
                 on_message_callback=self.on_message
             )
 
-            # Thread pool for non-blocking operations
+            # Set WebSocket callbacks for notifier
+            self.ws.on_disconnect_callback = lambda: self.notifier.notify_ws_disconnect()
+            self.ws.on_reconnect_callback = lambda: self.notifier.notify_ws_reconnected()
+
+            # BUG #6 FIX: Replace Event with Queue + dedicated worker thread
+            self._tick_queue = queue.Queue(maxsize=500)
+            self._stage2_thread = threading.Thread(
+                target=self._stage2_worker,
+                daemon=True,
+                name='Stage2Worker'
+            )
+            self._stage2_thread.start()
+
+            # Thread pool for history fetching (kept separate from tick processing)
             self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=2, thread_name_prefix="TradingApp"
             )
 
             # Events for tracking async operations
             self._history_fetch_in_progress = threading.Event()
-            self._processing_in_progress = threading.Event()
 
             # Option chain: stores live tick data for all subscribed options
             self._option_chain_lock = threading.Lock()
@@ -101,7 +136,7 @@ class TradingApp:
             self.should_stop = False
             self._stop_event = threading.Event()
 
-            logger.info("TradingApp initialized successfully")
+            logger.info("TradingApp initialized successfully with all features")
 
         except Exception as e:
             logger.critical(f"[TradingApp.__init__] Initialization failed: {e}", exc_info=True)
@@ -120,10 +155,14 @@ class TradingApp:
         self.detector = None
         self.executor = None
         self.monitor = None
+        self.risk_manager = None
+        self.notifier = None
+        self.mtf_filter = None
         self.ws = None
         self._fetch_executor = None
         self._history_fetch_in_progress = None
-        self._processing_in_progress = None
+        self._tick_queue = None
+        self._stage2_thread = None
         self._option_chain_lock = None
         self._chain_itm = 5
         self._chain_otm = 5
@@ -204,6 +243,12 @@ class TradingApp:
         except Exception as e:
             logger.critical(f"Unhandled exception during run: {e!r}", exc_info=True)
             raise
+
+    def stop(self):
+        """Stop the trading app gracefully."""
+        self.should_stop = True
+        self._stop_event.set()
+        logger.info("TradingApp stop requested")
 
     def initialize_market_state(self) -> None:
         try:
@@ -300,7 +345,7 @@ class TradingApp:
         """
         Two-stage message processing:
         Stage 1 (fast): Update market state immediately on WS thread
-        Stage 2 (slow): Submit remaining processing to thread pool
+        Stage 2 (slow): Push to queue for background processing
         """
         try:
             # Rule 6: Input validation
@@ -328,21 +373,61 @@ class TradingApp:
             # Stage 1: Fast update - write LTP to state immediately
             self.update_market_state(symbol, ltp, ask_price, bid_price)
 
-            # Stage 2: Slow processing - submit to thread pool if not already processing
-            if self._processing_in_progress and not self._processing_in_progress.is_set():
-                self._processing_in_progress.set()
-                if self._fetch_executor:
-                    self._fetch_executor.submit(self._process_message_stage2)
-                else:
-                    logger.error("Thread pool not available for stage 2 processing")
-                    self._processing_in_progress.clear()
+            # BUG #6 FIX: Push to queue for Stage 2 processing (non-blocking)
+            try:
+                self._tick_queue.put_nowait('tick')
+            except queue.Full:
+                # Queue is bounded - if full, we drop the tick (oldest will be processed)
+                logger.debug("Tick queue full, dropping tick")
 
         except Exception as e:
             logger.error(f"Exception in on_message stage 1: {e!r}, Message: {message}", exc_info=True)
 
+    def _stage2_worker(self):
+        """
+        BUG #6 FIX: Dedicated worker thread for Stage 2 processing.
+        Processes ticks from queue and runs all monitoring/decision logic.
+        """
+        logger.info("Stage 2 worker thread started")
+        while not self.should_stop:
+            try:
+                # Wait for a tick with timeout (allows checking should_stop)
+                self._tick_queue.get(timeout=1.0)
+
+                # Drain any queued ticks - process only the latest state once
+                drained = 0
+                while not self._tick_queue.empty():
+                    try:
+                        self._tick_queue.get_nowait()
+                        drained += 1
+                    except queue.Empty:
+                        break
+
+                if drained > 0:
+                    logger.debug(f"Drained {drained} queued ticks")
+
+                # Run Stage 2 processing
+                self._process_message_stage2()
+
+            except queue.Empty:
+                # Timeout - just continue loop
+                continue
+            except TokenExpiredError:
+                logger.critical("Token expired in stage 2 worker")
+                self._token_expired_error = TokenExpiredError("Token expired")
+                self.should_stop = True
+                self._stop_event.set()
+                break
+            except Exception as e:
+                logger.error(f"Stage2Worker error: {e}", exc_info=True)
+                # Brief pause to avoid tight error loop
+                time.sleep(0.1)
+
+        logger.info("Stage 2 worker thread stopped")
+
     def _process_message_stage2(self) -> None:
         """
-        Stage 2 message processing - runs in thread pool.
+        Stage 2 message processing - runs in dedicated worker thread.
         Contains all slower operations that shouldn't block the WebSocket thread.
         """
         try:
@@ -350,6 +435,9 @@ class TradingApp:
             if self.should_stop:
                 logger.debug("Stop requested, skipping stage 2 processing")
                 return
+
+            # FEATURE 6: Update unrealized P&L for DailyPnLWidget
+            self._update_unrealized_pnl()
 
             # Run all monitoring and decision logic
             if hasattr(self, 'monitor') and self.monitor:
@@ -377,13 +465,38 @@ class TradingApp:
 
         except TokenExpiredError:
             logger.critical("Token expired in stage 2 processing")
-            # Re-raise to be handled by caller
+            # Re-raise to be handled by worker thread
             raise
         except Exception as e:
             logger.error(f"Exception in message stage 2 processing: {e!r}", exc_info=True)
-        finally:
-            if self._processing_in_progress:
-                self._processing_in_progress.clear()
+
+    def _update_unrealized_pnl(self):
+        """
+        FEATURE 5: Update unrealized P&L for DailyPnLWidget.
+        Called from stage 2 worker.
+        """
+        try:
+            if (self.state.current_position is not None and
+                    self.state.current_buy_price is not None and
+                    self.state.current_price is not None and
+                    self.state.positions_hold > 0):
+                unrealized = (self.state.current_price - self.state.current_buy_price) * self.state.positions_hold
+                self.state.current_pnl = unrealized
+
+                # This will be picked up by the GUI via get_snapshot()
+        except Exception as e:
+            logger.error(f"Error updating unrealized P&L: {e}", exc_info=True)
+
+    def _on_trade_closed(self, pnl: float, is_winner: bool):
+        """
+        FEATURE 5: Callback for DailyPnLWidget when a trade is closed.
+        """
+        try:
+            # This callback is set in __init__ and called from OrderExecutor.exit_position()
+            logger.info(f"Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
+            # The DailyPnLWidget will receive this via signal in GUI thread
+        except Exception as e:
+            logger.error(f"Error in _on_trade_closed: {e}", exc_info=True)
 
     def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float) -> None:
         try:
@@ -824,6 +937,18 @@ class TradingApp:
             if self.state.current_position is None:
                 if trend == BaseEnums.ENTER_CALL and getattr(self.state, "should_buy_call", False):
                     logger.info("🎯 ENTER_CALL confirmed by BUY_CALL")
+
+                    # FEATURE 6: Multi-Timeframe Filter check
+                    if self.config.get('use_mtf_filter', False):
+                        allowed, summary = self.mtf_filter.should_allow_entry(
+                            self.state.derivative, BaseEnums.CALL
+                        )
+                        self.state.last_mtf_summary = summary
+                        if not allowed:
+                            logger.info(f'[MTF] Entry blocked: {summary}')
+                            return
+                        logger.info(f'[MTF] Entry allowed: {summary}')
+
                     try:
                         success = self.executor.buy_option(self.state, option_type=BaseEnums.CALL)
                         if success and self.state.call_option not in (self.state.all_symbols or []):
@@ -835,6 +960,18 @@ class TradingApp:
 
                 elif trend == BaseEnums.ENTER_PUT and getattr(self.state, "should_buy_put", False):
                     logger.info("🎯 ENTER_PUT confirmed by BUY_PUT")
+
+                    # FEATURE 6: Multi-Timeframe Filter check
+                    if self.config.get('use_mtf_filter', False):
+                        allowed, summary = self.mtf_filter.should_allow_entry(
+                            self.state.derivative, BaseEnums.PUT
+                        )
+                        self.state.last_mtf_summary = summary
+                        if not allowed:
+                            logger.info(f'[MTF] Entry blocked: {summary}')
+                            return
+                        logger.info(f'[MTF] Entry allowed: {summary}')
+
                     try:
                         success = self.executor.buy_option(self.state, option_type=BaseEnums.PUT)
                         if success and self.state.put_option not in (self.state.all_symbols or []):
@@ -941,8 +1078,10 @@ class TradingApp:
             self.reload_signal_engine()
             logger.info("Signal engine configuration reloaded")
 
-        except TokenExpiredError:
-            raise
+            # FEATURE 6: Invalidate MTF cache on settings change
+            if self.mtf_filter:
+                self.mtf_filter.invalidate_cache()
+
         except TokenExpiredError:
             raise
         except Exception as e:
@@ -1016,14 +1155,19 @@ class TradingApp:
             if hasattr(self, '_stop_event') and self._stop_event:
                 self._stop_event.set()  # Wake up the keep-alive loop immediately
 
+            # Wait for stage 2 worker thread to finish (with timeout)
+            if hasattr(self, '_stage2_thread') and self._stage2_thread and self._stage2_thread.is_alive():
+                logger.info("Waiting for stage 2 worker thread to finish...")
+                self._stage2_thread.join(timeout=2.0)
+
             # WebSocket cleanup
             if hasattr(self, 'ws') and self.ws:
                 try:
-                    if hasattr(self.ws, 'unsubscribe'):
-                        self.ws.unsubscribe()
-                    logger.info("WebSocket disconnected")
+                    if hasattr(self.ws, 'cleanup'):
+                        self.ws.cleanup()
+                    logger.info("WebSocket cleaned up")
                 except Exception as e:
-                    logger.error(f"Error disconnecting WebSocket: {e}", exc_info=True)
+                    logger.error(f"Error cleaning up WebSocket: {e}", exc_info=True)
 
             # Thread pool shutdown
             if hasattr(self, '_fetch_executor') and self._fetch_executor:
@@ -1033,7 +1177,32 @@ class TradingApp:
                 except Exception as e:
                     logger.error(f"Error shutting down thread pool: {e}", exc_info=True)
 
-            # Broker cleanup if needed
+            # Feature cleanups
+            if hasattr(self, 'risk_manager') and self.risk_manager:
+                try:
+                    self.risk_manager.cleanup()
+                except Exception as e:
+                    logger.error(f"RiskManager cleanup error: {e}", exc_info=True)
+
+            if hasattr(self, 'notifier') and self.notifier:
+                try:
+                    self.notifier.cleanup()
+                except Exception as e:
+                    logger.error(f"Notifier cleanup error: {e}", exc_info=True)
+
+            if hasattr(self, 'mtf_filter') and self.mtf_filter:
+                try:
+                    self.mtf_filter.cleanup()
+                except Exception as e:
+                    logger.error(f"MTF filter cleanup error: {e}", exc_info=True)
+
+            if hasattr(self, 'executor') and self.executor:
+                try:
+                    self.executor.cleanup()
+                except Exception as e:
+                    logger.error(f"Executor cleanup error: {e}", exc_info=True)
+
+            # Broker cleanup
             if hasattr(self, 'broker') and self.broker:
                 try:
                     if hasattr(self.broker, 'cleanup'):

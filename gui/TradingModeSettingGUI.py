@@ -1,3 +1,9 @@
+"""
+TradingModeSettingGUI.py
+========================
+PyQt5 GUI for trading mode settings with support for new features.
+"""
+
 import logging
 import logging.handlers
 import traceback
@@ -6,7 +12,7 @@ from typing import Optional
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
                              QCheckBox, QGroupBox, QLabel, QMessageBox,
-                             QTabWidget, QFrame, QScrollArea, QWidget)
+                             QTabWidget, QFrame, QScrollArea, QWidget, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
@@ -32,8 +38,8 @@ class TradingModeSettingGUI(QDialog):
 
             self.setWindowTitle("Trading Mode Settings")
             self.setModal(True)
-            self.setMinimumSize(650, 600)
-            self.resize(650, 600)
+            self.setMinimumSize(750, 700)  # Increased size for new tabs
+            self.resize(750, 700)
 
             # Match the exact style from DailyTradeSettingGUI
             self.setStyleSheet("""
@@ -75,18 +81,34 @@ class TradingModeSettingGUI(QDialog):
                     left: 10px;
                     padding: 0 5px 0 5px;
                 }
-                QComboBox, QDoubleSpinBox, QSpinBox {
+                QComboBox, QDoubleSpinBox, QSpinBox, QLineEdit {
                     background:#21262d; color:#e6edf3; border:1px solid #30363d;
                     border-radius:4px; padding:8px; font-size:10pt;
                     min-height:20px;
                 }
-                QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus { border:2px solid #58a6ff; }
+                QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus { 
+                    border:2px solid #58a6ff; 
+                }
                 QComboBox::drop-down { border:none; }
-                QComboBox::down-arrow { image: none; border-left:1px solid #30363d; width:20px; }
+                QComboBox::down-arrow { 
+                    image: none; 
+                    border-left: 5px solid transparent;
+                    border-right: 5px solid transparent;
+                    border-top: 5px solid #8b949e;
+                    margin-right: 5px;
+                }
                 QCheckBox { color:#e6edf3; spacing:8px; }
                 QCheckBox::indicator { width:18px; height:18px; }
-                QCheckBox::indicator:unchecked { border:2px solid #30363d; background:#21262d; border-radius:3px; }
-                QCheckBox::indicator:checked   { background:#238636; border:2px solid #2ea043; border-radius:3px; }
+                QCheckBox::indicator:unchecked { 
+                    border:2px solid #30363d; 
+                    background:#21262d; 
+                    border-radius:3px; 
+                }
+                QCheckBox::indicator:checked { 
+                    background:#238636; 
+                    border:2px solid #2ea043; 
+                    border-radius:3px; 
+                }
                 QPushButton {
                     background:#238636; color:#fff; border-radius:4px; padding:12px;
                     font-weight:bold; font-size:10pt; min-width:100px;
@@ -117,7 +139,12 @@ class TradingModeSettingGUI(QDialog):
             # Tabs
             self.tabs = QTabWidget()
             root.addWidget(self.tabs)
-            self.tabs.addTab(self._build_settings_tab(), "⚙️ Settings")
+
+            # Add tabs
+            self.tabs.addTab(self._build_mode_tab(), "🎮 Mode")
+            self.tabs.addTab(self._build_risk_tab(), "⚠️ Risk")  # FEATURE 1
+            self.tabs.addTab(self._build_mtf_tab(), "📈 MTF Filter")  # FEATURE 6
+            self.tabs.addTab(self._build_signal_tab(), "🎯 Signal")  # FEATURE 3
             self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
 
             # Status + Buttons layout
@@ -152,24 +179,7 @@ class TradingModeSettingGUI(QDialog):
 
         except Exception as e:
             logger.critical(f"[TradingModeSettingGUI.__init__] Failed: {e}", exc_info=True)
-            # Still try to create basic dialog
-            super().__init__(parent)
-            self.trading_mode_setting = trading_mode_setting or TradingModeSetting()
-            self.app = app
-            self._safe_defaults_init()
-            self.setWindowTitle("Trading Mode Settings - ERROR")
-            self.setMinimumSize(400, 200)
-
-            # Add error message
-            layout = QVBoxLayout(self)
-            error_label = QLabel(f"Failed to initialize settings dialog:\n{e}")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -186,14 +196,51 @@ class TradingModeSettingGUI(QDialog):
         self.slippage_spin = None
         self.delay_check = None
         self.delay_spin = None
+
+        # FEATURE 6 widgets
+        self.mtf_check = None
+        self.mtf_timeframes_edit = None
+        self.mtf_ema_fast_spin = None
+        self.mtf_ema_slow_spin = None
+        self.mtf_agreement_spin = None
+
+        # FEATURE 1 widgets
+        self.max_loss_spin = None
+        self.max_trades_spin = None
+        self.daily_target_spin = None
+
+        # FEATURE 3 widgets
+        self.min_confidence_spin = None
+
         self.save_btn = None
         self.cancel_btn = None
         self.apply_btn = None
         self.status_label = None
         self._save_in_progress = False
 
-    def _build_settings_tab(self):
-        """Build the settings tab with enhanced UI"""
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Trading Mode Settings - ERROR")
+            self.setMinimumSize(400, 200)
+
+            layout = QVBoxLayout(self)
+            error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
+            layout.addWidget(error_label)
+
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn)
+
+        except Exception as e:
+            logger.error(f"[TradingModeSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
+
+    # ── Mode Tab (Original) ───────────────────────────────────────────────────
+    def _build_mode_tab(self):
+        """Build the mode selection tab"""
         try:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -251,7 +298,7 @@ class TradingModeSettingGUI(QDialog):
 
             self.allow_live_check = QCheckBox("✅ Enable live trading (off by default for safety)")
             self.allow_live_check.setToolTip("Must be checked to allow any live trades")
-            self.allow_live_check.stateChanged.connect(self._update_ui_state)  # Add this line
+            self.allow_live_check.stateChanged.connect(self._update_ui_state)
             safety_layout.addWidget(self.allow_live_check)
 
             allow_desc = QLabel(
@@ -289,7 +336,7 @@ class TradingModeSettingGUI(QDialog):
             self.paper_balance_spin = QDoubleSpinBox()
             self.paper_balance_spin.setRange(1000, 10000000)
             self.paper_balance_spin.setSingleStep(10000)
-            self.paper_balance_spin.setSuffix(" ₹")
+            self.paper_balance_spin.setPrefix("₹ ")
             self.paper_balance_spin.setValue(100000)
             balance_form.addRow("Initial Balance:", self.paper_balance_spin)
             sim_layout.addLayout(balance_form)
@@ -357,18 +404,229 @@ class TradingModeSettingGUI(QDialog):
             return scroll
 
         except Exception as e:
-            logger.error(f"[TradingModeSettingGUI._build_settings_tab] Failed: {e}", exc_info=True)
-            # Return a basic scroll area on error
+            logger.error(f"[TradingModeSettingGUI._build_mode_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building mode tab: {e}")
+
+    # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
+    def _build_risk_tab(self):
+        """Build risk management tab"""
+        try:
             scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+
             container = QWidget()
             layout = QVBoxLayout(container)
-            error_label = QLabel(f"Error building settings tab: {e}")
-            error_label.setStyleSheet("color: #f85149;")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Risk Limits Group
+            limits_group = QGroupBox("Daily Risk Limits")
+            limits_layout = QFormLayout(limits_group)
+            limits_layout.setSpacing(8)
+            limits_layout.setLabelAlignment(Qt.AlignRight)
+
+            # Max Daily Loss
+            self.max_loss_spin = QDoubleSpinBox()
+            self.max_loss_spin.setRange(-1000000, 0)
+            self.max_loss_spin.setSingleStep(100)
+            self.max_loss_spin.setPrefix("₹ ")
+            self.max_loss_spin.setToolTip("Maximum daily loss before bot stops trading (negative value)")
+            self.max_loss_spin.setValue(-5000)
+            limits_layout.addRow("Max Daily Loss:", self.max_loss_spin)
+
+            loss_hint = QLabel("Trading stops when daily P&L reaches this level (negative number)")
+            loss_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            limits_layout.addRow("", loss_hint)
+
+            # Max Trades Per Day
+            self.max_trades_spin = QSpinBox()
+            self.max_trades_spin.setRange(1, 100)
+            self.max_trades_spin.setSuffix(" trades")
+            self.max_trades_spin.setToolTip("Maximum number of trades per day")
+            self.max_trades_spin.setValue(10)
+            limits_layout.addRow("Max Trades/Day:", self.max_trades_spin)
+
+            trades_hint = QLabel("Hard limit on number of entries per day")
+            trades_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            limits_layout.addRow("", trades_hint)
+
+            # Daily Profit Target
+            self.daily_target_spin = QDoubleSpinBox()
+            self.daily_target_spin.setRange(0, 10000000)
+            self.daily_target_spin.setSingleStep(100)
+            self.daily_target_spin.setPrefix("₹ ")
+            self.daily_target_spin.setToolTip("Daily profit target for progress tracking")
+            self.daily_target_spin.setValue(5000)
+            limits_layout.addRow("Daily Target:", self.daily_target_spin)
+
+            target_hint = QLabel("Profit target for the day (for display purposes only)")
+            target_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            limits_layout.addRow("", target_hint)
+
+            layout.addWidget(limits_group)
+
+            # Info Card
+            info_card = self._create_info_card(
+                "📘 About Risk Management:",
+                "• **Max Daily Loss**: When daily P&L reaches this negative value, "
+                "the bot stops trading automatically.\n\n"
+                "• **Max Trades/Day**: Hard limit on the number of entries per day.\n\n"
+                "• **Daily Target**: Visual progress indicator only - does not stop trading.\n\n"
+                "These limits help protect your capital and prevent over-trading."
+            )
+            layout.addWidget(info_card)
+
+            layout.addStretch()
             scroll.setWidget(container)
             return scroll
 
+        except Exception as e:
+            logger.error(f"[TradingModeSettingGUI._build_risk_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building risk tab: {e}")
+
+    # ── FEATURE 6: Multi-Timeframe Filter Tab ────────────────────────────────
+    def _build_mtf_tab(self):
+        """Build Multi-Timeframe Filter settings tab"""
+        try:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Enable/Disable Group
+            enable_group = QGroupBox("MTF Filter Status")
+            enable_layout = QVBoxLayout(enable_group)
+
+            self.mtf_check = QCheckBox("Enable Multi-Timeframe Filter")
+            self.mtf_check.setToolTip("When enabled, requires agreement across multiple timeframes before entry")
+            enable_layout.addWidget(self.mtf_check)
+
+            enable_hint = QLabel("Requires at least 2 of 3 timeframes to agree with trade direction")
+            enable_hint.setStyleSheet("color:#484f58; font-size:8pt; padding-left:26px;")
+            enable_layout.addWidget(enable_hint)
+
+            layout.addWidget(enable_group)
+
+            # Timeframe Configuration Group
+            tf_group = QGroupBox("Timeframe Configuration")
+            tf_layout = QFormLayout(tf_group)
+            tf_layout.setSpacing(8)
+            tf_layout.setLabelAlignment(Qt.AlignRight)
+
+            # Timeframes
+            self.mtf_timeframes_edit = QLineEdit()
+            self.mtf_timeframes_edit.setPlaceholderText("1,5,15")
+            self.mtf_timeframes_edit.setToolTip("Comma-separated list of timeframes in minutes")
+            tf_layout.addRow("Timeframes:", self.mtf_timeframes_edit)
+
+            tf_hint = QLabel("Example: 1,5,15 for 1min, 5min, and 15min")
+            tf_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            tf_layout.addRow("", tf_hint)
+
+            # Fast EMA
+            self.mtf_ema_fast_spin = QSpinBox()
+            self.mtf_ema_fast_spin.setRange(1, 50)
+            self.mtf_ema_fast_spin.setSuffix(" periods")
+            self.mtf_ema_fast_spin.setToolTip("Fast EMA period for trend detection")
+            tf_layout.addRow("Fast EMA:", self.mtf_ema_fast_spin)
+
+            # Slow EMA
+            self.mtf_ema_slow_spin = QSpinBox()
+            self.mtf_ema_slow_spin.setRange(5, 200)
+            self.mtf_ema_slow_spin.setSuffix(" periods")
+            self.mtf_ema_slow_spin.setToolTip("Slow EMA period for trend detection")
+            tf_layout.addRow("Slow EMA:", self.mtf_ema_slow_spin)
+
+            # Agreement Required
+            self.mtf_agreement_spin = QSpinBox()
+            self.mtf_agreement_spin.setRange(1, 3)
+            self.mtf_agreement_spin.setSuffix(" timeframes")
+            self.mtf_agreement_spin.setToolTip("Number of timeframes that must agree")
+            tf_layout.addRow("Agreement Required:", self.mtf_agreement_spin)
+
+            agree_hint = QLabel("How many timeframes must agree before allowing entry")
+            agree_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            tf_layout.addRow("", agree_hint)
+
+            layout.addWidget(tf_group)
+
+            # Info Card
+            info_card = self._create_info_card(
+                "📘 How Multi-Timeframe Filter Works:",
+                "1. For each timeframe, calculates EMA9 and EMA21\n"
+                "2. Determines trend: BULLISH (EMA9 > EMA21 > LTP) or BEARISH (EMA9 < EMA21 < LTP)\n"
+                "3. Requires at least N timeframes to agree (default: 2 of 3)\n"
+                "4. Entry is blocked if insufficient agreement\n\n"
+                "This filter helps avoid entries during conflicting trends across timeframes."
+            )
+            layout.addWidget(info_card)
+
+            layout.addStretch()
+            scroll.setWidget(container)
+            return scroll
+
+        except Exception as e:
+            logger.error(f"[TradingModeSettingGUI._build_mtf_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building MTF tab: {e}")
+
+    # ── FEATURE 3: Signal Confidence Tab ─────────────────────────────────────
+    def _build_signal_tab(self):
+        """Build signal confidence settings tab"""
+        try:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Confidence Group
+            conf_group = QGroupBox("Signal Confidence Settings")
+            conf_layout = QFormLayout(conf_group)
+            conf_layout.setSpacing(8)
+            conf_layout.setLabelAlignment(Qt.AlignRight)
+
+            # Min Confidence
+            self.min_confidence_spin = QDoubleSpinBox()
+            self.min_confidence_spin.setRange(0.0, 1.0)
+            self.min_confidence_spin.setSingleStep(0.05)
+            self.min_confidence_spin.setDecimals(2)
+            self.min_confidence_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
+            conf_layout.addRow("Min Confidence:", self.min_confidence_spin)
+
+            conf_hint = QLabel("Signals below this confidence are suppressed (0.0-1.0)")
+            conf_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            conf_layout.addRow("", conf_hint)
+
+            layout.addWidget(conf_group)
+
+            # Info Card
+            info_card = self._create_info_card(
+                "📘 About Signal Confidence:",
+                "• **Confidence Score**: Weighted average of rule results\n"
+                "• **Min Confidence**: Signals below this threshold are ignored\n"
+                "• **Rule Weights**: Configured in Strategy Editor\n\n"
+                "Example: If min confidence = 0.6, a group needs 60% of weighted "
+                "rules to pass before firing."
+            )
+            layout.addWidget(info_card)
+
+            layout.addStretch()
+            scroll.setWidget(container)
+            return scroll
+
+        except Exception as e:
+            logger.error(f"[TradingModeSettingGUI._build_signal_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building signal tab: {e}")
+
+    # ── Information Tab ───────────────────────────────────────────────────────
     def _build_info_tab(self):
         """Build the information tab with help content"""
         try:
@@ -426,13 +684,25 @@ class TradingModeSettingGUI(QDialog):
                     "• More realistic simulations = better strategy validation."
                 ),
                 (
-                    "⚡  Performance Impact",
-                    "How different modes affect system performance:\n\n"
-                    "• Simulation: Minimal impact, all calculations local.\n"
-                    "• Live: API calls to broker, network latency.\n"
-                    "• Backtest: CPU-intensive for large datasets.\n"
-                    "• Choose mode based on your current needs.\n"
-                    "• You can switch modes without restarting."
+                    "⚠️  Risk Management",
+                    "Daily loss limits and trade counts to protect capital.\n\n"
+                    "• **Max Daily Loss**: Stop trading when daily P&L hits this level.\n"
+                    "• **Max Trades/Day**: Hard limit on number of entries.\n"
+                    "• **Daily Target**: Visual progress indicator for profit goals."
+                ),
+                (
+                    "📈  Multi-Timeframe Filter",
+                    "Confirms trend direction across multiple timeframes.\n\n"
+                    "• Uses EMA 9/21 crossovers on multiple timeframes.\n"
+                    "• Requires configurable number of timeframes to agree.\n"
+                    "• Reduces false entries during conflicting trends."
+                ),
+                (
+                    "🎯  Signal Confidence",
+                    "Weighted voting system for signal groups.\n\n"
+                    "• Each rule can have a weight (default 1.0).\n"
+                    "• Confidence = passed_weight / total_weight.\n"
+                    "• Signals below min_confidence are suppressed."
                 ),
                 (
                     "📁  Settings Storage",
@@ -446,24 +716,8 @@ class TradingModeSettingGUI(QDialog):
 
             for title, body in infos:
                 try:
-                    card = QFrame()
-                    card.setObjectName("infoCard")
-                    card_layout = QVBoxLayout(card)
-                    card_layout.setContentsMargins(14, 12, 14, 12)
-                    card_layout.setSpacing(6)
-
-                    title_lbl = QLabel(title)
-                    title_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-                    title_lbl.setStyleSheet("color:#e6edf3;")
-
-                    body_lbl = QLabel(body)
-                    body_lbl.setWordWrap(True)
-                    body_lbl.setStyleSheet("color:#8b949e; font-size:9pt;")
-
-                    card_layout.addWidget(title_lbl)
-                    card_layout.addWidget(body_lbl)
+                    card = self._create_info_card(title, body)
                     layout.addWidget(card)
-
                 except Exception as e:
                     logger.error(f"Failed to create info card for {title}: {e}", exc_info=True)
 
@@ -473,16 +727,41 @@ class TradingModeSettingGUI(QDialog):
 
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._build_info_tab] Failed: {e}", exc_info=True)
-            scroll = QScrollArea()
-            container = QWidget()
-            layout = QVBoxLayout(container)
-            error_label = QLabel(f"Error building information tab: {e}")
-            error_label.setStyleSheet("color: #f85149;")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
-            scroll.setWidget(container)
-            return scroll
+            return self._create_error_scroll(f"Error building information tab: {e}")
 
+    def _create_info_card(self, title: str, body: str) -> QFrame:
+        """Create an information card"""
+        card = QFrame()
+        card.setObjectName("infoCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 12, 14, 12)
+        card_layout.setSpacing(6)
+
+        title_lbl = QLabel(title)
+        title_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title_lbl.setStyleSheet("color:#e6edf3;")
+
+        body_lbl = QLabel(body)
+        body_lbl.setWordWrap(True)
+        body_lbl.setStyleSheet("color:#8b949e; font-size:9pt;")
+
+        card_layout.addWidget(title_lbl)
+        card_layout.addWidget(body_lbl)
+        return card
+
+    def _create_error_scroll(self, error_msg):
+        """Create a scroll area with error message"""
+        scroll = QScrollArea()
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        error_label = QLabel(f"❌ {error_msg}")
+        error_label.setStyleSheet("color: #f85149; padding: 20px;")
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+        scroll.setWidget(container)
+        return scroll
+
+    # ── UI Update Methods ────────────────────────────────────────────────────
     def _load_settings(self):
         """Load current settings into UI"""
         try:
@@ -516,6 +795,30 @@ class TradingModeSettingGUI(QDialog):
             if self.delay_spin is not None:
                 self.delay_spin.setValue(int(self.trading_mode_setting.delay_ms or 500))
 
+            # FEATURE 6: MTF settings
+            if self.mtf_check is not None:
+                self.mtf_check.setChecked(bool(self.trading_mode_setting.use_mtf_filter))
+            if self.mtf_timeframes_edit is not None:
+                self.mtf_timeframes_edit.setText(str(self.trading_mode_setting.mtf_timeframes or "1,5,15"))
+            if self.mtf_ema_fast_spin is not None:
+                self.mtf_ema_fast_spin.setValue(int(self.trading_mode_setting.mtf_ema_fast or 9))
+            if self.mtf_ema_slow_spin is not None:
+                self.mtf_ema_slow_spin.setValue(int(self.trading_mode_setting.mtf_ema_slow or 21))
+            if self.mtf_agreement_spin is not None:
+                self.mtf_agreement_spin.setValue(int(self.trading_mode_setting.mtf_agreement_required or 2))
+
+            # FEATURE 1: Risk settings
+            if self.max_loss_spin is not None:
+                self.max_loss_spin.setValue(float(self.trading_mode_setting.max_daily_loss or -5000))
+            if self.max_trades_spin is not None:
+                self.max_trades_spin.setValue(int(self.trading_mode_setting.max_trades_per_day or 10))
+            if self.daily_target_spin is not None:
+                self.daily_target_spin.setValue(float(self.trading_mode_setting.daily_target or 5000))
+
+            # FEATURE 3: Signal confidence
+            if self.min_confidence_spin is not None:
+                self.min_confidence_spin.setValue(float(self.trading_mode_setting.min_confidence or 0.6))
+
             self._update_ui_state()
             logger.debug("Settings loaded into UI")
 
@@ -530,7 +833,7 @@ class TradingModeSettingGUI(QDialog):
             logger.error(f"[TradingModeSettingGUI._on_mode_changed] Failed: {e}", exc_info=True)
 
     def _update_ui_state(self):
-        """Update UI based on selected mode - FIXED button enable logic"""
+        """Update UI based on selected mode"""
         try:
             if self.mode_combo is None:
                 logger.warning("_update_ui_state called with None mode_combo")
@@ -544,8 +847,7 @@ class TradingModeSettingGUI(QDialog):
             if self.sim_group is not None:
                 self.sim_group.setEnabled(not is_live)
 
-            # FIXED: Button enable logic - buttons should be enabled by default
-            # Only disable for live mode when allow_live_check is not checked
+            # Button enable logic
             buttons_enabled = True
 
             if is_live:
@@ -570,6 +872,7 @@ class TradingModeSettingGUI(QDialog):
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._update_ui_state] Failed: {e}", exc_info=True)
 
+    # ── Save/Apply Methods ───────────────────────────────────────────────────
     def _apply_settings(self):
         """Apply settings without closing dialog"""
         try:
@@ -669,6 +972,7 @@ class TradingModeSettingGUI(QDialog):
                 logger.error(f"Invalid mode value: {e}")
                 self.trading_mode_setting.mode = TradingMode.SIM
 
+            # Mode settings
             if self.allow_live_check is not None:
                 self.trading_mode_setting.allow_live_trading = self.allow_live_check.isChecked()
             if self.confirm_live_check is not None:
@@ -683,6 +987,30 @@ class TradingModeSettingGUI(QDialog):
                 self.trading_mode_setting.simulate_delay = self.delay_check.isChecked()
             if self.delay_spin is not None:
                 self.trading_mode_setting.delay_ms = self.delay_spin.value()
+
+            # FEATURE 6: MTF settings
+            if self.mtf_check is not None:
+                self.trading_mode_setting.use_mtf_filter = self.mtf_check.isChecked()
+            if self.mtf_timeframes_edit is not None:
+                self.trading_mode_setting.mtf_timeframes = self.mtf_timeframes_edit.text()
+            if self.mtf_ema_fast_spin is not None:
+                self.trading_mode_setting.mtf_ema_fast = self.mtf_ema_fast_spin.value()
+            if self.mtf_ema_slow_spin is not None:
+                self.trading_mode_setting.mtf_ema_slow = self.mtf_ema_slow_spin.value()
+            if self.mtf_agreement_spin is not None:
+                self.trading_mode_setting.mtf_agreement_required = self.mtf_agreement_spin.value()
+
+            # FEATURE 1: Risk settings
+            if self.max_loss_spin is not None:
+                self.trading_mode_setting.max_daily_loss = self.max_loss_spin.value()
+            if self.max_trades_spin is not None:
+                self.trading_mode_setting.max_trades_per_day = self.max_trades_spin.value()
+            if self.daily_target_spin is not None:
+                self.trading_mode_setting.daily_target = self.daily_target_spin.value()
+
+            # FEATURE 3: Signal confidence
+            if self.min_confidence_spin is not None:
+                self.trading_mode_setting.min_confidence = self.min_confidence_spin.value()
 
             # Save to file
             success = self.trading_mode_setting.save()
@@ -726,6 +1054,15 @@ class TradingModeSettingGUI(QDialog):
             self.slippage_spin = None
             self.delay_check = None
             self.delay_spin = None
+            self.mtf_check = None
+            self.mtf_timeframes_edit = None
+            self.mtf_ema_fast_spin = None
+            self.mtf_ema_slow_spin = None
+            self.mtf_agreement_spin = None
+            self.max_loss_spin = None
+            self.max_trades_spin = None
+            self.daily_target_spin = None
+            self.min_confidence_spin = None
             self.save_btn = None
             self.cancel_btn = None
             self.apply_btn = None

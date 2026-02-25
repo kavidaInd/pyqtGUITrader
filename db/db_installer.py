@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS daily_trade_setting (
     id                 INTEGER PRIMARY KEY CHECK (id = 1),
     exchange           TEXT    NOT NULL DEFAULT 'NSE',
     week               INTEGER NOT NULL DEFAULT 0,
-    derivative         TEXT    NOT NULL DEFAULT 'NIFTY50',
+    derivative         TEXT    NOT NULL DEFAULT 'NIFTY50-INDEX',
     lot_size           INTEGER NOT NULL DEFAULT 75,
     call_lookback      INTEGER NOT NULL DEFAULT 0,
     put_lookback       INTEGER NOT NULL DEFAULT 0,
@@ -189,16 +189,20 @@ CREATE TABLE IF NOT EXISTS orders (
     take_profit      REAL,
     pnl              REAL,
     status           TEXT    NOT NULL DEFAULT 'PENDING'
-                     CHECK (status IN ('PENDING','OPEN','CLOSED','CANCELLED','REJECTED')),
+                     CHECK (status IN ('PENDING','CONFIRMED','OPEN','CLOSED','CANCELLED','REJECTED')),
     is_confirmed     INTEGER NOT NULL DEFAULT 0,
     entered_at       TEXT,
     exited_at        TEXT,
+    confirmed_at     TEXT,
+    cancelled_at     TEXT,
     reason_to_exit   TEXT,
-    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    updated_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status  ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_exited_at ON orders(exited_at);
 
 -- ============================================================
 -- 9. Generic key-value store  (replaces Config / strategy_setting.json)
@@ -207,6 +211,81 @@ CREATE TABLE IF NOT EXISTS app_kv (
     key        TEXT    PRIMARY KEY,
     value      TEXT    NOT NULL DEFAULT '',
     updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+-- ============================================================
+-- 10. Risk Manager settings  (FEATURE 1)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS risk_settings (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    max_daily_loss       REAL    NOT NULL DEFAULT -5000.0,
+    max_trades_per_day   INTEGER NOT NULL DEFAULT 10,
+    daily_target         REAL    NOT NULL DEFAULT 5000.0,
+    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+-- ============================================================
+-- 11. Signal Engine settings  (FEATURE 3)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS signal_settings (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    min_confidence       REAL    NOT NULL DEFAULT 0.6,
+    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+-- ============================================================
+-- 12. Telegram Notifier settings  (FEATURE 4)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS telegram_settings (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    bot_token            TEXT    NOT NULL DEFAULT '',
+    chat_id              TEXT    NOT NULL DEFAULT '',
+    enabled              INTEGER NOT NULL DEFAULT 0,
+    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+-- ============================================================
+-- 13. Multi-Timeframe Filter settings  (FEATURE 6)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS mtf_settings (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled              INTEGER NOT NULL DEFAULT 0,
+    timeframes           TEXT    NOT NULL DEFAULT '["1","5","15"]',
+    ema_fast             INTEGER NOT NULL DEFAULT 9,
+    ema_slow             INTEGER NOT NULL DEFAULT 21,
+    agreement_required   INTEGER NOT NULL DEFAULT 2,
+    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+-- ============================================================
+-- 14. Daily P&L tracking  (FEATURE 5 - cached values)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS daily_pnl (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                 TEXT    NOT NULL UNIQUE,
+    realized_pnl         REAL    NOT NULL DEFAULT 0.0,
+    unrealized_pnl       REAL    NOT NULL DEFAULT 0.0,
+    trades_count         INTEGER NOT NULL DEFAULT 0,
+    winners_count        INTEGER NOT NULL DEFAULT 0,
+    max_drawdown         REAL    NOT NULL DEFAULT 0.0,
+    peak                 REAL    NOT NULL DEFAULT 0.0,
+    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_pnl_date ON daily_pnl(date);
+
+-- ============================================================
+-- 15. WebSocket connection stats  (for monitoring)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ws_stats (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id           INTEGER REFERENCES trade_sessions(id) ON DELETE CASCADE,
+    connected_at         TEXT,
+    disconnected_at      TEXT,
+    messages_received    INTEGER NOT NULL DEFAULT 0,
+    errors_count         INTEGER NOT NULL DEFAULT 0,
+    reconnects_count     INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 """
 
@@ -226,6 +305,14 @@ _SINGLETON_SEEDS: Dict[str, str] = {
         "INSERT OR IGNORE INTO strategy_active (id, active_slug) VALUES (1, NULL)",
     "broker_tokens":
         "INSERT OR IGNORE INTO broker_tokens (id) VALUES (1)",
+    "risk_settings":
+        "INSERT OR IGNORE INTO risk_settings (id) VALUES (1)",
+    "signal_settings":
+        "INSERT OR IGNORE INTO signal_settings (id) VALUES (1)",
+    "telegram_settings":
+        "INSERT OR IGNORE INTO telegram_settings (id) VALUES (1)",
+    "mtf_settings":
+        "INSERT OR IGNORE INTO mtf_settings (id) VALUES (1)",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -257,7 +344,7 @@ EXPECTED_TABLES: Dict[str, List[str]] = {
     ],
     "strategy_active": ["id", "active_slug", "updated_at"],
     "broker_tokens": [
-        "id", "access_token", "issued_at", "expires_at", "updated_at",
+        "id", "access_token", "refresh_token", "issued_at", "expires_at", "updated_at",
     ],
     "trade_sessions": [
         "id", "started_at", "ended_at", "mode", "exchange",
@@ -269,10 +356,30 @@ EXPECTED_TABLES: Dict[str, List[str]] = {
         "id", "session_id", "broker_order_id", "symbol",
         "position_type", "quantity", "entry_price", "exit_price",
         "stop_loss", "take_profit", "pnl", "status",
-        "is_confirmed", "entered_at", "exited_at",
-        "reason_to_exit", "created_at",
+        "is_confirmed", "entered_at", "exited_at", "confirmed_at", "cancelled_at",
+        "reason_to_exit", "created_at", "updated_at",
     ],
     "app_kv": ["key", "value", "updated_at"],
+    "risk_settings": [
+        "id", "max_daily_loss", "max_trades_per_day", "daily_target", "updated_at",
+    ],
+    "signal_settings": [
+        "id", "min_confidence", "updated_at",
+    ],
+    "telegram_settings": [
+        "id", "bot_token", "chat_id", "enabled", "updated_at",
+    ],
+    "mtf_settings": [
+        "id", "enabled", "timeframes", "ema_fast", "ema_slow", "agreement_required", "updated_at",
+    ],
+    "daily_pnl": [
+        "id", "date", "realized_pnl", "unrealized_pnl", "trades_count",
+        "winners_count", "max_drawdown", "peak", "updated_at",
+    ],
+    "ws_stats": [
+        "id", "session_id", "connected_at", "disconnected_at",
+        "messages_received", "errors_count", "reconnects_count", "created_at",
+    ],
 }
 
 

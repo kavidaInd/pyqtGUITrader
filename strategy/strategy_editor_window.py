@@ -2,8 +2,10 @@
 strategy_editor_window_db.py
 ==============================
 Full-page Strategy Editor Window with tab-based signal rules and complete indicator registry.
-Enhanced with expanded cards, clear labels, and import/export functionality.
+Enhanced with expanded cards, clear labels, import/export functionality, and rule weights.
 Uses database-backed strategy manager.
+
+FEATURE 3: Added rule weight support for confidence scoring
 """
 
 from __future__ import annotations
@@ -21,12 +23,12 @@ from PyQt5.QtWidgets import (
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
     QCompleter,
-    QStackedWidget, QFileDialog)
+    QStackedWidget, QFileDialog, QDoubleSpinBox, QSpinBox, QGroupBox)
 
 from strategy.indicator_registry import (
     ALL_INDICATORS, get_indicator_params,
     get_param_type, get_param_description, get_indicator_category,
-    get_indicators_by_category
+    get_indicators_by_category, get_suggested_weight, get_rule_weight_range
 )
 from strategy.strategy_manager import strategy_manager
 
@@ -111,6 +113,16 @@ def _ss() -> str:
         QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 3px; }}
         QCheckBox::indicator:unchecked {{ background: #21262d; border: 2px solid {BORDER}; }}
         QCheckBox::indicator:checked  {{ background: {GREEN};  border: 2px solid {GREEN}; }}
+        QDoubleSpinBox, QSpinBox {{
+            background: #21262d;
+            color: {TEXT};
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            padding: 4px 6px;
+            font-size: 9pt;
+            min-width: 70px;
+        }}
+        QDoubleSpinBox:focus, QSpinBox:focus {{ border: 2px solid {BLUE}; }}
         QPushButton {{
             background: #21262d; color: {TEXT};
             border: 1px solid {BORDER}; border-radius: 5px;
@@ -936,10 +948,10 @@ class ParameterEditor(QWidget):
         return self._params.copy() if self._params else {}
 
 
-# ── Rule Editor Row ──────────────────────────────────────────────────────────
+# ── Rule Editor Row (with weight) ────────────────────────────────────────────
 
 class _RuleRow(QWidget):
-    """One editable rule row with clear labels and expanded layout"""
+    """One editable rule row with clear labels, expanded layout, and weight control"""
 
     deleted = pyqtSignal(object)
 
@@ -952,8 +964,8 @@ class _RuleRow(QWidget):
             self._param_editors = {}
 
             self.setStyleSheet(f"background:{BG_ITEM}; border-radius:6px; border:1px solid {BORDER};")
-            self.setMinimumHeight(250)
-            self.setMaximumHeight(400)
+            self.setMinimumHeight(280)  # Increased for weight control
+            self.setMaximumHeight(420)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Main vertical layout
@@ -1138,6 +1150,38 @@ class _RuleRow(QWidget):
 
             content_layout.addWidget(rhs_container, 4)
 
+            # ── WEIGHT CONTROL (FEATURE 3) ────────────────────────────────────
+            weight_container = QWidget()
+            weight_container.setFixedWidth(100)
+            weight_layout = QVBoxLayout(weight_container)
+            weight_layout.setContentsMargins(0, 0, 0, 0)
+            weight_layout.setAlignment(Qt.AlignTop)
+            weight_layout.setSpacing(4)
+
+            weight_header = QLabel("⚖️ WEIGHT")
+            weight_header.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold;")
+            weight_header.setAlignment(Qt.AlignCenter)
+            weight_layout.addWidget(weight_header)
+
+            weight_range = get_rule_weight_range()
+            self.weight_spin = QDoubleSpinBox()
+            self.weight_spin.setRange(weight_range["min"], weight_range["max"])
+            self.weight_spin.setSingleStep(weight_range["step"])
+            self.weight_spin.setValue(weight_range["default"])
+            self.weight_spin.setDecimals(1)
+            self.weight_spin.setAlignment(Qt.AlignCenter)
+            self.weight_spin.setToolTip(weight_range["description"])
+            self.weight_spin.valueChanged.connect(self._update_description)
+            weight_layout.addWidget(self.weight_spin)
+
+            # Suggested weight indicator
+            self.suggested_weight_lbl = QLabel("")
+            self.suggested_weight_lbl.setAlignment(Qt.AlignCenter)
+            self.suggested_weight_lbl.setStyleSheet(f"color:{DIM}; font-size:7pt;")
+            weight_layout.addWidget(self.suggested_weight_lbl)
+
+            content_layout.addWidget(weight_container)
+
             # ── DELETE BUTTON ─────────────────────────────────────────────────
             del_container = QWidget()
             del_container.setFixedWidth(36)
@@ -1203,6 +1247,8 @@ class _RuleRow(QWidget):
         self.rhs_column = None
         self.rhs_scalar = None
         self.rhs_params = None
+        self.weight_spin = None
+        self.suggested_weight_lbl = None
         self.desc_label = None
 
     def _update_description(self):
@@ -1211,6 +1257,7 @@ class _RuleRow(QWidget):
             lhs_desc = self.lhs_type.currentText() if self.lhs_type else "?"
             rhs_desc = self.rhs_type.currentText() if self.rhs_type else "?"
             op_desc = self.op.currentText() if self.op else "?"
+            weight = self.weight_spin.value() if self.weight_spin else 1.0
 
             if lhs_desc == "indicator":
                 lhs_val = self.lhs_indicator.currentText() if self.lhs_indicator else "indicator"
@@ -1227,7 +1274,9 @@ class _RuleRow(QWidget):
                 rhs_val = self.rhs_scalar.text() if self.rhs_scalar else "value"
 
             if self.desc_label:
-                self.desc_label.setText(f"ⓘ Rule: {lhs_desc} [{lhs_val}] {op_desc} {rhs_desc} [{rhs_val}]")
+                self.desc_label.setText(
+                    f"ⓘ Rule: {lhs_desc} [{lhs_val}] {op_desc} {rhs_desc} [{rhs_val}]  |  Weight: {weight:.1f}"
+                )
         except Exception as e:
             logger.error(f"[_RuleRow._update_description] Failed: {e}", exc_info=True)
 
@@ -1276,6 +1325,15 @@ class _RuleRow(QWidget):
                 if indicator in ALL_INDICATORS:
                     params_w.set_indicator(indicator)
                     params_w.setVisible(True)
+
+                    # FEATURE 3: Update suggested weight
+                    suggested = get_suggested_weight(indicator)
+                    if self.suggested_weight_lbl:
+                        self.suggested_weight_lbl.setText(f"suggested: {suggested:.1f}")
+
+                    # Auto-set weight if not manually changed?
+                    if self.weight_spin and self.weight_spin.value() == 1.0:
+                        self.weight_spin.setValue(suggested)
 
             self._update_description()
         except Exception as e:
@@ -1356,11 +1414,17 @@ class _RuleRow(QWidget):
                 if self.rhs_scalar:
                     self.rhs_scalar.setText(str(rhs_data.get("value", "0")))
 
+            # Load operator
             op = rule.get("op", ">")
             if self.op:
                 idx = self.op.findText(op)
                 if idx >= 0:
                     self.op.setCurrentIndex(idx)
+
+            # FEATURE 3: Load weight
+            weight = rule.get("weight", 1.0)
+            if self.weight_spin:
+                self.weight_spin.setValue(float(weight))
 
             self._update_description()
         except Exception as e:
@@ -1411,14 +1475,18 @@ class _RuleRow(QWidget):
 
             op = self.op.currentText() if self.op else ">"
 
+            # FEATURE 3: Get weight
+            weight = self.weight_spin.value() if self.weight_spin else 1.0
+
             return {
                 "lhs": lhs,
                 "op": op,
                 "rhs": rhs,
+                "weight": weight,
             }
         except Exception as e:
             logger.error(f"[_RuleRow.collect] Failed: {e}", exc_info=True)
-            return {"lhs": {"type": "scalar", "value": 0}, "op": ">", "rhs": {"type": "scalar", "value": 0}}
+            return {"lhs": {"type": "scalar", "value": 0}, "op": ">", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0}
 
 
 # ── Signal Group Panel ───────────────────────────────────────────────────────
@@ -1682,7 +1750,7 @@ class _SignalGroupPanel(QWidget):
                 self._empty_lbl.setVisible(count == 0)
 
             if count > 0 and self._rules_scroll:
-                height = min(600, 80 + 140 * count)  # 140px per row
+                height = min(600, 80 + 160 * count)  # 160px per row (increased for weight control)
                 self._rules_scroll.setMinimumHeight(height)
             elif self._rules_scroll:
                 self._rules_scroll.setMinimumHeight(120)
@@ -2257,7 +2325,7 @@ class _IndicatorsTab(QScrollArea):
                     background: {BG_ITEM};
                 }}
             """)
-            card.setFixedSize(260, 180)
+            card.setFixedSize(260, 200)  # Increased height for weight info
 
             layout = QVBoxLayout(card)
             layout.setContentsMargins(12, 10, 12, 10)
@@ -2282,6 +2350,12 @@ class _IndicatorsTab(QScrollArea):
             param_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
             param_lbl.setWordWrap(True)
             layout.addWidget(param_lbl)
+
+            # FEATURE 3: Suggested weight
+            weight = get_suggested_weight(indicator_name)
+            weight_lbl = QLabel(f"⚖️ Suggested weight: {weight:.1f}")
+            weight_lbl.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold;")
+            layout.addWidget(weight_lbl)
 
             # Category tag
             cat = get_indicator_category(indicator_name)
@@ -2551,6 +2625,8 @@ class StrategyEditorWindow(QDialog):
     """
     Full-page strategy editor with import/export functionality.
     Uses database-backed strategy manager.
+
+    FEATURE 3: Supports rule weights and confidence threshold configuration.
     """
     strategy_activated = pyqtSignal(str)
 
@@ -2564,8 +2640,8 @@ class StrategyEditorWindow(QDialog):
             self._dirty = False
 
             self.setWindowTitle("📋 Strategy Editor")
-            self.resize(1400, 900)
-            self.setMinimumSize(1200, 700)
+            self.resize(1500, 900)  # Slightly wider for weight controls
+            self.setMinimumSize(1300, 700)
             self.setStyleSheet(_ss())
 
             self._build_ui()
@@ -2573,7 +2649,7 @@ class StrategyEditorWindow(QDialog):
             if active:
                 self._load_strategy(active)
 
-            logger.info("StrategyEditorWindow (database) initialized")
+            logger.info("StrategyEditorWindow (database) initialized with Feature 3")
 
         except Exception as e:
             logger.critical(f"[StrategyEditorWindow.__init__] Failed: {e}", exc_info=True)
@@ -2610,6 +2686,7 @@ class StrategyEditorWindow(QDialog):
         self.revert_btn = None
         self.save_btn = None
         self.status_lbl = None
+        self.confidence_threshold_spin = None
 
     def _build_ui(self):
         """Build the main UI"""
@@ -2630,7 +2707,7 @@ class StrategyEditorWindow(QDialog):
             right_layout.setContentsMargins(0, 0, 0, 0)
             right_layout.setSpacing(0)
 
-            # Title bar with import/export
+            # Title bar with import/export and confidence threshold
             self._title_bar = self._build_title_bar()
             right_layout.addWidget(self._title_bar)
 
@@ -2652,7 +2729,7 @@ class StrategyEditorWindow(QDialog):
             logger.error(f"[StrategyEditorWindow._build_ui] Failed: {e}", exc_info=True)
 
     def _build_title_bar(self) -> QWidget:
-        """Build the title bar with import/export buttons"""
+        """Build the title bar with import/export buttons and confidence threshold"""
         try:
             bar = QFrame()
             bar.setStyleSheet(f"QFrame{{background:{BG_PANEL}; border-bottom:2px solid {BORDER};}}")
@@ -2671,6 +2748,24 @@ class StrategyEditorWindow(QDialog):
             h.addWidget(self._active_badge)
 
             h.addStretch()
+
+            # FEATURE 3: Confidence threshold control
+            conf_group = QHBoxLayout()
+            conf_group.setSpacing(8)
+            conf_lbl = QLabel("🎯 Min Confidence:")
+            conf_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt; font-weight:bold;")
+            conf_group.addWidget(conf_lbl)
+
+            self.confidence_threshold_spin = QDoubleSpinBox()
+            self.confidence_threshold_spin.setRange(0.0, 1.0)
+            self.confidence_threshold_spin.setSingleStep(0.05)
+            self.confidence_threshold_spin.setDecimals(2)
+            self.confidence_threshold_spin.setValue(0.6)
+            self.confidence_threshold_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
+            self.confidence_threshold_spin.valueChanged.connect(lambda: self._set_dirty(True))
+            conf_group.addWidget(self.confidence_threshold_spin)
+
+            h.addLayout(conf_group)
 
             # Import/Export buttons
             self._import_btn = QPushButton("📥 Import")
@@ -2788,6 +2883,12 @@ class StrategyEditorWindow(QDialog):
                 self._ind_tab.load(strategy)
             if self._rules_tab is not None:
                 self._rules_tab.load(strategy)
+
+            # FEATURE 3: Load confidence threshold
+            engine = strategy.get("engine", {})
+            if self.confidence_threshold_spin:
+                threshold = engine.get("min_confidence", 0.6)
+                self.confidence_threshold_spin.setValue(float(threshold))
 
             self._set_dirty(False)
 
@@ -2917,7 +3018,12 @@ class StrategyEditorWindow(QDialog):
             strategy["name"] = name
             strategy["description"] = self._info_tab.collect()["description"]
             strategy["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            strategy["engine"] = self._rules_tab.collect() if self._rules_tab else {}
+
+            # Get rules and add confidence threshold
+            engine = self._rules_tab.collect() if self._rules_tab else {}
+            if self.confidence_threshold_spin:
+                engine["min_confidence"] = self.confidence_threshold_spin.value()
+            strategy["engine"] = engine
 
             ok = strategy_manager.save(self._current_slug, strategy)
             if ok:

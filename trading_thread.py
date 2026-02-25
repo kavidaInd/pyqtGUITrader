@@ -1,6 +1,6 @@
 import logging.handlers
 import traceback
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 
@@ -21,9 +21,15 @@ class TradingThread(QThread):
     started = pyqtSignal()
     finished = pyqtSignal()
     error_occurred = pyqtSignal(str)
-    token_expired = pyqtSignal(str)   # Dedicated signal: emitted ONLY on TokenExpiredError
+    token_expired = pyqtSignal(str)  # Dedicated signal: emitted ONLY on TokenExpiredError
     status_update = pyqtSignal(str)  # For general status messages
     position_closed = pyqtSignal(str, float)  # symbol, pnl
+
+    # FEATURE 1: Risk breach signal
+    risk_breach = pyqtSignal(str)  # risk breach reason
+
+    # FEATURE 4: Telegram status signals
+    telegram_status = pyqtSignal(str, bool)  # message, is_success
 
     # Progress signals
     stop_progress = pyqtSignal(int)  # Progress percentage during stop
@@ -41,6 +47,12 @@ class TradingThread(QThread):
             # Rule 5: Thread safety with QMutex
             self._mutex = QMutex()
             self._shared_state: Dict[str, Any] = {}
+
+            # FEATURE 1: Connect risk manager signals if available
+            self._connect_risk_signals()
+
+            # FEATURE 6: MTF filter state
+            self._mtf_enabled = False
 
             logger.info("TradingThread initialized")
 
@@ -65,6 +77,19 @@ class TradingThread(QThread):
         self._shared_state = {}
         self._stop_attempts = 0
         self.MAX_STOP_ATTEMPTS = 3
+        self._mtf_enabled = False
+
+    def _connect_risk_signals(self):
+        """FEATURE 1: Connect risk manager signals to thread signals"""
+        try:
+            if (self.trading_app and
+                    hasattr(self.trading_app, 'risk_manager') and
+                    self.trading_app.risk_manager):
+                # Connect risk breach signal to our own signal
+                self.trading_app.risk_manager.risk_breach.connect(self.risk_breach.emit)
+                logger.debug("Risk manager signals connected")
+        except Exception as e:
+            logger.error(f"[TradingThread._connect_risk_signals] Failed: {e}", exc_info=True)
 
     def run(self):
         """
@@ -85,15 +110,21 @@ class TradingThread(QThread):
             self.status_update.emit("Trading thread started")
             logger.info("Trading thread started")
 
+            # FEATURE 6: Check MTF filter status
+            if hasattr(self.trading_app, 'config'):
+                self._mtf_enabled = self.trading_app.config.get('use_mtf_filter', False)
+                if self._mtf_enabled:
+                    self.status_update.emit("Multi-Timeframe Filter enabled")
+
             # Run the main trading application
             self.trading_app.run()
 
         except TokenExpiredError as e:
-            # FIX: Emit dedicated token_expired signal so the GUI can open the
+            # Emit dedicated token_expired signal so the GUI can open the
             # re-authentication popup directly, without fragile string-matching.
             error_msg = f"Token expired or invalid — re-authentication required. Details: {e}"
             logger.critical(error_msg, exc_info=True)
-            self.token_expired.emit(error_msg)        # ← dedicated signal
+            self.token_expired.emit(error_msg)  # ← dedicated signal
             self.status_update.emit("Trading stopped: Token expired — please re-login")
 
         except AttributeError as e:
@@ -230,6 +261,12 @@ class TradingThread(QThread):
 
             self.stop_progress.emit(90)
 
+            # FEATURE 1: Log risk summary on shutdown
+            self._log_risk_summary()
+
+            # FEATURE 4: Send shutdown notification
+            self._send_shutdown_notification()
+
             # Additional cleanup
             self.status_update.emit("Cleaning up resources...")
             if hasattr(self.trading_app, "cleanup"):
@@ -254,6 +291,47 @@ class TradingThread(QThread):
         except Exception as e:
             logger.error(f"Error during stop operations: {e}", exc_info=True)
             self.error_occurred.emit(f"Error during shutdown: {str(e)}")
+
+    def _log_risk_summary(self):
+        """FEATURE 1: Log risk summary on shutdown"""
+        try:
+            if (self.trading_app and
+                    hasattr(self.trading_app, 'risk_manager') and
+                    self.trading_app.risk_manager):
+                risk_summary = self.trading_app.risk_manager.get_risk_summary(self.trading_app.config)
+                logger.info(f"Risk summary at shutdown: {risk_summary}")
+
+                # Emit as status update
+                self.status_update.emit(
+                    f"Daily P&L: ₹{risk_summary.get('pnl_today', 0):.2f} | "
+                    f"Trades: {risk_summary.get('trades_today', 0)}"
+                )
+        except Exception as e:
+            logger.error(f"[TradingThread._log_risk_summary] Failed: {e}", exc_info=True)
+
+    def _send_shutdown_notification(self):
+        """FEATURE 4: Send shutdown notification via Telegram"""
+        try:
+            if (self.trading_app and
+                    hasattr(self.trading_app, 'notifier') and
+                    self.trading_app.notifier):
+
+                # Get final P&L
+                pnl = 0.0
+                state = getattr(self.trading_app, 'state', None)
+                if state and hasattr(state, 'current_pnl') and state.current_pnl:
+                    pnl = state.current_pnl
+
+                emoji = '✅' if pnl >= 0 else '❌'
+                msg = f"{emoji} *BOT SHUTDOWN*\nFinal P&L: ₹{pnl:.2f}"
+
+                # Use notifier's internal send method
+                self.trading_app.notifier._pool.submit(
+                    self.trading_app.notifier._send, msg
+                )
+                logger.info("Shutdown notification sent")
+        except Exception as e:
+            logger.error(f"[TradingThread._send_shutdown_notification] Failed: {e}", exc_info=True)
 
     def _force_stop(self):
         """
@@ -319,6 +397,9 @@ class TradingThread(QThread):
                 self.trading_app.should_stop = True
                 self.status_update.emit("Stop requested")
                 logger.info("Stop requested via should_stop flag")
+
+                # FEATURE 4: Send stop request notification
+                self._send_stop_notification()
             else:
                 # Fall back to old stop method
                 logger.warning("Trading app does not support should_stop flag, using fallback stop")
@@ -330,6 +411,19 @@ class TradingThread(QThread):
         except Exception as e:
             logger.error(f"[TradingThread.request_stop] Failed: {e}", exc_info=True)
             self.stop()
+
+    def _send_stop_notification(self):
+        """FEATURE 4: Send stop request notification"""
+        try:
+            if (self.trading_app and
+                    hasattr(self.trading_app, 'notifier') and
+                    self.trading_app.notifier):
+                msg = "🛑 *STOP REQUESTED*\nBot is shutting down gracefully..."
+                self.trading_app.notifier._pool.submit(
+                    self.trading_app.notifier._send, msg
+                )
+        except Exception as e:
+            logger.error(f"[TradingThread._send_stop_notification] Failed: {e}", exc_info=True)
 
     def wait_for_finished(self, timeout: int = 30000) -> bool:
         """
@@ -465,6 +559,9 @@ class CooperativeTradingApp:
             self.state = None
             self.executor = None
             self.ws = None
+            self.risk_manager = None
+            self.notifier = None
+            self.config = None
             logger.info("CooperativeTradingApp initialized")
         except Exception as e:
             logger.error(f"[CooperativeTradingApp.__init__] Failed: {e}", exc_info=True)
@@ -475,6 +572,9 @@ class CooperativeTradingApp:
         self.state = None
         self.executor = None
         self.ws = None
+        self.risk_manager = None
+        self.notifier = None
+        self.config = None
         self._cycle_count = 0
         self.MAX_CYCLES = 1000
 
@@ -522,7 +622,20 @@ class CooperativeTradingApp:
         """One iteration of trading logic"""
         try:
             # Your existing trading logic here
-            pass
+            # Check risk limits
+            if self.risk_manager:
+                allowed, reason = self.risk_manager.should_allow_trade(self.state, self.config)
+                if not allowed:
+                    logger.warning(f"Risk limit reached: {reason}")
+                    # Optionally stop trading
+                    self.should_stop = True
+                    return
+
+            # Check MTF filter if enabled
+            if self.config and self.config.get('use_mtf_filter', False):
+                # MTF logic would go here
+                pass
+
         except Exception as e:
             logger.error(f"[CooperativeTradingApp._process_trading_cycle] Failed: {e}", exc_info=True)
 
@@ -536,6 +649,21 @@ class CooperativeTradingApp:
                     logger.info("WebSocket cleaned up")
                 except Exception as e:
                     logger.warning(f"WebSocket cleanup error: {e}")
+
+            if self.notifier:
+                try:
+                    self.notifier.cleanup()
+                    logger.info("Notifier cleaned up")
+                except Exception as e:
+                    logger.warning(f"Notifier cleanup error: {e}")
+
+            if self.risk_manager:
+                try:
+                    self.risk_manager.cleanup()
+                    logger.info("Risk manager cleaned up")
+                except Exception as e:
+                    logger.warning(f"Risk manager cleanup error: {e}")
+
         except Exception as e:
             logger.error(f"[CooperativeTradingApp._cleanup] Failed: {e}", exc_info=True)
 
@@ -554,11 +682,29 @@ if __name__ == "__main__":
             self.executor = None
             self.ws = None
             self.should_stop = False
+            self.risk_manager = None
+            self.notifier = None
+            self.config = None
 
             try:
                 self.state = type('State', (), {'current_position': 'NIFTY'})()
                 self.executor = type('Executor', (), {'exit_position': lambda s, r: 100})()
                 self.ws = type('WS', (), {'unsubscribe': lambda: None})()
+
+                # Mock risk manager
+                risk_manager_type = type('RiskManager', (), {
+                    'get_risk_summary': lambda s, c: {'pnl_today': 500, 'trades_today': 2},
+                    'cleanup': lambda: None
+                })
+                self.risk_manager = risk_manager_type()
+
+                # Mock notifier
+                notifier_type = type('Notifier', (), {
+                    '_pool': type('Pool', (), {'submit': lambda f, m: None})(),
+                    'cleanup': lambda: None
+                })
+                self.notifier = notifier_type()
+
             except Exception as e:
                 logger.error(f"[MockTradingApp.__init__] Failed: {e}", exc_info=True)
 
@@ -593,6 +739,7 @@ if __name__ == "__main__":
     thread.finished.connect(lambda: print("Thread finished"))
     thread.error_occurred.connect(lambda e: print(f"Error: {e}"))
     thread.status_update.connect(lambda s: print(f"Status: {s}"))
+    thread.risk_breach.connect(lambda r: print(f"Risk breach: {r}"))
 
     # Start thread
     thread.start()

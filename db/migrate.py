@@ -186,11 +186,101 @@ def migrate_token(db=None) -> bool:
     path = Path(CONFIG_PATH) / "fyers_token.json"
     data = _load_json(path)
     if data:
-        ok = crud.tokens.save_token(access_token=data["access_token"],refresh_token=data["refresh_token"], db=db)
+        ok = crud.tokens.save_token(
+            access_token=data.get("access_token", ""),
+            refresh_token=data.get("refresh_token", ""),
+            db=db
+        )
         logger.info(f"  broker_tokens: {'OK' if ok else 'FAILED'} (from {data})")
         return ok
     logger.info("  broker_tokens: no token file found, skipping")
     return True
+
+
+# ---------------------------------------------------------------------------
+# NEW: Migration functions for feature-specific tables
+# ---------------------------------------------------------------------------
+
+def migrate_risk_settings(db=None) -> bool:
+    """Migrate risk settings from app_kv or create defaults."""
+    db = db or get_db()
+
+    # Check if we have existing settings in app_kv
+    max_daily_loss = crud.kv.get("max_daily_loss", -5000.0, db)
+    max_trades_per_day = crud.kv.get("max_trades_per_day", 10, db)
+    daily_target = crud.kv.get("daily_target", 5000.0, db)
+
+    # Update risk_settings table
+    try:
+        db.execute("""
+            UPDATE risk_settings 
+            SET max_daily_loss = ?, max_trades_per_day = ?, daily_target = ?, updated_at = ?
+            WHERE id = 1
+        """, (max_daily_loss, max_trades_per_day, daily_target, crud._NOW()))
+        logger.info("  risk_settings: migrated from app_kv")
+        return True
+    except Exception as e:
+        logger.error(f"  risk_settings migration failed: {e}")
+        return False
+
+
+def migrate_signal_settings(db=None) -> bool:
+    """Migrate signal settings from app_kv or create defaults."""
+    db = db or get_db()
+
+    min_confidence = crud.kv.get("min_confidence", 0.6, db)
+
+    try:
+        db.execute("""
+            UPDATE signal_settings 
+            SET min_confidence = ?, updated_at = ?
+            WHERE id = 1
+        """, (min_confidence, crud._NOW()))
+        logger.info("  signal_settings: migrated from app_kv")
+        return True
+    except Exception as e:
+        logger.error(f"  signal_settings migration failed: {e}")
+        return False
+
+
+def migrate_telegram_settings(db=None) -> bool:
+    """Migrate telegram settings from app_kv or create defaults."""
+    db = db or get_db()
+
+    bot_token = crud.kv.get("telegram_bot_token", "", db)
+    chat_id = crud.kv.get("telegram_chat_id", "", db)
+    enabled = 1 if bot_token and chat_id else 0
+
+    try:
+        db.execute("""
+            UPDATE telegram_settings 
+            SET bot_token = ?, chat_id = ?, enabled = ?, updated_at = ?
+            WHERE id = 1
+        """, (bot_token, chat_id, enabled, crud._NOW()))
+        logger.info("  telegram_settings: migrated from app_kv")
+        return True
+    except Exception as e:
+        logger.error(f"  telegram_settings migration failed: {e}")
+        return False
+
+
+def migrate_mtf_settings(db=None) -> bool:
+    """Migrate MTF settings from app_kv or create defaults."""
+    db = db or get_db()
+
+    enabled = 1 if crud.kv.get("use_mtf_filter", False, db) else 0
+
+    try:
+        db.execute("""
+            UPDATE mtf_settings 
+            SET enabled = ?, updated_at = ?
+            WHERE id = 1
+        """, (enabled, crud._NOW()))
+        logger.info("  mtf_settings: migrated from app_kv")
+        return True
+    except Exception as e:
+        logger.error(f"  mtf_settings migration failed: {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +307,10 @@ def migrate_all(db=None, stop_on_error: bool = False) -> bool:
         ("strategy_config",  migrate_strategy_config),
         ("strategies",       migrate_strategies),
         ("token",            migrate_token),
+        ("risk_settings",    migrate_risk_settings),
+        ("signal_settings",  migrate_signal_settings),
+        ("telegram_settings", migrate_telegram_settings),
+        ("mtf_settings",     migrate_mtf_settings),
     ]
 
     all_ok = True

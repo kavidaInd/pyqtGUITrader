@@ -2,11 +2,14 @@
 FyersManualLoginHelper_db.py
 =============================
 Database-backed Fyers manual login helper using the SQLite database for token storage.
+
+FEATURE 4: Added token expiry tracking for Telegram notifications.
 """
 
 import logging
 import urllib.parse
-from typing import Optional
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
 
 from fyers_apiv3 import fyersModel
 
@@ -20,6 +23,8 @@ logger = logging.getLogger(__name__)
 class FyersManualLoginHelper:
     """
     Fyers manual login helper using database for token storage.
+
+    FEATURE 4: Tracks token expiry for notifications.
     """
 
     def __init__(
@@ -49,6 +54,9 @@ class FyersManualLoginHelper:
             self.secret_key = secret_key
             self.redirect_uri = redirect_uri
             self.access_token: Optional[str] = None
+            self.token_issued_at: Optional[str] = None
+            self.token_expires_at: Optional[str] = None
+            self.refresh_token: Optional[str] = None
 
             # Load token from database
             self._load_token()
@@ -61,6 +69,9 @@ class FyersManualLoginHelper:
             self.secret_key = secret_key or ""
             self.redirect_uri = redirect_uri or ""
             self.access_token = None
+            self.token_issued_at = None
+            self.token_expires_at = None
+            self.refresh_token = None
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -68,6 +79,9 @@ class FyersManualLoginHelper:
         self.secret_key = ""
         self.redirect_uri = ""
         self.access_token = None
+        self.token_issued_at = None
+        self.token_expires_at = None
+        self.refresh_token = None
 
     def _load_token(self) -> None:
         """
@@ -79,13 +93,22 @@ class FyersManualLoginHelper:
 
             if token_data and token_data.get("access_token"):
                 self.access_token = token_data["access_token"]
-                logger.debug(f"Token loaded from database (length: {len(self.access_token)})")
+                self.token_issued_at = token_data.get("issued_at")
+                self.token_expires_at = token_data.get("expires_at")
+                self.refresh_token = token_data.get("refresh_token", "")
+
+                # Calculate expiry status
+                expiry_status = self.get_token_expiry_status()
+                logger.debug(f"Token loaded from database (length: {len(self.access_token)}, expires: {self.token_expires_at}, status: {expiry_status['status']})")
             else:
                 logger.debug("No token found in database")
 
         except Exception as e:
             logger.error(f"Error loading token from database: {e}", exc_info=True)
             self.access_token = None
+            self.token_issued_at = None
+            self.token_expires_at = None
+            self.refresh_token = None
 
     def generate_login_url(self, state: str = "STATE123") -> str:
         """
@@ -175,23 +198,35 @@ class FyersManualLoginHelper:
             if isinstance(response, dict):
                 if "access_token" in response and response["access_token"]:
                     self.access_token = response["access_token"]
+                    self.refresh_token = response.get("refresh_token", "")
+
+                    # FEATURE 4: Store expiry times
+                    self.token_issued_at = response.get("issued_at")
+                    self.token_expires_at = response.get("expires_at")
 
                     # Save token to database
                     try:
                         db = get_db()
-                        issued_at = response.get("issued_at")
-                        expires_at = response.get("expires_at")
-
                         success = tokens.save_token(
                             access_token=self.access_token,
-                            refresh_token=response.get("refresh_token", ""),
-                            issued_at=issued_at,
-                            expires_at=expires_at,
+                            refresh_token=self.refresh_token,
+                            issued_at=self.token_issued_at,
+                            expires_at=self.token_expires_at,
                             db=db
                         )
 
                         if success:
                             logger.info("Token received and saved to database successfully")
+
+                            # Log expiry info
+                            if self.token_expires_at:
+                                try:
+                                    # Parse expiry (Fyers typically returns timestamp in seconds)
+                                    if isinstance(self.token_expires_at, (int, float)):
+                                        expiry_dt = datetime.fromtimestamp(int(self.token_expires_at))
+                                        logger.info(f"Token expires at: {expiry_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                                except Exception as e:
+                                    logger.warning(f"Could not parse expiry timestamp: {e}")
                         else:
                             logger.error("Failed to save token to database")
 
@@ -223,15 +258,189 @@ class FyersManualLoginHelper:
     def is_authenticated(self) -> bool:
         """Check if helper has a valid access token."""
         try:
-            return bool(self.access_token and len(self.access_token) > 50)
+            # Check if token exists and has reasonable length
+            if not self.access_token or len(self.access_token) < 50:
+                return False
+
+            # FEATURE 4: Check if token is expired
+            expiry_info = self.get_token_expiry_status()
+            return expiry_info["is_valid"]
+
         except Exception as e:
             logger.error(f"[is_authenticated] Failed: {e}", exc_info=True)
             return False
+
+    # ==================================================================
+    # FEATURE 4: Token expiry tracking
+    # ==================================================================
+
+    def get_token_expiry_status(self) -> Dict[str, Any]:
+        """
+        Get detailed token expiry status.
+
+        Returns:
+            Dict with expiry information:
+            - is_valid: bool
+            - expires_at: str (ISO format)
+            - expires_in_seconds: int
+            - expires_in_hours: float
+            - status: str ('valid', 'expired', 'expiring_soon', 'unknown')
+        """
+        try:
+            if not self.access_token:
+                return {
+                    "is_valid": False,
+                    "expires_at": None,
+                    "expires_in_seconds": 0,
+                    "expires_in_hours": 0,
+                    "status": "no_token"
+                }
+
+            if not self.token_expires_at:
+                # If no expiry info, assume token is valid but unknown expiry
+                return {
+                    "is_valid": True,
+                    "expires_at": None,
+                    "expires_in_seconds": -1,
+                    "expires_in_hours": -1,
+                    "status": "unknown"
+                }
+
+            # Parse expiry timestamp
+            try:
+                # Fyers typically returns timestamp in seconds
+                if isinstance(self.token_expires_at, (int, float)):
+                    expiry_time = datetime.fromtimestamp(int(self.token_expires_at))
+                elif isinstance(self.token_expires_at, str):
+                    # Try to parse ISO format
+                    try:
+                        expiry_time = datetime.fromisoformat(self.token_expires_at.replace('Z', '+00:00'))
+                    except:
+                        # Try as timestamp string
+                        expiry_time = datetime.fromtimestamp(int(float(self.token_expires_at)))
+                else:
+                    expiry_time = None
+            except Exception as e:
+                logger.warning(f"Could not parse expiry time: {e}")
+                return {
+                    "is_valid": True,
+                    "expires_at": str(self.token_expires_at),
+                    "expires_in_seconds": -1,
+                    "expires_in_hours": -1,
+                    "status": "unknown"
+                }
+
+            if expiry_time is None:
+                return {
+                    "is_valid": True,
+                    "expires_at": str(self.token_expires_at),
+                    "expires_in_seconds": -1,
+                    "expires_in_hours": -1,
+                    "status": "unknown"
+                }
+
+            now = datetime.now()
+            seconds_remaining = (expiry_time - now).total_seconds()
+            hours_remaining = seconds_remaining / 3600
+
+            # Determine status
+            if seconds_remaining <= 0:
+                status = "expired"
+                is_valid = False
+            elif seconds_remaining < 3600:  # Less than 1 hour
+                status = "expiring_soon"
+                is_valid = True
+            else:
+                status = "valid"
+                is_valid = True
+
+            return {
+                "is_valid": is_valid,
+                "expires_at": expiry_time.isoformat(),
+                "expires_in_seconds": int(seconds_remaining),
+                "expires_in_hours": round(hours_remaining, 2),
+                "status": status
+            }
+
+        except Exception as e:
+            logger.error(f"[get_token_expiry_status] Failed: {e}", exc_info=True)
+            return {
+                "is_valid": bool(self.access_token),
+                "expires_at": str(self.token_expires_at) if self.token_expires_at else None,
+                "expires_in_seconds": -1,
+                "expires_in_hours": -1,
+                "status": "error"
+            }
+
+    def is_token_expired(self) -> bool:
+        """
+        Check if token is expired.
+
+        Returns:
+            True if token is expired or missing
+        """
+        try:
+            status = self.get_token_expiry_status()
+            return status["status"] == "expired" or not status["is_valid"]
+        except Exception as e:
+            logger.error(f"[is_token_expired] Failed: {e}", exc_info=True)
+            return False
+
+    def is_token_expiring_soon(self, threshold_hours: int = 1) -> bool:
+        """
+        Check if token will expire soon.
+
+        Args:
+            threshold_hours: Hours threshold for "soon"
+
+        Returns:
+            True if token expires within threshold_hours
+        """
+        try:
+            status = self.get_token_expiry_status()
+            return status["status"] == "expiring_soon" and 0 < status["expires_in_hours"] < threshold_hours
+        except Exception as e:
+            logger.error(f"[is_token_expiring_soon] Failed: {e}", exc_info=True)
+            return False
+
+    def get_token_info(self) -> Dict[str, Any]:
+        """
+        Get comprehensive token information.
+
+        Returns:
+            Dict with token details
+        """
+        try:
+            expiry_status = self.get_token_expiry_status()
+
+            return {
+                "has_token": bool(self.access_token),
+                "token_length": len(self.access_token) if self.access_token else 0,
+                "has_refresh_token": bool(self.refresh_token),
+                "issued_at": self.token_issued_at,
+                **expiry_status
+            }
+        except Exception as e:
+            logger.error(f"[get_token_info] Failed: {e}", exc_info=True)
+            return {
+                "has_token": False,
+                "token_length": 0,
+                "has_refresh_token": False,
+                "issued_at": None,
+                "is_valid": False,
+                "expires_at": None,
+                "expires_in_seconds": 0,
+                "expires_in_hours": 0,
+                "status": "error"
+            }
 
     def clear_token(self) -> None:
         """Clear the current token from memory and optionally from database."""
         try:
             self.access_token = None
+            self.token_issued_at = None
+            self.token_expires_at = None
+            self.refresh_token = None
             logger.info("Token cleared from memory")
         except Exception as e:
             logger.error(f"[clear_token] Failed: {e}", exc_info=True)
@@ -248,6 +457,9 @@ class FyersManualLoginHelper:
             success = tokens.clear(db)
             if success:
                 self.access_token = None
+                self.token_issued_at = None
+                self.token_expires_at = None
+                self.refresh_token = None
                 logger.info("Token revoked and cleared from database")
             else:
                 logger.error("Failed to revoke token from database")

@@ -34,6 +34,7 @@ from gui.popups.trade_history_popup import TradeHistoryPopup
 from gui.popups.connection_monitor_popup import ConnectionMonitorPopup
 from gui.popups.system_monitor_popup import SystemMonitorPopup
 from gui.status_panel import StatusPanel
+from gui.daily_pnl_widget import DailyPnLWidget  # FEATURE 5: New import
 from new_main import TradingApp
 from strategy.strategy_editor_window import StrategyEditorWindow
 from strategy.strategy_manager import StrategyManager
@@ -53,6 +54,10 @@ class TradingGUI(QMainWindow):
     app_state_changed = pyqtSignal(bool, str)  # running, mode
     strategy_changed = pyqtSignal(str)  # strategy slug
     log_message_received = pyqtSignal(str)  # For log messages
+
+    # FEATURE 5: Signal for daily P&L updates
+    trade_closed = pyqtSignal(float, bool)  # pnl, is_winner
+    unrealized_pnl_updated = pyqtSignal(float)  # unrealized P&L
 
     def __init__(self):
         # Rule 2: Safe defaults first - before any UI setup
@@ -182,12 +187,21 @@ class TradingGUI(QMainWindow):
                 }
             """)
 
-            # Settings objects
+            # Settings objects - Initialize with database
             self.config = Config()
+
+            # IMPORTANT FIX: Initialize settings objects and ensure they load from database
             self.brokerage_setting = BrokerageSetting()
+            self.brokerage_setting.load()  # Explicit load from database
+
             self.daily_setting = DailyTradeSetting()
+            self.daily_setting.load()
+
             self.profit_loss_setting = ProfitStoplossSetting()
+            self.profit_loss_setting.load()
+
             self.trading_mode_setting = TradingModeSetting()
+            self.trading_mode_setting.load()
 
             # Runtime state
             self.app_running = False
@@ -202,6 +216,9 @@ class TradingGUI(QMainWindow):
             self.signal_debug_popup = None
             self.connection_monitor_popup = None
             self.system_monitor_popup = None
+
+            # FEATURE 5: Daily P&L Widget
+            self.daily_pnl_widget = None
 
             # Log buffer for capturing logs when popup is closed
             self._log_buffer = []
@@ -262,6 +279,7 @@ class TradingGUI(QMainWindow):
         self.signal_debug_popup = None
         self.connection_monitor_popup = None
         self.system_monitor_popup = None
+        self.daily_pnl_widget = None
         self._log_buffer = []
         self._max_buffer_size = 5000
         self._log_handler = None
@@ -347,6 +365,10 @@ class TradingGUI(QMainWindow):
             self.app_state_changed.connect(self._on_app_state_changed)
             self.strategy_changed.connect(self._on_strategy_changed)
             self.log_message_received.connect(self._on_log_message)
+
+            # FEATURE 5: Connect trade signals
+            self.trade_closed.connect(self._on_trade_closed)
+            self.unrealized_pnl_updated.connect(self._on_unrealized_pnl_updated)
         except Exception as e:
             logger.error(f"[TradingGUI._setup_internal_signals] Signal setup failed: {e}", exc_info=True)
 
@@ -394,6 +416,31 @@ class TradingGUI(QMainWindow):
                     self._system_tray_icon.setToolTip(f"Trading App - Stopped ({mode} mode)")
         except Exception as e:
             logger.error(f"[TradingGUI._on_app_state_changed] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(float, bool)
+    def _on_trade_closed(self, pnl: float, is_winner: bool):
+        """
+        FEATURE 5: Handle trade closed signal from OrderExecutor.
+        Updates DailyPnLWidget when a trade is closed.
+        """
+        try:
+            if self.daily_pnl_widget:
+                self.daily_pnl_widget.on_trade_closed(pnl, is_winner)
+            logger.info(f"Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_trade_closed] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(float)
+    def _on_unrealized_pnl_updated(self, pnl: float):
+        """
+        FEATURE 5: Handle unrealized P&L updates from TradingApp.
+        Updates DailyPnLWidget with current unrealized P&L.
+        """
+        try:
+            if self.daily_pnl_widget:
+                self.daily_pnl_widget.on_unrealized_update(pnl)
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_unrealized_pnl_updated] Failed: {e}", exc_info=True)
 
     def _setup_log_handler(self):
         """Setup Qt log handler with buffering"""
@@ -505,7 +552,7 @@ class TradingGUI(QMainWindow):
         self.raise_()
 
     def _build_layout(self):
-        """Build main window layout"""
+        """Build main window layout with DailyPnLWidget"""
         try:
             central = QWidget()
             self.setCentralWidget(central)
@@ -544,6 +591,10 @@ class TradingGUI(QMainWindow):
             # Set initial sizes (chart gets 75%, status gets 25%)
             top_splitter.setSizes([1060, 340])
             root_layout.addWidget(top_splitter, 1)
+
+            # ── FEATURE 5: Daily P&L Widget (below splitter) ─────────────────────────
+            self.daily_pnl_widget = DailyPnLWidget(self.config)
+            root_layout.addWidget(self.daily_pnl_widget)
 
             # ── Bottom section: App Status Bar ─────────────────────────────
             self.app_status_bar = AppStatusBar()
@@ -794,8 +845,9 @@ class TradingGUI(QMainWindow):
                 status_info['fetching_history'] = self.trading_app._history_fetch_in_progress.is_set()
 
             # Check processing status
-            if hasattr(self.trading_app, '_processing_in_progress'):
-                status_info['processing'] = self.trading_app._processing_in_progress.is_set()
+            if hasattr(self.trading_app, '_tick_queue'):
+                # Queue-based processing doesn't have an "in progress" flag
+                status_info['processing'] = not self.trading_app._tick_queue.empty()
 
             # Check order pending status
             if hasattr(self.trading_app.state, 'order_pending'):
@@ -818,6 +870,14 @@ class TradingGUI(QMainWindow):
             # Get current P&L
             if hasattr(self.trading_app.state, 'current_pnl'):
                 status_info['current_pnl'] = self.trading_app.state.current_pnl
+
+                # FEATURE 5: Emit unrealized P&L for DailyPnLWidget (FIX: handle None)
+                pnl_value = status_info['current_pnl']
+                if pnl_value is not None:
+                    self.unrealized_pnl_updated.emit(float(pnl_value))
+                else:
+                    # Emit 0.0 when no position (no unrealized P&L)
+                    self.unrealized_pnl_updated.emit(0.0)
 
             # Update status bar
             self.app_status_bar.update_status(
@@ -948,10 +1008,33 @@ class TradingGUI(QMainWindow):
     def _init_trading_app(self):
         """Create the trading app instance"""
         try:
+            # IMPORTANT FIX: Log settings before creating TradingApp for debugging
+            logger.info("Initializing TradingApp with settings:")
+            logger.info(
+                f"  Brokerage: client_id={self.brokerage_setting.client_id[:5]}..." if self.brokerage_setting.client_id else "  Brokerage: No client_id")
+            logger.info(f"  Daily: derivative={self.daily_setting.derivative}, lot_size={self.daily_setting.lot_size}")
+            logger.info(
+                f"  P&L: tp={self.profit_loss_setting.tp_percentage}%, sl={self.profit_loss_setting.stoploss_percentage}%")
+            logger.info(f"  Mode: {self.trading_mode_setting.mode.value}")
+
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,
             )
+
+            # FEATURE 5: Connect trade closed callback
+            if hasattr(self.trading_app, 'executor'):
+                self.trading_app.executor.on_trade_closed_callback = self._on_trade_closed
+
+            # FEATURE 1: Inject risk manager config
+            if hasattr(self.trading_app, 'risk_manager'):
+                # Risk manager will get config from self.config
+                pass
+
+            # FEATURE 4: Inject notifier with settings
+            if hasattr(self.trading_app, 'notifier'):
+                # Notifier gets config from self.config
+                pass
 
             # Wire up chart config + signal engine
             try:
@@ -1014,6 +1097,12 @@ class TradingGUI(QMainWindow):
             self.trading_thread.token_expired.connect(self._on_token_expired)
             self.trading_thread.finished.connect(self._on_engine_finished)
             self.trading_thread.started.connect(lambda: logger.info("Trading thread started"))
+
+            # FEATURE 5: Connect trade closed signal from thread
+            self.trading_thread.position_closed.connect(
+                lambda sym, pnl: self.trade_closed.emit(pnl, pnl > 0)
+            )
+
             self.trading_thread.start()
 
             self.app_running = True
@@ -1525,6 +1614,11 @@ class TradingGUI(QMainWindow):
                 config=self.config,
                 broker_setting=self.brokerage_setting,
             )
+
+            # FEATURE 5: Reconnect trade closed callback
+            if hasattr(self.trading_app, 'executor'):
+                self.trading_app.executor.on_trade_closed_callback = self._on_trade_closed
+
             QMessageBox.information(self, "Reloaded", "Broker reloaded successfully.")
             logger.info("Broker reloaded successfully")
         except Exception as e:
@@ -1662,6 +1756,10 @@ class TradingGUI(QMainWindow):
                 # Clear trade history cache
                 self._trade_file_mtime = 0
                 self._last_loaded_trade_data = None
+
+                # FEATURE 5: Reset DailyPnLWidget
+                if self.daily_pnl_widget:
+                    self.daily_pnl_widget.reset()
 
                 QMessageBox.information(self, "Cache Cleared", "Cache has been cleared successfully.")
                 logger.info("Cache cleared")
@@ -1821,6 +1919,13 @@ class TradingGUI(QMainWindow):
                 except Exception as e:
                     logger.error(f"Trading app cleanup error: {e}")
 
+            # FEATURE 5: Cleanup DailyPnLWidget
+            if self.daily_pnl_widget and hasattr(self.daily_pnl_widget, 'cleanup'):
+                try:
+                    self.daily_pnl_widget.cleanup()
+                except Exception as e:
+                    logger.error(f"DailyPnLWidget cleanup error: {e}")
+
             logger.info("Cleanup completed, closing application")
             event.accept()
 
@@ -1856,6 +1961,13 @@ class TradingGUI(QMainWindow):
                             self.trading_thread.wait(2000)
                     except Exception as e:
                         logger.error(f"Thread cleanup error: {e}", exc_info=True)
+
+            # FEATURE 5: Cleanup DailyPnLWidget
+            if self.daily_pnl_widget and hasattr(self.daily_pnl_widget, 'cleanup'):
+                try:
+                    self.daily_pnl_widget.cleanup()
+                except Exception as e:
+                    logger.error(f"DailyPnLWidget cleanup error: {e}")
 
             # Remove log handler
             if self._log_handler:

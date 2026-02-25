@@ -30,6 +30,8 @@ class PositionMonitor:
     def update_trailing_sl_tp(self, trading: Any, state: Any) -> None:
         """
         Update the trailing stop-loss and take-profit levels based on price movement and strategy.
+
+        BUG #1 FIX: Stop-loss direction corrected for long options (BELOW entry price)
         """
         try:
             # Rule 6: Input validation
@@ -71,59 +73,6 @@ class PositionMonitor:
             if getattr(state, "highest_current_price", None) is None:
                 state.highest_current_price = buy_price
 
-            # FIX: Safely extract supertrend trend list
-            try:
-                derivative_trend = getattr(state, "derivative_trend", {})
-                if not isinstance(derivative_trend, dict):
-                    logger.warning("derivative_trend is not a dict")
-                    return
-
-                supertrend_data = derivative_trend.get("super_trend_short", {})
-                if not isinstance(supertrend_data, dict):
-                    logger.warning("super_trend_short is not a dict")
-                    return
-
-                trend_list = supertrend_data.get("trend") or []
-                if not isinstance(trend_list, (list, tuple)):
-                    logger.warning("trend_list is not a list/tuple")
-                    return
-
-                if not trend_list:
-                    logger.warning("Supertrend SL not available — skipping SL update.")
-                    return
-
-                try:
-                    supertrend_sl = float(trend_list[-1])
-                except (ValueError, TypeError, IndexError) as e:
-                    logger.warning(f"Failed to convert supertrend SL: {e}")
-                    return
-            except Exception as e:
-                logger.warning(f"Error accessing supertrend data: {e}")
-                return
-
-            derivative_price = getattr(state, "derivative_current_price", 'N/A')
-
-            if state.current_position == CALL:
-                if state.index_stop_loss is None or supertrend_sl > state.index_stop_loss:
-                    prev = state.index_stop_loss
-                    state.index_stop_loss = supertrend_sl
-
-                    # Update stop loss in database for all open orders
-                    self._update_orders_stop_loss(state, supertrend_sl)
-
-                    logger.info(f"[CALL] SL updated from {prev} to {supertrend_sl}, "
-                                f"LTP: {derivative_price}")
-            elif state.current_position == PUT:
-                if state.index_stop_loss is None or supertrend_sl < state.index_stop_loss:
-                    prev = state.index_stop_loss
-                    state.index_stop_loss = supertrend_sl
-
-                    # Update stop loss in database for all open orders
-                    self._update_orders_stop_loss(state, supertrend_sl)
-
-                    logger.info(f"[PUT] SL updated from {prev} to {supertrend_sl}, "
-                                f"LTP: {derivative_price}")
-
             # Check if price crossed TP and increased further
             try:
                 price_increased = current_price > state.highest_current_price
@@ -157,11 +106,19 @@ class PositionMonitor:
 
                         # Update SL and TP points
                         try:
+                            # BUG #1 FIX: Use NEGATIVE side for stop-loss (below price)
+                            # Original used POSITIVE which was wrong for long options
                             state.stop_loss = Utils.percentage_above_or_below(
-                                price=buy_price, side=POSITIVE, percentage=state.stoploss_percentage
+                                price=buy_price,
+                                side=NEGATIVE,  # Changed from POSITIVE to NEGATIVE
+                                percentage=state.stoploss_percentage
                             )
+
+                            # TP remains POSITIVE (above price)
                             state.tp_point = Utils.percentage_above_or_below(
-                                price=buy_price, side=POSITIVE, percentage=state.tp_percentage
+                                price=buy_price,
+                                side=POSITIVE,
+                                percentage=state.tp_percentage
                             )
 
                             # Update stop loss in database

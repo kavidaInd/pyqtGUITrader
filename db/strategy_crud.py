@@ -9,7 +9,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 
 from db.connector import DatabaseConnector, get_db
-from db.crud import strategies as base_strategies
+from db.crud import strategies  # Fixed: Import strategies directly
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,11 @@ class StrategyCRUD:
 
     def list_all(self, db: DatabaseConnector = None) -> List[Dict[str, Any]]:
         """Return all strategy metadata rows."""
-        return base_strategies.list_all(db)
+        return strategies.list_all(db)  # Fixed: use strategies directly
 
     def get(self, slug: str, db: DatabaseConnector = None) -> Optional[Dict[str, Any]]:
         """Return a full strategy dict (indicators + engine decoded)."""
-        return base_strategies.get(slug, db)
+        return strategies.get(slug, db)  # Fixed: use strategies directly
 
     def create(
             self,
@@ -48,12 +48,12 @@ class StrategyCRUD:
 
             # Handle collisions
             base, n = slug, 2
-            while base_strategies.exists(slug, db):
+            while strategies.exists(slug, db):  # Fixed: use strategies directly
                 slug = f"{base}-{n}"
                 n += 1
 
             # Create strategy
-            ok = base_strategies.create(
+            ok = strategies.create(  # Fixed: use strategies directly
                 slug=slug,
                 name=name,
                 description=description,
@@ -115,8 +115,14 @@ class StrategyCRUD:
             indicators = data.get("indicators", {})
             engine = data.get("engine", {})
 
+            # FEATURE 3: Ensure engine has confidence threshold
+            if engine and "min_confidence" not in engine:
+                # Get from config or use default
+                from db.config_crud import config_crud
+                engine["min_confidence"] = config_crud.get("min_confidence", 0.6, db)
+
             # Use upsert
-            return base_strategies.upsert(
+            return strategies.upsert(  # Fixed: use strategies directly
                 slug=slug,
                 name=name,
                 description=description,
@@ -168,7 +174,7 @@ class StrategyCRUD:
                     self.set_active(other_slugs[0], db)
 
             # Delete
-            ok = base_strategies.delete(slug, db)
+            ok = strategies.delete(slug, db)  # Fixed: use strategies directly
             if ok:
                 logger.info(f"Deleted strategy: {slug}")
                 return True, "Deleted"
@@ -182,17 +188,17 @@ class StrategyCRUD:
     def activate(self, slug: str, db: DatabaseConnector = None) -> bool:
         """Set a strategy as active."""
         db = db or get_db()
-        return base_strategies.set_active(slug, db)
+        return strategies.set_active(slug, db)  # Fixed: use strategies directly
 
     def get_active_slug(self, db: DatabaseConnector = None) -> Optional[str]:
         """Get the slug of the active strategy."""
         db = db or get_db()
-        return base_strategies.get_active_slug(db)
+        return strategies.get_active_slug(db)  # Fixed: use strategies directly
 
     def get_active(self, db: DatabaseConnector = None) -> Optional[Dict[str, Any]]:
         """Return the currently active strategy."""
         db = db or get_db()
-        return base_strategies.get_active(db)
+        return strategies.get_active(db)  # Fixed: use strategies directly
 
     def get_active_name(self, db: DatabaseConnector = None) -> str:
         """Get the name of the active strategy."""
@@ -211,6 +217,24 @@ class StrategyCRUD:
         db = db or get_db()
         active = self.get_active(db)
         return active.get("engine", {}) if active else {}
+
+    def get_active_min_confidence(self, db: DatabaseConnector = None) -> float:
+        """
+        FEATURE 3: Get min_confidence from active strategy or config.
+
+        Returns:
+            Minimum confidence threshold (0.0-1.0)
+        """
+        db = db or get_db()
+        engine = self.get_active_engine_config(db)
+
+        # Try strategy-specific first
+        if engine and "min_confidence" in engine:
+            return float(engine["min_confidence"])
+
+        # Fall back to global config
+        from db.config_crud import config_crud
+        return config_crud.get("min_confidence", 0.6, db)
 
     def count(self, db: DatabaseConnector = None) -> int:
         """Get number of strategies."""

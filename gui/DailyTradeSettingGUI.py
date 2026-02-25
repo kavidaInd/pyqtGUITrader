@@ -3,11 +3,12 @@ import threading
 from typing import Optional, Dict, Any, Tuple
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QDoubleValidator, QIntValidator
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QVBoxLayout, QLabel,
                              QWidget, QTabWidget, QFrame, QScrollArea,
-                             QComboBox, QCheckBox)
+                             QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
+                             QGroupBox, QHBoxLayout)
 
 from gui import DailyTradeSetting
 
@@ -41,6 +42,16 @@ class DailyTradeSettingGUI(QDialog):
         "lower_percentage": (0, 100),
         "cancel_after": (1, 60),
         "capital_reserve": (0, 1000000),
+        # FEATURE 6: MTF validation
+        "mtf_ema_fast": (1, 50),
+        "mtf_ema_slow": (5, 200),
+        "mtf_agreement_required": (1, 3),
+        # FEATURE 1: Risk validation
+        "max_daily_loss": (-1000000, 0),  # Negative values only
+        "max_trades_per_day": (1, 100),
+        "daily_target": (0, 1000000),
+        # FEATURE 3: Confidence validation
+        "min_confidence": (0.0, 1.0),
     }
 
     def __init__(self, parent, daily_setting: DailyTradeSetting, app=None):
@@ -58,13 +69,25 @@ class DailyTradeSettingGUI(QDialog):
 
             self.setWindowTitle("Daily Trade Settings")
             self.setModal(True)
-            self.setMinimumSize(650, 600)
-            self.resize(650, 600)
+            self.setMinimumSize(750, 700)  # Increased size for new tabs
+            self.resize(750, 700)
 
-            # EXACT stylesheet preservation - no changes
+            # EXACT stylesheet preservation with enhancements
             self.setStyleSheet("""
                 QDialog { background:#161b22; color:#e6edf3; }
                 QLabel  { color:#8b949e; }
+                QGroupBox {
+                    border: 1px solid #30363d;
+                    border-radius: 6px;
+                    margin-top: 10px;
+                    font-weight: bold;
+                    color: #e6edf3;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 5px 0 5px;
+                }
                 QTabWidget::pane {
                     border: 1px solid #30363d;
                     border-radius: 6px;
@@ -87,11 +110,32 @@ class DailyTradeSettingGUI(QDialog):
                     font-weight: bold;
                 }
                 QTabBar::tab:hover:!selected { background:#30363d; color:#e6edf3; }
-                QLineEdit, QComboBox {
+                QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
                     background:#21262d; color:#e6edf3; border:1px solid #30363d;
                     border-radius:4px; padding:8px; font-size:10pt;
+                    min-height: 20px;
                 }
-                QLineEdit:focus, QComboBox:focus { border:2px solid #58a6ff; }
+                QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+                    border:2px solid #58a6ff;
+                }
+                QSpinBox::up-button, QSpinBox::down-button,
+                QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+                    background: #30363d;
+                    border: none;
+                    width: 16px;
+                }
+                QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+                    image: none;
+                    border-left: 5px solid transparent;
+                    border-right: 5px solid transparent;
+                    border-bottom: 5px solid #8b949e;
+                }
+                QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+                    image: none;
+                    border-left: 5px solid transparent;
+                    border-right: 5px solid transparent;
+                    border-top: 5px solid #8b949e;
+                }
                 QCheckBox { color:#e6edf3; spacing:8px; }
                 QCheckBox::indicator { width:18px; height:18px; }
                 QCheckBox::indicator:unchecked { border:2px solid #30363d; background:#21262d; border-radius:3px; }
@@ -126,7 +170,12 @@ class DailyTradeSettingGUI(QDialog):
             # Tabs
             self.tabs = QTabWidget()
             root.addWidget(self.tabs)
-            self.tabs.addTab(self._build_settings_tab(), "⚙️ Settings")
+
+            # Add all tabs
+            self.tabs.addTab(self._build_settings_tab(), "⚙️ Core Settings")
+            self.tabs.addTab(self._build_risk_tab(), "⚠️ Risk Management")  # FEATURE 1
+            self.tabs.addTab(self._build_mtf_tab(), "📈 MTF Filter")  # FEATURE 6
+            self.tabs.addTab(self._build_signal_tab(), "🎯 Signal")  # FEATURE 3
             self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
 
             # Status + Save (always visible below tabs)
@@ -148,24 +197,7 @@ class DailyTradeSettingGUI(QDialog):
 
         except Exception as e:
             logger.critical(f"[DailyTradeSettingGUI.__init__] Failed: {e}", exc_info=True)
-            # Still try to show a basic dialog
-            super().__init__(parent)
-            self.daily_setting = daily_setting
-            self.app = app
-            self._safe_defaults_init()
-            self.setWindowTitle("Daily Trade Settings - ERROR")
-            self.setMinimumSize(400, 200)
-
-            # Add error message
-            layout = QVBoxLayout(self)
-            error_label = QLabel(f"Failed to initialize settings dialog:\n{e}")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -190,9 +222,29 @@ class DailyTradeSettingGUI(QDialog):
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._connect_signals] Failed: {e}", exc_info=True)
 
-    # ── Settings Tab ──────────────────────────────────────────────────────────
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Daily Trade Settings - ERROR")
+            self.setMinimumSize(400, 200)
+
+            layout = QVBoxLayout(self)
+            error_label = QLabel(f"❌ Failed to initialize settings dialog.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
+            layout.addWidget(error_label)
+
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn)
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
+
+    # ── Core Settings Tab (Original) ──────────────────────────────────────────
     def _build_settings_tab(self):
-        """Build the settings tab with form fields"""
+        """Build the core settings tab with form fields"""
         try:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -272,7 +324,7 @@ class DailyTradeSettingGUI(QDialog):
                     edit.setPlaceholderText(placeholder)
                     edit.setToolTip(tooltip)
 
-                    # Safely get value from settings - FIXED: Use explicit None check
+                    # Safely get value from settings
                     val = ""
                     if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                         val = self.daily_setting.data.get(key, "")
@@ -302,7 +354,6 @@ class DailyTradeSettingGUI(QDialog):
                     self.interval_combo.addItem(display, value)
 
                 current_val = "2m"
-                # FIXED: Use explicit None check
                 if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                     current_val = self.daily_setting.data.get("history_interval", "2m")
 
@@ -338,7 +389,6 @@ class DailyTradeSettingGUI(QDialog):
                 self.sideway_check = QCheckBox("Enable trading during sideways market (12:00–14:00)")
 
                 checked = False
-                # FIXED: Use explicit None check
                 if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                     checked = self.daily_setting.data.get("sideway_zone_trade", False)
                 self.sideway_check.setChecked(checked)
@@ -365,16 +415,291 @@ class DailyTradeSettingGUI(QDialog):
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._build_settings_tab] Failed: {e}", exc_info=True)
-            # Return a basic scroll area on error
+            return self._create_error_scroll(f"Error building settings tab: {e}")
+
+    # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
+    def _build_risk_tab(self):
+        """Build risk management tab"""
+        try:
             scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+
             container = QWidget()
             layout = QVBoxLayout(container)
-            error_label = QLabel(f"Error building settings tab: {e}")
-            error_label.setStyleSheet("color: #f85149;")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Risk Limits Group
+            limits_group = QGroupBox("Daily Risk Limits")
+            limits_layout = QFormLayout(limits_group)
+            limits_layout.setSpacing(8)
+            limits_layout.setLabelAlignment(Qt.AlignRight)
+
+            # Max Daily Loss
+            loss_spin = QDoubleSpinBox()
+            loss_spin.setRange(-1000000, 0)
+            loss_spin.setSingleStep(100)
+            loss_spin.setPrefix("₹")
+            loss_spin.setToolTip("Maximum daily loss before bot stops trading (negative value)")
+            current_loss = -5000
+            if self.daily_setting and hasattr(self.daily_setting, 'max_daily_loss'):
+                current_loss = self.daily_setting.max_daily_loss
+            loss_spin.setValue(current_loss)
+            limits_layout.addRow("Max Daily Loss:", loss_spin)
+            self.vars["max_daily_loss"] = (loss_spin, float)
+            self.entries["max_daily_loss"] = loss_spin
+
+            loss_hint = QLabel("Trading stops when daily P&L reaches this level (negative number)")
+            loss_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            limits_layout.addRow("", loss_hint)
+
+            # Max Trades Per Day
+            trades_spin = QSpinBox()
+            trades_spin.setRange(1, 100)
+            trades_spin.setSuffix(" trades")
+            trades_spin.setToolTip("Maximum number of trades per day")
+            current_trades = 10
+            if self.daily_setting and hasattr(self.daily_setting, 'max_trades_per_day'):
+                current_trades = self.daily_setting.max_trades_per_day
+            trades_spin.setValue(current_trades)
+            limits_layout.addRow("Max Trades/Day:", trades_spin)
+            self.vars["max_trades_per_day"] = (trades_spin, int)
+            self.entries["max_trades_per_day"] = trades_spin
+
+            trades_hint = QLabel("Hard limit on number of entries per day")
+            trades_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            limits_layout.addRow("", trades_hint)
+
+            # Daily Profit Target
+            target_spin = QDoubleSpinBox()
+            target_spin.setRange(0, 1000000)
+            target_spin.setSingleStep(100)
+            target_spin.setPrefix("₹")
+            target_spin.setToolTip("Daily profit target for progress tracking")
+            current_target = 5000
+            if self.daily_setting and hasattr(self.daily_setting, 'daily_target'):
+                current_target = self.daily_setting.daily_target
+            target_spin.setValue(current_target)
+            limits_layout.addRow("Daily Target:", target_spin)
+            self.vars["daily_target"] = (target_spin, float)
+            self.entries["daily_target"] = target_spin
+
+            target_hint = QLabel("Profit target for the day (for display purposes only)")
+            target_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            limits_layout.addRow("", target_hint)
+
+            layout.addWidget(limits_group)
+
+            # Info Card
+            info_card = QFrame()
+            info_card.setObjectName("infoCard")
+            info_layout = QVBoxLayout(info_card)
+            info_layout.setContentsMargins(14, 12, 14, 12)
+
+            info_title = QLabel("📘 About Risk Management:")
+            info_title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            info_title.setStyleSheet("color:#e6edf3;")
+
+            info_text = QLabel(
+                "• **Max Daily Loss**: When daily P&L reaches this negative value, "
+                "the bot stops trading automatically.\n\n"
+                "• **Max Trades/Day**: Hard limit on the number of entries per day. "
+                "Once reached, no new positions are opened.\n\n"
+                "• **Daily Target**: Visual progress indicator only - does not stop trading.\n\n"
+                "These limits help protect your capital and prevent over-trading."
+            )
+            info_text.setWordWrap(True)
+            info_text.setStyleSheet("color:#8b949e; font-size:9pt;")
+
+            info_layout.addWidget(info_title)
+            info_layout.addWidget(info_text)
+            layout.addWidget(info_card)
+
+            layout.addStretch()
             scroll.setWidget(container)
             return scroll
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._build_risk_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building risk tab: {e}")
+
+    # ── FEATURE 6: Multi-Timeframe Filter Tab ────────────────────────────────
+    def _build_mtf_tab(self):
+        """Build Multi-Timeframe Filter settings tab"""
+        try:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Enable/Disable Group
+            enable_group = QGroupBox("MTF Filter Status")
+            enable_layout = QVBoxLayout(enable_group)
+
+            mtf_check = QCheckBox("Enable Multi-Timeframe Filter")
+            mtf_check.setToolTip("When enabled, requires agreement across multiple timeframes before entry")
+            current_enabled = False
+            if self.daily_setting and hasattr(self.daily_setting, 'use_mtf_filter'):
+                current_enabled = self.daily_setting.use_mtf_filter
+            mtf_check.setChecked(current_enabled)
+            enable_layout.addWidget(mtf_check)
+            self.vars["use_mtf_filter"] = (mtf_check, bool)
+
+            enable_hint = QLabel("Requires at least 2 of 3 timeframes to agree with trade direction")
+            enable_hint.setStyleSheet("color:#484f58; font-size:8pt; padding-left:26px;")
+            enable_layout.addWidget(enable_hint)
+
+            layout.addWidget(enable_group)
+
+            # Timeframe Configuration Group
+            tf_group = QGroupBox("Timeframe Configuration")
+            tf_layout = QFormLayout(tf_group)
+            tf_layout.setSpacing(8)
+            tf_layout.setLabelAlignment(Qt.AlignRight)
+
+            # Timeframes
+            tf_edit = QLineEdit()
+            tf_edit.setPlaceholderText("1,5,15")
+            tf_edit.setToolTip("Comma-separated list of timeframes in minutes")
+            current_tf = "1,5,15"
+            if self.daily_setting and hasattr(self.daily_setting, 'mtf_timeframes'):
+                current_tf = self.daily_setting.mtf_timeframes
+            tf_edit.setText(current_tf)
+            tf_layout.addRow("Timeframes:", tf_edit)
+            self.vars["mtf_timeframes"] = (tf_edit, str)
+
+            tf_hint = QLabel("Example: 1,5,15 for 1min, 5min, and 15min")
+            tf_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            tf_layout.addRow("", tf_hint)
+
+            # Fast EMA
+            fast_spin = QSpinBox()
+            fast_spin.setRange(1, 50)
+            fast_spin.setSuffix(" periods")
+            fast_spin.setToolTip("Fast EMA period for trend detection")
+            current_fast = 9
+            if self.daily_setting and hasattr(self.daily_setting, 'mtf_ema_fast'):
+                current_fast = self.daily_setting.mtf_ema_fast
+            fast_spin.setValue(current_fast)
+            tf_layout.addRow("Fast EMA:", fast_spin)
+            self.vars["mtf_ema_fast"] = (fast_spin, int)
+
+            # Slow EMA
+            slow_spin = QSpinBox()
+            slow_spin.setRange(5, 200)
+            slow_spin.setSuffix(" periods")
+            slow_spin.setToolTip("Slow EMA period for trend detection")
+            current_slow = 21
+            if self.daily_setting and hasattr(self.daily_setting, 'mtf_ema_slow'):
+                current_slow = self.daily_setting.mtf_ema_slow
+            slow_spin.setValue(current_slow)
+            tf_layout.addRow("Slow EMA:", slow_spin)
+            self.vars["mtf_ema_slow"] = (slow_spin, int)
+
+            # Agreement Required
+            agree_spin = QSpinBox()
+            agree_spin.setRange(1, 3)
+            agree_spin.setSuffix(" timeframes")
+            agree_spin.setToolTip("Number of timeframes that must agree")
+            current_agree = 2
+            if self.daily_setting and hasattr(self.daily_setting, 'mtf_agreement_required'):
+                current_agree = self.daily_setting.mtf_agreement_required
+            agree_spin.setValue(current_agree)
+            tf_layout.addRow("Agreement Required:", agree_spin)
+            self.vars["mtf_agreement_required"] = (agree_spin, int)
+
+            agree_hint = QLabel("How many timeframes must agree before allowing entry")
+            agree_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            tf_layout.addRow("", agree_hint)
+
+            layout.addWidget(tf_group)
+
+            # Info Card
+            info_card = self._create_mtf_info_card()
+            layout.addWidget(info_card)
+
+            layout.addStretch()
+            scroll.setWidget(container)
+            return scroll
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._build_mtf_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building MTF tab: {e}")
+
+    # ── FEATURE 3: Signal Confidence Tab ─────────────────────────────────────
+    def _build_signal_tab(self):
+        """Build signal confidence settings tab"""
+        try:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Confidence Group
+            conf_group = QGroupBox("Signal Confidence Settings")
+            conf_layout = QFormLayout(conf_group)
+            conf_layout.setSpacing(8)
+            conf_layout.setLabelAlignment(Qt.AlignRight)
+
+            # Min Confidence
+            conf_spin = QDoubleSpinBox()
+            conf_spin.setRange(0.0, 1.0)
+            conf_spin.setSingleStep(0.05)
+            conf_spin.setDecimals(2)
+            conf_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
+            current_conf = 0.6
+            if self.daily_setting and hasattr(self.daily_setting, 'min_confidence'):
+                current_conf = self.daily_setting.min_confidence
+            conf_spin.setValue(current_conf)
+            conf_layout.addRow("Min Confidence:", conf_spin)
+            self.vars["min_confidence"] = (conf_spin, float)
+
+            conf_hint = QLabel("Signals below this confidence are suppressed (0.0-1.0)")
+            conf_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            conf_layout.addRow("", conf_hint)
+
+            layout.addWidget(conf_group)
+
+            # Info Card
+            info_card = QFrame()
+            info_card.setObjectName("infoCard")
+            info_layout = QVBoxLayout(info_card)
+            info_layout.setContentsMargins(14, 12, 14, 12)
+
+            info_title = QLabel("📘 About Signal Confidence:")
+            info_title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            info_title.setStyleSheet("color:#e6edf3;")
+
+            info_text = QLabel(
+                "• **Confidence Score**: Weighted average of rule results\n"
+                "• **Min Confidence**: Signals below this threshold are ignored\n"
+                "• **Rule Weights**: Configured in Strategy Editor\n\n"
+                "Example: If min confidence = 0.6, a group needs 60% of weighted "
+                "rules to pass before firing."
+            )
+            info_text.setWordWrap(True)
+            info_text.setStyleSheet("color:#8b949e; font-size:9pt;")
+
+            info_layout.addWidget(info_title)
+            info_layout.addWidget(info_text)
+            layout.addWidget(info_card)
+
+            layout.addStretch()
+            scroll.setWidget(container)
+            return scroll
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._build_signal_tab] Failed: {e}", exc_info=True)
+            return self._create_error_scroll(f"Error building signal tab: {e}")
 
     # ── Information Tab ───────────────────────────────────────────────────────
     def _build_info_tab(self):
@@ -425,46 +750,25 @@ class DailyTradeSettingGUI(QDialog):
                     "• Call and Put lookbacks can be tuned independently."
                 ),
                 (
-                    "📈  Max Num of Option",
-                    "The maximum number of open option positions the bot will hold simultaneously.\n\n"
-                    "• Once this limit is reached, no new positions are opened until existing ones close.\n"
-                    "• Acts as a hard position-size cap to limit overall exposure.\n"
-                    "• Recommended: start low (e.g. 2–5) and increase only after backtesting."
+                    "⚠️  Risk Management",
+                    "Daily loss limits and trade counts to protect capital.\n\n"
+                    "• **Max Daily Loss**: Stop trading when daily P&L hits this level.\n"
+                    "• **Max Trades/Day**: Hard limit on number of entries.\n"
+                    "• **Daily Target**: Visual progress indicator for profit goals."
                 ),
                 (
-                    "🔻  Lower Percentage",
-                    "A momentum filter — the minimum percentage price move required before an entry is triggered.\n\n"
-                    "• Higher value = stricter filter, fewer but potentially higher-quality entries.\n"
-                    "• Lower value = more entries, but with more false signals.\n"
-                    "• Expressed as a percentage, e.g. 0.5 means 0.5% minimum move."
+                    "📈  Multi-Timeframe Filter",
+                    "Confirms trend direction across multiple timeframes.\n\n"
+                    "• Uses EMA 9/21 crossovers on 1m, 5m, 15m charts.\n"
+                    "• Requires at least 2 of 3 timeframes to agree.\n"
+                    "• Reduces false entries during conflicting trends."
                 ),
                 (
-                    "⏰  Cancel After",
-                    "If a limit order is not filled within this many seconds, it is automatically cancelled.\n\n"
-                    "• Prevents stale orders from sitting in the order book during fast-moving markets.\n"
-                    "• Set lower (e.g. 10–15s) for highly liquid instruments.\n"
-                    "• Set higher for less liquid contracts where fills may take longer."
-                ),
-                (
-                    "💰  Capital Reserve",
-                    "The amount of capital (in ₹) that is always kept aside and never deployed.\n\n"
-                    "• The strategy uses: available capital − reserve for sizing positions.\n"
-                    "• Useful for maintaining a buffer against margin calls or unexpected losses.\n"
-                    "• Set to 0 to allow full capital deployment."
-                ),
-                (
-                    "⏱️  History Interval",
-                    "The candle timeframe used when fetching historical price data for signal generation.\n\n"
-                    "• Smaller intervals (e.g. 5S, 1m) = more granular signals, heavier API load.\n"
-                    "• Larger intervals (e.g. 15m, 30m) = slower signals, less data bandwidth.\n"
-                    "• Match this to the timeframe your strategy was designed and backtested on."
-                ),
-                (
-                    "↔️  Sideway Zone Trade",
-                    "Controls whether the bot continues trading during the low-volatility midday window (12:00–14:00).\n\n"
-                    "• Disabled (default): the bot pauses entries during this window to avoid choppy price action.\n"
-                    "• Enabled: the bot treats this window like any other session.\n"
-                    "• Recommended to leave disabled unless your strategy is specifically tuned for low-vol conditions."
+                    "🎯  Signal Confidence",
+                    "Weighted voting system for signal groups.\n\n"
+                    "• Each rule can have a weight (default 1.0).\n"
+                    "• Confidence = passed_weight / total_weight.\n"
+                    "• Signals below min_confidence are suppressed."
                 ),
                 (
                     "📁  Where are settings stored?",
@@ -497,7 +801,6 @@ class DailyTradeSettingGUI(QDialog):
 
                 except Exception as e:
                     logger.error(f"Failed to create info card for {title}: {e}", exc_info=True)
-                    # Skip this card but continue
 
             layout.addStretch()
             scroll.setWidget(container)
@@ -505,16 +808,44 @@ class DailyTradeSettingGUI(QDialog):
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._build_info_tab] Failed: {e}", exc_info=True)
-            # Return a basic scroll area on error
-            scroll = QScrollArea()
-            container = QWidget()
-            layout = QVBoxLayout(container)
-            error_label = QLabel(f"Error building information tab: {e}")
-            error_label.setStyleSheet("color: #f85149;")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
-            scroll.setWidget(container)
-            return scroll
+            return self._create_error_scroll(f"Error building information tab: {e}")
+
+    def _create_mtf_info_card(self):
+        """Create info card for MTF filter"""
+        card = QFrame()
+        card.setObjectName("infoCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+
+        title = QLabel("📘 How Multi-Timeframe Filter Works:")
+        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title.setStyleSheet("color:#e6edf3;")
+
+        text = QLabel(
+            "1. For each timeframe, calculates EMA9 and EMA21\n"
+            "2. Determines trend: BULLISH (EMA9 > EMA21 > LTP) or BEARISH (EMA9 < EMA21 < LTP)\n"
+            "3. Requires at least N timeframes to agree (default: 2 of 3)\n"
+            "4. Entry is blocked if insufficient agreement\n\n"
+            "This filter helps avoid entries during conflicting trends across timeframes."
+        )
+        text.setWordWrap(True)
+        text.setStyleSheet("color:#8b949e; font-size:9pt;")
+
+        layout.addWidget(title)
+        layout.addWidget(text)
+        return card
+
+    def _create_error_scroll(self, error_msg):
+        """Create a scroll area with error message"""
+        scroll = QScrollArea()
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        error_label = QLabel(f"❌ {error_msg}")
+        error_label.setStyleSheet("color: #f85149; padding: 20px;")
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+        scroll.setWidget(container)
+        return scroll
 
     # ── Validation ────────────────────────────────────────────────────────────
     def validate_field(self, key: str, value: str, typ: type) -> Tuple[bool, Any, Optional[str]]:
@@ -525,9 +856,16 @@ class DailyTradeSettingGUI(QDialog):
                 logger.warning(f"validate_field called with non-string key: {key}")
                 return False, None, "Invalid field key"
 
+            # Handle empty strings - allow for string fields, convert to default for numbers
             if not value.strip():
-                # Empty string is allowed for some fields (converted to default later)
-                return True, (0 if typ in (int, float) else ""), None
+                if typ in (int, float):
+                    # Use default from validation ranges
+                    if key in self.VALIDATION_RANGES:
+                        lo, hi = self.VALIDATION_RANGES[key]
+                        default_val = lo if typ == int else float(lo)
+                        return True, default_val, None
+                    return True, 0, None
+                return True, "", None
 
             try:
                 if typ == int:
@@ -567,13 +905,7 @@ class DailyTradeSettingGUI(QDialog):
             self.save_btn.setStyleSheet(
                 "QPushButton { background:#2ea043; color:#fff; border-radius:4px; padding:12px; }"
             )
-            # FIXED: Use explicit None checks in loop
-            for entry in self.entries.values():
-                if entry is not None:
-                    entry.setStyleSheet(
-                        "QLineEdit { background:#2d4a2d; color:#e6edf3; border:2px solid #3fb950;"
-                        "            border-radius:4px; padding:8px; }"
-                    )
+            # Reset styles after delay
             QTimer.singleShot(1500, self.reset_styles)
 
             logger.info("Success feedback shown")
@@ -599,23 +931,6 @@ class DailyTradeSettingGUI(QDialog):
     def reset_styles(self):
         """Reset all styles to normal"""
         try:
-            # FIXED: Use explicit None checks
-            for entry in self.entries.values():
-                if entry is not None:
-                    entry.setStyleSheet(
-                        "QLineEdit { background:#21262d; color:#e6edf3; border:1px solid #30363d;"
-                        "            border-radius:4px; padding:8px; }"
-                        "QLineEdit:focus { border:2px solid #58a6ff; }"
-                    )
-
-            # FIXED: Use explicit None check
-            if self.interval_combo is not None:
-                self.interval_combo.setStyleSheet(
-                    "QComboBox { background:#21262d; color:#e6edf3; border:1px solid #30363d;"
-                    "            border-radius:4px; padding:8px; font-size:10pt; }"
-                    "QComboBox:focus { border:2px solid #58a6ff; }"
-                )
-
             self.save_btn.setText("💾 Save All Settings")
             self.save_btn.setStyleSheet(
                 "QPushButton { background:#238636; color:#fff; border-radius:4px; padding:12px; }"
@@ -645,43 +960,59 @@ class DailyTradeSettingGUI(QDialog):
             validation_errors = []
 
             # Validate all fields
-            for key, (edit, typ) in self.vars.items():
+            for key, (widget, typ) in self.vars.items():
                 try:
-                    # FIXED: Use explicit None check
-                    if edit is None:
-                        logger.warning(f"Edit widget for {key} is None")
+                    if widget is None:
+                        logger.warning(f"Widget for {key} is None")
                         continue
 
-                    text = edit.text().strip()
-                    is_valid, value, error = self.validate_field(key, text, typ)
-
-                    if is_valid:
-                        data_to_save[key] = value
+                    # Get value based on widget type
+                    if isinstance(widget, QLineEdit):
+                        text = widget.text().strip()
+                    elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                        text = str(widget.value())
+                    elif isinstance(widget, QCheckBox):
+                        data_to_save[key] = widget.isChecked()
+                        continue
+                    elif isinstance(widget, QComboBox):
+                        text = widget.currentData() if widget.currentData() else widget.currentText()
                     else:
-                        validation_errors.append(error or f"Invalid value for {key}")
-                        if edit is not None:
-                            edit.setStyleSheet(
-                                "QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149;"
-                                "            border-radius:4px; padding:8px; }"
-                            )
+                        logger.warning(f"Unknown widget type for {key}")
+                        continue
+
+                    # Validate the value
+                    if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                        # Already validated by the widget
+                        data_to_save[key] = widget.value()
+                    else:
+                        is_valid, value, error = self.validate_field(key, text, typ)
+                        if is_valid:
+                            data_to_save[key] = value
+                        else:
+                            validation_errors.append(error or f"Invalid value for {key}")
+                            # Highlight the error
+                            if isinstance(widget, QLineEdit):
+                                widget.setStyleSheet(
+                                    "QLineEdit { background:#4d2a2a; color:#e6edf3; border:2px solid #f85149; }"
+                                )
+
                 except Exception as e:
                     logger.error(f"Error validating field {key}: {e}", exc_info=True)
                     validation_errors.append(f"Validation error for {key}")
 
             if validation_errors:
-                # FIXED: Use explicit None check
-                if self.tabs is not None:
-                    self.tabs.setCurrentIndex(0)
+                self.tabs.setCurrentIndex(0)
                 self.show_error_feedback(validation_errors[0])
                 self.save_btn.setEnabled(True)
                 self._save_in_progress = False
                 self.operation_finished.emit()
                 return
 
-            # Add combo box and checkbox values - FIXED: Use explicit None checks
+            # Add interval combo value
             if self.interval_combo is not None:
                 data_to_save["history_interval"] = self.interval_combo.currentData()
 
+            # Add sideway checkbox
             if self.sideway_check is not None:
                 data_to_save["sideway_zone_trade"] = self.sideway_check.isChecked()
 
@@ -690,7 +1021,7 @@ class DailyTradeSettingGUI(QDialog):
                              args=(data_to_save,),
                              daemon=True, name="DailyTradeSave").start()
 
-            logger.info("Save operation started in background thread")
+            logger.info(f"Save operation started with {len(data_to_save)} fields")
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.save] Failed: {e}", exc_info=True)
@@ -702,7 +1033,6 @@ class DailyTradeSettingGUI(QDialog):
     def _threaded_save(self, data_to_save: Dict[str, Any]):
         """Threaded save operation"""
         try:
-            # Rule 6: Validate daily setting (already correct - explicit None check)
             if self.daily_setting is None:
                 raise ValueError("Daily setting object is None")
 
@@ -716,7 +1046,7 @@ class DailyTradeSettingGUI(QDialog):
                 except Exception as e:
                     logger.error(f"Failed to set {key}={value}: {e}", exc_info=True)
 
-            # Save to file
+            # Save to database
             success = False
             if hasattr(self.daily_setting, 'save'):
                 success = self.daily_setting.save()
@@ -727,8 +1057,8 @@ class DailyTradeSettingGUI(QDialog):
                 self.save_completed.emit(True, "Settings saved successfully!")
                 logger.info("Daily trade settings saved successfully")
             else:
-                self.save_completed.emit(False, "Failed to save settings to file")
-                logger.error("Failed to save daily trade settings to file")
+                self.save_completed.emit(False, "Failed to save settings to database")
+                logger.error("Failed to save daily trade settings to database")
 
         except Exception as e:
             logger.error(f"Threaded save failed: {e}", exc_info=True)
@@ -773,19 +1103,11 @@ class DailyTradeSettingGUI(QDialog):
 
     def _on_operation_started(self):
         """Handle operation started signal"""
-        try:
-            # Disable close button or any other UI elements if needed
-            pass
-        except Exception as e:
-            logger.error(f"[DailyTradeSettingGUI._on_operation_started] Failed: {e}", exc_info=True)
+        pass
 
     def _on_operation_finished(self):
         """Handle operation finished signal"""
-        try:
-            # Re-enable UI elements if needed
-            pass
-        except Exception as e:
-            logger.error(f"[DailyTradeSettingGUI._on_operation_finished] Failed: {e}", exc_info=True)
+        pass
 
     # Rule 8: Cleanup method
     def cleanup(self):
@@ -793,7 +1115,7 @@ class DailyTradeSettingGUI(QDialog):
         try:
             logger.info("[DailyTradeSettingGUI] Starting cleanup")
 
-            # Cancel any pending timers - FIXED: Use explicit None check
+            # Cancel any pending timers
             if hasattr(self, '_save_timer') and self._save_timer is not None:
                 try:
                     if self._save_timer.isActive():
@@ -820,7 +1142,6 @@ class DailyTradeSettingGUI(QDialog):
     def closeEvent(self, event):
         """Handle close event with cleanup"""
         try:
-            # Cancel save if in progress
             if self._save_in_progress:
                 logger.warning("Closing while save in progress")
 

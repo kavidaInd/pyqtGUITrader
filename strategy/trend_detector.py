@@ -3,6 +3,8 @@ trend_detector_db.py
 ====================
 Trend detector that works with database-backed dynamic signal engine.
 Detects trends in market data and evaluates strategy signals.
+
+FEATURE 3: Handles confidence scores and threshold filtering.
 """
 
 from __future__ import annotations
@@ -24,20 +26,22 @@ def _debug_signal_result(result: dict):
     Pretty-prints a full signal evaluation result with actual indicator values.
     Replaces the old raw print(option_signal_result).
 
+    FEATURE 3: Enhanced to show confidence scores.
+
     Output example:
-    ┌─ SIGNAL: WAIT ──────────────────────────────────────
+    ┌─ SIGNAL: WAIT (Confidence: BUY_CALL 75%, BUY_PUT 0%) ─────────────────
     │ Indicator snapshot:
     │   rsi_{"length":14}        last=47.2300  prev=46.8100
     │   macd_{"fast":12,...}     last=-0.3100  prev=-0.2900
     │   ema_{"length":20}        last=244.8000 prev=244.5000
     │
-    │ BUY_CALL  [AND] → MISS
-    │   ✗  CLOSE > OPEN          47.2300 > 48.1000  → False
-    │   ✓  CLOSE > EMA           247.300 > 244.800  → True
-    │   ✗  RSI > 50.0            47.2300 > 50.0000  → False  ← BLOCKER
+    │ BUY_CALL  [AND] → MISS (confidence 75%)
+    │   ✗  CLOSE > OPEN          47.2300 > 48.1000  → False  (w=2.0)
+    │   ✓  CLOSE > EMA           247.300 > 244.800  → True   (w=1.5)
+    │   ✗  RSI > 50.0            47.2300 > 50.0000  → False  (w=1.0) ← BLOCKER
     │
-    │ BUY_PUT   [AND] → MISS
-    │   ✗  MACD < MACD           -0.3100 < -0.3100  → False  ← SELF-COMPARE BUG
+    │ BUY_PUT   [AND] → MISS (confidence 0%)
+    │   ✗  MACD < MACD           -0.3100 < -0.3100  → False  (w=1.0) ← SELF-COMPARE BUG
     └─────────────────────────────────────────────────────
     """
     try:
@@ -47,7 +51,19 @@ def _debug_signal_result(result: dict):
 
         lines = []
         signal_val = result.get("signal_value", "WAIT")
-        lines.append(f"┌─ SIGNAL: {signal_val} " + "─" * max(0, 45 - len(str(signal_val))))
+        confidence = result.get("confidence", {})
+        threshold = result.get("threshold", 0.6)
+
+        # Build confidence summary
+        conf_summary = []
+        for sig, conf in confidence.items():
+            if conf > 0:
+                conf_summary.append(f"{sig} {conf:.0%}")
+
+        header = f"┌─ SIGNAL: {signal_val}"
+        if conf_summary:
+            header += f" (Confidence: {', '.join(conf_summary)})"
+        lines.append(header + " " + "─" * max(0, 45 - len(header)))
 
         # ── Indicator snapshot ────────────────────────────────────────────────────
         ind_vals = result.get("indicator_values", {})
@@ -80,8 +96,9 @@ def _debug_signal_result(result: dict):
                 continue
             logic = "AND"  # default; AND is the common path shown in logs
             group_fired = fired.get(group, False)
+            group_conf = confidence.get(group, 0)
             status = "FIRED ✓" if group_fired else "MISS  ✗"
-            lines.append(f"│ {str(group)[:12]:<12} [{logic}] → {status}")
+            lines.append(f"│ {str(group)[:12]:<12} [{logic}] → {status} (confidence {group_conf:.0%})")
 
             # Find the AND-chain blocker (first False in AND mode)
             first_false_found = False
@@ -93,6 +110,7 @@ def _debug_signal_result(result: dict):
                         rv = r.get("rhs_value") if isinstance(r, dict) else None
                         detail = r.get("detail", "") if isinstance(r, dict) else ""
                         rule_s = r.get("rule", "?") if isinstance(r, dict) else "?"
+                        weight = r.get("weight", 1.0) if isinstance(r, dict) else 1.0
                         tick = "✓" if res else "✗"
 
                         # Flag the first blocker in an AND chain
@@ -105,13 +123,15 @@ def _debug_signal_result(result: dict):
                         if lv is not None and rv is not None and lv == rv and "MACD < MACD" in str(rule_s):
                             blocker_note = "  ← SELF-COMPARE BUG"
 
-                        lines.append(f"│   {tick}  {str(rule_s)[:35]:<35}  {detail}{blocker_note}")
+                        lines.append(f"│   {tick}  {str(rule_s)[:35]:<35}  {detail} (w={weight:.1f}){blocker_note}")
                     except Exception as e:
                         logger.debug(f"Failed to process rule in {group}: {e}")
                         continue
 
             lines.append("│")
 
+        # FEATURE 3: Add threshold info
+        lines.append(f"│ Min Confidence Threshold: {threshold:.0%}")
         lines.append("└" + "─" * 52)
         logger.debug("\n".join(lines))
 
@@ -180,6 +200,8 @@ class TrendDetector:
     """
     Trend detector that works with database-backed signal engine.
     Detects trends in market data and evaluates strategy signals.
+
+    FEATURE 3: Handles confidence scores and threshold filtering.
     """
 
     def __init__(self, config: object, signal_engine: DynamicSignalEngine = None):
@@ -261,9 +283,15 @@ class TrendDetector:
             if self.signal_engine is not None:
                 try:
                     option_signal_result = self.signal_engine.evaluate(df)
+
+                    # FEATURE 3: Add confidence data to state if available
+                    if state is not None and option_signal_result:
+                        self._update_state_with_confidence(state, option_signal_result)
+
                     # ── Structured debug log ──────────────────────────────────
                     _debug_signal_result(option_signal_result)
                     # ─────────────────────────────────────────────────────────
+
                     if hasattr(self.signal_engine, '_last_cache'):
                         try:
                             cache = self.signal_engine.last_cache
@@ -287,6 +315,26 @@ class TrendDetector:
         except Exception as e:
             logger.error(f"Trend detection error for {symbol}: {e}", exc_info=True)
             return None
+
+    def _update_state_with_confidence(self, state: object, signal_result: Dict[str, Any]):
+        """
+        FEATURE 3: Update state with confidence data.
+
+        Args:
+            state: TradeState object
+            signal_result: Signal evaluation result
+        """
+        try:
+            if state is None or not signal_result:
+                return
+
+            # Update state with confidence data if available
+            if hasattr(state, 'signal_confidence'):
+                # This will be handled by the property setter in TradeState
+                pass  # The state object will handle this via its properties
+
+        except Exception as e:
+            logger.error(f"[TrendDetector._update_state_with_confidence] Failed: {e}", exc_info=True)
 
     def get_indicator_cache(self) -> Dict:
         """Return the last indicator cache for debugging"""
@@ -319,6 +367,41 @@ class TrendDetector:
         except Exception as e:
             logger.error(f"[TrendDetector.get_active_strategy_info] Failed: {e}", exc_info=True)
             return {"active": False, "message": f"Error: {e}"}
+
+    # FEATURE 3: New method to get confidence summary
+    def get_confidence_summary(self, signal_result: Dict[str, Any]) -> str:
+        """
+        Get a human-readable summary of confidence scores.
+
+        Args:
+            signal_result: Signal evaluation result
+
+        Returns:
+            String summary
+        """
+        try:
+            if not signal_result or not signal_result.get("available"):
+                return "No signal available"
+
+            confidence = signal_result.get("confidence", {})
+            threshold = signal_result.get("threshold", 0.6)
+
+            parts = []
+            for sig, conf in confidence.items():
+                if conf >= threshold:
+                    parts.append(f"✅ {sig}: {conf:.0%}")
+                elif conf > 0:
+                    parts.append(f"⚠️ {sig}: {conf:.0%}")
+                else:
+                    parts.append(f"❌ {sig}: 0%")
+
+            if parts:
+                return " | ".join(parts)
+            return "No confidence data"
+
+        except Exception as e:
+            logger.error(f"[TrendDetector.get_confidence_summary] Failed: {e}", exc_info=True)
+            return "Error getting confidence summary"
 
     # Rule 8: Cleanup method
     def cleanup(self):

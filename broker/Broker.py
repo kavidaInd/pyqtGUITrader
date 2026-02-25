@@ -4,8 +4,8 @@ import logging.handlers
 import os
 import random
 import time
-from datetime import datetime, date
-from typing import Optional, Any, Callable
+from datetime import datetime, date, timedelta
+from typing import Optional, Any, Callable, List, Dict
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
@@ -15,6 +15,10 @@ from requests.exceptions import Timeout, ConnectionError
 import BaseEnums
 from Utils.Utils import Utils
 from gui.BrokerageSetting import BrokerageSetting
+
+# Import database modules
+from db.connector import get_db
+from db.crud import tokens
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +57,6 @@ class Broker:
     def __init__(self, state, broker_setting: BrokerageSetting = None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
-
         try:
             self.state = state
 
@@ -72,13 +75,17 @@ class Broker:
             if not self.client_id:
                 logger.warning("client_id is missing in broker settings")
 
-            # Load token
+            # ==================================================================
+            # FIX: Load token from database instead of JSON file
+            # ==================================================================
             try:
-                self.state.token = Utils.load_access_token()
+                self.state.token = self._load_token_from_db()
                 if not self.state.token:
                     logger.warning("Access token is empty or None")
+                else:
+                    logger.info(f"Access token loaded from database (length: {len(self.state.token)})")
             except Exception as e:
-                logger.error(f"Failed to load access token: {e}", exc_info=True)
+                logger.error(f"Failed to load access token from database: {e}", exc_info=True)
                 self.state.token = None
 
             # Initialize FyersModel
@@ -113,9 +120,43 @@ class Broker:
         self._retry_count = 0
         self.MAX_RETRIES = 3
 
+    # ==================================================================
+    # FIX: New method to load token from database
+    # ==================================================================
+    def _load_token_from_db(self) -> Optional[str]:
+        """
+        Load access token from database.
+
+        Returns:
+            Access token string or None if not found
+        """
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+
+            if token_data and token_data.get("access_token"):
+                access_token = token_data["access_token"]
+
+                # Also store expiry info in state if needed
+                if hasattr(self.state, 'token_expires_at'):
+                    self.state.token_expires_at = token_data.get("expires_at")
+                if hasattr(self.state, 'token_issued_at'):
+                    self.state.token_issued_at = token_data.get("issued_at")
+
+                logger.debug(f"Token loaded from database (expires: {token_data.get('expires_at', 'unknown')})")
+                return access_token
+            else:
+                logger.debug("No token found in database")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error loading token from database: {e}", exc_info=True)
+            return None
+
     @staticmethod
     def read_file():
-        """Read token file with comprehensive error handling"""
+        """Read token file with comprehensive error handling (DEPRECATED - kept for backward compatibility)"""
+        logger.warning("read_file() is deprecated - tokens should be loaded from database")
         try:
             file_path = os.path.join(CONFIG_PATH, "fyers_token.json")
 
@@ -654,6 +695,134 @@ class Broker:
             logger.error(f"Exception in get_option_current_price: {e!r}", exc_info=True)
             return None
 
+    def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        """
+        FEATURE 2: Get detailed quote (bid, ask, ltp) for an option.
+        Used for mid-price calculation in smart order execution.
+
+        Args:
+            option_name: Option symbol
+
+        Returns:
+            Dict with 'ltp', 'bid', 'ask' or None if failed
+        """
+        try:
+            if not option_name:
+                logger.warning("get_option_quote called with empty option_name")
+                return None
+
+            if not self.fyers:
+                logger.error("Cannot get option quote: FyersModel not initialized")
+                return None
+
+            # Format symbol
+            formatted_symbol = self._format_symbol(option_name)
+            if not formatted_symbol:
+                return None
+
+            data = {"symbols": formatted_symbol}
+
+            # Apply rate limiting
+            self._check_rate_limit()
+
+            # Get quotes
+            response = self.retry_on_failure(
+                lambda: self.fyers.quotes(data),
+                context="get_option_quote"
+            )
+
+            if response and response.get("s") == self.OK and response.get("d"):
+                v = response["d"][0]["v"]
+                return {
+                    "ltp": v.get("lp"),
+                    "bid": v.get("bid_price"),
+                    "ask": v.get("ask_price"),
+                    "high": v.get("high_price"),
+                    "low": v.get("low_price"),
+                    "open": v.get("open_price"),
+                    "close": v.get("prev_close_price"),
+                    "volume": v.get("volume"),
+                    "oi": v.get("oi"),
+                }
+            else:
+                logger.warning(f"Failed to fetch quote for {option_name}: {response}")
+                return None
+
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in get_option_quote: {e!r}", exc_info=True)
+            return None
+
+    def get_option_chain_quotes(self, symbols: List[str]) -> Dict[str, Dict[str, float]]:
+        """
+        FEATURE 2: Get quotes for multiple options in one call.
+        Used to populate option_chain in TradingApp.
+
+        Args:
+            symbols: List of option symbols
+
+        Returns:
+            Dict mapping symbol -> {ltp, bid, ask}
+        """
+        try:
+            if not symbols:
+                logger.warning("get_option_chain_quotes called with empty symbols list")
+                return {}
+
+            if not self.fyers:
+                logger.error("Cannot get option chain quotes: FyersModel not initialized")
+                return {}
+
+            # Format symbols with NSE prefix
+            formatted_symbols = []
+            for sym in symbols:
+                formatted = self._format_symbol(sym)
+                if formatted:
+                    formatted_symbols.append(formatted)
+
+            if not formatted_symbols:
+                return {}
+
+            data = {"symbols": ','.join(formatted_symbols)}
+
+            # Apply rate limiting
+            self._check_rate_limit()
+
+            # Get quotes
+            response = self.retry_on_failure(
+                lambda: self.fyers.quotes(data),
+                context="get_option_chain_quotes"
+            )
+
+            result = {}
+            if response and response.get("s") == self.OK and response.get("d"):
+                for item in response["d"]:
+                    sym = item.get("n") or item.get("symbol", "")
+                    # Remove NSE: prefix for internal storage
+                    if sym.startswith("NSE:"):
+                        sym = sym[4:]
+                    v = item.get("v", {})
+                    result[sym] = {
+                        "ltp": v.get("lp"),
+                        "bid": v.get("bid_price"),
+                        "ask": v.get("ask_price"),
+                        "high": v.get("high_price"),
+                        "low": v.get("low_price"),
+                        "volume": v.get("volume"),
+                        "oi": v.get("oi"),
+                    }
+            else:
+                logger.warning(f"Failed to fetch option chain quotes: {response}")
+
+            return result
+
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in get_option_chain_quotes: {e!r}", exc_info=True)
+            return {}
+
     def get_balance(self, capital_reserve: float = 0.0):
         """Get account balance"""
         try:
@@ -756,6 +925,161 @@ class Broker:
         except Exception as e:
             logger.error(f"Exception in get_history: {e!r}", exc_info=True)
             return None
+
+    def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30) -> Optional[pd.DataFrame]:
+        """
+        FEATURE 6: Get historical data for a specific timeframe with proper date range.
+        Used by MultiTimeframeFilter to get data for different intervals.
+
+        Args:
+            symbol: Symbol to fetch
+            interval: Timeframe interval (e.g., "1", "5", "15")
+            days: Number of days of history to fetch
+
+        Returns:
+            DataFrame with OHLCV data or None
+        """
+        try:
+            if not symbol:
+                logger.error("Symbol is required for get_history_for_timeframe")
+                return None
+
+            if not self.fyers:
+                logger.error("Cannot get history: FyersModel not initialized")
+                return None
+
+            # Calculate date range based on interval
+            today = datetime.today()
+
+            # Need more data for longer intervals
+            if interval in ["15", "30", "60"]:
+                fetch_days = max(days, 60)
+            elif interval in ["120", "240"]:
+                fetch_days = max(days, 120)
+            else:
+                fetch_days = days
+
+            from_date = (today - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
+            to_date = today.strftime("%Y-%m-%d")
+
+            # Format symbol
+            formatted_symbol = self._format_symbol(symbol)
+            if not formatted_symbol:
+                return None
+
+            # Prepare parameters
+            params = {
+                "symbol": formatted_symbol,
+                "resolution": interval,
+                "date_format": "1",
+                "range_from": from_date,
+                "range_to": to_date,
+                "cont_flag": "1"
+            }
+
+            # Apply rate limiting
+            self._check_rate_limit()
+
+            # Get history
+            response = self.retry_on_failure(
+                lambda: self.fyers.history(params),
+                context="get_history_for_timeframe"
+            )
+
+            if response and response.get("s") == self.OK and "candles" in response:
+                df = pd.DataFrame(response['candles'], columns=["time", "open", "high", "low", "close", "volume"])
+                # Convert timestamp to datetime for easier filtering
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                return df
+            else:
+                logger.warning(f"Failed to get history for {symbol} interval {interval}: {response}")
+                return None
+
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in get_history_for_timeframe: {e!r}", exc_info=True)
+            return None
+
+    def is_connected(self) -> bool:
+        """
+        FEATURE 4: Check if broker connection is active.
+        Used by connection monitor and notifier.
+
+        Returns:
+            True if connected and token valid
+        """
+        try:
+            if not self.fyers or not self.state or not self.state.token:
+                return False
+
+            # Quick check - try to get profile (lightweight call)
+            profile = self.get_profile()
+            return profile is not None
+
+        except TokenExpiredError:
+            return False
+        except Exception as e:
+            logger.error(f"Error checking connection: {e}", exc_info=True)
+            return False
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        """
+        Get current open positions.
+
+        Returns:
+            List of position dicts
+        """
+        try:
+            if not self.fyers:
+                logger.error("Cannot get positions: FyersModel not initialized")
+                return []
+
+            response = self.retry_on_failure(
+                lambda: self.fyers.positions(),
+                context="get_positions"
+            )
+
+            if response and response.get("s") == self.OK:
+                return response.get("netPositions", [])
+            else:
+                logger.warning(f"Failed to get positions: {response}")
+                return []
+
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in get_positions: {e!r}", exc_info=True)
+            return []
+
+    def get_orderbook(self) -> List[Dict[str, Any]]:
+        """
+        Get current order book.
+
+        Returns:
+            List of orders
+        """
+        try:
+            if not self.fyers:
+                logger.error("Cannot get orderbook: FyersModel not initialized")
+                return []
+
+            response = self.retry_on_failure(
+                lambda: self.fyers.orderbook(),
+                context="get_orderbook"
+            )
+
+            if response and response.get("s") == self.OK:
+                return response.get("orderBook", [])
+            else:
+                logger.warning(f"Failed to get orderbook: {response}")
+                return []
+
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in get_orderbook: {e!r}", exc_info=True)
+            return []
 
     @staticmethod
     def calculate_pnl(current_price, buy_price=None, options=None):

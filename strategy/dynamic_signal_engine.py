@@ -3,6 +3,12 @@ dynamic_signal_engine_db.py
 ============================
 Database-backed DynamicSignalEngine for option trading that works with StrategyManager.
 Signals: BUY_CALL, BUY_PUT, EXIT_CALL, EXIT_PUT, HOLD, WAIT
+
+FEATURE 3: Signal Confidence Voting System
+- Weighted rule evaluation
+- Confidence scoring per group
+- Minimum confidence threshold
+- Human-readable explanations
 """
 
 from __future__ import annotations
@@ -277,6 +283,11 @@ def _rule_to_string(rule: Dict[str, Any]) -> str:
         lhs = s(rule.get('lhs', {}))
         op = rule.get('op', '?')
         rhs = s(rule.get('rhs', {}))
+
+        # FEATURE 3: Add weight to string representation
+        weight = rule.get('weight', 1.0)
+        if weight != 1.0:
+            return f"{lhs} {op} {rhs} (w={weight:.1f})"
         return f"{lhs} {op} {rhs}"
 
     except Exception as e:
@@ -288,6 +299,11 @@ class DynamicSignalEngine:
     """
     Dynamic signal engine that uses strategy configuration from StrategyManager.
     Each instance is tied to a specific strategy slug.
+
+    FEATURE 3: Signal Confidence Voting System
+    - Each rule has a weight (default 1.0)
+    - Confidence = sum(passed_weights) / sum(total_weights)
+    - Signals below min_confidence are suppressed
     """
 
     DEFAULT_CONFIG: Dict[str, Any] = {
@@ -312,6 +328,9 @@ class DynamicSignalEngine:
             self.config = {k: {"logic": v["logic"], "rules": list(v["rules"]), "enabled": v["enabled"]}
                            for k, v in self.DEFAULT_CONFIG.items()}
 
+            # FEATURE 3: Default confidence threshold
+            self.min_confidence = 0.6
+
             # Import here to avoid circular imports
             from strategy.strategy_manager import strategy_manager
             self._manager = strategy_manager
@@ -325,12 +344,14 @@ class DynamicSignalEngine:
             logger.critical(f"[DynamicSignalEngine.__init__] Failed: {e}", exc_info=True)
             self.config = dict(self.DEFAULT_CONFIG)
             self.conflict_resolution = "WAIT"
+            self.min_confidence = 0.6
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._last_cache = None
         self.strategy_slug = None
         self.conflict_resolution = "WAIT"
+        self.min_confidence = 0.6
         self.config = {}
         self._manager = None
 
@@ -377,6 +398,12 @@ class DynamicSignalEngine:
                     try:
                         self.config[k]["logic"] = str(engine_config[k].get("logic", "AND")).upper()
                         rules = engine_config[k].get("rules", [])
+
+                        # FEATURE 3: Ensure each rule has a weight
+                        for rule in rules:
+                            if "weight" not in rule:
+                                rule["weight"] = 1.0
+
                         self.config[k]["rules"] = list(rules) if isinstance(rules, list) else []
                         self.config[k]["enabled"] = bool(engine_config[k].get("enabled", True))
                     except Exception as e:
@@ -385,6 +412,13 @@ class DynamicSignalEngine:
             # Load conflict resolution
             if "conflict_resolution" in engine_config:
                 self.conflict_resolution = str(engine_config["conflict_resolution"]).upper()
+
+            # FEATURE 3: Load min confidence
+            if "min_confidence" in engine_config:
+                try:
+                    self.min_confidence = float(engine_config["min_confidence"])
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid min_confidence value: {e}")
 
             self.strategy_slug = slug
             logger.info(f"Dynamic signal config loaded from strategy: {slug}")
@@ -418,6 +452,7 @@ class DynamicSignalEngine:
             # Update engine config
             strategy["engine"] = self.to_dict()
             strategy["engine"]["conflict_resolution"] = self.conflict_resolution
+            strategy["engine"]["min_confidence"] = self.min_confidence
 
             success = self._manager.save(slug, strategy)
             if success:
@@ -457,6 +492,12 @@ class DynamicSignalEngine:
                     try:
                         self.config[k]["logic"] = str(d[k].get("logic", "AND")).upper()
                         rules = d[k].get("rules", [])
+
+                        # FEATURE 3: Ensure each rule has a weight
+                        for rule in rules:
+                            if "weight" not in rule:
+                                rule["weight"] = 1.0
+
                         self.config[k]["rules"] = list(rules) if isinstance(rules, list) else []
                         self.config[k]["enabled"] = bool(d[k].get("enabled", True))
                     except Exception as e:
@@ -464,6 +505,13 @@ class DynamicSignalEngine:
 
             if "conflict_resolution" in d:
                 self.conflict_resolution = str(d["conflict_resolution"]).upper()
+
+            # FEATURE 3: Load min confidence
+            if "min_confidence" in d:
+                try:
+                    self.min_confidence = float(d["min_confidence"])
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid min_confidence value: {e}")
 
         except Exception as e:
             logger.error(f"[from_dict] Failed: {e}", exc_info=True)
@@ -479,6 +527,10 @@ class DynamicSignalEngine:
             if rule is None:
                 logger.warning("Cannot add None rule")
                 return False
+
+            # FEATURE 3: Ensure rule has weight
+            if "weight" not in rule:
+                rule["weight"] = 1.0
 
             self.config[k]["rules"].append(rule)
             logger.debug(f"Added rule to {k}")
@@ -509,6 +561,12 @@ class DynamicSignalEngine:
             k = self._key(signal)
             rules = self.config.get(k, {}).get("rules", [])
             if 0 <= index < len(rules) and rule is not None:
+                # FEATURE 3: Preserve weight if not specified
+                if "weight" not in rule and "weight" in rules[index]:
+                    rule["weight"] = rules[index]["weight"]
+                elif "weight" not in rule:
+                    rule["weight"] = 1.0
+
                 rules[index] = rule
                 logger.debug(f"Updated rule {index} in {k}")
                 return True
@@ -521,7 +579,7 @@ class DynamicSignalEngine:
     def get_rules(self, signal: Union[str, OptionSignal]) -> List[Dict[str, Any]]:
         """Get all rules for a signal"""
         try:
-            k = self._key(signal)
+            k = self._key(signal)  # FIXED: Get key first
             return list(self.config.get(k, {}).get("rules", []))
         except Exception as e:
             logger.error(f"[get_rules] Failed for {signal}: {e}", exc_info=True)
@@ -565,35 +623,77 @@ class DynamicSignalEngine:
             logger.error(f"[is_enabled] Failed for {signal}: {e}", exc_info=True)
             return True
 
-    def rule_descriptions(self, signal: Union[str, OptionSignal]) -> List[str]:
-        """Get human-readable rule descriptions"""
+    # FEATURE 3: Rule weight management
+    def set_rule_weight(self, signal: Union[str, OptionSignal], index: int, weight: float) -> bool:
+        """Set weight for a specific rule"""
         try:
-            return [_rule_to_string(r) for r in self.get_rules(signal)]
+            k = self._key(signal)
+            rules = self.config.get(k, {}).get("rules", [])
+            if 0 <= index < len(rules):
+                rules[index]["weight"] = float(weight)
+                logger.debug(f"Set weight for rule {index} in {k} to {weight}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"[set_rule_weight] Failed for {signal}: {e}", exc_info=True)
+            return False
+
+    def get_rule_weight(self, signal: Union[str, OptionSignal], index: int) -> float:
+        """Get weight for a specific rule"""
+        try:
+            k = self._key(signal)
+            rules = self.config.get(k, {}).get("rules", [])
+            if 0 <= index < len(rules):
+                return float(rules[index].get("weight", 1.0))
+            return 1.0
+        except Exception as e:
+            logger.error(f"[get_rule_weight] Failed for {signal}: {e}", exc_info=True)
+            return 1.0
+
+    def rule_descriptions(self, signal: Union[str, OptionSignal]) -> List[str]:
+        """Get human-readable rule descriptions with weights"""
+        try:
+            k = self._key(signal)  # FIXED: Get key first
+            return [_rule_to_string(r) for r in self.config.get(k, {}).get("rules", [])]
         except Exception as e:
             logger.error(f"[rule_descriptions] Failed for {signal}: {e}", exc_info=True)
             return []
 
     def _evaluate_group(self, signal: Union[str, OptionSignal], df: pd.DataFrame,
-                       cache: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
-        """Evaluate a single signal group"""
+                       cache: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]], float, float]:
+        """
+        Evaluate a single signal group.
+
+        FEATURE 3: Returns confidence score and total weight.
+
+        Returns:
+            Tuple[bool, List[Dict], float, float]: (fired, rule_results, confidence, total_weight)
+        """
         try:
             k = self._key(signal)
             group = self.config.get(k, {})
 
             if not group.get("enabled", True):
-                return False, []
+                return False, [], 0.0, 0.0
 
             logic = group.get("logic", "AND").upper()
             rules = group.get("rules", [])
 
             if not rules:
-                return False, []
+                return False, [], 0.0, 0.0
 
             group_result = (logic == "AND")
             rule_results = []
 
+            total_weight = 0.0
+            passed_weight = 0.0
+
             for rule in rules:
                 try:
+                    # Get rule weight (FEATURE 3)
+                    weight = float(rule.get("weight", 1.0))
+                    total_weight += weight
+
                     rule_str = _rule_to_string(rule)
 
                     lhs_series = _resolve_side(df, rule.get("lhs", {}), cache)
@@ -604,6 +704,9 @@ class DynamicSignalEngine:
                     else:
                         result, lhs_val, rhs_val = _apply_operator(lhs_series, rule.get("op", ">"), rhs_series)
 
+                    if result:
+                        passed_weight += weight
+
                     def _fmt(v):
                         if v is None: return "N/A"
                         return f"{v:.4f}" if isinstance(v, float) else str(v)
@@ -613,13 +716,17 @@ class DynamicSignalEngine:
                         "result": result,
                         "lhs_value": lhs_val,
                         "rhs_value": rhs_val,
+                        "weight": weight,
                         "detail": f"{_fmt(lhs_val)} {rule.get('op','?')} {_fmt(rhs_val)} → {'✓' if result else '✗'}",
                     }
                     rule_results.append(entry)
 
                     if logic == "AND":
                         group_result = group_result and result
-                    else:
+                        # For AND logic, any false means group doesn't fire regardless of confidence
+                        if not result:
+                            group_result = False
+                    else:  # OR logic
                         group_result = group_result or result
 
                 except Exception as e:
@@ -629,29 +736,38 @@ class DynamicSignalEngine:
                         "result": False,
                         "lhs_value": None,
                         "rhs_value": None,
+                        "weight": rule.get("weight", 1.0),
                         "detail": f"ERROR: {e}",
                         "error": str(e)
                     })
                     if logic == "AND":
                         group_result = False
 
-            return group_result, rule_results
+            # Calculate confidence
+            confidence = passed_weight / total_weight if total_weight > 0 else 0.0
+
+            return group_result, rule_results, confidence, total_weight
 
         except Exception as e:
             logger.error(f"[_evaluate_group] Failed for {signal}: {e}", exc_info=True)
-            return False, []
+            return False, [], 0.0, 0.0
 
     def evaluate(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
+        FEATURE 3: Enhanced evaluation with confidence scoring.
+
         Returns:
           {
             "signal":           OptionSignal,
             "signal_value":     str,
             "fired":            {group: bool, ...},
-            "rule_results":     {group: [{rule, result, lhs_value, rhs_value, detail},...], ...},
+            "rule_results":     {group: [{rule, result, lhs_value, rhs_value, detail, weight},...], ...},
             "indicator_values": {cache_key: {"last": float, "prev": float}, ...},
             "conflict":         bool,
             "available":        bool,
+            "confidence":       {group: float, ...},  # Confidence scores per group
+            "threshold":        float,                 # Min confidence threshold
+            "explanation":      str,                   # Human-readable explanation
           }
         """
         neutral = self._neutral_result()
@@ -664,12 +780,14 @@ class DynamicSignalEngine:
             cache = {}
             fired = {}
             rule_results = {}
+            confidences = {}
             has_any_rules = False
 
             for sig in SIGNAL_GROUPS:
-                gf, rd = self._evaluate_group(sig, df, cache)
+                gf, rd, conf, _ = self._evaluate_group(sig, df, cache)
                 fired[sig.value] = gf
                 rule_results[sig.value] = rd
+                confidences[sig.value] = conf
                 if rd:
                     has_any_rules = True
 
@@ -703,7 +821,17 @@ class DynamicSignalEngine:
             if not has_any_rules:
                 return neutral
 
+            # FEATURE 3: Apply confidence threshold to fired groups
+            for sig in SIGNAL_GROUPS:
+                sig_val = sig.value
+                if fired.get(sig_val, False) and confidences.get(sig_val, 0) < self.min_confidence:
+                    logger.debug(f"Signal {sig_val} suppressed - confidence {confidences[sig_val]:.2f} < {self.min_confidence}")
+                    fired[sig_val] = False
+
             resolved = self._resolve(fired)
+
+            # FEATURE 3: Generate human-readable explanation
+            explanation = self._generate_explanation(fired, confidences)
 
             return {
                 "signal": resolved,
@@ -713,11 +841,34 @@ class DynamicSignalEngine:
                 "indicator_values": indicator_values,
                 "conflict": fired.get("BUY_CALL", False) and fired.get("BUY_PUT", False),
                 "available": True,
+                "confidence": confidences,
+                "threshold": self.min_confidence,
+                "explanation": explanation,
             }
 
         except Exception as e:
             logger.error(f"[evaluate] Failed: {e}", exc_info=True)
             return neutral
+
+    def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float]) -> str:
+        """FEATURE 3: Generate human-readable explanation of last evaluation"""
+        try:
+            parts = []
+            for sig, is_fired in fired.items():
+                conf = confidences.get(sig, 0)
+                status = "FIRED" if is_fired else "suppressed" if conf >= self.min_confidence else "blocked"
+                color = "✓" if is_fired else "✗"
+                parts.append(f"{color} {sig}: {conf:.0%} ({status})")
+            return " | ".join(parts)
+        except Exception as e:
+            logger.error(f"[_generate_explanation] Failed: {e}", exc_info=True)
+            return "No explanation available"
+
+    def evaluate_with_confidence(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        FEATURE 3: Alias for evaluate() - maintains backward compatibility.
+        """
+        return self.evaluate(df)
 
     def _resolve(self, fired: Dict[str, bool]) -> OptionSignal:
         """Resolve final signal from fired groups"""
@@ -760,6 +911,9 @@ class DynamicSignalEngine:
                 "indicator_values": {},
                 "conflict": False,
                 "available": False,
+                "confidence": {s.value: 0.0 for s in SIGNAL_GROUPS},
+                "threshold": 0.6,
+                "explanation": "No data available for evaluation",
             }
         except Exception as e:
             logger.error(f"[_neutral_result] Failed: {e}", exc_info=True)
@@ -788,42 +942,47 @@ class DynamicSignalEngine:
 
 
 def build_example_config() -> Dict[str, Any]:
-    """Build an example configuration"""
+    """
+    Build an example configuration with weights.
+
+    FEATURE 3: Includes rule weights.
+    """
     try:
         return {
             "BUY_CALL": {"logic": "AND", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": ">",
-                 "rhs": {"type": "scalar", "value": 55}},
+                 "rhs": {"type": "scalar", "value": 55}, "weight": 2.0},
                 {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_above",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}},
+                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.5},
                 {"lhs": {"type": "indicator", "indicator": "macd", "params": {"fast": 12, "slow": 26, "signal": 9}},
-                 "op": ">", "rhs": {"type": "scalar", "value": 0}},
+                 "op": ">", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0},
             ]},
             "BUY_PUT": {"logic": "AND", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": "<",
-                 "rhs": {"type": "scalar", "value": 45}},
+                 "rhs": {"type": "scalar", "value": 45}, "weight": 2.0},
                 {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_below",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}},
+                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.5},
                 {"lhs": {"type": "indicator", "indicator": "macd", "params": {"fast": 12, "slow": 26, "signal": 9}},
-                 "op": "<", "rhs": {"type": "scalar", "value": 0}},
+                 "op": "<", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0},
             ]},
             "EXIT_CALL": {"logic": "OR", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": ">",
-                 "rhs": {"type": "scalar", "value": 75}},
+                 "rhs": {"type": "scalar", "value": 75}, "weight": 1.0},
                 {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_below",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}},
+                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.0},
             ]},
             "EXIT_PUT": {"logic": "OR", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": "<",
-                 "rhs": {"type": "scalar", "value": 25}},
+                 "rhs": {"type": "scalar", "value": 25}, "weight": 1.0},
                 {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_above",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}},
+                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.0},
             ]},
             "HOLD": {"logic": "AND", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "adx", "params": {"length": 14}}, "op": ">",
-                 "rhs": {"type": "scalar", "value": 25}},
+                 "rhs": {"type": "scalar", "value": 25}, "weight": 1.0},
             ]},
             "conflict_resolution": "WAIT",
+            "min_confidence": 0.6,
         }
     except Exception as e:
         logger.error(f"[build_example_config] Failed: {e}", exc_info=True)

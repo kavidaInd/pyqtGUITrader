@@ -3,6 +3,7 @@ import logging.handlers
 import traceback
 from typing import Optional
 from collections import deque
+from datetime import datetime  # Moved import to top
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QApplication, \
@@ -166,6 +167,8 @@ class LogPopup(QDialog):
         self.level_combo = None
         self.wrap_check = None
         self.max_lines_spin = None
+        self.copy_filtered_btn = None  # Added missing attribute
+        self.export_btn = None  # Added missing attribute
 
         # Message handling
         self._message_queue = deque(maxlen=10000)
@@ -749,7 +752,3 @@ class LogPopup(QDialog):
             self._process_batch()
         except Exception as e:
             logger.error(f"[LogPopup.showEvent] Failed: {e}", exc_info=True)
-
-
-# Import at bottom to avoid circular imports
-from datetime import datetime

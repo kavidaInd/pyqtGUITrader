@@ -17,7 +17,7 @@ import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ class DatabaseConnector:
             logger.error(f"[execute] Failed: {e}\nSQL: {sql}\nParams: {params}", exc_info=True)
             raise
 
-    def fetchall(self, sql: str, params: tuple = ()) -> list:
+    def fetchall(self, sql: str, params: tuple = ()) -> List[sqlite3.Row]:
         """Execute a SELECT and return all rows as list of sqlite3.Row."""
         conn = self._get_conn()
         try:
@@ -176,6 +176,146 @@ class DatabaseConnector:
         except Exception as e:
             logger.error(f"[fetchone] Failed: {e}\nSQL: {sql}", exc_info=True)
             return None
+
+    # ------------------------------------------------------------------
+    # NEW: Convenience methods for CRUD operations
+    # ------------------------------------------------------------------
+
+    def insert(self, table: str, data: Dict[str, Any]) -> int:
+        """
+        Insert a row and return the last row id.
+
+        Args:
+            table: Table name
+            data: Dictionary of column -> value
+
+        Returns:
+            lastrowid
+        """
+        conn = self._get_conn()
+        try:
+            columns = ', '.join(data.keys())
+            placeholders = ', '.join(['?' for _ in data])
+            sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+            cur = conn.execute(sql, tuple(data.values()))
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"[insert] Failed into {table}: {e}", exc_info=True)
+            return -1
+
+    def update(self, table: str, data: Dict[str, Any], where: str, where_params: tuple) -> bool:
+        """
+        Update rows matching condition.
+
+        Args:
+            table: Table name
+            data: Dictionary of column -> value to update
+            where: WHERE clause (e.g., "id = ?")
+            where_params: Parameters for WHERE clause
+
+        Returns:
+            True if successful
+        """
+        conn = self._get_conn()
+        try:
+            set_clause = ', '.join([f"{k} = ?" for k in data.keys()])
+            sql = f"UPDATE {table} SET {set_clause} WHERE {where}"
+            params = tuple(data.values()) + where_params
+            conn.execute(sql, params)
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"[update] Failed in {table}: {e}", exc_info=True)
+            return False
+
+    def delete(self, table: str, where: str, where_params: tuple) -> bool:
+        """
+        Delete rows matching condition.
+
+        Args:
+            table: Table name
+            where: WHERE clause
+            where_params: Parameters for WHERE clause
+
+        Returns:
+            True if successful
+        """
+        conn = self._get_conn()
+        try:
+            sql = f"DELETE FROM {table} WHERE {where}"
+            conn.execute(sql, where_params)
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"[delete] Failed in {table}: {e}", exc_info=True)
+            return False
+
+    def table_exists(self, table_name: str) -> bool:
+        """Check if a table exists in the database."""
+        try:
+            result = self.fetchone(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,)
+            )
+            return result is not None
+        except Exception as e:
+            logger.error(f"[table_exists] Failed for {table_name}: {e}", exc_info=True)
+            return False
+
+    def get_table_info(self, table_name: str) -> List[Dict[str, Any]]:
+        """Get column information for a table."""
+        try:
+            rows = self.fetchall(f"PRAGMA table_info({table_name})")
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"[get_table_info] Failed for {table_name}: {e}", exc_info=True)
+            return []
+
+    def vacuum(self) -> bool:
+        """Run VACUUM to optimize database."""
+        try:
+            conn = self._get_conn()
+            conn.execute("VACUUM")
+            logger.info("Database vacuum completed")
+            return True
+        except Exception as e:
+            logger.error(f"[vacuum] Failed: {e}", exc_info=True)
+            return False
+
+    def backup(self, backup_path: str) -> bool:
+        """
+        Create a backup of the database.
+
+        Args:
+            backup_path: Path for backup file
+
+        Returns:
+            True if successful
+        """
+        try:
+            import shutil
+            shutil.copy2(self.db_path, backup_path)
+            logger.info(f"Database backed up to {backup_path}")
+            return True
+        except Exception as e:
+            logger.error(f"[backup] Failed: {e}", exc_info=True)
+            return False
+
+    def get_size(self) -> int:
+        """Get database file size in bytes."""
+        try:
+            return os.path.getsize(self.db_path)
+        except Exception as e:
+            logger.error(f"[get_size] Failed: {e}", exc_info=True)
+            return 0
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Close the current thread's connection."""

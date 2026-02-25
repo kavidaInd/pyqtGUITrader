@@ -2,6 +2,11 @@
 FyersManualLoginPopup_db.py
 ===========================
 PyQt5 QDialog for Fyers manual login using database-backed settings.
+
+Enhanced with:
+- FEATURE 4: Telegram notification on token expiry
+- Improved token management
+- Better error handling
 """
 
 # PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
@@ -15,11 +20,12 @@ from urllib.parse import urlparse, parse_qs
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QTextEdit,
                              QPushButton, QLineEdit, QHBoxLayout, QMessageBox,
                              QProgressBar, QApplication, QWidget, QTabWidget,
-                             QFrame, QScrollArea)
+                             QFrame, QScrollArea, QCheckBox, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 
 import webbrowser
+from datetime import datetime, timedelta
 
 from Utils.FyersManualLoginHelper import FyersManualLoginHelper
 
@@ -110,7 +116,10 @@ class FyersManualLoginPopup(QDialog):
     operation_started = pyqtSignal()
     operation_finished = pyqtSignal()
 
-    def __init__(self, parent, brokerage_setting, reason: str = None):
+    # FEATURE 4: Signal for Telegram notification
+    token_refreshed = pyqtSignal(str, str)  # message, status
+
+    def __init__(self, parent, brokerage_setting, reason: str = None, notifier=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
@@ -118,20 +127,33 @@ class FyersManualLoginPopup(QDialog):
             super().__init__(parent)
             self.brokerage_setting = brokerage_setting
             self._reason = reason  # Optional context message (e.g. token expired)
+            self.notifier = notifier  # FEATURE 4: Telegram notifier
 
             # Rule 6: Input validation
             if brokerage_setting is None:
                 logger.error("FyersManualLoginPopup initialized with None brokerage_setting")
 
             self.setWindowTitle("Fyers Manual Login — Re-authentication Required" if reason else "Fyers Manual Login")
-            self.setMinimumSize(750, 640 if reason else 600)
-            self.resize(750, 640 if reason else 600)
+            self.setMinimumSize(750, 700 if reason else 650)
+            self.resize(750, 700 if reason else 650)
             self.setModal(True)
 
             # EXACT stylesheet preservation - no changes
             self.setStyleSheet("""
                 QDialog { background:#161b22; color:#e6edf3; font-family:'Segoe UI', sans-serif; }
                 QLabel  { color:#8b949e; font-size:10pt; }
+                QGroupBox {
+                    border: 1px solid #30363d;
+                    border-radius: 6px;
+                    margin-top: 10px;
+                    font-weight: bold;
+                    color: #e6edf3;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 5px 0 5px;
+                }
                 QTabWidget::pane {
                     border:1px solid #30363d;
                     border-radius:6px;
@@ -167,6 +189,13 @@ class FyersManualLoginPopup(QDialog):
                 QPushButton:hover    { background:#2ea043; }
                 QPushButton:pressed  { background:#1e7a2f; }
                 QPushButton:disabled { background:#21262d; color:#484f58; }
+                QPushButton#secondary {
+                    background:#21262d;
+                    border:1px solid #30363d;
+                }
+                QPushButton#secondary:hover {
+                    background:#30363d;
+                }
                 QProgressBar {
                     border:1px solid #30363d; border-radius:4px;
                     text-align:center; color:#e6edf3;
@@ -183,6 +212,21 @@ class FyersManualLoginPopup(QDialog):
                     background:#1c2128;
                     border:1px solid #30363d;
                     border-radius:6px;
+                }
+                QCheckBox {
+                    color: #e6edf3;
+                    spacing: 8px;
+                }
+                QCheckBox::indicator {
+                    width: 18px;
+                    height: 18px;
+                    border: 1px solid #30363d;
+                    border-radius: 3px;
+                    background: #21262d;
+                }
+                QCheckBox::indicator:checked {
+                    background: #238636;
+                    border: 1px solid #2ea043;
                 }
             """)
 
@@ -233,6 +277,7 @@ class FyersManualLoginPopup(QDialog):
             self.tabs = QTabWidget()
             root.addWidget(self.tabs)
             self.tabs.addTab(self._build_login_tab(), "🔑 Login")
+            self.tabs.addTab(self._build_notification_tab(), "📱 Notifications")  # FEATURE 4
             self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
 
             # Progress bar (always visible below tabs)
@@ -252,11 +297,7 @@ class FyersManualLoginPopup(QDialog):
             btn_layout.setSpacing(10)
 
             self.clear_btn = QPushButton("✖ Clear")
-            self.clear_btn.setStyleSheet("""
-                QPushButton { background:#21262d; color:#e6edf3; border:1px solid #30363d;
-                             border-radius:4px; padding:8px 12px; }
-                QPushButton:hover { background:#30363d; }
-            """)
+            self.clear_btn.setObjectName("secondary")
             self.clear_btn.clicked.connect(self.clear_code_entry)
 
             self.login_btn = QPushButton("🔒 Complete Login")
@@ -271,6 +312,7 @@ class FyersManualLoginPopup(QDialog):
 
             btn_layout.addWidget(self.clear_btn)
             btn_layout.addWidget(self.login_btn)
+            btn_layout.addStretch()
             btn_layout.addWidget(self.cancel_btn)
             root.addLayout(btn_layout)
 
@@ -289,28 +331,13 @@ class FyersManualLoginPopup(QDialog):
 
         except Exception as e:
             logger.critical(f"[FyersManualLoginPopup.__init__] Failed: {e}", exc_info=True)
-            # Still try to show a basic dialog
-            super().__init__(parent)
-            self.brokerage_setting = brokerage_setting
-            self._safe_defaults_init()
-            self.setWindowTitle("Fyers Manual Login - ERROR")
-            self.setMinimumSize(400, 200)
-
-            # Add error message
-            layout = QVBoxLayout(self)
-            error_label = QLabel(f"Failed to initialize login dialog:\n{e}")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.brokerage_setting = None
         self._reason = None
+        self.notifier = None
         self.tabs = None
         self.url_text = None
         self.code_entry = None
@@ -323,6 +350,8 @@ class FyersManualLoginPopup(QDialog):
         self.login_url = None
         self.token_worker = None
         self._exchange_in_progress = False
+        self.notify_check = None
+        self.telegram_status_label = None
 
     def _connect_signals(self):
         """Connect internal signals"""
@@ -330,8 +359,31 @@ class FyersManualLoginPopup(QDialog):
             self.error_occurred.connect(self._on_error)
             self.operation_started.connect(self._on_operation_started)
             self.operation_finished.connect(self._on_operation_finished)
+
+            # FEATURE 4: Connect token refreshed signal
+            self.token_refreshed.connect(self._on_token_refreshed)
         except Exception as e:
             logger.error(f"[FyersManualLoginPopup._connect_signals] Failed: {e}", exc_info=True)
+
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Fyers Manual Login - ERROR")
+            self.setMinimumSize(400, 200)
+
+            layout = QVBoxLayout(self)
+            error_label = QLabel(f"❌ Failed to initialize login dialog.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
+            layout.addWidget(error_label)
+
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn)
+
+        except Exception as e:
+            logger.error(f"[FyersManualLoginPopup._create_error_dialog] Failed: {e}", exc_info=True)
 
     # ── Login Tab ─────────────────────────────────────────────────────────────
     def _build_login_tab(self):
@@ -363,6 +415,7 @@ class FyersManualLoginPopup(QDialog):
             url_row.addWidget(self.url_text, 1)
 
             copy_btn = QPushButton("📋 Copy")
+            copy_btn.setObjectName("secondary")
             copy_btn.setMaximumWidth(80)
             copy_btn.setToolTip("Copy the login URL to clipboard.")
             copy_btn.clicked.connect(self.copy_url_to_clipboard)
@@ -413,7 +466,6 @@ class FyersManualLoginPopup(QDialog):
 
         except Exception as e:
             logger.error(f"[FyersManualLoginPopup._build_login_tab] Failed: {e}", exc_info=True)
-            # Return a basic widget on error
             error_label = QLabel(f"Error building login tab: {e}")
             error_label.setStyleSheet("color: #f85149;")
             error_label.setWordWrap(True)
@@ -421,6 +473,114 @@ class FyersManualLoginPopup(QDialog):
             layout.addWidget(error_label)
 
         return widget
+
+    # ── FEATURE 4: Notifications Tab ──────────────────────────────────────────
+    def _build_notification_tab(self):
+        """Build notifications tab for Telegram settings"""
+        widget = QWidget()
+        try:
+            layout = QVBoxLayout(widget)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(15)
+
+            # Notification Settings Group
+            notify_group = QGroupBox("Notification Settings")
+            notify_layout = QVBoxLayout(notify_group)
+
+            # Enable checkbox
+            self.notify_check = QCheckBox("Send Telegram notification on token expiry")
+
+            # Check if Telegram is configured
+            telegram_configured = False
+            if self.brokerage_setting and hasattr(self.brokerage_setting, 'is_telegram_configured'):
+                telegram_configured = self.brokerage_setting.is_telegram_configured()
+
+            self.notify_check.setChecked(telegram_configured)
+            self.notify_check.setToolTip("Receive a Telegram alert when your token expires")
+            notify_layout.addWidget(self.notify_check)
+
+            notify_hint = QLabel(
+                "When enabled, you'll receive a Telegram notification whenever "
+                "your Fyers token expires and needs renewal."
+            )
+            notify_hint.setWordWrap(True)
+            notify_hint.setStyleSheet("color:#484f58; font-size:8pt; padding-left:26px;")
+            notify_layout.addWidget(notify_hint)
+
+            layout.addWidget(notify_group)
+
+            # Status Group
+            status_group = QGroupBox("Current Status")
+            status_layout = QVBoxLayout(status_group)
+
+            self.telegram_status_label = QLabel("")
+            status_layout.addWidget(self.telegram_status_label)
+
+            self._update_telegram_status()
+
+            layout.addWidget(status_group)
+
+            # Info Card
+            info_card = QFrame()
+            info_card.setObjectName("infoCard")
+            info_layout = QVBoxLayout(info_card)
+            info_layout.setContentsMargins(14, 12, 14, 12)
+
+            info_title = QLabel("📘 About Token Expiry Notifications:")
+            info_title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            info_title.setStyleSheet("color:#e6edf3;")
+
+            info_text = QLabel(
+                "• Fyers access tokens expire periodically (typically after 24 hours)\n"
+                "• When enabled, you'll receive a Telegram alert when your token expires\n"
+                "• Configure Telegram Bot Token and Chat ID in Settings → Brokerage Settings\n"
+                "• This helps you know when re-authentication is needed"
+            )
+            info_text.setWordWrap(True)
+            info_text.setStyleSheet("color:#8b949e; font-size:9pt;")
+
+            info_layout.addWidget(info_title)
+            info_layout.addWidget(info_text)
+            layout.addWidget(info_card)
+
+            layout.addStretch()
+
+        except Exception as e:
+            logger.error(f"[FyersManualLoginPopup._build_notification_tab] Failed: {e}", exc_info=True)
+            error_label = QLabel(f"Error building notifications tab: {e}")
+            error_label.setStyleSheet("color: #f85149;")
+            error_label.setWordWrap(True)
+            layout = QVBoxLayout(widget)
+            layout.addWidget(error_label)
+
+        return widget
+
+    def _update_telegram_status(self):
+        """Update Telegram status display"""
+        try:
+            if not hasattr(self, 'telegram_status_label') or self.telegram_status_label is None:
+                return
+
+            if not self.brokerage_setting:
+                self.telegram_status_label.setText("❌ Brokerage settings not available")
+                self.telegram_status_label.setStyleSheet("color: #f85149;")
+                return
+
+            if hasattr(self.brokerage_setting, 'is_telegram_configured'):
+                if self.brokerage_setting.is_telegram_configured():
+                    self.telegram_status_label.setText("✅ Telegram notifications configured")
+                    self.telegram_status_label.setStyleSheet("color: #3fb950;")
+                else:
+                    self.telegram_status_label.setText(
+                        "⚠️ Telegram not configured — go to Settings → Brokerage Settings to set up"
+                    )
+                    self.telegram_status_label.setStyleSheet("color: #d29922;")
+            else:
+                self.telegram_status_label.setText("⚠️ Telegram settings not available")
+                self.telegram_status_label.setStyleSheet("color: #d29922;")
+
+        except Exception as e:
+            logger.error(f"[FyersManualLoginPopup._update_telegram_status] Failed: {e}", exc_info=True)
 
     # ── Information Tab ───────────────────────────────────────────────────────
     def _build_info_tab(self):
@@ -469,6 +629,13 @@ class FyersManualLoginPopup(QDialog):
                     "• If the exchange fails, check that your auth code hasn't expired and try again."
                 ),
                 (
+                    "📱  Token Expiry Notifications",
+                    "You can receive Telegram alerts when your token expires.\n\n"
+                    "• Enable notifications in the 'Notifications' tab\n"
+                    "• Configure Telegram in Settings → Brokerage Settings\n"
+                    "• Get notified immediately when re-authentication is needed"
+                ),
+                (
                     "⚠️  Common Issues",
                     "Auth code expired — Fyers codes are valid for only ~60 seconds. "
                     "If you see an 'invalid code' error, restart from Step 1.\n\n"
@@ -510,7 +677,6 @@ class FyersManualLoginPopup(QDialog):
 
                 except Exception as e:
                     logger.error(f"Failed to create info card for {title}: {e}", exc_info=True)
-                    # Skip this card but continue
 
             layout.addStretch()
             scroll.setWidget(container)
@@ -518,7 +684,6 @@ class FyersManualLoginPopup(QDialog):
 
         except Exception as e:
             logger.error(f"[FyersManualLoginPopup._build_info_tab] Failed: {e}", exc_info=True)
-            # Return a basic scroll area on error
             scroll = QScrollArea()
             container = QWidget()
             layout = QVBoxLayout(container)
@@ -554,7 +719,6 @@ class FyersManualLoginPopup(QDialog):
 
             self.login_url = self.fyers.generate_login_url()
 
-            # FIXED: Use explicit None checks
             if self.url_text is not None:
                 self.url_text.setText(self.login_url)
 
@@ -576,7 +740,6 @@ class FyersManualLoginPopup(QDialog):
     def _handle_login_url_error(self, error_msg: str):
         """Handle login URL generation error"""
         try:
-            # FIXED: Use explicit None check
             if self.status_label is not None:
                 self.status_label.setText(f"❌ {error_msg}")
 
@@ -589,10 +752,8 @@ class FyersManualLoginPopup(QDialog):
     def copy_url_to_clipboard(self):
         """Copy login URL to clipboard"""
         try:
-            # FIXED: Use explicit check for login_url
             if self.login_url is not None:
                 QApplication.clipboard().setText(self.login_url)
-                # FIXED: Use explicit None check
                 if self.status_label is not None:
                     self.status_label.setText("📋 URL copied to clipboard")
                     QTimer.singleShot(2000, lambda: self.status_label.setText("") if self.status_label is not None else None)
@@ -620,7 +781,6 @@ class FyersManualLoginPopup(QDialog):
     def clear_code_entry(self):
         """Clear the code entry field"""
         try:
-            # FIXED: Use explicit None check
             if self.code_entry is not None:
                 self.code_entry.clear()
         except Exception as e:
@@ -683,7 +843,6 @@ class FyersManualLoginPopup(QDialog):
                 logger.warning("Exchange already in progress")
                 return
 
-            # FIXED: Use explicit None check
             if self.code_entry is None:
                 logger.error("Code entry widget not initialized")
                 return
@@ -711,7 +870,7 @@ class FyersManualLoginPopup(QDialog):
             self._exchange_in_progress = True
             self.operation_started.emit()
 
-            # Disable UI - FIXED: Use explicit None checks
+            # Disable UI
             if self.login_btn is not None:
                 self.login_btn.setEnabled(False)
             if self.clear_btn is not None:
@@ -741,7 +900,6 @@ class FyersManualLoginPopup(QDialog):
     def update_progress(self, percentage: int, message: str):
         """Update progress bar and status"""
         try:
-            # FIXED: Use explicit None checks
             if self.progress_bar is not None:
                 self.progress_bar.setValue(percentage)
             if self.status_label is not None:
@@ -768,7 +926,6 @@ class FyersManualLoginPopup(QDialog):
 
             if error:
                 logger.error(f"Token exchange failed: {error}")
-                # FIXED: Use explicit None check
                 if self.status_label is not None:
                     self.status_label.setText(f"❌ Login failed: {error}")
                 QMessageBox.critical(
@@ -780,7 +937,29 @@ class FyersManualLoginPopup(QDialog):
 
             if token:
                 logger.info("✓ Token received successfully")
-                # FIXED: Use explicit None checks
+
+                # Save token to brokerage settings
+                if self.brokerage_setting and hasattr(self.brokerage_setting, 'save_token'):
+                    try:
+                        # Calculate expiry (default 24 hours from now)
+                        issued_at = datetime.now().isoformat()
+                        expires_at = (datetime.now() + timedelta(hours=24)).isoformat()
+
+                        self.brokerage_setting.save_token(
+                            access_token=token,
+                            refresh_token="",  # Fyers doesn't use refresh tokens
+                            issued_at=issued_at,
+                            expires_at=expires_at
+                        )
+                        logger.info("Token saved to database")
+
+                        # FEATURE 4: Send success notification if enabled
+                        if hasattr(self, 'notify_check') and self.notify_check and self.notify_check.isChecked():
+                            self._send_token_refresh_notification(success=True)
+
+                    except Exception as e:
+                        logger.error(f"Failed to save token: {e}", exc_info=True)
+
                 if self.status_label is not None:
                     self.status_label.setText("✅ Login successful!")
                 if self.progress_bar is not None:
@@ -796,7 +975,6 @@ class FyersManualLoginPopup(QDialog):
                 # Close dialog after short delay
                 QTimer.singleShot(500, self.accept)
             else:
-                # FIXED: Use explicit None check
                 if self.status_label is not None:
                     self.status_label.setText("❌ Failed to retrieve token")
                 QMessageBox.critical(
@@ -813,10 +991,40 @@ class FyersManualLoginPopup(QDialog):
             self._exchange_in_progress = False
             self.operation_finished.emit()
 
+    def _send_token_refresh_notification(self, success: bool = True):
+        """
+        FEATURE 4: Send notification about token refresh.
+
+        Args:
+            success: True if token refresh succeeded
+        """
+        try:
+            if not self.notifier:
+                logger.debug("No notifier available for token notification")
+                return
+
+            if success:
+                msg = "✅ *TOKEN REFRESHED*\nFyers access token has been successfully renewed."
+                self.notifier.notify_token_refreshed(msg)
+                self.token_refreshed.emit(msg, "success")
+            else:
+                msg = "❌ *TOKEN REFRESH FAILED*\nFailed to refresh Fyers access token."
+                self.notifier.notify_token_refresh_failed(msg)
+                self.token_refreshed.emit(msg, "error")
+
+        except Exception as e:
+            logger.error(f"[_send_token_refresh_notification] Failed: {e}", exc_info=True)
+
+    def _on_token_refreshed(self, message: str, status: str):
+        """Handle token refreshed signal"""
+        try:
+            logger.info(f"Token refresh notification: {status} - {message}")
+        except Exception as e:
+            logger.error(f"[_on_token_refreshed] Failed: {e}", exc_info=True)
+
     def reset_ui(self):
         """Reset UI to initial state"""
         try:
-            # FIXED: Use explicit None checks
             if self.login_btn is not None:
                 self.login_btn.setEnabled(True)
             if self.clear_btn is not None:
@@ -841,19 +1049,11 @@ class FyersManualLoginPopup(QDialog):
 
     def _on_operation_started(self):
         """Handle operation started signal"""
-        try:
-            # Disable close button or any other UI elements if needed
-            pass
-        except Exception as e:
-            logger.error(f"[_on_operation_started] Failed: {e}", exc_info=True)
+        pass
 
     def _on_operation_finished(self):
         """Handle operation finished signal"""
-        try:
-            # Re-enable UI elements if needed
-            pass
-        except Exception as e:
-            logger.error(f"[_on_operation_finished] Failed: {e}", exc_info=True)
+        pass
 
     # Rule 8: Cleanup method
     def cleanup(self):
@@ -874,6 +1074,7 @@ class FyersManualLoginPopup(QDialog):
             self.token_worker = None
             self.fyers = None
             self.brokerage_setting = None
+            self.notifier = None
 
             logger.info("[FyersManualLoginPopup] Cleanup completed")
 

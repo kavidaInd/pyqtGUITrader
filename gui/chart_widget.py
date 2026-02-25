@@ -2622,10 +2622,6 @@ class EnhancedSignalDataTab(QWidget):
         self.ts_label.setText("—")
 
 
-# =============================================================================
-# MULTI CHART WIDGET (Enhanced)
-# =============================================================================
-
 class EnhancedMultiChartWidget(QWidget):
     """
     Enhanced multi-chart widget with:
@@ -2642,7 +2638,7 @@ class EnhancedMultiChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Tab widget — no toolbar for algo trading
+        # Tab widget
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget::pane {
@@ -2657,7 +2653,7 @@ class EnhancedMultiChartWidget(QWidget):
                 border-bottom: none;
                 font-size: 10pt;
                 font-weight: bold;
-                width: 150px;
+                min-width: 120px;
                 height: 30px;
             }
             QTabBar::tab:selected {
@@ -2674,7 +2670,7 @@ class EnhancedMultiChartWidget(QWidget):
         # Create charts
         self.spot_chart = EnhancedChartWidget()
         self.call_chart = EnhancedChartWidget()
-        self.put_chart  = EnhancedChartWidget()
+        self.put_chart = EnhancedChartWidget()
         self.signal_tab = EnhancedSignalDataTab()
 
         self.spot_chart.set_symbol("Spot Index")
@@ -2683,7 +2679,7 @@ class EnhancedMultiChartWidget(QWidget):
 
         self.tabs.addTab(self.spot_chart, "📈 Spot")
         self.tabs.addTab(self.call_chart, "☎ ATM Call")
-        self.tabs.addTab(self.put_chart,  "🔻 ATM Put")
+        self.tabs.addTab(self.put_chart, "🔻 ATM Put")
         self.tabs.addTab(self.signal_tab, "🔬 Signal Data")
 
         layout.addWidget(self.tabs, 1)
