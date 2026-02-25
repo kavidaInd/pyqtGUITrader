@@ -1,186 +1,97 @@
-import json
+"""
+BrokerageSetting_db.py
+======================
+Database-backed brokerage settings using the SQLite database.
+"""
+
+import logging
 import logging.handlers
-import os
 from typing import Dict, Any, Optional
+
+from db.connector import get_db
+from db.crud import brokerage
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
 class BrokerageSetting:
+    """
+    Database-backed brokerage settings using the brokerage_setting table.
+
+    This is a drop-in replacement for the JSON-based BrokerageSetting class,
+    maintaining the same interface while using the database.
+    """
+
     REQUIRED_FIELDS = ["client_id", "secret_key", "redirect_uri"]
 
-    # Rule 2: Class-level constants for defaults
-    DEFAULT_DATA: Dict[str, str] = {k: "" for k in REQUIRED_FIELDS}
-
-    def __init__(self, json_file: str = 'config/brokerage_setting.json'):
+    def __init__(self):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
-            # Rule 6: Input validation
-            if not isinstance(json_file, str):
-                logger.error(f"json_file must be string, got {type(json_file)}. Using default.")
-                json_file = 'config/brokerage_setting.json'
-
-            self.json_file = json_file
-            self.data = {k: "" for k in self.REQUIRED_FIELDS}
+            # Load from database
             self.load()
-
-            logger.info(f"BrokerageSetting initialized with file: {self.json_file}")
+            logger.info("BrokerageSetting (database) initialized")
 
         except Exception as e:
             logger.critical(f"[BrokerageSetting.__init__] Failed: {e}", exc_info=True)
             # Still set basic attributes to prevent crashes
-            self.json_file = json_file if isinstance(json_file, str) else 'config/brokerage_setting.json'
-            self.data = {k: "" for k in self.REQUIRED_FIELDS}
+            self._data = {k: "" for k in self.REQUIRED_FIELDS}
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.json_file = 'config/brokerage_setting.json'
-        self.data: Dict[str, str] = {}
+        self._data: Dict[str, str] = {k: "" for k in self.REQUIRED_FIELDS}
         self._loaded = False
-        self._load_attempts = 0
-        self.MAX_LOAD_ATTEMPTS = 3
 
     def load(self) -> bool:
         """
-        Load brokerage settings from JSON file.
+        Load brokerage settings from database.
 
         Returns:
             bool: True if load successful, False otherwise
         """
         try:
-            # Rule 6: Validate file path
-            if not self.json_file:
-                logger.error("Cannot load: json_file is None or empty")
-                return False
+            db = get_db()
+            data = brokerage.get(db)
 
-            # Check if file exists
-            if not os.path.exists(self.json_file):
-                logger.warning(f"Brokerage settings file not found at {self.json_file}. Using defaults.")
-                self.data = dict(self.DEFAULT_DATA)
-                return False
-
-            # Read and parse file
-            try:
-                with open(self.json_file, "r", encoding='utf-8') as f:
-                    loaded = json.load(f)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse brokerage settings JSON in {self.json_file}: {e}")
-                # Try to create backup of corrupted file
-                self._backup_corrupted_file()
-                self.data = dict(self.DEFAULT_DATA)
-                return False
-            except IOError as e:
-                logger.error(f"Failed to read brokerage settings file {self.json_file}: {e}")
-                self.data = dict(self.DEFAULT_DATA)
-                return False
-
-            # Validate that loaded data is a dictionary
-            if not isinstance(loaded, dict):
-                logger.error(
-                    f"Invalid data format in {self.json_file}. Expected dict, got {type(loaded)}. Using defaults.")
-                self.data = dict(self.DEFAULT_DATA)
-                return False
-
-            # Fill all required fields, even if file is missing some keys
-            for k in self.REQUIRED_FIELDS:
-                value = loaded.get(k, "")
-                # Ensure value is string
-                self.data[k] = str(value) if value is not None else ""
+            if data:
+                for k in self.REQUIRED_FIELDS:
+                    self._data[k] = str(data.get(k, ""))
+            else:
+                # No data found, use defaults
+                for k in self.REQUIRED_FIELDS:
+                    self._data[k] = ""
 
             self._loaded = True
-            logger.info(f"Brokerage settings loaded successfully from {self.json_file}")
+            logger.debug("Brokerage settings loaded from database")
             return True
 
         except Exception as e:
-            logger.error(f"[BrokerageSetting.load] Unexpected error: {e}", exc_info=True)
-            self.data = dict(self.DEFAULT_DATA)
+            logger.error(f"[BrokerageSetting.load] Failed: {e}", exc_info=True)
             return False
-
-    def _backup_corrupted_file(self) -> None:
-        """Create a backup of corrupted config file."""
-        try:
-            if os.path.exists(self.json_file):
-                backup_file = f"{self.json_file}.corrupted.{self._load_attempts}"
-                import shutil
-                shutil.copy2(self.json_file, backup_file)
-                logger.info(f"Corrupted brokerage settings backed up to {backup_file}")
-        except Exception as e:
-            logger.warning(f"Failed to backup corrupted file: {e}")
 
     def save(self) -> bool:
         """
-        Save brokerage settings to file with atomic write.
+        Save brokerage settings to database.
 
         Returns:
             bool: True if save successful, False otherwise
         """
-        tmpfile = None
         try:
-            # Rule 6: Validate file path
-            if not self.json_file:
-                logger.error("Cannot save: json_file is None or empty")
-                return False
+            db = get_db()
+            success = brokerage.save(self._data, db)
 
-            # Handle case where file is in current directory
-            dir_path = os.path.dirname(self.json_file)
-            if dir_path:  # Only create directories if there's a path
-                try:
-                    os.makedirs(dir_path, exist_ok=True)
-                    logger.debug(f"Ensured directory exists: {dir_path}")
-                except PermissionError as e:
-                    logger.error(f"Permission denied creating directory {dir_path}: {e}")
-                    return False
-                except Exception as e:
-                    logger.error(f"Failed to create directory {dir_path}: {e}")
-                    return False
+            if success:
+                logger.debug("Brokerage settings saved to database")
+            else:
+                logger.error("Failed to save brokerage settings to database")
 
-            # Atomic write using temporary file
-            tmpfile = self.json_file + ".tmp"
-
-            # Prepare data for saving (ensure all values are strings)
-            save_data = {}
-            for k in self.REQUIRED_FIELDS:
-                value = self.data.get(k, "")
-                save_data[k] = str(value) if value is not None else ""
-
-            # Write to temporary file
-            try:
-                with open(tmpfile, "w", encoding='utf-8') as f:
-                    json.dump(save_data, f, indent=2)
-            except IOError as e:
-                logger.error(f"Failed to write temporary file {tmpfile}: {e}")
-                return False
-            except TypeError as e:
-                logger.error(f"Data contains non-serializable values: {e}")
-                return False
-
-            # Atomic replace
-            try:
-                os.replace(tmpfile, self.json_file)
-                logger.info(f"Brokerage settings saved successfully to {self.json_file}")
-                return True
-            except OSError as e:
-                logger.error(f"Failed to replace brokerage settings file: {e}")
-                self._safe_remove(tmpfile)
-                return False
+            return success
 
         except Exception as e:
-            logger.error(f"[BrokerageSetting.save] Unexpected error: {e}", exc_info=True)
-            if tmpfile:
-                self._safe_remove(tmpfile)
+            logger.error(f"[BrokerageSetting.save] Failed: {e}", exc_info=True)
             return False
-
-    def _safe_remove(self, filepath: str) -> None:
-        """Safely remove a file, ignoring errors."""
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                logger.debug(f"Removed temporary file: {filepath}")
-        except Exception as e:
-            logger.warning(f"Failed to remove temporary file {filepath}: {e}")
 
     def to_dict(self) -> Dict[str, str]:
         """
@@ -191,10 +102,10 @@ class BrokerageSetting:
         """
         try:
             # Return a copy to prevent external modification
-            return dict(self.data)
+            return dict(self._data)
         except Exception as e:
             logger.error(f"[BrokerageSetting.to_dict] Failed: {e}", exc_info=True)
-            return dict(self.DEFAULT_DATA)
+            return {k: "" for k in self.REQUIRED_FIELDS}
 
     def from_dict(self, d: Optional[Dict[str, Any]]) -> None:
         """
@@ -207,24 +118,24 @@ class BrokerageSetting:
             # Rule 6: Input validation
             if d is None:
                 logger.warning("from_dict called with None, using defaults")
-                self.data = dict(self.DEFAULT_DATA)
+                self._data = {k: "" for k in self.REQUIRED_FIELDS}
                 return
 
             if not isinstance(d, dict):
                 logger.error(f"from_dict expected dict, got {type(d)}. Using defaults.")
-                self.data = dict(self.DEFAULT_DATA)
+                self._data = {k: "" for k in self.REQUIRED_FIELDS}
                 return
 
             # Update data with validated values
             for k in self.REQUIRED_FIELDS:
                 value = d.get(k, "")
-                self.data[k] = str(value) if value is not None else ""
+                self._data[k] = str(value) if value is not None else ""
 
-            logger.debug(f"Brokerage settings loaded from dict with {len(self.data)} keys")
+            logger.debug("Brokerage settings loaded from dict")
 
         except Exception as e:
             logger.error(f"[BrokerageSetting.from_dict] Failed: {e}", exc_info=True)
-            self.data = dict(self.DEFAULT_DATA)
+            self._data = {k: "" for k in self.REQUIRED_FIELDS}
 
     def get(self, key: str, default: str = "") -> str:
         """
@@ -243,7 +154,7 @@ class BrokerageSetting:
                 logger.warning(f"get() called with non-string key: {key}")
                 return default
 
-            value = self.data.get(key, default)
+            value = self._data.get(key, default)
             return str(value) if value is not None else default
 
         except Exception as e:
@@ -276,7 +187,7 @@ class BrokerageSetting:
                 logger.warning(f"set() called with non-standard key '{key}'")
                 # Still allow it, but log warning
 
-            self.data[key] = str(value) if value is not None else ""
+            self._data[key] = str(value) if value is not None else ""
             logger.debug(f"Setting '{key}' updated")
             return True
 
@@ -294,7 +205,7 @@ class BrokerageSetting:
         try:
             results = {}
             for field in self.REQUIRED_FIELDS:
-                value = self.data.get(field, "")
+                value = self._data.get(field, "")
                 results[field] = bool(value and str(value).strip())
             return results
         except Exception as e:
@@ -318,7 +229,7 @@ class BrokerageSetting:
     def __repr__(self) -> str:
         """Safe string representation (hides secret_key)."""
         try:
-            safe = {k: (v if k != "secret_key" else "***") for k, v in self.data.items()}
+            safe = {k: (v if k != "secret_key" else "***") for k, v in self._data.items()}
             return f"<BrokerageSetting {safe}>"
         except Exception as e:
             logger.error(f"[BrokerageSetting.__repr__] Failed: {e}", exc_info=True)
@@ -329,7 +240,7 @@ class BrokerageSetting:
     def client_id(self) -> str:
         """Get client ID."""
         try:
-            return str(self.data.get("client_id", ""))
+            return str(self._data.get("client_id", ""))
         except Exception as e:
             logger.error(f"[BrokerageSetting.client_id getter] Failed: {e}", exc_info=True)
             return ""
@@ -338,7 +249,7 @@ class BrokerageSetting:
     def client_id(self, value: str) -> None:
         """Set client ID."""
         try:
-            self.data["client_id"] = str(value) if value is not None else ""
+            self._data["client_id"] = str(value) if value is not None else ""
         except Exception as e:
             logger.error(f"[BrokerageSetting.client_id setter] Failed: {e}", exc_info=True)
 
@@ -346,7 +257,7 @@ class BrokerageSetting:
     def secret_key(self) -> str:
         """Get secret key."""
         try:
-            return str(self.data.get("secret_key", ""))
+            return str(self._data.get("secret_key", ""))
         except Exception as e:
             logger.error(f"[BrokerageSetting.secret_key getter] Failed: {e}", exc_info=True)
             return ""
@@ -355,7 +266,7 @@ class BrokerageSetting:
     def secret_key(self, value: str) -> None:
         """Set secret key."""
         try:
-            self.data["secret_key"] = str(value) if value is not None else ""
+            self._data["secret_key"] = str(value) if value is not None else ""
         except Exception as e:
             logger.error(f"[BrokerageSetting.secret_key setter] Failed: {e}", exc_info=True)
 
@@ -363,7 +274,7 @@ class BrokerageSetting:
     def redirect_uri(self) -> str:
         """Get redirect URI."""
         try:
-            return str(self.data.get("redirect_uri", ""))
+            return str(self._data.get("redirect_uri", ""))
         except Exception as e:
             logger.error(f"[BrokerageSetting.redirect_uri getter] Failed: {e}", exc_info=True)
             return ""
@@ -372,7 +283,7 @@ class BrokerageSetting:
     def redirect_uri(self, value: str) -> None:
         """Set redirect URI."""
         try:
-            self.data["redirect_uri"] = str(value) if value is not None else ""
+            self._data["redirect_uri"] = str(value) if value is not None else ""
         except Exception as e:
             logger.error(f"[BrokerageSetting.redirect_uri setter] Failed: {e}", exc_info=True)
 
@@ -382,7 +293,7 @@ class BrokerageSetting:
         try:
             logger.info("[BrokerageSetting] Starting cleanup")
             # Clear data
-            self.data.clear()
+            self._data.clear()
             logger.info("[BrokerageSetting] Cleanup completed")
         except Exception as e:
             logger.error(f"[BrokerageSetting.cleanup] Error: {e}", exc_info=True)
@@ -423,9 +334,11 @@ class BrokerageSettingContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            # Restore backup - FIXED: Use explicit None check
+            # Restore backup
             if self.settings is not None and self._backup is not None:
                 self.settings.from_dict(self._backup)
+                # Save to database to persist the restoration
+                self.settings.save()
                 logger.debug("BrokerageSettingContext restored backup")
 
         except Exception as e:

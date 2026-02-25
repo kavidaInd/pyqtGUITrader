@@ -1,20 +1,33 @@
-import json
-import os
+"""
+DailyTradeSetting_db.py
+=======================
+Database-backed daily trade settings using the SQLite database.
+"""
+
 import logging
 import logging.handlers
 from typing import Any, Dict, Optional
-import traceback
+
+from db.connector import get_db
+from db.crud import daily_trade
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
 class DailyTradeSetting:
+    """
+    Database-backed daily trade settings using the daily_trade_setting table.
+
+    This is a drop-in replacement for the JSON-based DailyTradeSetting class,
+    maintaining the same interface while using the database.
+    """
+
     DEFAULTS = {
         "exchange": "NSE",
         "week": 0,
         "derivative": "NIFTY50",
-        "lot_size": 75,
+        "lot_size": 65,
         "call_lookback": 0,
         "put_lookback": 0,
         "history_interval": "2m",
@@ -41,35 +54,24 @@ class DailyTradeSetting:
         "sideway_zone_trade": bool
     }
 
-    def __init__(self, json_file: str = 'config/daily_trade_setting.json'):
+    def __init__(self):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
-            # Rule 6: Input validation
-            if not isinstance(json_file, str):
-                logger.error(f"json_file must be string, got {type(json_file)}. Using default.")
-                json_file = 'config/daily_trade_setting.json'
-
-            self.json_file = json_file
-            self.data = dict(self.DEFAULTS)
+            # Load from database
             self.load()
-
-            logger.info(f"DailyTradeSetting initialized with file: {self.json_file}")
+            logger.info("DailyTradeSetting (database) initialized")
 
         except Exception as e:
             logger.critical(f"[DailyTradeSetting.__init__] Failed: {e}", exc_info=True)
             # Still set basic attributes to prevent crashes
-            self.json_file = json_file if isinstance(json_file, str) else 'config/daily_trade_setting.json'
             self.data = dict(self.DEFAULTS)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.json_file = 'config/daily_trade_setting.json'
-        self.data: Dict[str, Any] = {}
+        self.data: Dict[str, Any] = dict(self.DEFAULTS)
         self._loaded = False
-        self._load_attempts = 0
-        self.MAX_LOAD_ATTEMPTS = 3
 
     def _validate_and_convert(self, key: str, value: Any) -> Any:
         """Validate and convert value to the correct type"""
@@ -129,144 +131,54 @@ class DailyTradeSetting:
 
     def load(self) -> bool:
         """
-        Load settings from JSON file.
+        Load settings from database.
 
         Returns:
             bool: True if load successful, False otherwise
         """
         try:
-            # Rule 6: Validate file path
-            if not self.json_file:
-                logger.error("Cannot load: json_file is None or empty")
-                return False
-
-            # Check if file exists
-            if not os.path.exists(self.json_file):
-                logger.info(f"Daily trade settings file not found at {self.json_file}. Using defaults.")
+            db = get_db()
+            data = daily_trade.get(db)
+            if data:
+                for k, default_value in self.DEFAULTS.items():
+                    if k in data:
+                        self.data[k] = self._validate_and_convert(k, data[k])
+                    else:
+                        self.data[k] = default_value
+            else:
+                # No data found, use defaults
                 self.data = dict(self.DEFAULTS)
-                return False
-
-            # Read and parse file
-            try:
-                with open(self.json_file, "r", encoding='utf-8') as f:
-                    loaded = json.load(f)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse daily trade settings JSON in {self.json_file}: {e}")
-                # Try to create backup of corrupted file
-                self._backup_corrupted_file()
-                self.data = dict(self.DEFAULTS)
-                return False
-            except IOError as e:
-                logger.error(f"Failed to read daily trade settings file {self.json_file}: {e}")
-                self.data = dict(self.DEFAULTS)
-                return False
-
-            if not isinstance(loaded, dict):
-                logger.error(
-                    f"Invalid data format in {self.json_file}. Expected dict, got {type(loaded)}. Using defaults.")
-                self.data = dict(self.DEFAULTS)
-                return False
-
-            # Fill missing keys with defaults, validate existing values
-            for k, default_value in self.DEFAULTS.items():
-                if k in loaded:
-                    self.data[k] = self._validate_and_convert(k, loaded[k])
-                else:
-                    self.data[k] = default_value
 
             self._loaded = True
-            logger.info(f"Daily trade settings loaded successfully from {self.json_file}")
+            logger.debug("Daily trade settings loaded from database")
             return True
 
         except Exception as e:
-            logger.error(f"[DailyTradeSetting.load] Unexpected error: {e}", exc_info=True)
+            logger.error(f"[DailyTradeSetting.load] Failed: {e}", exc_info=True)
             self.data = dict(self.DEFAULTS)
             return False
 
-    def _backup_corrupted_file(self) -> None:
-        """Create a backup of corrupted config file."""
-        try:
-            if os.path.exists(self.json_file):
-                backup_file = f"{self.json_file}.corrupted.{self._load_attempts}"
-                import shutil
-                shutil.copy2(self.json_file, backup_file)
-                logger.info(f"Corrupted daily trade settings backed up to {backup_file}")
-        except Exception as e:
-            logger.warning(f"Failed to backup corrupted file: {e}")
-
     def save(self) -> bool:
-        """Save settings atomically"""
-        temp_file = None
+        """
+        Save settings to database.
+
+        Returns:
+            bool: True if save successful, False otherwise
+        """
         try:
-            # Rule 6: Validate file path
-            if not self.json_file:
-                logger.error("Cannot save: json_file is None or empty")
-                return False
+            db = get_db()
+            success = daily_trade.save(self.data, db)
 
-            # Handle case where file is in current directory
-            dir_path = os.path.dirname(self.json_file)
-            if dir_path:
-                try:
-                    os.makedirs(dir_path, exist_ok=True)
-                except PermissionError as e:
-                    logger.error(f"Permission denied creating directory {dir_path}: {e}")
-                    return False
-                except Exception as e:
-                    logger.error(f"Failed to create directory {dir_path}: {e}")
-                    return False
+            if success:
+                logger.debug("Daily trade settings saved to database")
+            else:
+                logger.error("Failed to save daily trade settings to database")
 
-            # Atomic write using temporary file
-            temp_file = self.json_file + ".tmp"
-
-            # Prepare data for saving (ensure all values are serializable)
-            save_data = {}
-            for k, v in self.data.items():
-                try:
-                    # Ensure value is JSON serializable
-                    if isinstance(v, (str, int, float, bool, type(None))):
-                        save_data[k] = v
-                    else:
-                        save_data[k] = str(v)
-                        logger.warning(f"Converted non-serializable value for {k} to string")
-                except Exception as e:
-                    logger.warning(f"Failed to prepare {k} for saving: {e}")
-                    save_data[k] = self.DEFAULTS.get(k, None)
-
-            # Write to temporary file
-            try:
-                with open(temp_file, "w", encoding='utf-8') as f:
-                    json.dump(save_data, f, indent=2)
-            except IOError as e:
-                logger.error(f"Failed to write temporary file {temp_file}: {e}")
-                return False
-            except TypeError as e:
-                logger.error(f"Data contains non-serializable values: {e}")
-                return False
-
-            # Atomic replace
-            try:
-                os.replace(temp_file, self.json_file)
-                logger.info(f"Daily trade settings saved successfully to {self.json_file}")
-                return True
-            except OSError as e:
-                logger.error(f"Failed to replace daily trade settings file: {e}")
-                self._safe_remove(temp_file)
-                return False
+            return success
 
         except Exception as e:
-            logger.error(f"[DailyTradeSetting.save] Unexpected error: {e}", exc_info=True)
-            if temp_file:
-                self._safe_remove(temp_file)
+            logger.error(f"[DailyTradeSetting.save] Failed: {e}", exc_info=True)
             return False
-
-    def _safe_remove(self, filepath: str) -> None:
-        """Safely remove a file, ignoring errors."""
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                logger.debug(f"Removed temporary file: {filepath}")
-        except Exception as e:
-            logger.warning(f"Failed to remove temporary file {filepath}: {e}")
 
     # Property accessors with validation and error handling
     @property
@@ -638,6 +550,8 @@ class DailyTradeSettingContext:
             # Restore backup
             if self.settings and self._backup is not None:
                 self.settings.from_dict(self._backup)
+                # Save to database to persist the restoration
+                self.settings.save()
                 logger.debug("DailyTradeSettingContext restored backup")
 
         except Exception as e:

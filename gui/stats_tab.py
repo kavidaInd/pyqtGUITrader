@@ -1,533 +1,407 @@
-# PYQT: Replaces Tkinter StatsTab - preserves class name
-import logging
-import logging.handlers
-import traceback
-from typing import Any, Optional, Dict
-import threading
-
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QLabel, QApplication)
+# gui/stats_tab.py
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+                             QGridLayout, QLabel, QTabWidget, QScrollArea)
+from datetime import datetime
 import pandas as pd
-import numpy as np
-
-# Rule 4: Structured logging
-logger = logging.getLogger(__name__)
 
 
 class StatsTab(QWidget):
-    """
-    # PYQT: Replaces the Tkinter StatsTab. Renders all TradeState fields
-    in a QTableWidget. Refresh is driven by QTimer from the parent window.
-    Class name preserved so any existing references still work.
-    """
-
-    STATS_KEYS = [
-        ("current_position", "Current Position"),
-        ("previous_position", "Previous Position"),
-        ("current_trading_symbol", "Trading Symbol"),
-        ("current_order_id", "Order ID"),
-        ("order_pending", "Order Pending"),
-        ("positions_hold", "Positions Hold"),
-        ("reason_to_exit", "Exit Reason"),
-        ("current_buy_price", "Buy Price"),
-        ("current_price", "Current Price"),
-        ("highest_current_price", "Highest Price"),
-        ("derivative_current_price", "Derivative Price"),
-        ("current_index_data", "Index Data"),
-        ("current_call_data", "Call Data"),
-        ("current_put_data", "Put Data"),
-        ("percentage_change", "P&L %"),
-        ("current_pnl", "Current P&L"),
-        ("account_balance", "Account Balance"),
-        ("max_profit", "Max Profit"),
-        ("stop_loss", "Stop Loss"),
-        ("tp_point", "Take Profit"),
-        ("tp_percentage", "TP %"),
-        ("stoploss_percentage", "SL %"),
-        ("original_profit_per", "Original Profit %"),
-        ("original_stoploss_per", "Original SL %"),
-        ("trailing_first_profit", "Trailing First Profit"),
-        ("take_profit_type", "TP Type"),
-        ("profit_step", "Profit Step"),
-        ("loss_step", "Loss Step"),
-        ("interval", "Interval"),
-        ("cancel_after", "Cancel After"),
-        ("lot_size", "Lot Size"),
-        ("expiry", "Expiry"),
-        ("max_num_of_option", "Max Options"),
-        ("lower_percentage", "Lower %"),
-        ("option_trend", "Option Trend"),
-        ("derivative_trend", "Derivative Trend"),
-        ("market_trend", "Market Trend"),
-        ("trend", "Trend"),
-        ("supertrend_reset", "Supertrend Reset"),
-        ("b_band", "Bollinger Bands"),
-        ("call_lookback", "Call Lookback"),
-        ("put_lookback", "Put Lookback"),
-        ("original_call_lookback", "Original Call Lookback"),
-        ("original_put_lookback", "Original Put Lookback"),
-        ("call_option", "Call Option"),
-        ("put_option", "Put Option"),
-        ("call_current_close", "Call Close"),
-        ("put_current_close", "Put Close"),
-        ("calculated_pcr", "Calculated PCR"),
-        ("current_pcr", "Current PCR"),
-        ("current_pcr_vol", "PCR Volume"),
-        ("current_trade_started_time", "Trade Start Time"),
-        ("current_trade_confirmed", "Trade Confirmed"),
-        ("last_index_updated", "Last Index Update"),
-        ("option_price_update", "Option Price Update"),
-        ("derivative_history_df", "Derivative History"),
-        ("option_history_df", "Option History"),
-        ("orders", "Orders"),
-        ("all_symbols", "All Symbols"),
-    ]
-
-    # Cache for formatted values to avoid recomputing
-    _value_cache: Dict[int, str] = {}
-    _cache_size_limit = 1000
-
     def __init__(self, state, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
+        super().__init__(parent)
+        self.state = state
+        self.init_ui()
 
-        try:
-            super().__init__(parent)
-            self.state = state
-            self._refresh_lock = threading.RLock()  # Use RLock for reentrant locking
-            self._last_values: Dict[int, Any] = {}
-            self._updating = False
-            self._closing = False
+    def init_ui(self):
+        layout = QVBoxLayout(self)
 
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(12, 12, 12, 12)
+        # Create tab widget for organized categories
+        tabs = QTabWidget()
 
-            # EXACT layout preservation
-            header = QLabel("📊 All Calculated State Stats")
-            header.setFont(QFont("Segoe UI", 13, QFont.Bold))
-            header.setStyleSheet("color: #e6edf3;")
-            header.setAlignment(Qt.AlignCenter)
-            layout.addWidget(header)
+        # 1. POSITION SUMMARY TAB (Most important for traders)
+        tabs.addTab(self.create_position_tab(), "Position Summary")
 
-            sub = QLabel("Auto-refreshes every second  •  Double-click a cell to copy value")
-            sub.setFont(QFont("Segoe UI", 8))
-            sub.setStyleSheet("color: #8b949e;")
-            sub.setAlignment(Qt.AlignCenter)
-            layout.addWidget(sub)
+        # 2. RISK METRICS TAB
+        tabs.addTab(self.create_risk_tab(), "Risk Management")
 
-            # PYQT: QTableWidget for two-column stat display
-            self.table = QTableWidget(len(self.STATS_KEYS), 2)
-            self.table.setHorizontalHeaderLabels(["Stat", "Value"])
-            self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-            self.table.verticalHeader().setVisible(False)
-            self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-            self.table.setSelectionBehavior(QTableWidget.SelectRows)
-            self.table.setAlternatingRowColors(True)
+        # 3. SIGNAL ENGINE TAB
+        tabs.addTab(self.create_signal_tab(), "Signal Engine")
 
-            # EXACT stylesheet preservation
-            self.table.setStyleSheet("""
-                QTableWidget {
-                    background: #0d1117;
-                    alternate-background-color: #161b22;
-                    color: #e6edf3;
-                    gridline-color: #30363d;
-                    border: 1px solid #30363d;
-                    font-family: Consolas, monospace;
-                    font-size: 9pt;
-                }
-                QHeaderView::section {
-                    background: #161b22;
-                    color: #8b949e;
-                    border: 1px solid #30363d;
-                    padding: 4px;
-                    font-weight: bold;
-                }
-            """)
+        # 4. PERFORMANCE METRICS TAB
+        tabs.addTab(self.create_performance_tab(), "Performance")
 
-            # Pre-populate stat name column (never changes)
-            for i, (_, display_name) in enumerate(self.STATS_KEYS):
-                try:
-                    item = QTableWidgetItem(display_name)
-                    item.setForeground(QColor("#8b949e"))
-                    self.table.setItem(i, 0, item)
-                    self.table.setItem(i, 1, QTableWidgetItem("—"))
-                except Exception as e:
-                    logger.error(f"Failed to create table item for row {i}: {e}", exc_info=True)
+        # 5. MARKET DATA TAB
+        tabs.addTab(self.create_market_tab(), "Market Data")
 
-            # PYQT: Copy to clipboard on cell double-click
-            self.table.cellDoubleClicked.connect(self._copy_to_clipboard)
+        # 6. RAW STATE TAB (for debugging)
+        tabs.addTab(self.create_debug_tab(), "Debug View")
 
-            layout.addWidget(self.table)
+        layout.addWidget(tabs)
 
-            logger.info("StatsTab initialized")
+    def create_position_tab(self):
+        """Current position details - most critical for active trader"""
+        widget = QWidget()
+        layout = QGridLayout(widget)
 
-        except Exception as e:
-            logger.critical(f"[StatsTab.__init__] Failed: {e}", exc_info=True)
-            # Still try to create basic widget
-            super().__init__(parent)
-            self.state = state
-            self._safe_defaults_init()
-            layout = QVBoxLayout(self)
-            error_label = QLabel(f"❌ Error initializing stats tab: {e}")
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
+        snap = self.state.get_position_snapshot()
 
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.state = None
-        self._refresh_lock = threading.RLock()
-        self._last_values = {}
-        self._updating = False
-        self._closing = False
-        self.table = None
+        row = 0
 
-    def _safe_get_attr(self, obj: Any, key: str, default: Any = "—") -> Any:
-        """Safely get attribute from object with error handling"""
-        try:
-            # Rule 6: Input validation
-            if obj is None:
-                logger.debug(f"_safe_get_attr called with None obj for key {key}")
-                return default
+        # Position Status
+        layout.addWidget(QLabel("Current Position:"), row, 0)
+        pos_label = QLabel(str(snap.get('current_position', 'None')))
+        pos_label.setProperty("cssClass", "value")
+        if snap.get('current_position') == 'CALL':
+            pos_label.setProperty("cssClass", "positive")
+        elif snap.get('current_position') == 'PUT':
+            pos_label.setProperty("cssClass", "negative")
+        layout.addWidget(pos_label, row, 1)
+        row += 1
 
-            if not isinstance(key, str):
-                logger.warning(f"_safe_get_attr called with non-string key: {key}")
-                return default
+        # Trade Confirmed
+        layout.addWidget(QLabel("Trade Confirmed:"), row, 0)
+        conf_label = QLabel(str(snap.get('current_trade_confirmed', False)))
+        conf_label.setProperty("cssClass", "value")
+        layout.addWidget(conf_label, row, 1)
+        row += 1
 
-            if hasattr(obj, key):
-                return getattr(obj, key)
-            return default
+        # Order Pending
+        layout.addWidget(QLabel("Order Pending:"), row, 0)
+        pending_label = QLabel(str(snap.get('order_pending', False)))
+        pending_label.setProperty("cssClass", "value")
+        layout.addWidget(pending_label, row, 1)
+        row += 1
 
-        except AttributeError as e:
-            logger.debug(f"Attribute {key} not found: {e}")
-            return default
-        except Exception as e:
-            logger.error(f"[_safe_get_attr] Failed for key {key}: {e}", exc_info=True)
-            return f"<Error: {type(e).__name__}>"
+        # Position Size
+        layout.addWidget(QLabel("Positions Hold:"), row, 0)
+        layout.addWidget(QLabel(str(snap.get('positions_hold', 0))), row, 1)
+        row += 1
 
-    def _format_value(self, val: Any, max_length: int = 120) -> str:
-        """Format a value for display with caching for complex objects"""
-        try:
-            if val is None:
-                return "—"
+        # Entry Price
+        layout.addWidget(QLabel("Entry Price:"), row, 0)
+        entry = snap.get('current_buy_price')
+        entry_label = QLabel(f"{entry:.2f}" if entry else "None")
+        entry_label.setProperty("cssClass", "value")
+        layout.addWidget(entry_label, row, 1)
+        row += 1
 
-            # Use cache for complex objects to avoid repeated formatting
-            cache_key = None
-            if hasattr(val, '__hash__') and val is not None:
-                try:
-                    # Create a cache key based on type and string representation
-                    type_id = id(type(val))
-                    val_hash = hash(str(val)) % self._cache_size_limit
-                    cache_key = type_id * self._cache_size_limit + val_hash
-                except (TypeError, ValueError) as e:
-                    logger.debug(f"Cannot create cache key for {type(val)}: {e}")
-                    cache_key = None
+        # Current Price
+        layout.addWidget(QLabel("Current Price:"), row, 0)
+        current = snap.get('current_price')
+        current_label = QLabel(f"{current:.2f}" if current else "None")
+        current_label.setProperty("cssClass", "value")
+        layout.addWidget(current_label, row, 1)
+        row += 1
 
-            if cache_key is not None and cache_key in self._value_cache:
-                return self._value_cache[cache_key]
+        # Highest Price
+        layout.addWidget(QLabel("Highest Price:"), row, 0)
+        high = snap.get('highest_current_price')
+        high_label = QLabel(f"{high:.2f}" if high else "None")
+        high_label.setProperty("cssClass", "value")
+        layout.addWidget(high_label, row, 1)
+        row += 1
 
-            # Handle different types efficiently
-            formatted = self._format_value_by_type(val, max_length)
+        # P&L
+        layout.addWidget(QLabel("Current P&L:"), row, 0)
+        pnl = snap.get('current_pnl')
+        pnl_label = QLabel(f"₹{pnl:.2f}" if pnl else "None")
+        pnl_label.setProperty("cssClass", "value")
+        if pnl and pnl > 0:
+            pnl_label.setProperty("cssClass", "positive")
+        elif pnl and pnl < 0:
+            pnl_label.setProperty("cssClass", "negative")
+        layout.addWidget(pnl_label, row, 1)
+        row += 1
 
-            # Cache the result if possible
-            if cache_key is not None:
-                self._value_cache[cache_key] = formatted
-                # Limit cache size
-                if len(self._value_cache) > self._cache_size_limit:
-                    # Remove 20% oldest entries
-                    remove_count = max(1, self._cache_size_limit // 5)
-                    for _ in range(remove_count):
-                        if self._value_cache:
-                            self._value_cache.pop(next(iter(self._value_cache)))
+        # Percentage Change
+        layout.addWidget(QLabel("Change %:"), row, 0)
+        pct = snap.get('percentage_change')
+        pct_label = QLabel(f"{pct:.2f}%" if pct else "None")
+        pct_label.setProperty("cssClass", "value")
+        if pct and pct > 0:
+            pct_label.setProperty("cssClass", "positive")
+        elif pct and pct < 0:
+            pct_label.setProperty("cssClass", "negative")
+        layout.addWidget(pct_label, row, 1)
+        row += 1
 
-            return formatted
+        # Exit Reason
+        layout.addWidget(QLabel("Exit Reason:"), row, 0)
+        reason = snap.get('reason_to_exit', 'None')
+        layout.addWidget(QLabel(str(reason)), row, 1)
+        row += 1
 
-        except Exception as e:
-            logger.error(f"[_format_value] Failed: {e}", exc_info=True)
-            return f"<Format Error: {type(e).__name__}>"
+        return widget
 
-    def _format_value_by_type(self, val: Any, max_length: int) -> str:
-        """Format value based on its type"""
-        try:
-            # Check for as_dict method first
-            if hasattr(val, "as_dict") and callable(getattr(val, "as_dict")):
-                try:
-                    d = val.as_dict()
-                    return (f"O:{d.get('open', '-')}  H:{d.get('high', '-')}  "
-                            f"L:{d.get('low', '-')}  C:{d.get('close', '-')}  Vol:{d.get('volume', '-')}")
-                except Exception as e:
-                    logger.debug(f"as_dict failed: {e}")
-                    return str(val)
+    def create_risk_tab(self):
+        """Stop loss, take profit, and risk parameters"""
+        widget = QWidget()
+        layout = QGridLayout(widget)
 
-            # Handle pandas DataFrame
-            if isinstance(val, pd.DataFrame):
-                if val.empty:
-                    return "Empty DataFrame"
-                try:
-                    cols = list(val.columns[:4])
-                    result = f"DataFrame {val.shape}  cols={cols}"
-                    if len(val) > 0:
-                        # Show first row as sample
-                        try:
-                            first_row = val.iloc[0].to_dict()
-                            sample = {k: v for k, v in list(first_row.items())[:3]}
-                            result += f"  sample: {sample}"
-                        except Exception as e:
-                            logger.debug(f"Failed to get sample: {e}")
-                    return result
-                except Exception as e:
-                    logger.debug(f"DataFrame formatting failed: {e}")
-                    return f"DataFrame {val.shape}"
+        snap = self.state.get_position_snapshot()
 
-            # Handle pandas Series
-            if isinstance(val, pd.Series):
-                try:
-                    return f"Series {val.shape}  {val.name}"
-                except Exception as e:
-                    logger.debug(f"Series formatting failed: {e}")
-                    return "Series"
+        row = 0
 
-            # Handle numpy array
-            if isinstance(val, np.ndarray):
-                try:
-                    result = f"ndarray shape={val.shape}  dtype={val.dtype}"
-                    if val.size > 0 and val.size < 10:
-                        result += f"  {val}"
-                    return result
-                except Exception as e:
-                    logger.debug(f"ndarray formatting failed: {e}")
-                    return "ndarray"
+        # Stop Loss
+        layout.addWidget(QLabel("Stop Loss:"), row, 0)
+        sl = snap.get('stop_loss')
+        sl_label = QLabel(f"{sl:.2f}" if sl else "None")
+        sl_label.setProperty("cssClass", "value negative")
+        layout.addWidget(sl_label, row, 1)
+        row += 1
 
-            # Handle dictionary
-            if isinstance(val, dict):
-                s = str(val)
-                return s[:max_length] + "..." if len(s) > max_length else s
+        # Index Stop Loss
+        layout.addWidget(QLabel("Index Stop Loss:"), row, 0)
+        idx_sl = snap.get('index_stop_loss')
+        idx_sl_label = QLabel(f"{idx_sl:.2f}" if idx_sl else "None")
+        idx_sl_label.setProperty("cssClass", "value")
+        layout.addWidget(idx_sl_label, row, 1)
+        row += 1
 
-            # Handle lists and tuples
-            if isinstance(val, (list, tuple)):
-                try:
-                    if len(val) > 5:
-                        return f"{type(val).__name__}[{len(val)}]: {str(val[:4])[:-1]}, ..."
-                    return str(val)
-                except Exception as e:
-                    logger.debug(f"List/tuple formatting failed: {e}")
-                    return f"{type(val).__name__}[{len(val) if hasattr(val, '__len__') else '?'}]"
+        # Take Profit
+        layout.addWidget(QLabel("Take Profit:"), row, 0)
+        tp = snap.get('tp_point')
+        tp_label = QLabel(f"{tp:.2f}" if tp else "None")
+        tp_label.setProperty("cssClass", "value positive")
+        layout.addWidget(tp_label, row, 1)
+        row += 1
 
-            # Handle float
-            if isinstance(val, float):
-                try:
-                    return f"{val:.4f}"
-                except Exception as e:
-                    logger.debug(f"Float formatting failed: {e}")
-                    return str(val)
+        # Risk Percentages
+        layout.addWidget(QLabel("TP %:"), row, 0)
+        tp_pct = self.state.tp_percentage
+        layout.addWidget(QLabel(f"{tp_pct:.1f}%"), row, 1)
+        row += 1
 
-            # Handle int and bool
-            if isinstance(val, (int, bool)):
-                return str(val)
+        layout.addWidget(QLabel("SL %:"), row, 0)
+        sl_pct = self.state.stoploss_percentage
+        layout.addWidget(QLabel(f"{sl_pct:.1f}%"), row, 1)
+        row += 1
 
-            # Default to string
-            s = str(val)
-            return s[:max_length] + "..." if len(s) > max_length else s
+        # Trailing Settings
+        row += 1
+        layout.addWidget(QLabel("Trailing First Profit:"), row, 0)
+        layout.addWidget(QLabel(f"{self.state.trailing_first_profit:.1f}%"), row, 1)
+        row += 1
 
-        except Exception as e:
-            logger.error(f"[_format_value_by_type] Failed: {e}", exc_info=True)
-            return f"<Format Error: {type(e).__name__}>"
+        layout.addWidget(QLabel("Max Profit:"), row, 0)
+        layout.addWidget(QLabel(f"{self.state.max_profit:.1f}%"), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("Profit Step:"), row, 0)
+        layout.addWidget(QLabel(f"{self.state.profit_step:.1f}%"), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("Loss Step:"), row, 0)
+        layout.addWidget(QLabel(f"{self.state.loss_step:.1f}%"), row, 1)
+        row += 1
+
+        return widget
+
+    def create_signal_tab(self):
+        """Dynamic signal engine output"""
+        widget = QWidget()
+        layout = QGridLayout(widget)
+
+        snap = self.state.get_position_snapshot()
+        signal_result = self.state.get_option_signal_snapshot()
+
+        row = 0
+
+        # Current Signal
+        layout.addWidget(QLabel("Current Signal:"), row, 0)
+        signal = snap.get('option_signal', 'WAIT')
+        signal_label = QLabel(signal)
+        signal_label.setProperty("cssClass", "value")
+
+        # Color code signals
+        if signal in ['BUY_CALL', 'BUY_PUT']:
+            signal_label.setProperty("cssClass", "positive")
+        elif signal in ['EXIT_CALL', 'EXIT_PUT']:
+            signal_label.setProperty("cssClass", "negative")
+        elif signal == 'HOLD':
+            signal_label.setProperty("cssClass", "value")
+        else:  # WAIT
+            signal_label.setProperty("cssClass", "")
+
+        layout.addWidget(signal_label, row, 1)
+        row += 1
+
+        # Signal Conflict
+        layout.addWidget(QLabel("Signal Conflict:"), row, 0)
+        conflict = snap.get('signal_conflict', False)
+        conflict_label = QLabel(str(conflict))
+        if conflict:
+            conflict_label.setProperty("cssClass", "negative")
+        layout.addWidget(conflict_label, row, 1)
+        row += 1
+
+        # Signals Active
+        layout.addWidget(QLabel("Signals Active:"), row, 0)
+        active = signal_result.get('available', False)
+        layout.addWidget(QLabel(str(active)), row, 1)
+        row += 1
+
+        # Fired Signals
+        row += 1
+        layout.addWidget(QLabel("Fired Signals:"), row, 0)
+        row += 1
+
+        fired = signal_result.get('fired', {})
+        for i, (sig, val) in enumerate(fired.items()):
+            layout.addWidget(QLabel(f"  {sig}:"), row + i, 0)
+            val_label = QLabel(str(val))
+            if val:
+                val_label.setProperty("cssClass", "positive")
+            layout.addWidget(val_label, row + i, 1)
+
+        return widget
+
+    def create_performance_tab(self):
+        """Performance metrics and account stats"""
+        widget = QWidget()
+        layout = QGridLayout(widget)
+
+        snap = self.state.get_snapshot()
+
+        row = 0
+
+        # Account Balance
+        layout.addWidget(QLabel("Account Balance:"), row, 0)
+        balance = snap.get('account_balance', 0)
+        layout.addWidget(QLabel(f"₹{balance:,.2f}"), row, 1)
+        row += 1
+
+        # Lot Size
+        layout.addWidget(QLabel("Lot Size:"), row, 0)
+        layout.addWidget(QLabel(str(snap.get('lot_size', 0))), row, 1)
+        row += 1
+
+        # Capital Reserve
+        layout.addWidget(QLabel("Capital Reserve:"), row, 0)
+        layout.addWidget(QLabel(f"₹{snap.get('capital_reserve', 0):,.2f}"), row, 1)
+        row += 1
+
+        # Max Options
+        layout.addWidget(QLabel("Max Options:"), row, 0)
+        layout.addWidget(QLabel(str(snap.get('max_num_of_option', 0))), row, 1)
+        row += 1
+
+        # Trade Timing
+        row += 1
+        start_time = snap.get('current_trade_started_time')
+        if start_time:
+            layout.addWidget(QLabel("Trade Started:"), row, 0)
+            layout.addWidget(QLabel(start_time.strftime("%H:%M:%S")), row, 1)
+            row += 1
+
+            if snap.get('current_price'):
+                duration = datetime.now() - start_time
+                layout.addWidget(QLabel("Trade Duration:"), row, 0)
+                layout.addWidget(QLabel(str(duration).split('.')[0]), row, 1)
+                row += 1
+
+        return widget
+
+    def create_market_tab(self):
+        """Market data and instrument info"""
+        widget = QWidget()
+        layout = QGridLayout(widget)
+
+        snap = self.state.get_snapshot()
+
+        row = 0
+
+        # Instruments
+        layout.addWidget(QLabel("Derivative:"), row, 0)
+        layout.addWidget(QLabel(snap.get('derivative', 'N/A')), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("Call Option:"), row, 0)
+        layout.addWidget(QLabel(str(snap.get('call_option', 'None'))), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("Put Option:"), row, 0)
+        layout.addWidget(QLabel(str(snap.get('put_option', 'None'))), row, 1)
+        row += 1
+
+        # Prices
+        row += 1
+        layout.addWidget(QLabel("Derivative Price:"), row, 0)
+        deriv = snap.get('derivative_current_price', 0)
+        layout.addWidget(QLabel(f"{deriv:.2f}"), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("Call Close:"), row, 0)
+        call = snap.get('call_current_close')
+        layout.addWidget(QLabel(f"{call:.2f}" if call else "None"), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("Put Close:"), row, 0)
+        put = snap.get('put_current_close')
+        layout.addWidget(QLabel(f"{put:.2f}" if put else "None"), row, 1)
+        row += 1
+
+        # PCR
+        row += 1
+        layout.addWidget(QLabel("PCR:"), row, 0)
+        layout.addWidget(QLabel(f"{snap.get('current_pcr', 0):.3f}"), row, 1)
+        row += 1
+
+        layout.addWidget(QLabel("PCR Vol:"), row, 0)
+        pcr_vol = snap.get('current_pcr_vol')
+        layout.addWidget(QLabel(f"{pcr_vol:.3f}" if pcr_vol else "None"), row, 1)
+        row += 1
+
+        # Market Trend
+        row += 1
+        layout.addWidget(QLabel("Market Trend:"), row, 0)
+        trend = snap.get('market_trend')
+        trend_label = QLabel(str(trend) if trend is not None else "None")
+        if trend == 1:
+            trend_label.setProperty("cssClass", "positive")
+        elif trend == -1:
+            trend_label.setProperty("cssClass", "negative")
+        layout.addWidget(trend_label, row, 1)
+        row += 1
+
+        return widget
+
+    def create_debug_tab(self):
+        """Raw state snapshot for debugging"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+
+        snap = self.state.get_snapshot()
+
+        # Display all key-value pairs
+        for key, value in sorted(snap.items()):
+            if value is not None and not key.endswith('_df'):  # Skip DataFrame placeholders
+                h_layout = QHBoxLayout()
+                h_layout.addWidget(QLabel(f"{key}:"))
+
+                value_str = str(value)
+                if len(value_str) > 100:
+                    value_str = value_str[:100] + "..."
+
+                val_label = QLabel(value_str)
+                val_label.setWordWrap(True)
+                val_label.setProperty("cssClass", "value")
+                h_layout.addWidget(val_label)
+
+                scroll_layout.addLayout(h_layout)
+
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+
+        return widget
 
     def refresh(self):
-        """
-        # PYQT: Called on main thread by QTimer. Reads state and updates table values.
-        Uses change detection to only update cells that have changed.
-        """
-        # Rule 6: Check if we should update
-        if self._closing:
-            return
-
-        if self.state is None:
-            logger.debug("Refresh called with None state")
-            return
-
-        if self._updating:
-            logger.debug("Refresh already in progress, skipping")
-            return
-
-        # Prevent reentrant calls
-        self._updating = True
-
-        try:
-            # Check if table exists - This is already correct (explicit None check)
-            if self.table is None:
-                logger.warning("Refresh called with None table")
-                return
-
-            # Get a snapshot of values with thread safety
-            with self._refresh_lock:
-                current_values = {}
-                for i, (key, _) in enumerate(self.STATS_KEYS):
-                    try:
-                        val = self._safe_get_attr(self.state, key)
-                        current_values[i] = val
-                    except Exception as e:
-                        logger.warning(f"Failed to get value for key {key}: {e}")
-                        current_values[i] = f"<Access Error>"
-
-            # Update only changed cells
-            for i, val in current_values.items():
-                try:
-                    # Check if value changed
-                    if i in self._last_values:
-                        last_val = self._last_values[i]
-                        if self._values_equal(last_val, val):
-                            continue
-
-                    # Format and update
-                    formatted = self._format_value(val)
-                    current_item = self.table.item(i, 1)
-
-                    if current_item is not None and current_item.text() != formatted:
-                        current_item.setText(formatted)
-
-                    # Store for next comparison
-                    self._last_values[i] = val
-
-                except IndexError:
-                    logger.warning(f"Row {i} out of range")
-                except Exception as e:
-                    logger.error(f"Error updating row {i}: {e}", exc_info=True)
-                    try:
-                        item = self.table.item(i, 1)
-                        if item is not None:
-                            item.setText(f"<Update Error>")
-                    except:
-                        pass
-
-        except Exception as e:
-            logger.error(f"[StatsTab.refresh] Failed: {e}", exc_info=True)
-        finally:
-            self._updating = False
-
-    def _values_equal(self, a: Any, b: Any) -> bool:
-        """Compare two values efficiently"""
-        try:
-            if a is b:
-                return True
-
-            if type(a) != type(b):
-                return False
-
-            if a is None or b is None:
-                return a is b
-
-            # Handle pandas and numpy objects
-            if isinstance(a, (pd.DataFrame, pd.Series, np.ndarray)):
-                try:
-                    # For large data structures, just check if they're the same object
-                    # or if their shapes and first elements match
-                    if hasattr(a, 'shape') and hasattr(b, 'shape'):
-                        if a.shape != b.shape:
-                            return False
-
-                    # Try to compare first element
-                    if hasattr(a, 'iloc') and hasattr(b, 'iloc'):
-                        if len(a) > 0 and len(b) > 0:
-                            try:
-                                return str(a.iloc[0]) == str(b.iloc[0])
-                            except:
-                                pass
-
-                    # Fallback to string comparison
-                    return str(a) == str(b)
-
-                except Exception as e:
-                    logger.debug(f"Pandas/numpy comparison failed: {e}")
-                    return str(a) == str(b)
-
-            # Regular comparison
-            try:
-                return a == b
-            except Exception as e:
-                logger.debug(f"Direct comparison failed: {e}")
-                return str(a) == str(b)
-
-        except Exception as e:
-            logger.error(f"[_values_equal] Failed: {e}", exc_info=True)
-            return False
-
-    def _copy_to_clipboard(self, row: int, col: int):
-        """# PYQT: Copy full raw value to system clipboard on double-click"""
-        if col != 1:  # Only copy from value column
-            return
-
-        try:
-            # Rule 6: Validate row
-            if row < 0 or row >= len(self.STATS_KEYS):
-                logger.warning(f"Invalid row index: {row}")
-                return
-
-            key = self.STATS_KEYS[row][0]
-            val = self._safe_get_attr(self.state, key)
-
-            # Copy to clipboard
-            QApplication.clipboard().setText(str(val))
-            logger.debug(f"Copied {key} to clipboard: {val}")
-
-            # Visual feedback - briefly highlight the cell
-            # FIXED: Use explicit None check
-            if self.table is not None:
-                item = self.table.item(row, col)
-                if item is not None:
-                    original_bg = item.background()
-                    item.setBackground(QColor("#238636"))
-                    QTimer.singleShot(200, lambda: self._reset_cell_background(item, original_bg))
-
-        except Exception as e:
-            logger.error(f"Copy failed: {e}", exc_info=True)
-
-    def _reset_cell_background(self, item: QTableWidgetItem, original_bg):
-        """Reset cell background after copy feedback"""
-        try:
-            # FIXED: Use explicit None check
-            if item is not None and not self._closing:
-                item.setBackground(original_bg)
-        except Exception as e:
-            logger.error(f"Failed to reset cell background: {e}", exc_info=True)
-
-    def clear_cache(self):
-        """Clear the value cache to free memory"""
-        try:
-            self._value_cache.clear()
-            self._last_values.clear()
-            logger.debug("Cache cleared")
-        except Exception as e:
-            logger.error(f"[StatsTab.clear_cache] Failed: {e}", exc_info=True)
-
-    # Rule 8: Cleanup method
-    def cleanup(self):
-        """Clean up resources before shutdown"""
-        try:
-            logger.info("[StatsTab] Starting cleanup")
-            self._closing = True
-            self._updating = False
-
-            # Clear cache
-            self.clear_cache()
-
-            # Clear references
-            self.state = None
-            self.table = None
-
-            logger.info("[StatsTab] Cleanup completed")
-
-        except Exception as e:
-            logger.error(f"[StatsTab.cleanup] Error: {e}", exc_info=True)
-
-    def closeEvent(self, event):
-        """Clean up when tab is closed"""
-        try:
-            self.cleanup()
-            super().closeEvent(event)
-        except Exception as e:
-            logger.error(f"[StatsTab.closeEvent] Failed: {e}", exc_info=True)
-            super().closeEvent(event)
+        """Refresh all displayed stats"""
+        # Force UI update by re-fetching all data
+        # This will be called by the timer in StatsPopup
+        pass

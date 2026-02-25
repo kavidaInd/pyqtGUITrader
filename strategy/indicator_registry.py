@@ -5,10 +5,8 @@ Registry of all available pandas_ta indicators with their parameters and metadat
 This provides a single source of truth for indicator definitions used throughout the app.
 """
 
-import logging
 import logging.handlers
-from typing import Dict, List, Any, Optional, Set
-import traceback
+from typing import Dict, List, Any
 
 try:
     import pandas_ta as ta

@@ -1,11 +1,19 @@
+"""
+position_monitor_db.py
+======================
+Position monitor that works with database-backed orders.
+Monitors positions, updates trailing stops, and confirms/cancels orders.
+"""
+
 import logging
-import logging.handlers
-import traceback
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional
 
 from BaseEnums import *
 from Utils.Utils import Utils
+
+from db.connector import get_db
+from db.crud import orders as orders_crud
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -14,6 +22,11 @@ ORDER_STATUS_EXECUTED = 2
 
 
 class PositionMonitor:
+    """
+    Position monitor that works with database-backed orders.
+    Monitors positions, updates trailing stops, and confirms/cancels orders.
+    """
+
     def update_trailing_sl_tp(self, trading: Any, state: Any) -> None:
         """
         Update the trailing stop-loss and take-profit levels based on price movement and strategy.
@@ -94,12 +107,20 @@ class PositionMonitor:
                 if state.index_stop_loss is None or supertrend_sl > state.index_stop_loss:
                     prev = state.index_stop_loss
                     state.index_stop_loss = supertrend_sl
+
+                    # Update stop loss in database for all open orders
+                    self._update_orders_stop_loss(state, supertrend_sl)
+
                     logger.info(f"[CALL] SL updated from {prev} to {supertrend_sl}, "
                                 f"LTP: {derivative_price}")
             elif state.current_position == PUT:
                 if state.index_stop_loss is None or supertrend_sl < state.index_stop_loss:
                     prev = state.index_stop_loss
                     state.index_stop_loss = supertrend_sl
+
+                    # Update stop loss in database for all open orders
+                    self._update_orders_stop_loss(state, supertrend_sl)
+
                     logger.info(f"[PUT] SL updated from {prev} to {supertrend_sl}, "
                                 f"LTP: {derivative_price}")
 
@@ -142,6 +163,10 @@ class PositionMonitor:
                             state.tp_point = Utils.percentage_above_or_below(
                                 price=buy_price, side=POSITIVE, percentage=state.tp_percentage
                             )
+
+                            # Update stop loss in database
+                            self._update_orders_stop_loss(state, state.stop_loss)
+
                             logger.info(f"Trailing update: stop_loss={state.stop_loss}, tp_point={state.tp_point}, "
                                         f"stoploss_percentage={state.stoploss_percentage}, tp_percentage={state.tp_percentage}")
                         except Exception as e:
@@ -152,9 +177,32 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Exception in update_trailing_sl_tp: {e}", exc_info=True)
 
+    def _update_orders_stop_loss(self, state: Any, stop_loss: float) -> None:
+        """
+        Update stop loss in database for all open orders.
+
+        Args:
+            state: Trading state object
+            stop_loss: New stop loss value
+        """
+        try:
+            orders = getattr(state, "orders", [])
+            if not orders:
+                return
+
+            db = get_db()
+            for order in orders:
+                if isinstance(order, dict) and order.get("id"):
+                    order_id = order["id"]
+                    orders_crud.update_stop_loss(order_id, stop_loss, db)
+                    logger.debug(f"Updated stop loss for order {order_id} to {stop_loss}")
+        except Exception as e:
+            logger.error(f"Failed to update orders stop loss: {e}", exc_info=True)
+
     def confirm_trade(self, trading: Any, state: Any) -> None:
         """
         Confirms executed orders and cancels pending ones if price drifts or timeout.
+        Updates order status in database.
         """
         try:
             # Rule 6: Input validation
@@ -195,6 +243,7 @@ class PositionMonitor:
                 state.current_trade_confirmed = True
                 return
 
+            db = get_db()
             for order in order_list:
                 try:
                     if not isinstance(order, dict):
@@ -208,6 +257,8 @@ class PositionMonitor:
                         continue
 
                     status_list = None
+                    broker_order_id = order.get("broker_id")
+
                     try:
                         status_list = trading.get_current_order_status(order_id)
                     except Exception as e:
@@ -216,7 +267,13 @@ class PositionMonitor:
                     if status_list and isinstance(status_list, list) and len(status_list) > 0:
                         order_status = status_list[0].get("status")
                         logger.debug(f"Polling Order ID {order_id}: Status = {order_status}")
+
                         if order_status == ORDER_STATUS_EXECUTED:
+                            # Confirm order in database
+                            if broker_order_id:
+                                orders_crud.confirm(order_id, broker_order_id, db)
+                            else:
+                                orders_crud.confirm(order_id, db=db)
                             confirmed.append(order)
                         else:
                             unconfirmed.append(order)
@@ -273,10 +330,10 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Exception in confirm_trade: {e}", exc_info=True)
 
-    @staticmethod
-    def cancel_pending_trade(trading: Any, state: Any) -> None:
+    def cancel_pending_trade(self, trading: Any, state: Any) -> None:
         """
         Cancel all un-executed (unconfirmed) orders in `state.orders`.
+        Updates order status in database.
         If any orders have already been confirmed, mark trade as confirmed.
         """
         try:
@@ -300,6 +357,7 @@ class PositionMonitor:
 
             logger.info(f"Attempting to cancel {len(order_list)} unconfirmed order(s)...")
             remaining_orders = []
+            db = get_db()
 
             for order in order_list:
                 try:
@@ -314,9 +372,14 @@ class PositionMonitor:
                         remaining_orders.append(order)
                         continue
 
+                    # Cancel with broker
                     try:
                         if hasattr(trading, 'cancel_order') and callable(trading.cancel_order):
                             trading.cancel_order(order_id=order_id)
+
+                            # Update order status in database
+                            orders_crud.cancel(order_id, "Trade not confirmed - cancelled", db)
+
                             logger.info(f"Cancelled order ID: {order_id}")
                         else:
                             logger.warning(f"Trading object has no cancel_order method")
@@ -350,6 +413,38 @@ class PositionMonitor:
 
         except Exception as e:
             logger.error(f"Exception in cancel_pending_trade: {e}", exc_info=True)
+
+    def get_open_orders_count(self, state: Any) -> int:
+        """
+        Get count of open orders from state.
+
+        Args:
+            state: Trading state object
+
+        Returns:
+            Number of open orders
+        """
+        try:
+            return len(getattr(state, "orders", []))
+        except Exception as e:
+            logger.error(f"[get_open_orders_count] Failed: {e}", exc_info=True)
+            return 0
+
+    def has_confirmed_orders(self, state: Any) -> bool:
+        """
+        Check if there are any confirmed orders.
+
+        Args:
+            state: Trading state object
+
+        Returns:
+            True if there are confirmed orders
+        """
+        try:
+            return bool(getattr(state, "confirmed_orders", []))
+        except Exception as e:
+            logger.error(f"[has_confirmed_orders] Failed: {e}", exc_info=True)
+            return False
 
     # Rule 8: Cleanup method
     def cleanup(self):

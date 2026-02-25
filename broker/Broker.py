@@ -1,35 +1,31 @@
-import logging
+import logging.handlers
+import json
 import logging.handlers
 import os
 import random
 import time
-import json
-import pandas as pd
 from datetime import datetime, date
-from dateutil.relativedelta import relativedelta
-from typing import Optional, Dict, Any, Union, Callable, List
-import requests
-from requests.exceptions import Timeout, ConnectionError
+from typing import Optional, Any, Callable
 
+import pandas as pd
+from dateutil.relativedelta import relativedelta
 from fyers_apiv3 import fyersModel
+from requests.exceptions import Timeout, ConnectionError
 
 import BaseEnums
 from Utils.Utils import Utils
 from gui.BrokerageSetting import BrokerageSetting
 
-# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.getenv("CONFIG_PATH", "Config")
 
 
-# FIX: Define custom exception for token expiration
 class TokenExpiredError(RuntimeError):
     """Exception raised when Fyers token has expired or is invalid."""
 
     def __init__(self, message: str = "Token expired or invalid", code: Optional[int] = None):
         try:
-            # Rule 6: Input validation
             if code is not None:
                 message = f"{message} (code: {code})"
             super().__init__(message)

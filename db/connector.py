@@ -65,7 +65,7 @@ class DatabaseConnector:
             raise ValueError(f"Invalid db_path: {db_path!r}")
 
         self.db_path = db_path
-        self._local = threading.local()   # per-thread storage
+        self._local = threading.local()  # per-thread storage
         self._schema_applied = False
         self._schema_lock = threading.Lock()
 
@@ -91,7 +91,7 @@ class DatabaseConnector:
                     check_same_thread=False,  # we manage thread-safety ourselves
                     detect_types=sqlite3.PARSE_DECLTYPES,
                 )
-                conn.row_factory = sqlite3.Row   # rows behave like dicts
+                conn.row_factory = sqlite3.Row  # rows behave like dicts
                 conn.execute("PRAGMA journal_mode = WAL;")
                 conn.execute("PRAGMA foreign_keys = ON;")
                 conn.execute("PRAGMA busy_timeout = 5000;")

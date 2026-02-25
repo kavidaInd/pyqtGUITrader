@@ -1,13 +1,13 @@
 """
-DynamicSignalEngine for option trading.
+dynamic_signal_engine_db.py
+============================
+Database-backed DynamicSignalEngine for option trading that works with StrategyManager.
 Signals: BUY_CALL, BUY_PUT, EXIT_CALL, EXIT_PUT, HOLD, WAIT
 """
+
 from __future__ import annotations
 import json
 import logging
-import logging.handlers
-import os
-import traceback
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
@@ -44,7 +44,8 @@ class OptionSignal(str, Enum):
             return cls.WAIT
 
 
-SIGNAL_GROUPS = [OptionSignal.BUY_CALL, OptionSignal.BUY_PUT, OptionSignal.EXIT_CALL, OptionSignal.EXIT_PUT,
+SIGNAL_GROUPS = [OptionSignal.BUY_CALL, OptionSignal.BUY_PUT,
+                 OptionSignal.EXIT_CALL, OptionSignal.EXIT_PUT,
                  OptionSignal.HOLD]
 
 SIGNAL_LABELS: Dict[str, str] = {
@@ -69,10 +70,12 @@ OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 INDICATOR_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "rsi": {"length": 14}, "ema": {"length": 20}, "sma": {"length": 20}, "wma": {"length": 20},
     "macd": {"fast": 12, "slow": 26, "signal": 9}, "bbands": {"length": 20, "std": 2.0},
-    "atr": {"length": 14}, "adx": {"length": 14}, "cci": {"length": 20}, "stoch": {"k": 14, "d": 3, "smooth_k": 3},
+    "atr": {"length": 14}, "adx": {"length": 14}, "cci": {"length": 20},
+    "stoch": {"k": 14, "d": 3, "smooth_k": 3},
     "roc": {"length": 10}, "mom": {"length": 10}, "willr": {"length": 14}, "obv": {}, "vwap": {},
     "supertrend": {"length": 7, "multiplier": 3.0}, "kc": {"length": 20, "scalar": 1.5},
-    "donchian": {"lower_length": 20, "upper_length": 20}, "psar": {"af0": 0.02, "af": 0.02, "max_af": 0.2},
+    "donchian": {"lower_length": 20, "upper_length": 20},
+    "psar": {"af0": 0.02, "af": 0.02, "max_af": 0.2},
     "tema": {"length": 20}, "dema": {"length": 20}, "hma": {"length": 20}, "zlma": {"length": 20},
     "slope": {"length": 1}, "linreg": {"length": 14},
 }
@@ -282,41 +285,54 @@ def _rule_to_string(rule: Dict[str, Any]) -> str:
 
 
 class DynamicSignalEngine:
+    """
+    Dynamic signal engine that uses strategy configuration from StrategyManager.
+    Each instance is tied to a specific strategy slug.
+    """
+
     DEFAULT_CONFIG: Dict[str, Any] = {
         sig.value: {"logic": "AND", "rules": [], "enabled": True} for sig in SIGNAL_GROUPS
     }
 
-    def __init__(self, config_file: str = "config/dynamic_signals.json", conflict_resolution: str = "WAIT"):
+    def __init__(self, strategy_slug: Optional[str] = None, conflict_resolution: str = "WAIT"):
+        """
+        Initialize the signal engine.
+
+        Args:
+            strategy_slug: Slug of the strategy to use (None for defaults)
+            conflict_resolution: How to resolve conflicts ("WAIT" or "PRIORITY")
+        """
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
-            # Rule 6: Input validation
-            if not isinstance(config_file, str):
-                logger.error(f"config_file must be string, got {type(config_file)}. Using default.")
-                config_file = "config/dynamic_signals.json"
-
             self._last_cache = None
-            self.config_file = config_file
+            self.strategy_slug = strategy_slug
             self.conflict_resolution = conflict_resolution.upper()
             self.config = {k: {"logic": v["logic"], "rules": list(v["rules"]), "enabled": v["enabled"]}
                            for k, v in self.DEFAULT_CONFIG.items()}
-            self.load()
 
-            logger.info(f"DynamicSignalEngine initialized with file: {self.config_file}")
+            # Import here to avoid circular imports
+            from strategy.strategy_manager import strategy_manager
+            self._manager = strategy_manager
+
+            if strategy_slug:
+                self.load_from_strategy()
+            else:
+                logger.info("DynamicSignalEngine initialized with defaults (no strategy)")
 
         except Exception as e:
             logger.critical(f"[DynamicSignalEngine.__init__] Failed: {e}", exc_info=True)
-            self.config_file = config_file if isinstance(config_file, str) else "config/dynamic_signals.json"
             self.config = dict(self.DEFAULT_CONFIG)
             self.conflict_resolution = "WAIT"
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._last_cache = None
-        self.config_file = "config/dynamic_signals.json"
+        self.strategy_slug = None
         self.conflict_resolution = "WAIT"
         self.config = {}
+        self._manager = None
 
     def _key(self, signal: Union[str, OptionSignal]) -> str:
         """Get config key for signal"""
@@ -328,95 +344,91 @@ class DynamicSignalEngine:
             logger.error(f"[_key] Failed: {e}", exc_info=True)
             return ""
 
-    def load(self) -> bool:
-        """Load configuration from file"""
+    def load_from_strategy(self, strategy_slug: Optional[str] = None) -> bool:
+        """
+        Load configuration from a strategy.
+
+        Args:
+            strategy_slug: Slug of the strategy (uses current if None)
+
+        Returns:
+            bool: True if load successful
+        """
         try:
-            if not os.path.exists(self.config_file):
-                logger.info(f"No dynamic signal config at {self.config_file}. Using defaults.")
+            slug = strategy_slug or self.strategy_slug
+            if not slug or not self._manager:
+                logger.warning("No strategy slug or manager available")
                 return False
 
-            try:
-                with open(self.config_file, "r", encoding='utf-8') as f:
-                    data = json.load(f)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse config JSON: {e}", exc_info=True)
-                return False
-            except IOError as e:
-                logger.error(f"Failed to read config file: {e}", exc_info=True)
+            strategy = self._manager.get(slug)
+            if not strategy:
+                logger.warning(f"Strategy not found: {slug}")
                 return False
 
-            if not isinstance(data, dict):
-                logger.error(f"Config must be a dict, got {type(data)}")
+            engine_config = strategy.get("engine", {})
+            if not engine_config:
+                logger.info(f"No engine config found for strategy {slug}, using defaults")
                 return False
 
+            # Load signal configurations
             for sig in SIGNAL_GROUPS:
                 k = sig.value
-                if k in data and isinstance(data[k], dict):
+                if k in engine_config and isinstance(engine_config[k], dict):
                     try:
-                        self.config[k]["logic"] = str(data[k].get("logic", "AND")).upper()
-                        rules = data[k].get("rules", [])
+                        self.config[k]["logic"] = str(engine_config[k].get("logic", "AND")).upper()
+                        rules = engine_config[k].get("rules", [])
                         self.config[k]["rules"] = list(rules) if isinstance(rules, list) else []
-                        self.config[k]["enabled"] = bool(data[k].get("enabled", True))
+                        self.config[k]["enabled"] = bool(engine_config[k].get("enabled", True))
                     except Exception as e:
                         logger.warning(f"Failed to load config for {k}: {e}")
 
-            if "conflict_resolution" in data:
-                self.conflict_resolution = str(data["conflict_resolution"]).upper()
+            # Load conflict resolution
+            if "conflict_resolution" in engine_config:
+                self.conflict_resolution = str(engine_config["conflict_resolution"]).upper()
 
+            self.strategy_slug = slug
+            logger.info(f"Dynamic signal config loaded from strategy: {slug}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load config: {e}", exc_info=True)
+            logger.error(f"Failed to load config from strategy: {e}", exc_info=True)
             return False
 
-    def save(self) -> bool:
-        """Save configuration to file"""
-        temp_file = None
+    def save_to_strategy(self, strategy_slug: Optional[str] = None) -> bool:
+        """
+        Save current configuration to a strategy.
+
+        Args:
+            strategy_slug: Slug of the strategy (uses current if None)
+
+        Returns:
+            bool: True if save successful
+        """
         try:
-            if not self.config_file:
-                logger.error("Cannot save: config_file is None or empty")
+            slug = strategy_slug or self.strategy_slug
+            if not slug or not self._manager:
+                logger.warning("No strategy slug or manager available")
                 return False
 
-            dir_path = os.path.dirname(self.config_file)
-            if dir_path:
-                try:
-                    os.makedirs(dir_path, exist_ok=True)
-                except Exception as e:
-                    logger.error(f"Failed to create directory {dir_path}: {e}")
-                    return False
-
-            temp_file = self.config_file + ".tmp"
-
-            payload = self.to_dict()
-            payload["conflict_resolution"] = self.conflict_resolution
-
-            try:
-                with open(temp_file, "w", encoding='utf-8') as f:
-                    json.dump(payload, f, indent=2)
-            except Exception as e:
-                logger.error(f"Failed to write temp file: {e}")
+            strategy = self._manager.get(slug)
+            if not strategy:
+                logger.warning(f"Strategy not found: {slug}")
                 return False
 
-            try:
-                os.replace(temp_file, self.config_file)
-                logger.info(f"Config saved to {self.config_file}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to replace config file: {e}")
-                if os.path.exists(temp_file):
-                    try:
-                        os.remove(temp_file)
-                    except:
-                        pass
-                return False
+            # Update engine config
+            strategy["engine"] = self.to_dict()
+            strategy["engine"]["conflict_resolution"] = self.conflict_resolution
+
+            success = self._manager.save(slug, strategy)
+            if success:
+                logger.info(f"Dynamic signal config saved to strategy: {slug}")
+            else:
+                logger.error(f"Failed to save config to strategy: {slug}")
+
+            return success
 
         except Exception as e:
-            logger.error(f"Failed to save: {e}", exc_info=True)
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except:
-                    pass
+            logger.error(f"Failed to save config to strategy: {e}", exc_info=True)
             return False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -769,6 +781,7 @@ class DynamicSignalEngine:
             logger.info("[DynamicSignalEngine] Starting cleanup")
             self._last_cache = None
             self.config.clear()
+            self._manager = None
             logger.info("[DynamicSignalEngine] Cleanup completed")
         except Exception as e:
             logger.error(f"[DynamicSignalEngine.cleanup] Error: {e}", exc_info=True)

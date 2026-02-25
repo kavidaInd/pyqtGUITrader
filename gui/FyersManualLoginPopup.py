@@ -1,3 +1,9 @@
+"""
+FyersManualLoginPopup_db.py
+===========================
+PyQt5 QDialog for Fyers manual login using database-backed settings.
+"""
+
 # PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
 import logging
 import logging.handlers
@@ -279,7 +285,7 @@ class FyersManualLoginPopup(QDialog):
             # Initialize login URL
             self.init_login_url()
 
-            logger.info("FyersManualLoginPopup initialized")
+            logger.info("FyersManualLoginPopup (database) initialized")
 
         except Exception as e:
             logger.critical(f"[FyersManualLoginPopup.__init__] Failed: {e}", exc_info=True)
@@ -458,8 +464,8 @@ class FyersManualLoginPopup(QDialog):
                     "🔑  What happens after I click 'Complete Login'?",
                     "The auth code is sent to Fyers' token endpoint in a background thread "
                     "(so the UI stays responsive). Fyers returns a session token which is then "
-                    "stored in memory and used to authenticate all subsequent API calls.\n\n"
-                    "• The token is never logged or written to disk by this dialog.\n"
+                    "stored in the database and used to authenticate all subsequent API calls.\n\n"
+                    "• The token is stored securely in the database.\n"
                     "• If the exchange fails, check that your auth code hasn't expired and try again."
                 ),
                 (
@@ -474,7 +480,7 @@ class FyersManualLoginPopup(QDialog):
                 ),
                 (
                     "📋  Credentials used",
-                    "This dialog uses the credentials configured in Brokerage Settings:\n\n"
+                    "This dialog uses the credentials configured in Brokerage Settings (database-backed):\n\n"
                     "• Client ID — identifies your app to Fyers.\n"
                     "• Secret Key — proves your app's identity during token exchange.\n"
                     "• Redirect URI — the address Fyers redirects to after login.\n\n"
@@ -784,7 +790,7 @@ class FyersManualLoginPopup(QDialog):
 
                 QMessageBox.information(
                     self, "Success",
-                    "Login successful! Token has been received and will be used for trading."
+                    "Login successful! Token has been received and stored in the database."
                 )
 
                 # Close dialog after short delay

@@ -1,16 +1,17 @@
 """
-strategy_editor_window.py
-==========================
+strategy_editor_window_db.py
+==============================
 Full-page Strategy Editor Window with tab-based signal rules and complete indicator registry.
 Enhanced with expanded cards, clear labels, and import/export functionality.
+Uses database-backed strategy manager.
 """
 
 from __future__ import annotations
 
 import json
-import logging.handlers
+import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator
@@ -27,35 +28,36 @@ from strategy.indicator_registry import (
     get_param_type, get_param_description, get_indicator_category,
     get_indicators_by_category
 )
-from strategy.strategy_manager import (
-    StrategyManager, SIGNAL_GROUPS
-)
+from strategy.strategy_manager import strategy_manager
+
+# Import SIGNAL_GROUPS as strings - these are the string values used in the engine config
+SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 from strategy.strategy_presets import get_preset_names, get_preset_rules
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 # ── Palette ──────────────────────────────────────────────────────────────────
-BG       = "#0d1117"
+BG = "#0d1117"
 BG_PANEL = "#161b22"
-BG_ITEM  = "#1c2128"
-BG_SEL   = "#1f3d5c"
-BORDER   = "#30363d"
-TEXT     = "#e6edf3"
-DIM      = "#8b949e"
-GREEN    = "#3fb950"
-RED      = "#f85149"
-BLUE     = "#58a6ff"
-YELLOW   = "#d29922"
-ORANGE   = "#ffa657"
-PURPLE   = "#bc8cff"
+BG_ITEM = "#1c2128"
+BG_SEL = "#1f3d5c"
+BORDER = "#30363d"
+TEXT = "#e6edf3"
+DIM = "#8b949e"
+GREEN = "#3fb950"
+RED = "#f85149"
+BLUE = "#58a6ff"
+YELLOW = "#d29922"
+ORANGE = "#ffa657"
+PURPLE = "#bc8cff"
 
 SIGNAL_META = {
-    "BUY_CALL":  ("📈", GREEN,  "BUY CALL"),
-    "BUY_PUT":   ("📉", BLUE,   "BUY PUT"),
-    "EXIT_CALL": ("🔴", RED,    "SELL CALL"),
-    "EXIT_PUT":  ("🟠", ORANGE, "SELL PUT"),
-    "HOLD":      ("⏸",  YELLOW, "HOLD"),
+    "BUY_CALL": ("📈", GREEN, "BUY CALL"),
+    "BUY_PUT": ("📉", BLUE, "BUY PUT"),
+    "EXIT_CALL": ("🔴", RED, "EXIT CALL"),
+    "EXIT_PUT": ("🟠", ORANGE, "EXIT PUT"),
+    "HOLD": ("⏸", YELLOW, "HOLD"),
 }
 
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
@@ -64,14 +66,14 @@ COLUMNS = ["close", "open", "high", "low", "volume", "hl2", "hlc3", "ohlc4"]
 
 # Human-readable labels and descriptions for each column
 COLUMN_META = {
-    "close":  ("CLOSE",  "Closing price"),
-    "open":   ("OPEN",   "Opening price"),
-    "high":   ("HIGH",   "Period high"),
-    "low":    ("LOW",    "Period low"),
+    "close": ("CLOSE", "Closing price"),
+    "open": ("OPEN", "Opening price"),
+    "high": ("HIGH", "Period high"),
+    "low": ("LOW", "Period low"),
     "volume": ("VOLUME", "Trading volume"),
-    "hl2":    ("HL2",    "(High + Low) / 2  — mid-price"),
-    "hlc3":   ("HLC3",   "(High + Low + Close) / 3  — typical price"),
-    "ohlc4":  ("OHLC4",  "(Open + High + Low + Close) / 4  — average price"),
+    "hl2": ("HL2", "(High + Low) / 2  — mid-price"),
+    "hlc3": ("HLC3", "(High + Low + Close) / 3  — typical price"),
+    "ohlc4": ("OHLC4", "(Open + High + Low + Close) / 4  — average price"),
 }
 
 
@@ -365,7 +367,7 @@ class ImportExportDialog(QDialog):
 
             data = json.loads(self.json_edit.toPlainText())
             # Basic validation - check for required fields
-            if 'meta' in data and 'engine' in data:
+            if 'name' in data and 'engine' in data:
                 if self.ok_btn:
                     self.ok_btn.setEnabled(True)
                     self.ok_btn.setText("✓ Valid - Import")
@@ -374,7 +376,7 @@ class ImportExportDialog(QDialog):
                 if self.ok_btn:
                     self.ok_btn.setEnabled(False)
                     self.ok_btn.setText("✗ Invalid - Missing required fields")
-                QMessageBox.warning(self, "Invalid", "JSON must contain 'meta' and 'engine' fields.")
+                QMessageBox.warning(self, "Invalid", "JSON must contain 'name' and 'engine' fields.")
         except json.JSONDecodeError as e:
             if self.ok_btn:
                 self.ok_btn.setEnabled(False)
@@ -1830,8 +1832,8 @@ class _SignalRulesTab(QWidget):
             signal_tabs = [
                 ("BUY_CALL", "📈 BUY CALL", GREEN),
                 ("BUY_PUT", "📉 BUY PUT", BLUE),
-                ("EXIT_CALL", "🔴 SELL CALL", RED),
-                ("EXIT_PUT", "🟠 SELL PUT", ORANGE),
+                ("EXIT_CALL", "🔴 EXIT CALL", RED),
+                ("EXIT_PUT", "🟠 EXIT PUT", ORANGE),
                 ("HOLD", "⏸ HOLD", YELLOW),
             ]
 
@@ -2096,23 +2098,22 @@ class _InfoTab(QWidget):
     def load(self, strategy: Dict):
         """Load strategy metadata into tab"""
         try:
-            meta = strategy.get("meta", {})
             if self.name_edit:
-                self.name_edit.setText(meta.get("name", ""))
+                self.name_edit.setText(strategy.get("name", ""))
             if self.desc_edit:
-                self.desc_edit.setPlainText(meta.get("description", ""))
+                self.desc_edit.setPlainText(strategy.get("description", ""))
             if self.created_lbl:
-                self.created_lbl.setText(meta.get("created_at", "—"))
+                self.created_lbl.setText(strategy.get("created_at", "—"))
             if self.updated_lbl:
-                self.updated_lbl.setText(meta.get("updated_at", "—"))
+                self.updated_lbl.setText(strategy.get("updated_at", "—"))
 
             engine = strategy.get("engine", {})
             total_rules = 0
             indicators = set()
             enabled_count = 0
 
-            for signal in SIGNAL_GROUPS:
-                group = engine.get(signal, {})
+            for signal in SIGNAL_GROUPS:  # signal is a string like "BUY_CALL"
+                group = engine.get(signal, {})  # Use string key directly
                 rules = group.get("rules", [])
                 total_rules += len(rules)
 
@@ -2169,7 +2170,8 @@ class _IndicatorsTab(QScrollArea):
                 "📊 AVAILABLE INDICATORS (pandas_ta)\n"
                 "The following indicators are available for your strategy rules."
             )
-            info_lbl.setStyleSheet(f"color:{DIM}; font-size:11pt; padding:12px; background:{BG_ITEM}; border-radius:6px;")
+            info_lbl.setStyleSheet(
+                f"color:{DIM}; font-size:11pt; padding:12px; background:{BG_ITEM}; border-radius:6px;")
             info_lbl.setWordWrap(True)
             self._layout.addWidget(info_lbl)
 
@@ -2273,7 +2275,7 @@ class _IndicatorsTab(QScrollArea):
                 for k, v in list(params.items())[:4]:
                     param_text += f"• {k}: {v}\n"
                 if len(params) > 4:
-                    param_text += f"• ... (+{len(params)-4} more)"
+                    param_text += f"• ... (+{len(params) - 4} more)"
                 param_lbl = QLabel(param_text)
             else:
                 param_lbl = QLabel("• No parameters")
@@ -2284,7 +2286,8 @@ class _IndicatorsTab(QScrollArea):
             # Category tag
             cat = get_indicator_category(indicator_name)
             cat_lbl = QLabel(f"📌 {cat}")
-            cat_lbl.setStyleSheet(f"color:{BLUE}CC; font-size:8pt; border:none; background:{BLUE}11; padding:2px 6px; border-radius:3px;")
+            cat_lbl.setStyleSheet(
+                f"color:{BLUE}CC; font-size:8pt; border:none; background:{BLUE}11; padding:2px 6px; border-radius:3px;")
             layout.addWidget(cat_lbl)
 
             layout.addStretch()
@@ -2332,13 +2335,12 @@ class _StrategyListPanel(QWidget):
     strategy_selected = pyqtSignal(str)
     strategy_activated = pyqtSignal(str)
 
-    def __init__(self, manager: StrategyManager, parent=None):
+    def __init__(self, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
-            self.manager = manager
             self._current_slug: Optional[str] = None
             self.setFixedWidth(260)
             self.setStyleSheet(f"background:{BG_PANEL}; border-right:2px solid {BORDER};")
@@ -2349,7 +2351,8 @@ class _StrategyListPanel(QWidget):
 
             # Header
             hdr = QLabel("  📋 STRATEGIES")
-            hdr.setStyleSheet(f"color:{BLUE}; font-size:10pt; font-weight:bold; padding:14px 16px; background:{BG_PANEL};")
+            hdr.setStyleSheet(
+                f"color:{BLUE}; font-size:10pt; font-weight:bold; padding:14px 16px; background:{BG_PANEL};")
             root.addWidget(hdr)
 
             # Action buttons
@@ -2405,7 +2408,6 @@ class _StrategyListPanel(QWidget):
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.manager = None
         self._current_slug = None
         self.list_widget = None
         self.new_btn = None
@@ -2416,25 +2418,26 @@ class _StrategyListPanel(QWidget):
     def refresh(self):
         """Refresh the list of strategies"""
         try:
-            if self.list_widget is None or self.manager is None:
+            if self.list_widget is None:
                 return
 
             self.list_widget.blockSignals(True)
             self.list_widget.clear()
-            active = self.manager.get_active_slug()
+            active = strategy_manager.get_active_slug()
 
-            for s in self.manager.list_strategies():
+            for s in strategy_manager.list_strategies():
                 try:
                     item = QListWidgetItem()
                     name = s["name"]
+                    slug = s["slug"]
                     is_active = s["is_active"]
                     item.setText(("⚡ " if is_active else "   ") + name)
-                    item.setData(Qt.UserRole, s["slug"])
+                    item.setData(Qt.UserRole, slug)
                     if is_active:
                         item.setForeground(QColor(BLUE))
                         item.setFont(QFont("", -1, QFont.Bold))
                     self.list_widget.addItem(item)
-                    if s["slug"] == self._current_slug:
+                    if slug == self._current_slug:
                         self.list_widget.setCurrentItem(item)
                 except Exception as e:
                     logger.warning(f"Failed to add strategy item: {e}")
@@ -2471,7 +2474,7 @@ class _StrategyListPanel(QWidget):
                 self, "New Strategy", "Strategy name:", text="My Strategy"
             )
             if ok and name and name.strip():
-                ok2, slug = self.manager.create(name.strip())
+                ok2, slug = strategy_manager.create(name.strip())
                 if ok2:
                     self._current_slug = slug
                     self.refresh()
@@ -2482,16 +2485,16 @@ class _StrategyListPanel(QWidget):
     def _on_dup(self):
         """Duplicate current strategy"""
         try:
-            if not self._current_slug or self.manager is None:
+            if not self._current_slug:
                 return
 
-            src = self.manager.get(self._current_slug)
-            src_name = src.get("meta", {}).get("name", self._current_slug) if src else self._current_slug
+            src = strategy_manager.get(self._current_slug)
+            src_name = src.get("name", self._current_slug) if src else self._current_slug
             name, ok = QInputDialog.getText(
                 self, "Duplicate Strategy", "New name:", text=f"{src_name} (copy)"
             )
             if ok and name and name.strip():
-                ok2, slug = self.manager.duplicate(self._current_slug, name.strip())
+                ok2, slug = strategy_manager.duplicate(self._current_slug, name.strip())
                 if ok2:
                     self._current_slug = slug
                     self.refresh()
@@ -2510,10 +2513,7 @@ class _StrategyListPanel(QWidget):
     def _on_activate_slug(self, slug: str):
         """Activate strategy by slug"""
         try:
-            if self.manager is None:
-                return
-
-            self.manager.activate(slug)
+            strategy_manager.activate(slug)
             self.refresh()
             self.strategy_activated.emit(slug)
         except Exception as e:
@@ -2522,22 +2522,22 @@ class _StrategyListPanel(QWidget):
     def _on_delete(self):
         """Delete current strategy"""
         try:
-            if not self._current_slug or self.manager is None:
+            if not self._current_slug:
                 return
 
-            s = self.manager.get(self._current_slug)
-            name = s.get("meta", {}).get("name", self._current_slug) if s else self._current_slug
+            s = strategy_manager.get(self._current_slug)
+            name = s.get("name", self._current_slug) if s else self._current_slug
             ok = QMessageBox.question(
                 self, "Delete Strategy",
                 f"Delete '{name}'?\nThis cannot be undone.",
                 QMessageBox.Yes | QMessageBox.No
             )
             if ok == QMessageBox.Yes:
-                success, msg = self.manager.delete(self._current_slug)
+                success, msg = strategy_manager.delete(self._current_slug)
                 if not success:
                     QMessageBox.warning(self, "Cannot Delete", msg)
                 else:
-                    self._current_slug = self.manager.get_active_slug()
+                    self._current_slug = strategy_manager.get_active_slug()
                     self.refresh()
                     if self._current_slug:
                         self.strategy_selected.emit(self._current_slug)
@@ -2550,16 +2550,16 @@ class _StrategyListPanel(QWidget):
 class StrategyEditorWindow(QDialog):
     """
     Full-page strategy editor with import/export functionality.
+    Uses database-backed strategy manager.
     """
     strategy_activated = pyqtSignal(str)
 
-    def __init__(self, manager: StrategyManager, parent=None):
+    def __init__(self, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent, Qt.Window)
-            self.manager = manager
             self._current_slug: Optional[str] = None
             self._dirty = False
 
@@ -2569,11 +2569,11 @@ class StrategyEditorWindow(QDialog):
             self.setStyleSheet(_ss())
 
             self._build_ui()
-            active = manager.get_active_slug() if manager else None
+            active = strategy_manager.get_active_slug()
             if active:
                 self._load_strategy(active)
 
-            logger.info("StrategyEditorWindow initialized")
+            logger.info("StrategyEditorWindow (database) initialized")
 
         except Exception as e:
             logger.critical(f"[StrategyEditorWindow.__init__] Failed: {e}", exc_info=True)
@@ -2593,7 +2593,6 @@ class StrategyEditorWindow(QDialog):
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.manager = None
         self._current_slug = None
         self._dirty = False
         self._list_panel = None
@@ -2620,7 +2619,7 @@ class StrategyEditorWindow(QDialog):
             root.setSpacing(0)
 
             # Left: strategy list
-            self._list_panel = _StrategyListPanel(self.manager)
+            self._list_panel = _StrategyListPanel()
             self._list_panel.strategy_selected.connect(self._on_strategy_selected)
             self._list_panel.strategy_activated.connect(self._on_strategy_activated)
             root.addWidget(self._list_panel)
@@ -2640,8 +2639,8 @@ class StrategyEditorWindow(QDialog):
             self._info_tab = _InfoTab()
             self._ind_tab = _IndicatorsTab()
             self._rules_tab = _SignalRulesTab()
-            self._tabs.addTab(self._info_tab,  "⚙  Info")
-            self._tabs.addTab(self._ind_tab,   "📊  Indicators")
+            self._tabs.addTab(self._info_tab, "⚙  Info")
+            self._tabs.addTab(self._ind_tab, "📊  Indicators")
             self._tabs.addTab(self._rules_tab, "🔬  Signal Rules")
             right_layout.addWidget(self._tabs, 1)
 
@@ -2777,10 +2776,7 @@ class StrategyEditorWindow(QDialog):
                 if ans == QMessageBox.No:
                     return
 
-            if self.manager is None:
-                return
-
-            strategy = self.manager.get(slug)
+            strategy = strategy_manager.get(slug)
             if strategy is None:
                 return
 
@@ -2795,11 +2791,11 @@ class StrategyEditorWindow(QDialog):
 
             self._set_dirty(False)
 
-            name = strategy.get("meta", {}).get("name", slug)
+            name = strategy.get("name", slug)
             if self._title_lbl:
                 self._title_lbl.setText(name)
 
-            is_active = self.manager.get_active_slug() == slug if self.manager is not None else False
+            is_active = strategy_manager.get_active_slug() == slug
             if is_active and self._active_badge:
                 self._active_badge.setText("  ⚡ ACTIVE  ")
                 self._active_badge.setStyleSheet(
@@ -2864,8 +2860,7 @@ class StrategyEditorWindow(QDialog):
                     if not self._do_save():
                         return
 
-            if self.manager is not None:
-                self.manager.activate(self._current_slug)
+            strategy_manager.activate(self._current_slug)
 
             if self._list_panel is not None:
                 self._list_panel.refresh()
@@ -2904,7 +2899,7 @@ class StrategyEditorWindow(QDialog):
     def _do_save(self) -> bool:
         """Perform save operation"""
         try:
-            if not self._current_slug or self.manager is None:
+            if not self._current_slug:
                 return False
 
             if self._info_tab is None:
@@ -2915,15 +2910,16 @@ class StrategyEditorWindow(QDialog):
                 QMessageBox.warning(self, "Validation", "Strategy name cannot be empty.")
                 return False
 
-            strategy = self.manager.get(self._current_slug) or {}
-            strategy["meta"] = strategy.get("meta", {})
-            strategy["meta"]["name"] = name
-            strategy["meta"]["description"] = self._info_tab.collect()["description"]
-            strategy["meta"]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            strategy["indicators"] = self._ind_tab.collect() if self._ind_tab else {}
+            # Get current strategy data
+            strategy = strategy_manager.get(self._current_slug) or {}
+
+            # Update with new data
+            strategy["name"] = name
+            strategy["description"] = self._info_tab.collect()["description"]
+            strategy["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             strategy["engine"] = self._rules_tab.collect() if self._rules_tab else {}
 
-            ok = self.manager.save(self._current_slug, strategy)
+            ok = strategy_manager.save(self._current_slug, strategy)
             if ok:
                 self._set_dirty(False)
                 if self._title_lbl:
@@ -2954,28 +2950,27 @@ class StrategyEditorWindow(QDialog):
                 data = dlg.get_imported_data()
 
                 # Ask for strategy name
-                name = data.get('meta', {}).get('name', 'Imported Strategy')
+                name = data.get('name', 'Imported Strategy')
                 new_name, ok = QInputDialog.getText(
                     self, "Import Strategy", "Strategy name:", text=name
                 )
                 if ok and new_name and new_name.strip():
                     # Create new strategy with imported data
-                    if self.manager is not None:
-                        ok2, slug = self.manager.create(new_name.strip())
-                        if ok2:
-                            # Update with imported data
-                            strategy = self.manager.get(slug)
-                            if strategy is not None:
-                                strategy['meta']['description'] = data.get('meta', {}).get('description', '')
-                                strategy['engine'] = data.get('engine', {})
-                                self.manager.save(slug, strategy)
+                    ok2, slug = strategy_manager.create(new_name.strip())
+                    if ok2:
+                        # Update with imported data
+                        strategy = strategy_manager.get(slug)
+                        if strategy is not None:
+                            strategy['description'] = data.get('description', '')
+                            strategy['engine'] = data.get('engine', {})
+                            strategy_manager.save(slug, strategy)
 
-                            self._current_slug = slug
-                            if self._list_panel is not None:
-                                self._list_panel.refresh()
-                            self._load_strategy(slug)
+                        self._current_slug = slug
+                        if self._list_panel is not None:
+                            self._list_panel.refresh()
+                        self._load_strategy(slug)
 
-                            QMessageBox.information(self, "Success", f"Strategy '{new_name}' imported successfully!")
+                        QMessageBox.information(self, "Success", f"Strategy '{new_name}' imported successfully!")
         except Exception as e:
             logger.error(f"[StrategyEditorWindow._on_import] Failed: {e}", exc_info=True)
             QMessageBox.critical(self, "Import Failed", f"Failed to import strategy: {e}")
@@ -2983,11 +2978,11 @@ class StrategyEditorWindow(QDialog):
     def _on_export(self):
         """Export current strategy to JSON"""
         try:
-            if not self._current_slug or self.manager is None:
+            if not self._current_slug:
                 QMessageBox.warning(self, "No Strategy", "Please select a strategy to export.")
                 return
 
-            strategy = self.manager.get(self._current_slug)
+            strategy = strategy_manager.get(self._current_slug)
             if strategy is not None:
                 dlg = ImportExportDialog('export', strategy, self)
                 dlg.exec_()
@@ -3002,7 +2997,6 @@ class StrategyEditorWindow(QDialog):
             logger.info("[StrategyEditorWindow] Starting cleanup")
 
             # Clear references
-            self.manager = None
             self._list_panel = None
             self._info_tab = None
             self._ind_tab = None

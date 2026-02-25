@@ -1,78 +1,32 @@
-import os
-import json
+"""
+FyersManualLoginHelper_db.py
+=============================
+Database-backed Fyers manual login helper using the SQLite database for token storage.
+"""
+
 import logging
-import logging.handlers
 import urllib.parse
-from typing import Optional, Dict, Any
-import traceback
+from typing import Optional
 
 from fyers_apiv3 import fyersModel
 
-import BaseEnums
+from db.connector import get_db
+from db.crud import tokens
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
-def write_file(token: str) -> bool:
-    """
-    Write token to file.
-
-    Args:
-        token: Token string to write
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        if token is None:
-            logger.error("write_file called with None token")
-            return False
-
-        file_path = os.path.join(BaseEnums.CONFIG_PATH, "fyers_token.json")
-
-        # Ensure directory exists
-        try:
-            os.makedirs(BaseEnums.CONFIG_PATH, exist_ok=True)
-        except PermissionError as e:
-            logger.error(f"Permission denied creating directory {BaseEnums.CONFIG_PATH}: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to create directory {BaseEnums.CONFIG_PATH}: {e}", exc_info=True)
-            return False
-
-        # Write token atomically
-        temp_file = file_path + ".tmp"
-        try:
-            with open(temp_file, "w", encoding='utf-8') as f:
-                f.write(token)
-            os.replace(temp_file, file_path)
-            logger.info(f"Token written to {file_path}")
-            return True
-        except IOError as e:
-            logger.error(f"Failed to write token file: {e}", exc_info=True)
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except:
-                    pass
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error writing token file: {e}", exc_info=True)
-            return False
-
-    except Exception as e:
-        logger.error(f"[write_file] Failed: {e}", exc_info=True)
-        return False
-
-
 class FyersManualLoginHelper:
+    """
+    Fyers manual login helper using database for token storage.
+    """
+
     def __init__(
             self,
             client_id: str,
             secret_key: str,
-            redirect_uri: str,
-            token_file: str = f"{BaseEnums.LOG_PATH}/fyers_token.json"
+            redirect_uri: str
     ):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
@@ -94,25 +48,18 @@ class FyersManualLoginHelper:
             self.client_id = client_id
             self.secret_key = secret_key
             self.redirect_uri = redirect_uri
-            self.token_file = token_file
             self.access_token: Optional[str] = None
 
-            if os.path.exists(token_file):
-                try:
-                    self._load_token()
-                    logger.info("Loaded token from file.")
-                except Exception as e:
-                    logger.error(f"Error loading token file: {e}", exc_info=True)
-                    self.access_token = None
+            # Load token from database
+            self._load_token()
 
-            logger.debug("FyersManualLoginHelper initialized")
+            logger.debug("FyersManualLoginHelper (database) initialized")
 
         except Exception as e:
             logger.critical(f"[FyersManualLoginHelper.__init__] Failed: {e}", exc_info=True)
             self.client_id = client_id or ""
             self.secret_key = secret_key or ""
             self.redirect_uri = redirect_uri or ""
-            self.token_file = token_file
             self.access_token = None
 
     def _safe_defaults_init(self):
@@ -120,69 +67,25 @@ class FyersManualLoginHelper:
         self.client_id = ""
         self.secret_key = ""
         self.redirect_uri = ""
-        self.token_file = ""
         self.access_token = None
 
     def _load_token(self) -> None:
         """
-        Load token from file.
-        Flexible loading for both txt and json token files.
+        Load token from database.
         """
         try:
-            if not self.token_file:
-                raise ValueError("token_file is not set")
+            db = get_db()
+            token_data = tokens.get(db)
 
-            if not os.path.exists(self.token_file):
-                logger.warning(f"Token file not found: {self.token_file}")
-                return
-
-            if self.token_file.endswith(".json"):
-                try:
-                    with open(self.token_file, "r", encoding='utf-8') as f:
-                        data = json.load(f)
-
-                    # Try known key locations
-                    if isinstance(data, dict):
-                        if "access_token" in data:
-                            self.access_token = data["access_token"]
-                        elif "token" in data:
-                            self.access_token = data["token"]
-                        else:
-                            # Try to find any string value that looks like a token
-                            for key, value in data.items():
-                                if isinstance(value, str) and len(value) > 50:
-                                    self.access_token = value
-                                    logger.debug(f"Found token in key '{key}'")
-                                    break
-                            else:
-                                logger.warning("No access_token found in JSON file")
-                    elif isinstance(data, str):
-                        self.access_token = data
-                    else:
-                        logger.error(f"Unexpected data type in token file: {type(data)}")
-                        raise ValueError("Malformed token file (json).")
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON token file: {e}", exc_info=True)
-                    raise
+            if token_data and token_data.get("access_token"):
+                self.access_token = token_data["access_token"]
+                logger.debug(f"Token loaded from database (length: {len(self.access_token)})")
             else:
-                try:
-                    with open(self.token_file, "r", encoding='utf-8') as f:
-                        self.access_token = f.read().strip()
-                except IOError as e:
-                    logger.error(f"Failed to read token file: {e}", exc_info=True)
-                    raise
+                logger.debug("No token found in database")
 
-            if self.access_token:
-                logger.debug(f"Token loaded successfully (length: {len(self.access_token)})")
-            else:
-                logger.warning("Token file contained empty token")
-
-        except PermissionError as e:
-            logger.error(f"Permission denied reading token file: {e}")
-            raise
         except Exception as e:
-            logger.error(f"Error reading token file: {e}", exc_info=True)
-            raise
+            logger.error(f"Error loading token from database: {e}", exc_info=True)
+            self.access_token = None
 
     def generate_login_url(self, state: str = "STATE123") -> str:
         """
@@ -273,27 +176,27 @@ class FyersManualLoginHelper:
                 if "access_token" in response and response["access_token"]:
                     self.access_token = response["access_token"]
 
-                    # Save token to file
+                    # Save token to database
                     try:
-                        token_file = os.path.join(BaseEnums.CONFIG_PATH, "fyers_token.json")
+                        db = get_db()
+                        issued_at = response.get("issued_at")
+                        expires_at = response.get("expires_at")
 
-                        # Ensure directory exists
-                        os.makedirs(BaseEnums.CONFIG_PATH, exist_ok=True)
+                        success = tokens.save_token(
+                            access_token=self.access_token,
+                            refresh_token=response.get("refresh_token", ""),
+                            issued_at=issued_at,
+                            expires_at=expires_at,
+                            db=db
+                        )
 
-                        # Write atomically
-                        temp_file = token_file + ".tmp"
-                        with open(temp_file, "w", encoding='utf-8') as f:
-                            json.dump(response, f, indent=2)
-                        os.replace(temp_file, token_file)
+                        if success:
+                            logger.info("Token received and saved to database successfully")
+                        else:
+                            logger.error("Failed to save token to database")
 
-                        logger.info("Token received and saved successfully")
-
-                    except PermissionError as e:
-                        logger.error(f"Permission denied saving token file: {e}")
-                    except IOError as e:
-                        logger.error(f"Failed to save token file: {e}", exc_info=True)
                     except Exception as e:
-                        logger.error(f"Unexpected error saving token: {e}", exc_info=True)
+                        logger.error(f"Failed to save token to database: {e}", exc_info=True)
 
                     return self.access_token
                 else:
@@ -326,12 +229,32 @@ class FyersManualLoginHelper:
             return False
 
     def clear_token(self) -> None:
-        """Clear the current token and optionally delete token file."""
+        """Clear the current token from memory and optionally from database."""
         try:
             self.access_token = None
             logger.info("Token cleared from memory")
         except Exception as e:
             logger.error(f"[clear_token] Failed: {e}", exc_info=True)
+
+    def revoke_token(self) -> bool:
+        """
+        Revoke the current token (clear from database).
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            db = get_db()
+            success = tokens.clear(db)
+            if success:
+                self.access_token = None
+                logger.info("Token revoked and cleared from database")
+            else:
+                logger.error("Failed to revoke token from database")
+            return success
+        except Exception as e:
+            logger.error(f"[revoke_token] Failed: {e}", exc_info=True)
+            return False
 
     # Rule 8: Cleanup method
     def cleanup(self):

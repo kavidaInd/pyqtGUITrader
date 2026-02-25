@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import logging.handlers
 import threading
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, List, Optional
+from datetime import datetime
 
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import (
-    QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout, QTabWidget, )
+    QWidget, QGridLayout, QLabel, QFrame, QVBoxLayout, QTabWidget,
+    QHBoxLayout, QPushButton, QGroupBox, QTableWidget, QTableWidgetItem,
+    QHeaderView, QFormLayout
+)
+
+# Import Utils for market status
+from Utils.Utils import Utils
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -24,7 +32,9 @@ RED = "#f85149"
 YELLOW = "#d29922"
 BLUE = "#58a6ff"
 ORANGE = "#ffa657"
+PURPLE = "#bc8cff"
 GREY_OFF = "#484f58"
+GREY_DARK = "#21262d"
 
 
 def _global_ss() -> str:
@@ -49,16 +59,60 @@ def _global_ss() -> str:
             padding: 6px 16px;
             font-size: 9pt;
             font-weight: bold;
+            width:120px
         }}
         QTabBar::tab:selected {{
             background: {BG_PANEL};
             color: {TEXT_MAIN};
             border-bottom: 2px solid {BLUE};
         }}
+        QTabBar::tab:hover:!selected {{
+            background: #2d333b;
+        }}
+        QGroupBox {{
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            margin-top: 8px;
+            font-weight: bold;
+            color: {TEXT_MAIN};
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 8px;
+            padding: 0 5px;
+            color: {BLUE};
+        }}
+        QPushButton {{
+            background: #21262d;
+            color: {TEXT_MAIN};
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 9pt;
+            font-weight: bold;
+        }}
+        QPushButton:hover {{
+            background: #30363d;
+        }}
+        QPushButton:disabled {{
+            color: {GREY_OFF};
+        }}
+        QPushButton#exit {{
+            background: {RED};
+            color: white;
+            border: none;
+        }}
+        QPushButton#exit:hover {{
+            background: #f85149;
+        }}
+        QPushButton#exit:disabled {{
+            background: #21262d;
+            color: {GREY_OFF};
+        }}
         QTableWidget {{
             background: {BG_PANEL};
             gridline-color: {BORDER};
-            border: none;
+            border: 1px solid {BORDER};
             color: {TEXT_MAIN};
             font-size: 9pt;
         }}
@@ -72,13 +126,22 @@ def _global_ss() -> str:
             font-size: 8pt;
             font-weight: bold;
         }}
-        QScrollArea {{ border: none; background: transparent; }}
         QLabel {{ color: {TEXT_MAIN}; }}
+        QLabel#value {{ color: {BLUE}; font-weight: bold; }}
+        QLabel#positive {{ color: {GREEN}; font-weight: bold; }}
+        QLabel#negative {{ color: {RED}; font-weight: bold; }}
+        QLabel#signal-badge {{
+            color: white;
+            border-radius: 3px;
+            font-size: 8pt;
+            font-weight: bold;
+            padding: 2px 8px;
+        }}
     """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# StatusCard
+# StatusCard (YOUR ORIGINAL CARD - UNCHANGED)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StatusCard(QFrame):
@@ -102,7 +165,6 @@ class StatusCard(QFrame):
     """
 
     def __init__(self, icon: str, label: str, parent=None):
-        # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
@@ -136,7 +198,6 @@ class StatusCard(QFrame):
             self._safe_defaults_init()
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
         self._dimmed = False
         self._title = None
         self.value_label = None
@@ -144,23 +205,13 @@ class StatusCard(QFrame):
         self._last_color = TEXT_MAIN
 
     def set_value(self, text: str, color: str = TEXT_MAIN):
-        """Must be called on the main thread only."""
         try:
-            # Rule 6: Input validation
             if text is None:
-                logger.warning("set_value called with None text")
                 text = "—"
 
-            if not isinstance(color, str):
-                logger.warning(f"set_value called with non-string color: {color}")
-                color = TEXT_MAIN
-
-            # FIXED: Use explicit None check
             if self.value_label is None:
-                logger.warning("set_value called with None value_label")
                 return
 
-            # Check if value changed
             if text == self._last_value and color == self._last_color:
                 return
 
@@ -175,13 +226,7 @@ class StatusCard(QFrame):
             logger.error(f"[StatusCard.set_value] Failed: {e}", exc_info=True)
 
     def set_dimmed(self, dimmed: bool):
-        """Grey out card when it is irrelevant (no active trade)."""
         try:
-            # Rule 6: Input validation
-            if not isinstance(dimmed, bool):
-                logger.warning(f"set_dimmed called with non-bool: {dimmed}")
-                dimmed = bool(dimmed)
-
             if dimmed == self._dimmed:
                 return
 
@@ -189,66 +234,54 @@ class StatusCard(QFrame):
             self.setStyleSheet(self._DIM_SS if dimmed else self._BASE_SS)
             dim_col = GREY_OFF if dimmed else TEXT_DIM
 
-            # FIXED: Use explicit None check
             if self._title is not None:
                 self._title.setStyleSheet(
                     f"color: {dim_col}; border: none; background: transparent;"
                 )
 
-            # FIXED: Use explicit None check
-            if dimmed:
-                if self.value_label is not None:
-                    self.value_label.setText("—")
-                    self.value_label.setStyleSheet(
-                        f"color: {GREY_OFF}; border: none; background: transparent;"
-                    )
-                self._last_value = None  # force repaint when trade reopens
+            if dimmed and self.value_label is not None:
+                self.value_label.setText("—")
+                self.value_label.setStyleSheet(
+                    f"color: {GREY_OFF}; border: none; background: transparent;"
+                )
+                self._last_value = None
 
         except Exception as e:
             logger.error(f"[StatusCard.set_dimmed] Failed: {e}", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# StatusPanel  (public API fully preserved)
+# StatusPanel - ENHANCED WITH TABS + SIGNAL CARD + MARKET STATUS
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StatusPanel(QWidget):
     """
-    Single-tab panel showing live trade status.
-
-    Trade Status tab
-        Grid of StatusCards for position, balance, prices, PnL etc.
-        Trade-specific cards (symbol, buy/current/target/stoploss price, PnL)
-        are automatically greyed out and reset when no trade is active.
-
-    Signal Data (moved to MultiChartWidget tab 3 — "🔬 Signal Data")
-        Previously Tab 2 here; now lives in the chart area where there is
-        sufficient horizontal space for the indicator and rule tables.
-
-    Public API (unchanged):
-        panel.refresh(state, config)
-        panel.pause_refresh()
-        panel.resume_refresh()
-        panel.clear_cache()
+    Enhanced status panel with:
+    - Signal in its own card
+    - Market status connected to Utils
+    - Additional tabs for performance, positions, account
     """
 
     # Cards that only make sense when a trade is open
-    _TRADE_ONLY: Set[str] = frozenset({"symbol", "buy_price", "current_price",
-                                       "target_price", "stoploss_price", "pnl"})
+    _TRADE_ONLY: Set[str] = frozenset({
+        "symbol", "buy_price", "current_price", "target_price",
+        "stoploss_price", "pnl"
+    })
 
+    # Updated FIELDS - REPLACED prev_position with signal
     FIELDS = [
         # Always-visible
         ("position", "🟢", "Position"),
-        ("prev_position", "🔄", "Previous Position"),
+        ("signal", "📊", "Signal"),  # ← REPLACED prev_position with signal
         ("balance", "🏦", "Balance"),
-        ("derivative", "📈", "Derivative Price"),
+        ("derivative", "📈", "Index"),
         # Trade-specific (dimmed when no trade)
         ("symbol", "💹", "Symbol"),
-        ("buy_price", "🛒", "Buy Price"),
-        ("current_price", "💰", "Current Price"),
-        ("target_price", "🎯", "Target Price"),
-        ("stoploss_price", "🛑", "Stoploss Price"),
-        ("pnl", "💵", "PnL"),
+        ("buy_price", "🛒", "Entry"),
+        ("current_price", "💰", "Current"),
+        ("target_price", "🎯", "Target"),
+        ("stoploss_price", "🛑", "Stop"),
+        ("pnl", "💵", "P&L"),
     ]
 
     COLORS = {
@@ -259,243 +292,503 @@ class StatusPanel(QWidget):
         "accent": BLUE,
     }
 
+    # Signal colors
+    SIGNAL_COLORS = {
+        "BUY_CALL": GREEN,
+        "BUY_PUT": BLUE,
+        "EXIT_CALL": RED,
+        "EXIT_PUT": ORANGE,
+        "HOLD": YELLOW,
+        "WAIT": GREY_OFF
+    }
+
+    # Signals
+    exit_position_clicked = pyqtSignal()
+    modify_sl_clicked = pyqtSignal()
+    modify_tp_clicked = pyqtSignal()
+
     def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
             self.setStyleSheet(_global_ss())
+            self.setMinimumWidth(340)
+            self.setMaximumWidth(400)
 
-            self._lock = threading.RLock()  # Use RLock for reentrant locking
+            self._lock = threading.RLock()
             self._last_state: Dict[str, str] = {}
             self._refresh_enabled = True
-            self._trade_active = False  # tracks last known trade state
+            self._trade_active = False
             self._closing = False
+            self._recent_trades: List[Dict] = []
 
+            # Market status from Utils
+            self._market_open = Utils.is_market_open()
+            self._is_holiday = Utils.is_today_holiday()
+
+            # Main layout
             root = QVBoxLayout(self)
-            root.setContentsMargins(0, 0, 0, 0)
-            root.setSpacing(0)
+            root.setContentsMargins(4, 4, 4, 4)
+            root.setSpacing(4)
 
+            # Header with timestamp and market status
+            header = self._create_header()
+            root.addWidget(header)
+
+            # Tab widget
             self._tabs = QTabWidget()
+
+            # Tab 1: Trade Status (YOUR CARD LAYOUT WITH SIGNAL CARD)
+            self._create_trade_tab()
+
+            # Tab 2: Performance
+            self._create_performance_tab()
+
+            # Tab 3: Positions
+            self._create_positions_tab()
+
+            # Tab 4: Account
+            self._create_account_tab()
+
             root.addWidget(self._tabs)
 
-            # ── Tab 1: Trade Status ────────────────────────────────────────────
-            trade_tab = QWidget()
-            trade_layout = QVBoxLayout(trade_tab)
-            trade_layout.setContentsMargins(6, 6, 6, 6)
-            trade_layout.setSpacing(4)
+            # Start timer to update market status periodically
+            self._market_timer = QTimer()
+            self._market_timer.timeout.connect(self._update_market_status)
+            self._market_timer.start(60000)  # Update every minute
 
-            # No-trade notice (visible when no trade is open)
-            self._no_trade_lbl = QLabel("⚪  No active trade — trade fields are greyed out")
-            self._no_trade_lbl.setStyleSheet(
-                f"color: {GREY_OFF}; font-size: 8pt; padding: 2px 4px;"
-            )
-            trade_layout.addWidget(self._no_trade_lbl)
-
-            grid_widget = QWidget()
-            grid = QGridLayout(grid_widget)
-            grid.setSpacing(6)
-            grid.setContentsMargins(0, 0, 0, 0)
-            self.cards: Dict[str, StatusCard] = {}
-
-            for i, (key, icon, label) in enumerate(self.FIELDS):
-                try:
-                    card = StatusCard(icon, label)
-                    grid.addWidget(card, i // 2, i % 2)
-                    self.cards[key] = card
-                except Exception as e:
-                    logger.error(f"Failed to create card for {key}: {e}", exc_info=True)
-
-            trade_layout.addWidget(grid_widget)
-            trade_layout.addStretch()
-
-            # Start with trade-only cards dimmed
-            for key in self._TRADE_ONLY:
-                if key in self.cards:
-                    self.cards[key].set_dimmed(True)
-
-            self._tabs.addTab(trade_tab, "📊  Trade Status   ")
-
-            logger.info("StatusPanel initialized")
+            logger.info("Enhanced StatusPanel initialized with Signal Card")
 
         except Exception as e:
             logger.critical(f"[StatusPanel.__init__] Failed: {e}", exc_info=True)
-            # Still create basic widget
             super().__init__(parent)
             self._safe_defaults_init()
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
         self._lock = threading.RLock()
         self._last_state = {}
         self._refresh_enabled = True
         self._trade_active = False
         self._closing = False
+        self._recent_trades = []
+        self._market_open = False
+        self._is_holiday = False
+        self._market_timer = None
         self._tabs = None
         self._no_trade_lbl = None
         self.cards = {}
+        self._perf_labels = {}
+        self._account_labels = {}
+        self.positions_table = None
+        self.recent_table = None
+        self.exit_btn = None
+        self.modify_sl_btn = None
+        self.modify_tp_btn = None
+        self.timestamp = None
+        self.conn_status = None
+        self.market_status = None
 
-    # ── Private helpers ───────────────────────────────────────────────────────
+    def _create_header(self) -> QWidget:
+        """Create header with timestamp and market status from Utils"""
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.conn_status = QLabel("●")
+        self.conn_status.setStyleSheet(f"color: {RED}; font-size: 10px;")
+        header_layout.addWidget(self.conn_status)
+
+        self.timestamp = QLabel(datetime.now().strftime("%H:%M:%S"))
+        self.timestamp.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8pt;")
+        header_layout.addWidget(self.timestamp)
+
+        header_layout.addStretch()
+
+        # Market status from Utils
+        self.market_status = QLabel()
+        self._update_market_status_display()
+        header_layout.addWidget(self.market_status)
+
+        return header
+
+    def _update_market_status(self):
+        """Update market status using Utils"""
+        try:
+            self._market_open = Utils.is_market_open()
+            self._is_holiday = Utils.is_today_holiday()
+            self._update_market_status_display()
+        except Exception as e:
+            logger.error(f"[StatusPanel._update_market_status] Failed: {e}")
+
+    def _update_market_status_display(self):
+        """Update the market status label"""
+        try:
+            if self._is_holiday:
+                self.market_status.setText("Market: Holiday")
+                self.market_status.setStyleSheet(f"color: {GREY_OFF}; font-size: 8pt;")
+            elif self._market_open:
+                self.market_status.setText("Market: Open")
+                self.market_status.setStyleSheet(f"color: {GREEN}; font-size: 8pt;")
+            else:
+                self.market_status.setText("Market: Closed")
+                self.market_status.setStyleSheet(f"color: {RED}; font-size: 8pt;")
+        except Exception as e:
+            logger.error(f"[StatusPanel._update_market_status_display] Failed: {e}")
+
+    def _create_trade_tab(self):
+        """Tab 1: Trade Status - YOUR CARD LAYOUT WITH SIGNAL CARD"""
+        trade_tab = QWidget()
+        trade_layout = QVBoxLayout(trade_tab)
+        trade_layout.setContentsMargins(6, 6, 6, 6)
+        trade_layout.setSpacing(8)
+
+        # No-trade notice (visible when no trade is open)
+        self._no_trade_lbl = QLabel("⚪  No active trade — trade fields are greyed out")
+        self._no_trade_lbl.setStyleSheet(
+            f"color: {GREY_OFF}; font-size: 8pt; padding: 2px 4px; height:30px;width:100%"
+        )
+        # trade_layout.addWidget(self._no_trade_lbl)
+
+        # YOUR ORIGINAL CARD GRID - 2 columns, 5 rows (now with signal card)
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setSpacing(6)
+        grid.setContentsMargins(0, 0, 0, 0)
+
+        self.cards: Dict[str, StatusCard] = {}
+
+        for i, (key, icon, label) in enumerate(self.FIELDS):
+            try:
+                card = StatusCard(icon, label)
+                grid.addWidget(card, i // 2, i % 2)
+                self.cards[key] = card
+            except Exception as e:
+                logger.error(f"Failed to create card for {key}: {e}", exc_info=True)
+
+        trade_layout.addWidget(grid_widget)
+
+        # Conflict indicator (small, below signal card)
+        self.conflict_label = QLabel("")
+        self.conflict_label.setAlignment(Qt.AlignCenter)
+        self.conflict_label.setVisible(False)
+        trade_layout.addWidget(self.conflict_label)
+
+        # Action buttons (only enabled when trade active)
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(4)
+
+        self.exit_btn = QPushButton("Exit")
+        self.exit_btn.setObjectName("exit")
+        self.exit_btn.setEnabled(False)
+        self.exit_btn.clicked.connect(self.exit_position_clicked.emit)
+        button_layout.addWidget(self.exit_btn)
+
+        self.modify_sl_btn = QPushButton("SL")
+        self.modify_sl_btn.setEnabled(False)
+        self.modify_sl_btn.clicked.connect(self.modify_sl_clicked.emit)
+        button_layout.addWidget(self.modify_sl_btn)
+
+        self.modify_tp_btn = QPushButton("TP")
+        self.modify_tp_btn.setEnabled(False)
+        self.modify_tp_btn.clicked.connect(self.modify_tp_clicked.emit)
+        button_layout.addWidget(self.modify_tp_btn)
+
+        button_layout.addStretch()
+        trade_layout.addLayout(button_layout)
+
+        # Start with trade-only cards dimmed
+        for key in self._TRADE_ONLY:
+            if key in self.cards:
+                self.cards[key].set_dimmed(True)
+
+        self._tabs.addTab(trade_tab, "📊 Trade")
+
+    def _create_performance_tab(self):
+        """Tab 2: Performance metrics"""
+        perf_tab = QWidget()
+        layout = QVBoxLayout(perf_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        # Today's summary
+        today_group = QGroupBox("Today")
+        today_layout = QGridLayout()
+        today_layout.setSpacing(6)
+
+        today_layout.addWidget(QLabel("Trades:"), 0, 0)
+        self.today_trades = QLabel("0")
+        self.today_trades.setObjectName("value")
+        today_layout.addWidget(self.today_trades, 0, 1)
+
+        today_layout.addWidget(QLabel("Wins:"), 0, 2)
+        self.today_wins = QLabel("0")
+        self.today_wins.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
+        today_layout.addWidget(self.today_wins, 0, 3)
+
+        today_layout.addWidget(QLabel("Losses:"), 0, 4)
+        self.today_losses = QLabel("0")
+        self.today_losses.setStyleSheet(f"color: {RED}; font-weight: bold;")
+        today_layout.addWidget(self.today_losses, 0, 5)
+
+        today_layout.addWidget(QLabel("P&L:"), 1, 0)
+        self.today_pnl = QLabel("₹0")
+        self.today_pnl.setObjectName("value")
+        today_layout.addWidget(self.today_pnl, 1, 1, 1, 5)
+
+        today_group.setLayout(today_layout)
+        layout.addWidget(today_group)
+
+        # Performance stats
+        perf_group = QGroupBox("Stats")
+        perf_layout = QFormLayout()
+        perf_layout.setSpacing(6)
+        perf_layout.setLabelAlignment(Qt.AlignLeft)
+
+        stats = [
+            ("Win Rate:", "win_rate", "0%"),
+            ("Avg Win:", "avg_win", "₹0"),
+            ("Avg Loss:", "avg_loss", "₹0"),
+            ("Max Win:", "max_win", "₹0"),
+            ("Max Loss:", "max_loss", "₹0"),
+            ("Total Trades:", "total_trades", "0"),
+        ]
+
+        for label, key, default in stats:
+            value_label = QLabel(default)
+            value_label.setObjectName("value")
+            perf_layout.addRow(QLabel(label), value_label)
+            self._perf_labels[key] = value_label
+
+        perf_group.setLayout(perf_layout)
+        layout.addWidget(perf_group)
+
+        # Recent trades mini table
+        recent_group = QGroupBox("Recent")
+        recent_layout = QVBoxLayout()
+
+        self.recent_table = QTableWidget(0, 3)
+        self.recent_table.setHorizontalHeaderLabels(["Time", "Type", "P&L"])
+        self.recent_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.recent_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.recent_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.recent_table.verticalHeader().setVisible(False)
+        self.recent_table.setMaximumHeight(100)
+
+        recent_layout.addWidget(self.recent_table)
+        recent_group.setLayout(recent_layout)
+        layout.addWidget(recent_group)
+
+        self._tabs.addTab(perf_tab, "📈 Performance")
+
+    def _create_positions_tab(self):
+        """Tab 3: Active positions"""
+        pos_tab = QWidget()
+        layout = QVBoxLayout(pos_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        self.positions_table = QTableWidget(0, 4)
+        self.positions_table.setHorizontalHeaderLabels(["Symbol", "Type", "Qty", "P&L"])
+        self.positions_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.positions_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.positions_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.positions_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.positions_table.verticalHeader().setVisible(False)
+
+        layout.addWidget(self.positions_table)
+        self._tabs.addTab(pos_tab, "📋 Positions")
+
+    def _create_account_tab(self):
+        """Tab 4: Account info"""
+        account_tab = QWidget()
+        layout = QFormLayout(account_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        layout.setLabelAlignment(Qt.AlignLeft)
+
+        fields = [
+            ("Balance:", "balance", "₹0"),
+            ("Margin:", "margin", "₹0"),
+            ("Buying Power:", "buying_power", "₹0"),
+            ("M2M:", "m2m", "₹0"),
+            ("Day Trades:", "day_trades", "0"),
+            ("Open Pos:", "open_positions", "0"),
+        ]
+
+        self._account_labels = {}
+        for label, key, default in fields:
+            value_label = QLabel(default)
+            value_label.setObjectName("value")
+            layout.addRow(QLabel(label), value_label)
+            self._account_labels[key] = value_label
+
+        self._tabs.addTab(account_tab, "🏦 Account")
+
+    # ── Private helpers ───────────────────────────────────────────────────
 
     def _safe_get(self, obj: Any, attr: str, default: Any = None) -> Any:
-        """Safely get attribute from object with error handling"""
         try:
-            # Rule 6: Input validation
             if obj is None:
                 return default
-
-            if not isinstance(attr, str):
-                logger.warning(f"_safe_get called with non-string attr: {attr}")
-                return default
-
             return getattr(obj, attr) if hasattr(obj, attr) else default
-
-        except Exception as e:
-            logger.debug(f"Failed to get attribute {attr}: {e}")
+        except Exception:
             return default
 
     def _fmt(self, value: Any, spec: str = ".2f") -> str:
-        """Format value for display"""
         try:
             if value is None:
                 return "—"
-
             try:
                 return f"{float(value):{spec}}"
             except (ValueError, TypeError):
                 return str(value)
-
-        except Exception as e:
-            logger.error(f"[_fmt] Failed: {e}", exc_info=True)
+        except Exception:
             return "—"
 
+    def _fmt_currency(self, value: Any) -> str:
+        try:
+            if value is None:
+                return "—"
+            if abs(float(value)) >= 1000:
+                return f"₹{float(value):,.0f}"
+            return f"₹{float(value):.2f}"
+        except (ValueError, TypeError):
+            return str(value) if value else "—"
+
+    def _fmt_percent(self, value: Any) -> str:
+        try:
+            if value is None:
+                return "—"
+            return f"{float(value):+.1f}%"
+        except (ValueError, TypeError):
+            return str(value) if value else "—"
+
     def _pnl_color(self, pnl) -> str:
-        """Get color for PnL value"""
         try:
             if pnl is None:
                 return self.COLORS["neutral"]
-
             v = float(pnl)
             if v > 0:
                 return self.COLORS["positive"]
             if v < 0:
                 return self.COLORS["negative"]
             return self.COLORS["neutral"]
-
-        except (TypeError, ValueError) as e:
-            logger.debug(f"Failed to parse PnL {pnl}: {e}")
-            return self.COLORS["neutral"]
-        except Exception as e:
-            logger.error(f"[_pnl_color] Failed: {e}", exc_info=True)
+        except Exception:
             return self.COLORS["neutral"]
 
     def _pos_color(self, pos) -> str:
-        """Get color for position value"""
         try:
             if pos and str(pos).upper() in ("LONG", "SHORT", "CALL", "PUT"):
                 return self.COLORS["positive"]
             return self.COLORS["neutral"]
-        except Exception as e:
-            logger.error(f"[_pos_color] Failed: {e}", exc_info=True)
+        except Exception:
             return self.COLORS["neutral"]
 
+    def _signal_color(self, signal: str) -> str:
+        """Get color for signal"""
+        return self.SIGNAL_COLORS.get(signal, GREY_OFF)
+
     def _trade_open(self, state) -> bool:
-        """Check if trade is currently open"""
         try:
             if state is None:
                 return False
-
             pos = self._safe_get(state, "current_position")
-            if pos and str(pos).upper() not in ("NONE", "NO POSITION", "", "NONE"):
+            if pos and str(pos).upper() not in ("NONE", ""):
                 return True
-
-            symbol = self._safe_get(state, "current_trading_symbol")
-            return bool(symbol)
-
-        except Exception as e:
-            logger.error(f"[_trade_open] Failed: {e}", exc_info=True)
+            return False
+        except Exception:
             return False
 
     def _set_card(self, key: str, text: str, color: str):
-        """Apply a card update only when the value actually changed."""
         try:
-            # Rule 6: Input validation
             if key not in self.cards:
-                logger.warning(f"Card {key} not found")
                 return
-
             if text is None:
                 text = "—"
-
-            if not isinstance(color, str):
-                color = self.COLORS["normal"]
-
             ck, cc = f"{key}_v", f"{key}_c"
             with self._lock:
                 if text != self._last_state.get(ck) or color != self._last_state.get(cc):
                     self.cards[key].set_value(text, color)
                     self._last_state[ck] = text
                     self._last_state[cc] = color
-
         except Exception as e:
             logger.error(f"[_set_card] Failed for key {key}: {e}", exc_info=True)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────
 
     def refresh(self, state, config):
-        """
-        Called on the main thread by QTimer every second.
-        Reads TradeState and updates both tabs.
-        """
-        # Rule 6: Check if refresh should proceed
-        if self._closing:
-            return
-
-        if state is None:
-            logger.debug("refresh called with None state")
-            return
-
-        if not self._refresh_enabled:
-            logger.debug("refresh disabled")
+        """Refresh all tabs with current state"""
+        if self._closing or not self._refresh_enabled or state is None:
             return
 
         try:
-            # Get values with thread safety
+            # Update timestamp
+            self.timestamp.setText(datetime.now().strftime("%H:%M:%S"))
+
+            # Update market status periodically
+            self._update_market_status()
+
+            # Get values
             with self._lock:
                 pos = self._safe_get(state, "current_position")
-                prev_pos = self._safe_get(state, "previous_position")
                 symbol = self._safe_get(state, "current_trading_symbol")
                 buy_price = self._safe_get(state, "current_buy_price")
                 cur_price = self._safe_get(state, "current_price")
                 tp = self._safe_get(state, "tp_point")
                 sl = self._safe_get(state, "stop_loss")
                 pnl = self._safe_get(state, "percentage_change")
+                pnl_abs = self._safe_get(state, "current_pnl")
                 balance = self._safe_get(state, "account_balance")
                 deriv = self._safe_get(state, "derivative_current_price")
+                lots = self._safe_get(state, "positions_hold", 0)
+                lot_size = self._safe_get(state, "lot_size", 1)
 
-            # ── Trade-active state: toggle dimming ─────────────────────────
+                # Get signal
+                signal_result = self._safe_get(state, "option_signal_result", {})
+                if signal_result and isinstance(signal_result, dict):
+                    signal = signal_result.get("signal_value", "WAIT")
+                    conflict = signal_result.get("conflict", False)
+                else:
+                    signal = "WAIT"
+                    conflict = False
+
+            # Update trade active state
             trade_active = self._trade_open(state)
             if trade_active != self._trade_active:
                 self._trade_active = trade_active
                 for key in self._TRADE_ONLY:
                     if key in self.cards:
                         self.cards[key].set_dimmed(not trade_active)
-                # FIXED: Use explicit None check
                 if self._no_trade_lbl is not None:
                     self._no_trade_lbl.setVisible(not trade_active)
 
-            # ── Always-visible cards ───────────────────────────────────────
-            self._set_card("position",
-                           str(pos) if pos is not None else "None",
-                           self._pos_color(pos))
-            self._set_card("prev_position",
-                           str(prev_pos) if prev_pos is not None else "None",
-                           self.COLORS["normal"])
-            self._set_card("balance", self._fmt(balance), self.COLORS["normal"])
+                # Update button states
+                if hasattr(self, 'exit_btn') and self.exit_btn:
+                    self.exit_btn.setEnabled(trade_active)
+                if hasattr(self, 'modify_sl_btn') and self.modify_sl_btn:
+                    self.modify_sl_btn.setEnabled(trade_active)
+                if hasattr(self, 'modify_tp_btn') and self.modify_tp_btn:
+                    self.modify_tp_btn.setEnabled(trade_active)
+
+            # Update signal card
+            if "signal" in self.cards:
+                signal_color = self._signal_color(signal)
+                self.cards["signal"].set_value(signal, signal_color)
+
+                # Show conflict if present
+                if conflict:
+                    self.conflict_label.setText("⚠ Signal Conflict")
+                    self.conflict_label.setStyleSheet(f"color: {RED}; font-size: 7pt;")
+                    self.conflict_label.setVisible(True)
+                else:
+                    self.conflict_label.setVisible(False)
+
+            # Update always-visible cards
+            self._set_card("position", str(pos) if pos else "None", self._pos_color(pos))
+            self._set_card("balance", self._fmt_currency(balance), self.COLORS["normal"])
             self._set_card("derivative", self._fmt(deriv), self.COLORS["accent"])
 
-            # ── Trade-specific cards (only update when trade is active) ────
+            # Update trade-specific cards
             if trade_active:
                 self._set_card("symbol", str(symbol) if symbol else "—", self.COLORS["normal"])
                 self._set_card("buy_price", self._fmt(buy_price), self.COLORS["normal"])
@@ -503,68 +796,154 @@ class StatusPanel(QWidget):
                 self._set_card("target_price", self._fmt(tp), self.COLORS["positive"])
                 self._set_card("stoploss_price", self._fmt(sl), self.COLORS["negative"])
 
-                try:
-                    if pnl is not None:
-                        pnl_txt = f"{float(pnl):.2f}%"
-                    else:
-                        pnl_txt = "—"
-                except (ValueError, TypeError):
-                    pnl_txt = str(pnl) if pnl is not None else "—"
-
+                pnl_txt = self._fmt_percent(pnl) if pnl is not None else "—"
                 self._set_card("pnl", pnl_txt, self._pnl_color(pnl))
 
-            # Signal Data is refreshed by MultiChartWidget (chart tab 3)
+            # Update positions table
+            self._update_positions_table(trade_active, symbol, pos, lots, lot_size, pnl_abs)
+
+            # Update account tab
+            if "balance" in self._account_labels:
+                self._account_labels["balance"].setText(self._fmt_currency(balance))
+            if "open_positions" in self._account_labels:
+                self._account_labels["open_positions"].setText(str(1 if trade_active else 0))
+            if "m2m" in self._account_labels:
+                self._account_labels["m2m"].setText(self._fmt_currency(pnl_abs))
 
         except Exception as e:
             logger.error(f"StatusPanel.refresh error: {e}", exc_info=True)
 
-    def pause_refresh(self):
-        """Pause automatic refresh"""
+    def _update_positions_table(self, trade_active: bool, symbol: str, pos: str,
+                                lots: int, lot_size: int, pnl: float):
+        """Update positions table"""
         try:
-            self._refresh_enabled = False
-            logger.debug("Refresh paused")
+            self.positions_table.setRowCount(0)
+
+            if trade_active and symbol:
+                self.positions_table.insertRow(0)
+                self.positions_table.setItem(0, 0, QTableWidgetItem(str(symbol)))
+                self.positions_table.setItem(0, 1, QTableWidgetItem(str(pos) if pos else "—"))
+                self.positions_table.setItem(0, 2, QTableWidgetItem(f"{lots}"))
+
+                pnl_item = QTableWidgetItem(self._fmt_currency(pnl))
+                color = GREEN if pnl and pnl > 0 else RED if pnl and pnl < 0 else TEXT_MAIN
+                pnl_item.setForeground(QColor(color))
+                self.positions_table.setItem(0, 3, pnl_item)
         except Exception as e:
-            logger.error(f"[StatusPanel.pause_refresh] Failed: {e}", exc_info=True)
+            logger.error(f"[StatusPanel._update_positions_table] Failed: {e}")
+
+    def add_recent_trade(self, trade_data: Dict):
+        """Add a completed trade to recent list"""
+        try:
+            self._recent_trades.append(trade_data)
+
+            time_str = datetime.now().strftime("%H:%M")
+            trade_type = trade_data.get('type', 'CALL')
+            pnl = trade_data.get('pnl', 0)
+
+            # Keep only last 8
+            if self.recent_table.rowCount() >= 8:
+                self.recent_table.removeRow(0)
+
+            row = self.recent_table.rowCount()
+            self.recent_table.insertRow(row)
+            self.recent_table.setItem(row, 0, QTableWidgetItem(time_str))
+            self.recent_table.setItem(row, 1, QTableWidgetItem(trade_type))
+
+            pnl_item = QTableWidgetItem(f"{pnl:+.0f}")
+            pnl_item.setForeground(QColor(GREEN if pnl > 0 else RED))
+            self.recent_table.setItem(row, 2, pnl_item)
+
+            # Update performance metrics
+            self._update_performance_metrics()
+
+        except Exception as e:
+            logger.error(f"[StatusPanel.add_recent_trade] Failed: {e}")
+
+    def _update_performance_metrics(self):
+        """Update performance metrics from trade history"""
+        try:
+            if not self._recent_trades:
+                return
+
+            total = len(self._recent_trades)
+            winning = [t for t in self._recent_trades if t.get('pnl', 0) > 0]
+            losing = [t for t in self._recent_trades if t.get('pnl', 0) < 0]
+
+            win_count = len(winning)
+            loss_count = len(losing)
+            win_rate = (win_count / total * 100) if total > 0 else 0
+
+            avg_win = sum(t.get('pnl', 0) for t in winning) / win_count if win_count > 0 else 0
+            avg_loss = sum(t.get('pnl', 0) for t in losing) / loss_count if loss_count > 0 else 0
+            max_win = max((t.get('pnl', 0) for t in winning), default=0)
+            max_loss = min((t.get('pnl', 0) for t in losing), default=0)
+
+            # Today's stats
+            today = datetime.now().date()
+            today_trades = [t for t in self._recent_trades
+                            if t.get('time', datetime.now()).date() == today]
+            today_wins = sum(1 for t in today_trades if t.get('pnl', 0) > 0)
+            today_losses = sum(1 for t in today_trades if t.get('pnl', 0) < 0)
+            today_pnl = sum(t.get('pnl', 0) for t in today_trades)
+
+            # Update UI
+            self.today_trades.setText(str(len(today_trades)))
+            self.today_wins.setText(str(today_wins))
+            self.today_losses.setText(str(today_losses))
+            self.today_pnl.setText(self._fmt_currency(today_pnl))
+
+            color = GREEN if today_pnl > 0 else RED if today_pnl < 0 else BLUE
+            self.today_pnl.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+            # Update perf labels
+            if "win_rate" in self._perf_labels:
+                self._perf_labels["win_rate"].setText(f"{win_rate:.1f}%")
+            if "avg_win" in self._perf_labels:
+                self._perf_labels["avg_win"].setText(self._fmt_currency(avg_win))
+            if "avg_loss" in self._perf_labels:
+                self._perf_labels["avg_loss"].setText(self._fmt_currency(abs(avg_loss)))
+            if "max_win" in self._perf_labels:
+                self._perf_labels["max_win"].setText(self._fmt_currency(max_win))
+            if "max_loss" in self._perf_labels:
+                self._perf_labels["max_loss"].setText(self._fmt_currency(abs(max_loss)))
+            if "total_trades" in self._perf_labels:
+                self._perf_labels["total_trades"].setText(str(total))
+
+        except Exception as e:
+            logger.error(f"[StatusPanel._update_performance_metrics] Failed: {e}")
+
+    def set_connection_status(self, connected: bool):
+        """Set connection status indicator"""
+        color = GREEN if connected else RED
+        self.conn_status.setStyleSheet(f"color: {color}; font-size: 10px;")
+
+    def pause_refresh(self):
+        self._refresh_enabled = False
 
     def resume_refresh(self):
-        """Resume automatic refresh"""
-        try:
-            self._refresh_enabled = True
-            logger.debug("Refresh resumed")
-        except Exception as e:
-            logger.error(f"[StatusPanel.resume_refresh] Failed: {e}", exc_info=True)
+        self._refresh_enabled = True
 
     def clear_cache(self):
-        """Clear internal state cache"""
-        try:
-            with self._lock:
-                self._last_state.clear()
-                logger.debug("Cache cleared")
-        except Exception as e:
-            logger.error(f"[StatusPanel.clear_cache] Failed: {e}", exc_info=True)
+        with self._lock:
+            self._last_state.clear()
 
-    # Rule 8: Cleanup method
     def cleanup(self):
-        """Clean up resources before shutdown"""
         try:
             logger.info("[StatusPanel] Starting cleanup")
             self._closing = True
             self.pause_refresh()
             self.clear_cache()
-
-            # Clear cards
             self.cards.clear()
+            self._recent_trades.clear()
+
+            if self._market_timer and self._market_timer.isActive():
+                self._market_timer.stop()
 
             logger.info("[StatusPanel] Cleanup completed")
-
         except Exception as e:
             logger.error(f"[StatusPanel.cleanup] Error: {e}", exc_info=True)
 
     def closeEvent(self, event):
-        """Handle close event with cleanup"""
-        try:
-            self.cleanup()
-            super().closeEvent(event)
-        except Exception as e:
-            logger.error(f"[StatusPanel.closeEvent] Failed: {e}", exc_info=True)
-            super().closeEvent(event)
+        self.cleanup()
+        super().closeEvent(event)

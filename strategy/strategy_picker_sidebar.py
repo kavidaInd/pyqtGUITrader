@@ -1,8 +1,8 @@
 """
-strategy_picker_sidebar.py
-==========================
+strategy_picker_sidebar_db.py
+==============================
 A compact, non-modal sidebar popup for quickly switching the active strategy
-at runtime without opening the full editor.
+at runtime without opening the full editor. Uses database-backed strategy manager.
 
 Shows:
   - List of all strategies with the active one highlighted
@@ -21,7 +21,6 @@ Usage (as floating popup from TradingGUI):
     def _show_strategy_picker(self):
         if not self.strategy_picker:
             self.strategy_picker = StrategyPickerSidebar(
-                manager=self.strategy_manager,
                 trading_app=self.trading_app,
                 parent=self
             )
@@ -35,19 +34,20 @@ Usage (as floating popup from TradingGUI):
 from __future__ import annotations
 
 import logging
-import logging.handlers
-import traceback
 from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView, QDialog, QFrame, QHBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QPushButton, QScrollArea,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
-from strategy.strategy_manager import StrategyManager, SIGNAL_GROUPS
+from strategy.strategy_manager import strategy_manager
+
+# Import SIGNAL_GROUPS as strings from the right place
+# These are the string values used in the engine config
+SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -197,19 +197,18 @@ class _StrategyCard(QFrame):
                 logger.warning("update called with None strategy")
                 return
 
-            meta = strategy.get("meta", {})
             if self._name_lbl:
-                self._name_lbl.setText(str(meta.get("name", "—")))
+                self._name_lbl.setText(str(strategy.get("name", "—")))
 
-            desc = meta.get("description", "")
+            desc = strategy.get("description", "")
             if self._desc_lbl:
                 self._desc_lbl.setText(desc[:100] + ("…" if len(desc) > 100 else ""))
                 self._desc_lbl.setVisible(bool(desc))
 
-            # Rules count
+            # Rules count - use string keys directly, not .value
             engine = strategy.get("engine", {})
             total = 0
-            for sig in SIGNAL_GROUPS:
+            for sig in SIGNAL_GROUPS:  # sig is already a string like "BUY_CALL"
                 group = engine.get(sig, {}) if engine else {}
                 rules = group.get("rules", []) if isinstance(group, dict) else []
                 total += len(rules)
@@ -218,7 +217,7 @@ class _StrategyCard(QFrame):
                 self._rules_lbl.setText(f"{total} rule{'s' if total != 1 else ''}")
 
             # Updated
-            upd = meta.get("updated_at", "—")
+            upd = strategy.get("updated_at", "—")
             if upd and "T" in upd:
                 upd = upd.replace("T", " ")[:16]
             if self._updated_lbl:
@@ -241,18 +240,17 @@ class _StrategyCard(QFrame):
 class StrategyPickerSidebar(QDialog):
     """
     Compact floating sidebar for switching active strategy.
-    Non-modal — can stay open while trading.
+    Non-modal — can stay open while trading. Uses database-backed strategy manager.
     """
     strategy_activated = pyqtSignal(str)  # emitted with slug
     open_editor_requested = pyqtSignal()  # user wants full editor
 
-    def __init__(self, manager: StrategyManager, trading_app=None, parent=None):
+    def __init__(self, trading_app=None, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent, Qt.Window | Qt.Tool)
-            self.manager = manager
             self.trading_app = trading_app
             self._current_signal = "WAIT"
 
@@ -270,7 +268,7 @@ class StrategyPickerSidebar(QDialog):
             self._timer.timeout.connect(self._refresh_signal)
             self._timer.start(2000)
 
-            logger.info("StrategyPickerSidebar initialized")
+            logger.info("StrategyPickerSidebar (database) initialized")
 
         except Exception as e:
             logger.critical(f"[StrategyPickerSidebar.__init__] Failed: {e}", exc_info=True)
@@ -290,7 +288,6 @@ class StrategyPickerSidebar(QDialog):
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.manager = None
         self.trading_app = None
         self._current_signal = "WAIT"
         self._timer = None
@@ -357,30 +354,31 @@ class StrategyPickerSidebar(QDialog):
             raise
 
     def refresh(self):
-        """Reload the strategy list from manager."""
+        """Reload the strategy list from database."""
         try:
             # Use explicit `is None` — never use truthiness on QWidget or
             # custom objects, as an empty QListWidget is falsy (len == 0).
-            if self._list is None or self.manager is None:
+            if self._list is None:
                 return
 
             self._list.blockSignals(True)
             self._list.clear()
 
-            strategies = self.manager.list_strategies()
-            active_slug = self.manager.get_active_slug()
+            strategies = strategy_manager.list_strategies()
+            active_slug = strategy_manager.get_active_slug()
 
             for s in strategies:
                 try:
                     item = QListWidgetItem()
-                    is_active = s.get("is_active", False)
+                    slug = s.get("slug", "")
+                    is_active = (slug == active_slug)
 
-                    # Safely get engine data
-                    strategy_data = self.manager.get(s.get("slug", "")) or {}
+                    # Get full strategy data for rules count
+                    strategy_data = strategy_manager.get(slug) or {}
                     engine = strategy_data.get("engine", {}) if strategy_data else {}
 
                     total_rules = 0
-                    for sig in SIGNAL_GROUPS:
+                    for sig in SIGNAL_GROUPS:  # sig is a string like "BUY_CALL"
                         group = engine.get(sig, {}) if engine else {}
                         rules = group.get("rules", []) if isinstance(group, dict) else []
                         total_rules += len(rules)
@@ -389,10 +387,13 @@ class StrategyPickerSidebar(QDialog):
                     prefix = "⚡" if is_active else "  "
                     name = s.get("name", "Unknown")
                     item.setText(f"{prefix}  {name}")
-                    item.setData(Qt.UserRole, s.get("slug", ""))
+                    item.setData(Qt.UserRole, slug)
 
                     tooltip = s.get("description", "")
-                    tooltip += f"\n{total_rules} rules | updated {s.get('updated_at', '—')[:16] if s.get('updated_at') else '—'}"
+                    updated = s.get("updated_at", "—")
+                    if updated and "T" in updated:
+                        updated = updated.replace("T", " ")[:16]
+                    tooltip += f"\n{total_rules} rules | updated {updated}"
                     item.setToolTip(tooltip)
 
                     if is_active:
@@ -411,7 +412,7 @@ class StrategyPickerSidebar(QDialog):
 
             # Update active card
             if self._card is not None:
-                active_data = self.manager.get_active()
+                active_data = strategy_manager.get_active()
                 if active_data is not None:
                     self._card.update(active_data, self._current_signal)
 
@@ -436,7 +437,7 @@ class StrategyPickerSidebar(QDialog):
             sig_data = trend.get("option_signal", {})
             self._current_signal = sig_data.get("signal_value", "WAIT") if sig_data else "WAIT"
 
-            active = self.manager.get_active() if self.manager is not None else None
+            active = strategy_manager.get_active()
             if active is not None and self._card is not None:
                 self._card.update(active, self._current_signal)
 
@@ -468,22 +469,17 @@ class StrategyPickerSidebar(QDialog):
     def _activate(self, slug: str):
         """Activate a strategy by slug"""
         try:
-            if self.manager is None:
-                logger.warning("Cannot activate: manager is None")
-                return
-
             if not slug:
                 logger.warning("Cannot activate: empty slug")
                 return
 
-            ok = self.manager.activate(slug)
+            ok = strategy_manager.activate(slug)
             if ok:
                 self.refresh()
                 self.strategy_activated.emit(slug)
 
-                strategy_data = self.manager.get(slug) or {}
-                meta = strategy_data.get("meta", {}) if strategy_data else {}
-                name = meta.get("name", slug)
+                strategy_data = strategy_manager.get(slug) or {}
+                name = strategy_data.get("name", slug)
 
                 if self._status_lbl:
                     self._status_lbl.setText(f"✓ Activated: {name}")
@@ -515,7 +511,6 @@ class StrategyPickerSidebar(QDialog):
                     logger.warning(f"Error stopping timer: {e}")
 
             # Clear references
-            self.manager = None
             self.trading_app = None
             self._card = None
             self._list = None

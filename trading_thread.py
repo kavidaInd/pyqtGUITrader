@@ -1,4 +1,3 @@
-# PYQT: QThread wrapper for TradingApp to keep GUI responsive
 import logging.handlers
 import traceback
 from typing import Any, Dict

@@ -1,9 +1,7 @@
-import os
 import logging
-from pathlib import Path
-from typing import Dict, Any, Set, List, Optional
+import os
+from typing import Dict, Set, List
 
-# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 # ============================================================================

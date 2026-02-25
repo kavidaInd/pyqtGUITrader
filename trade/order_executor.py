@@ -1,58 +1,49 @@
-import logging
+"""
+order_executor_db.py
+====================
+Database-backed order executor that stores trades and orders in SQLite database.
+"""
+
 import logging.handlers
-import os
-from datetime import datetime
 import random
-import csv
-import traceback
-from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional, Any
 
 import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
+
+from db.connector import get_db
+from db.crud import orders as orders_crud, sessions as sessions_crud
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
 class OrderExecutor:
-    def __init__(self, broker_api, config, trades_file="logs/trades.csv"):
+    """
+    Database-backed order executor that stores trades and orders in SQLite.
+    """
+
+    def __init__(self, broker_api, config):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             self.api = broker_api
             self.config = config
-            self.trades_file = trades_file
 
-            self.ensure_daily_trades_file()
-
-            logger.info("OrderExecutor initialized")
+            logger.info("OrderExecutor (database) initialized")
 
         except Exception as e:
             logger.critical(f"[OrderExecutor.__init__] Failed: {e}", exc_info=True)
             self.api = broker_api
             self.config = config
-            self.trades_file = trades_file
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.api = None
         self.config = None
-        self.trades_file = "logs/trades.csv"
-
-    @staticmethod
-    def _trade_fields():
-        """Return list of trade CSV fields"""
-        try:
-            return [
-                "order_id", "symbol", "side", "qty", "buy_price",
-                "sell_price", "pnl", "transaction_cost", "net_pnl",
-                "percentage_change", "start_time", "end_time", "status", "reason"
-            ]
-        except Exception as e:
-            logger.error(f"[_trade_fields] Failed: {e}", exc_info=True)
-            return []
 
     def buy_option(self, state, option_type):
         """
@@ -179,6 +170,7 @@ class OrderExecutor:
     def place_orders(self, symbol, shares, price, state):
         """
         Place orders in lots as per broker constraints and paper/live mode.
+        Returns list of order dicts with database IDs.
         """
         orders = []
         try:
@@ -200,6 +192,7 @@ class OrderExecutor:
                 return []
 
             max_lot = getattr(state, 'max_num_of_option', 0)
+            session_id = getattr(state, 'session_id', None)
 
             # Check if we're in live trading mode
             is_live = BaseEnums.BOT_TYPE == BaseEnums.LIVE and max_lot > 0
@@ -208,28 +201,84 @@ class OrderExecutor:
                 full_lots, remainder = divmod(shares, max_lot)
                 for i in range(full_lots):
                     try:
-                        oid = self.api.place_order(symbol=symbol, qty=max_lot, limitPrice=price)
-                        if oid:
-                            orders.append({"id": oid, "qty": max_lot, "symbol": symbol, "price": price})
+                        broker_order_id = self.api.place_order(symbol=symbol, qty=max_lot, limitPrice=price)
+                        if broker_order_id:
+                            # Create order in database
+                            db = get_db()
+                            order_id = orders_crud.create(
+                                session_id=session_id,
+                                symbol=symbol,
+                                position_type=state.current_position or "UNKNOWN",
+                                quantity=max_lot,
+                                broker_order_id=broker_order_id,
+                                entry_price=price,
+                                stop_loss=state.stop_loss,
+                                take_profit=state.tp_point,
+                                db=db
+                            )
+                            if order_id > 0:
+                                orders.append({
+                                    "id": order_id,
+                                    "broker_id": broker_order_id,
+                                    "qty": max_lot,
+                                    "symbol": symbol,
+                                    "price": price
+                                })
+                                logger.debug(f"Created order {order_id} for {max_lot} shares")
                     except Exception as e:
                         logger.error(f"Failed to place lot {i + 1}: {e}", exc_info=True)
 
                 if remainder > 0:
                     try:
-                        oid = self.api.place_order(symbol=symbol, qty=remainder, limitPrice=price)
-                        if oid:
-                            orders.append({"id": oid, "qty": remainder, "symbol": symbol, "price": price})
+                        broker_order_id = self.api.place_order(symbol=symbol, qty=remainder, limitPrice=price)
+                        if broker_order_id:
+                            # Create order in database
+                            db = get_db()
+                            order_id = orders_crud.create(
+                                session_id=session_id,
+                                symbol=symbol,
+                                position_type=state.current_position or "UNKNOWN",
+                                quantity=remainder,
+                                broker_order_id=broker_order_id,
+                                entry_price=price,
+                                stop_loss=state.stop_loss,
+                                take_profit=state.tp_point,
+                                db=db
+                            )
+                            if order_id > 0:
+                                orders.append({
+                                    "id": order_id,
+                                    "broker_id": broker_order_id,
+                                    "qty": remainder,
+                                    "symbol": symbol,
+                                    "price": price
+                                })
                     except Exception as e:
                         logger.error(f"Failed to place remainder order: {e}", exc_info=True)
             else:
                 # Paper-trading: simulate all as a single order
                 try:
-                    orders.append({
-                        "id": f"paper_{random.randint(10000, 99999)}_{int(datetime.now().timestamp())}",
-                        "qty": shares,
-                        "symbol": symbol,
-                        "price": price
-                    })
+                    # Create order in database
+                    db = get_db()
+                    order_id = orders_crud.create(
+                        session_id=session_id,
+                        symbol=symbol,
+                        position_type=state.current_position or "UNKNOWN",
+                        quantity=shares,
+                        broker_order_id=f"paper_{random.randint(10000, 99999)}_{int(datetime.now().timestamp())}",
+                        entry_price=price,
+                        stop_loss=state.stop_loss,
+                        take_profit=state.tp_point,
+                        db=db
+                    )
+                    if order_id > 0:
+                        orders.append({
+                            "id": order_id,
+                            "broker_id": None,
+                            "qty": shares,
+                            "symbol": symbol,
+                            "price": price
+                        })
                 except Exception as e:
                     logger.error(f"Failed to create paper order: {e}", exc_info=True)
 
@@ -400,7 +449,7 @@ class OrderExecutor:
         Gracefully exits the current CALL or PUT position:
         - Sells all confirmed orders.
         - Cancels all unconfirmed orders.
-        - Logs completed trades to CSV.
+        - Updates orders in database.
         - Resets trade state.
         """
         try:
@@ -424,40 +473,45 @@ class OrderExecutor:
                     return False
 
                 exit_reason = reason if reason else getattr(state, 'reason_to_exit', None)
-                confirmed_orders = getattr(state, "confirmed_orders", [])
-                unconfirmed_orders = getattr(state, "orders", [])
+                orders = getattr(state, "orders", [])
+                db = get_db()
 
-                # 1. Sell confirmed orders
-                for order in confirmed_orders:
+                # 1. Sell and update orders
+                for order in orders:
                     try:
                         if not isinstance(order, dict):
                             logger.warning(f"[EXIT] Invalid order format: {order}")
                             continue
 
+                        order_id = order.get("id")
                         symbol = order.get("symbol")
                         qty = order.get("qty", 0)
+                        broker_id = order.get("broker_id")
 
-                        if self.api:
-                            self.api.sell_at_current(symbol=symbol, qty=qty)
-                            logger.info(f"[EXIT] Sold {qty} of {symbol} at {sell_price}")
+                        # Calculate P&L for this order
+                        buy_price = order.get("price", 0.0)
+                        pnl = (sell_price - buy_price) * qty
 
-                        self.save_trade_to_csv(order, state, exit_reason)
+                        if self.api and broker_id:
+                            try:
+                                self.api.sell_at_current(symbol=symbol, qty=qty)
+                                logger.info(f"[EXIT] Sold {qty} of {symbol} at {sell_price}")
+                            except Exception as e:
+                                logger.error(f"[EXIT] Failed to sell order {order_id}: {e}", exc_info=True)
+
+                        # Update order in database
+                        if order_id:
+                            orders_crud.close_order(
+                                order_id=order_id,
+                                exit_price=sell_price,
+                                pnl=pnl,
+                                reason=exit_reason,
+                                db=db
+                            )
+                            logger.debug(f"Updated order {order_id} as closed with P&L: {pnl:.2f}")
+
                     except Exception as e:
-                        logger.error(f"[EXIT] Failed to sell order {order.get('id', 'unknown')}: {e}", exc_info=True)
-
-                # 2. Cancel unconfirmed orders
-                for order in unconfirmed_orders:
-                    try:
-                        if not isinstance(order, dict):
-                            continue
-
-                        order_id = order.get("id")
-                        if order_id and self.api:
-                            self.api.cancel_order(order_id=order_id)
-                            logger.info(f"[EXIT] Cancelled unconfirmed order ID: {order_id}")
-                    except Exception as e:
-                        logger.error(f"[EXIT] Failed to cancel order ID {order.get('id', 'unknown')}: {e}",
-                                     exc_info=True)
+                        logger.error(f"[EXIT] Failed to process order {order.get('id', 'unknown')}: {e}", exc_info=True)
 
                 logger.info(f"[EXIT] Completed exit for {state.current_position}. Reason: {exit_reason}")
                 state.previous_position = state.current_position
@@ -492,189 +546,102 @@ class OrderExecutor:
                 state.order_pending = False
             return False
 
-    def save_trade_to_csv(self, order, state, reason):
+    def confirm_order(self, order_id: int, broker_order_id: str = None) -> bool:
         """
-        Save a closed trade to the daily trades CSV file with transaction costs.
+        Confirm an order in the database.
+
+        Args:
+            order_id: Database order ID
+            broker_order_id: Optional broker order ID
+
+        Returns:
+            bool: True if successful
         """
         try:
-            # Rule 6: Input validation
-            if order is None:
-                logger.warning("save_trade_to_csv called with None order")
-                return
-
-            if state is None:
-                logger.warning("save_trade_to_csv called with None state")
-                return
-
-            # Get today's trade file
-            daily_file = self.ensure_daily_trades_file()
-
-            order_id = order.get("id", "N/A")
-            symbol = order.get("symbol", "N/A")
-            qty = order.get("qty", 0)
-            buy_price = order.get("price", 0.0)
-            sell_price = getattr(state, 'current_price', 0.0) or 0.0
-            start_time = getattr(state, 'current_trade_started_time', datetime.now()) or datetime.now()
-            end_time = datetime.now()
-            side = getattr(state, 'current_position', "UNKNOWN") or "UNKNOWN"
-
-            # Calculate P&L and transaction costs
-            gross_pnl = (sell_price - buy_price) * qty
-
-            try:
-                transaction_cost = self.calculate_total_transaction_cost(qty, buy_price, sell_price)
-            except Exception as e:
-                logger.error(f"Failed to calculate transaction cost: {e}", exc_info=True)
-                transaction_cost = 0.0
-
-            net_pnl = gross_pnl - transaction_cost
-
-            percentage_change = 0.0
-            if buy_price > 0:
-                percentage_change = ((sell_price - buy_price) / buy_price) * 100
-
-            row = {
-                "order_id": str(order_id),
-                "symbol": str(symbol),
-                "side": str(side),
-                "qty": int(qty),
-                "buy_price": round(float(buy_price), 2),
-                "sell_price": round(float(sell_price), 2),
-                "pnl": round(float(gross_pnl), 2),
-                "transaction_cost": round(float(transaction_cost), 2),
-                "net_pnl": round(float(net_pnl), 2),
-                "percentage_change": round(float(percentage_change), 2),
-                "start_time": start_time.strftime('%Y-%m-%d %H:%M:%S') if hasattr(start_time, 'strftime') else str(
-                    start_time),
-                "end_time": end_time.strftime('%Y-%m-%d %H:%M:%S'),
-                "status": "closed",
-                "reason": str(reason) if reason else ""
-            }
-
-            # Append to daily file
-            try:
-                with open(daily_file, mode='a', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=row.keys())
-                    writer.writerow(row)
-                logger.info(f"[SAVE] Trade recorded - Gross P&L: {gross_pnl:.2f}, "
-                            f"Transaction Cost: {transaction_cost:.2f}, Net P&L: {net_pnl:.2f}")
-            except IOError as e:
-                logger.error(f"Failed to write to CSV file {daily_file}: {e}", exc_info=True)
-            except Exception as e:
-                logger.error(f"Unexpected error writing to CSV: {e}", exc_info=True)
-
+            db = get_db()
+            return orders_crud.confirm(order_id, broker_order_id, db)
         except Exception as e:
-            logger.exception(f"[SAVE] Failed to save trade to daily CSV: {e}")
+            logger.error(f"[confirm_order] Failed for order {order_id}: {e}", exc_info=True)
+            return False
 
-    def get_daily_trades_file(self):
+    def cancel_order(self, order_id: int, reason: str = None) -> bool:
         """
-        Generate daily trade file path based on current date.
-        Format: logs/trades_YYYY-MM-DD.csv
-        """
-        try:
-            today = datetime.now().strftime('%Y-%m-%d')
-            base_dir = os.path.dirname(self.trades_file) if self.trades_file else "logs"
-            filename = f"trades_{today}.csv"
-            return os.path.join(base_dir, filename)
-        except Exception as e:
-            logger.error(f"[get_daily_trades_file] Failed: {e}", exc_info=True)
-            return "logs/trades_error.csv"
+        Cancel an order in the database.
 
-    def ensure_daily_trades_file(self):
-        """
-        Ensure the daily trades file exists with proper headers.
-        Creates the file if it doesn't exist.
+        Args:
+            order_id: Database order ID
+            reason: Cancellation reason
+
+        Returns:
+            bool: True if successful
         """
         try:
-            daily_file = self.get_daily_trades_file()
+            db = get_db()
 
-            # Create directory if it doesn't exist
-            try:
-                dir_path = os.path.dirname(daily_file)
-                if dir_path:
-                    os.makedirs(dir_path, exist_ok=True)
-            except PermissionError as e:
-                logger.error(f"Permission denied creating directory: {e}")
-            except Exception as e:
-                logger.error(f"Failed to create directory: {e}", exc_info=True)
-
-            # Create file with headers if it doesn't exist
-            if not os.path.exists(daily_file):
+            # Cancel with broker if live
+            order = orders_crud.get(order_id, db)
+            if order and order.get("broker_order_id") and self.api:
                 try:
-                    with open(daily_file, mode='w', newline='', encoding='utf-8') as file:
-                        fields = self._trade_fields()
-                        if fields:
-                            writer = csv.DictWriter(file, fieldnames=fields)
-                            writer.writeheader()
-                except IOError as e:
-                    logger.error(f"Failed to create daily trades file {daily_file}: {e}", exc_info=True)
+                    self.api.cancel_order(order_id=order["broker_order_id"])
+                except Exception as e:
+                    logger.error(f"Failed to cancel with broker: {e}", exc_info=True)
 
-            return daily_file
-
+            return orders_crud.cancel(order_id, reason, db)
         except Exception as e:
-            logger.error(f"[ensure_daily_trades_file] Failed: {e}", exc_info=True)
-            return self.trades_file or "logs/trades.csv"
+            logger.error(f"[cancel_order] Failed for order {order_id}: {e}", exc_info=True)
+            return False
 
-    def get_trades_file_for_date(self, date_str):
+    def update_stop_loss(self, order_id: int, stop_loss: float) -> bool:
         """
-        Get the trades file path for a specific date.
+        Update stop loss for an order.
 
-        :param date_str: Date string in format 'YYYY-MM-DD'
-        :return: File path for that date's trades
+        Args:
+            order_id: Database order ID
+            stop_loss: New stop loss price
+
+        Returns:
+            bool: True if successful
         """
         try:
-            if not date_str:
-                logger.warning("get_trades_file_for_date called with empty date_str")
-                return self.trades_file or "logs/trades.csv"
-
-            base_dir = os.path.dirname(self.trades_file) if self.trades_file else "logs"
-            filename = f"trades_{date_str}.csv"
-            return os.path.join(base_dir, filename)
+            db = get_db()
+            return orders_crud.update_stop_loss(order_id, stop_loss, db)
         except Exception as e:
-            logger.error(f"[get_trades_file_for_date] Failed: {e}", exc_info=True)
-            return self.trades_file or "logs/trades.csv"
+            logger.error(f"[update_stop_loss] Failed for order {order_id}: {e}", exc_info=True)
+            return False
 
-    # Optional: Method to list all daily trade files
-    def list_daily_trade_files(self):
+    def get_open_orders(self, session_id: int = None) -> List[Dict]:
         """
-        List all daily trade files in the logs directory.
+        Get all open orders.
 
-        :return: List of tuples (date, filepath) sorted by date
+        Args:
+            session_id: Optional session ID to filter by
+
+        Returns:
+            List of open orders
         """
         try:
-            base_dir = os.path.dirname(self.trades_file) if self.trades_file else "logs"
-            if not os.path.exists(base_dir):
-                logger.debug(f"Directory {base_dir} does not exist")
-                return []
-
-            trade_files = []
-            if not os.path.isdir(base_dir):
-                logger.warning(f"{base_dir} is not a directory")
-                return []
-
-            for filename in os.listdir(base_dir):
-                if filename.startswith('trades_') and filename.endswith('.csv'):
-                    # Extract date from filename
-                    date_part = filename.replace('trades_', '').replace('.csv', '')
-                    try:
-                        # Validate date format
-                        datetime.strptime(date_part, '%Y-%m-%d')
-                        filepath = os.path.join(base_dir, filename)
-                        trade_files.append((date_part, filepath))
-                    except ValueError:
-                        logger.debug(f"Skipping file with invalid date format: {filename}")
-                        continue
-
-            # Sort by date
-            trade_files.sort(key=lambda x: x[0])
-            return trade_files
-
-        except PermissionError as e:
-            logger.error(f"Permission denied listing directory: {e}")
-            return []
+            db = get_db()
+            return orders_crud.list_open(session_id, db)
         except Exception as e:
-            logger.exception(f"Failed to list daily trade files: {e}")
+            logger.error(f"[get_open_orders] Failed: {e}", exc_info=True)
             return []
+
+    def get_order(self, order_id: int) -> Optional[Dict]:
+        """
+        Get order by ID.
+
+        Args:
+            order_id: Database order ID
+
+        Returns:
+            Order dict or None
+        """
+        try:
+            db = get_db()
+            return orders_crud.get(order_id, db)
+        except Exception as e:
+            logger.error(f"[get_order] Failed for order {order_id}: {e}", exc_info=True)
+            return None
 
     @staticmethod
     def calculate_total_transaction_cost(quantity, buy_price, sell_price):

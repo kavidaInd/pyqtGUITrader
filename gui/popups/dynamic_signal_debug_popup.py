@@ -1,55 +1,28 @@
 """
-DynamicSignalDebugPopup
-=======================
+dynamic_signal_debug_popup_db.py
+=================================
 A live-updating popup that shows every detail of the DynamicSignalEngine
 evaluation: indicator values, rule-by-rule results, group fired/not-fired
 status, conflict detection, and the final resolved signal.
-
-Usage (from TradingGUI.py):
-    # In __init__:
-    self.signal_debug_popup = None
-
-    # In _create_menu (under the View menu):
-    sig_act = QAction("🔬 Dynamic Signal Debug", self)
-    sig_act.triggered.connect(self._show_signal_debug_popup)
-    view_menu.addAction(sig_act)
-
-    # New method:
-    def _show_signal_debug_popup(self):
-        if not self.trading_app:
-            QMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
-            return
-        if not self.signal_debug_popup:
-            self.signal_debug_popup = DynamicSignalDebugPopup(self.trading_app, self)
-        self.signal_debug_popup.show()
-        self.signal_debug_popup.raise_()
-        self.signal_debug_popup.activateWindow()
-
-    # In _tick_fast, add:
-    if self.signal_debug_popup and self.signal_debug_popup.isVisible():
-        self.signal_debug_popup.refresh()
-
-    # In _close_all_popups, add:
-    if self.signal_debug_popup:
-        self.signal_debug_popup.close()
+Works with database-backed signal engine.
 """
 
 from __future__ import annotations
 import logging
-import logging.handlers
 import json
-import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QProgressBar,
+    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView, QGroupBox,
     QGridLayout, QTabWidget, QTextEdit,
 )
+
+from strategy.dynamic_signal_engine import SIGNAL_COLORS, SIGNAL_LABELS, SIGNAL_GROUPS
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -69,26 +42,6 @@ BLUE = "#58a6ff"
 PURPLE = "#bc8cff"
 ORANGE = "#ffa657"
 GREY_OFF = "#484f58"
-
-SIGNAL_COLORS = {
-    "BUY_CALL": "#3fb950",
-    "BUY_PUT": "#58a6ff",
-    "EXIT_CALL": "#f85149",
-    "EXIT_PUT": "#ffa657",
-    "HOLD": "#d29922",
-    "WAIT": "#484f58",
-}
-
-SIGNAL_LABELS = {
-    "BUY_CALL": "📈  Buy Call",
-    "BUY_PUT": "📉  Buy Put",
-    "EXIT_CALL": "🔴  Exit Call",
-    "EXIT_PUT": "🟠  Exit Put",
-    "HOLD": "⏸   Hold",
-    "WAIT": "⏳  Wait",
-}
-
-SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 
 def _style_sheet() -> str:
@@ -705,6 +658,7 @@ class DynamicSignalDebugPopup(QDialog):
     """
     Non-modal popup that lives alongside the main TradingGUI window.
     Call  refresh()  every second (or from _tick_fast) to keep it live.
+    Works with database-backed signal engine.
     """
 
     def __init__(self, trading_app, parent=None):
@@ -723,6 +677,7 @@ class DynamicSignalDebugPopup(QDialog):
             self._last_signal_value: str = ""
             self._auto_refresh = True
             self._indicator_cache: Dict = {}
+            self._current_strategy_slug: Optional[str] = None
 
             self._build_ui()
 
@@ -731,7 +686,7 @@ class DynamicSignalDebugPopup(QDialog):
             self._timer.timeout.connect(self._maybe_refresh)
             self._timer.start(1000)
 
-            logger.info("DynamicSignalDebugPopup initialized")
+            logger.info("DynamicSignalDebugPopup (database) initialized")
 
         except Exception as e:
             logger.critical(f"[DynamicSignalDebugPopup.__init__] Failed: {e}", exc_info=True)
@@ -757,6 +712,7 @@ class DynamicSignalDebugPopup(QDialog):
         self._last_signal_value = ""
         self._auto_refresh = True
         self._indicator_cache = {}
+        self._current_strategy_slug = None
         self._timer = None
         self._signal_badge = None
         self._lbl_conflict = None
@@ -765,11 +721,13 @@ class DynamicSignalDebugPopup(QDialog):
         self._lbl_last_close = None
         self._lbl_bars = None
         self._lbl_timestamp = None
+        self._lbl_strategy = None
         self._fired_pills = {}
         self._group_panels = {}
         self._cache_panel = None
         self._json_panel = None
         self._tabs = None
+        self._groups_layout = None
         self._status_lbl = None
         self._auto_chk = None
 
@@ -840,6 +798,7 @@ class DynamicSignalDebugPopup(QDialog):
             self._lbl_last_close = self._make_status_pair(grid, 1, 2, "LAST CLOSE")
             self._lbl_bars = self._make_status_pair(grid, 2, 0, "BARS IN DF")
             self._lbl_timestamp = self._make_status_pair(grid, 2, 2, "LAST REFRESH")
+            self._lbl_strategy = self._make_status_pair(grid, 3, 0, "ACTIVE STRATEGY")
 
             layout.addLayout(grid, 1)
             layout.addStretch()
@@ -1031,6 +990,26 @@ class DynamicSignalDebugPopup(QDialog):
             # Timestamp
             if self._lbl_timestamp is not None:
                 self._lbl_timestamp.setText(datetime.now().strftime("%H:%M:%S"))
+
+            # Active strategy - new in database version
+            if self._lbl_strategy is not None:
+                try:
+                    if hasattr(self.trading_app, "trend_detector") and \
+                       hasattr(self.trading_app.trend_detector, "signal_engine") and \
+                       self.trading_app.trend_detector.signal_engine is not None:
+                        engine = self.trading_app.trend_detector.signal_engine
+                        strategy_slug = getattr(engine, "strategy_slug", None)
+                        if strategy_slug:
+                            self._lbl_strategy.setText(strategy_slug)
+                            if strategy_slug != self._current_strategy_slug:
+                                self._current_strategy_slug = strategy_slug
+                        else:
+                            self._lbl_strategy.setText("Default")
+                    else:
+                        self._lbl_strategy.setText("—")
+                except Exception as e:
+                    logger.debug(f"Failed to get strategy slug: {e}")
+                    self._lbl_strategy.setText("—")
 
             # ── Fired pills ──────────────────────────────────────────────────
             fired_map = option_signal.get("fired", {})

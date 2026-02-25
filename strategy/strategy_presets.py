@@ -214,7 +214,7 @@ PRESETS: Dict[str, List[Dict]] = {
     ],
 
     # =========================================================================
-    # SELL CALL  (Bearish — premium selling)
+    # EXIT CALL  (Bearish — premium selling)
     # =========================================================================
     "EXIT_CALL": [
 
@@ -240,7 +240,7 @@ PRESETS: Dict[str, List[Dict]] = {
     ],
 
     # =========================================================================
-    # SELL PUT  (Bullish — premium selling)
+    # EXIT PUT  (Bullish — premium selling)
     # =========================================================================
     "EXIT_PUT": [
 

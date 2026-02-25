@@ -1,11 +1,16 @@
+"""
+trend_detector_db.py
+====================
+Trend detector that works with database-backed dynamic signal engine.
+Detects trends in market data and evaluates strategy signals.
+"""
+
 from __future__ import annotations
-import logging
 import logging.handlers
-import traceback
 from typing import Dict, List, Optional, Any, Union
 import pandas as pd
 import numpy as np
-from Utils.Quants import Quants
+
 from strategy.dynamic_signal_engine import DynamicSignalEngine
 
 # Rule 4: Structured logging
@@ -172,6 +177,11 @@ def round_series(series: Any) -> List[Optional[float]]:
 
 
 class TrendDetector:
+    """
+    Trend detector that works with database-backed signal engine.
+    Detects trends in market data and evaluates strategy signals.
+    """
+
     def __init__(self, config: object, signal_engine: DynamicSignalEngine = None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
@@ -181,7 +191,7 @@ class TrendDetector:
             self.signal_engine = signal_engine
             self._last_cache = {}  # Store last indicator cache for debugging
 
-            logger.debug("TrendDetector initialized")
+            logger.debug("TrendDetector (database) initialized")
 
         except Exception as e:
             logger.critical(f"[TrendDetector.__init__] Failed: {e}", exc_info=True)
@@ -285,6 +295,30 @@ class TrendDetector:
         except Exception as e:
             logger.error(f"[TrendDetector.get_indicator_cache] Failed: {e}", exc_info=True)
             return {}
+
+    def get_active_strategy_info(self) -> Dict[str, Any]:
+        """Get information about the currently active strategy"""
+        try:
+            if self.signal_engine is None:
+                return {"active": False, "message": "No signal engine configured"}
+
+            # Get strategy slug from engine if available
+            slug = getattr(self.signal_engine, 'strategy_slug', None)
+            if slug:
+                return {
+                    "active": True,
+                    "slug": slug,
+                    "message": f"Using strategy: {slug}"
+                }
+            else:
+                return {
+                    "active": True,
+                    "slug": None,
+                    "message": "Using default strategy configuration"
+                }
+        except Exception as e:
+            logger.error(f"[TrendDetector.get_active_strategy_info] Failed: {e}", exc_info=True)
+            return {"active": False, "message": f"Error: {e}"}
 
     # Rule 8: Cleanup method
     def cleanup(self):

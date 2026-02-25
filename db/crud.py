@@ -55,20 +55,20 @@ class BrokerageCRUD:
         return _row_to_dict(row)
 
     def update(
-        self,
-        client_id: str = None,
-        secret_key: str = None,
-        redirect_uri: str = None,
-        db: DatabaseConnector = None,
+            self,
+            client_id: str = None,
+            secret_key: str = None,
+            redirect_uri: str = None,
+            db: DatabaseConnector = None,
     ) -> bool:
         """Update one or more credential fields."""
         db = db or get_db()
         current = self.get(db)
         data = {
-            "client_id":    client_id    if client_id    is not None else current.get("client_id", ""),
-            "secret_key":   secret_key   if secret_key   is not None else current.get("secret_key", ""),
+            "client_id": client_id if client_id is not None else current.get("client_id", ""),
+            "secret_key": secret_key if secret_key is not None else current.get("secret_key", ""),
             "redirect_uri": redirect_uri if redirect_uri is not None else current.get("redirect_uri", ""),
-            "updated_at":   _NOW(),
+            "updated_at": _NOW(),
         }
         try:
             db.execute(
@@ -114,17 +114,17 @@ brokerage = BrokerageCRUD()
 class DailyTradeCRUD:
     TABLE = "daily_trade_setting"
     DEFAULTS = {
-        "exchange":          "NSE",
-        "week":              0,
-        "derivative":        "NIFTY50",
-        "lot_size":          75,
-        "call_lookback":     0,
-        "put_lookback":      0,
-        "history_interval":  "2m",
+        "exchange": "NSE",
+        "week": 0,
+        "derivative": "NIFTY50",
+        "lot_size": 75,
+        "call_lookback": 0,
+        "put_lookback": 0,
+        "history_interval": "2m",
         "max_num_of_option": 1800,
-        "lower_percentage":  0.0,
-        "cancel_after":      5,
-        "capital_reserve":   0,
+        "lower_percentage": 0.0,
+        "cancel_after": 5,
+        "capital_reserve": 0,
         "sideway_zone_trade": False,
     }
 
@@ -192,13 +192,13 @@ daily_trade = DailyTradeCRUD()
 class ProfitStoplossCRUD:
     TABLE = "profit_stoploss_setting"
     DEFAULTS = {
-        "profit_type":           "STOP",
-        "tp_percentage":         15.0,
-        "stoploss_percentage":    7.0,
-        "trailing_first_profit":  3.0,
-        "max_profit":            30.0,
-        "profit_step":            2.0,
-        "loss_step":              2.0,
+        "profit_type": "STOP",
+        "tp_percentage": 15.0,
+        "stoploss_percentage": 7.0,
+        "trailing_first_profit": 3.0,
+        "max_profit": 30.0,
+        "profit_step": 2.0,
+        "loss_step": 2.0,
     }
 
     def get(self, db: DatabaseConnector = None) -> Dict[str, Any]:
@@ -256,14 +256,14 @@ class TradingModeCRUD:
     VALID_MODES = {"SIM", "PAPER", "LIVE"}
     BOOL_FIELDS = {"allow_live_trading", "confirm_live_trades", "simulate_slippage", "simulate_delay"}
     DEFAULTS = {
-        "mode":                "SIM",
-        "paper_balance":       100000.0,
-        "allow_live_trading":  False,
+        "mode": "SIM",
+        "paper_balance": 100000.0,
+        "allow_live_trading": False,
         "confirm_live_trades": True,
-        "simulate_slippage":   True,
-        "slippage_percent":    0.05,
-        "simulate_delay":      True,
-        "delay_ms":            500,
+        "simulate_slippage": True,
+        "slippage_percent": 0.05,
+        "simulate_delay": True,
+        "delay_ms": 500,
     }
 
     def get(self, db: DatabaseConnector = None) -> Dict[str, Any]:
@@ -359,13 +359,13 @@ class StrategiesCRUD:
         return d
 
     def create(
-        self,
-        slug: str,
-        name: str,
-        description: str = "",
-        indicators: Dict = None,
-        engine: Dict = None,
-        db: DatabaseConnector = None,
+            self,
+            slug: str,
+            name: str,
+            description: str = "",
+            indicators: Dict = None,
+            engine: Dict = None,
+            db: DatabaseConnector = None,
     ) -> bool:
         """Insert a new strategy. Returns False if slug already exists."""
         db = db or get_db()
@@ -391,13 +391,13 @@ class StrategiesCRUD:
             return False
 
     def upsert(
-        self,
-        slug: str,
-        name: str,
-        description: str = "",
-        indicators: Dict = None,
-        engine: Dict = None,
-        db: DatabaseConnector = None,
+            self,
+            slug: str,
+            name: str,
+            description: str = "",
+            indicators: Dict = None,
+            engine: Dict = None,
+            db: DatabaseConnector = None,
     ) -> bool:
         """Create or fully overwrite a strategy (mirrors StrategyManager.save)."""
         db = db or get_db()
@@ -527,12 +527,12 @@ class TokenCRUD:
         return self.get(db).get("access_token", "")
 
     def save_token(
-        self,
-        access_token: str,
-        refresh_token: str,
-        issued_at: str = None,
-        expires_at: str = None,
-        db: DatabaseConnector = None,
+            self,
+            access_token: str,
+            refresh_token: str,
+            issued_at: str = None,
+            expires_at: str = None,
+            db: DatabaseConnector = None,
     ) -> bool:
         db = db or get_db()
         now = _NOW()
@@ -563,14 +563,14 @@ class SessionCRUD:
     TABLE = "trade_sessions"
 
     def create(
-        self,
-        mode: str,
-        exchange: str = None,
-        derivative: str = None,
-        lot_size: int = None,
-        interval: str = None,
-        strategy_slug: str = None,
-        db: DatabaseConnector = None,
+            self,
+            mode: str,
+            exchange: str = None,
+            derivative: str = None,
+            lot_size: int = None,
+            interval: str = None,
+            strategy_slug: str = None,
+            db: DatabaseConnector = None,
     ) -> int:
         """Insert a new session and return its id."""
         db = db or get_db()
@@ -587,14 +587,14 @@ class SessionCRUD:
             return -1
 
     def close(
-        self,
-        session_id: int,
-        total_pnl: float = None,
-        total_trades: int = None,
-        winning_trades: int = None,
-        losing_trades: int = None,
-        notes: str = None,
-        db: DatabaseConnector = None,
+            self,
+            session_id: int,
+            total_pnl: float = None,
+            total_trades: int = None,
+            winning_trades: int = None,
+            losing_trades: int = None,
+            notes: str = None,
+            db: DatabaseConnector = None,
     ) -> bool:
         db = db or get_db()
         try:
@@ -647,16 +647,16 @@ class OrderCRUD:
     TABLE = "orders"
 
     def create(
-        self,
-        session_id: int,
-        symbol: str,
-        position_type: str,
-        quantity: int,
-        broker_order_id: str = None,
-        entry_price: float = None,
-        stop_loss: float = None,
-        take_profit: float = None,
-        db: DatabaseConnector = None,
+            self,
+            session_id: int,
+            symbol: str,
+            position_type: str,
+            quantity: int,
+            broker_order_id: str = None,
+            entry_price: float = None,
+            stop_loss: float = None,
+            take_profit: float = None,
+            db: DatabaseConnector = None,
     ) -> int:
         db = db or get_db()
         try:
@@ -693,12 +693,12 @@ class OrderCRUD:
             return False
 
     def close_order(
-        self,
-        order_id: int,
-        exit_price: float,
-        pnl: float,
-        reason: str = None,
-        db: DatabaseConnector = None,
+            self,
+            order_id: int,
+            exit_price: float,
+            pnl: float,
+            reason: str = None,
+            db: DatabaseConnector = None,
     ) -> bool:
         db = db or get_db()
         try:
@@ -734,7 +734,7 @@ class OrderCRUD:
         return _row_to_dict(row)
 
     def list_for_session(
-        self, session_id: int, db: DatabaseConnector = None
+            self, session_id: int, db: DatabaseConnector = None
     ) -> List[Dict[str, Any]]:
         db = db or get_db()
         rows = db.fetchall(

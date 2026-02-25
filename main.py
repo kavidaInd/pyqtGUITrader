@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # PYQT: New entry point for PyQt5 application
-import sys
 import logging
 import logging.handlers
 import os
+import sys
 import traceback
 from datetime import datetime
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox
-from PyQt5.QtCore import Qt, QTimer
 
 from TradingGUI import TradingGUI
 
