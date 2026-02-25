@@ -32,3 +32,6 @@ typing-extensions~=4.8.0
 # Additional utilities
 # (Add any other dependencies as needed)
 psutil
+kiteconnect
+dhanhq
+pyotp

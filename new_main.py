@@ -16,7 +16,8 @@ import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
 from Utils.notifier import Notifier
-from broker.Broker import Broker, TokenExpiredError
+from broker.BaseBroker import TokenExpiredError
+from broker.BrokerFactory import BrokerFactory
 from data.websocket_manager import WebSocketManager
 from gui.DailyTradeSetting import DailyTradeSetting
 from gui.ProfitStoplossSetting import ProfitStoplossSetting
@@ -61,7 +62,7 @@ class TradingApp:
 
             self.state = TradeState()
             self.config = config
-            self.broker = Broker(state=self.state, broker_setting=broker_setting)
+            self.broker = BrokerFactory.create(state=self.state, broker_setting=broker_setting)
             self.trade_config = DailyTradeSetting()
             self.profit_loss_config = ProfitStoplossSetting()
             self.state.cancel_pending_trade = self.cancel_pending_trade

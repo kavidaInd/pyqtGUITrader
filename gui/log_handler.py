@@ -275,7 +275,6 @@ class QtLogHandler(logging.Handler):
                 ))
 
             # Connect to log widget if provided
-            # FIXED: Use explicit None check
             if log_widget is not None:
                 self.connect_log_widget(log_widget)
 
@@ -306,12 +305,10 @@ class QtLogHandler(logging.Handler):
     def connect_log_widget(self, log_widget: ColoredLogWidget):
         """Connect this handler to a ColoredLogWidget"""
         try:
-            # FIXED: Use explicit None check
             if log_widget is None:
                 logger.warning("connect_log_widget called with None widget")
                 return
 
-            # FIXED: Use explicit None check
             if self.signaller is not None:
                 self.signaller.log_message.connect(log_widget.append_colored)
                 self.signaller.log_batch.connect(log_widget.append_batch)
@@ -383,7 +380,6 @@ class QtLogHandler(logging.Handler):
                     self._flush_pending()
             else:
                 # Direct emission with level
-                # FIXED: Use explicit None check
                 if self.signaller is not None:
                     self.signaller.log_message.emit(msg, record.levelno)
 
@@ -396,7 +392,6 @@ class QtLogHandler(logging.Handler):
         try:
             self._closed = True
 
-            # FIXED: Use explicit None check
             if self._timer is not None:
                 try:
                     self._timer.stop()
@@ -419,7 +414,6 @@ class QtLogHandler(logging.Handler):
             self._rate_limit_ms = ms
 
             if ms and ms > 0:
-                # FIXED: Use explicit None check
                 if self._timer is None:
                     self._timer = QTimer()
                     self._timer.timeout.connect(self._flush_pending)
@@ -429,7 +423,6 @@ class QtLogHandler(logging.Handler):
                     self._timer.setInterval(ms)
                     if not self._timer.isActive():
                         self._timer.start()
-            # FIXED: Use explicit None check
             elif not ms and self._timer is not None:
                 self._timer.stop()
                 self._timer = None
@@ -443,7 +436,7 @@ class QtLogHandler(logging.Handler):
 class SimpleLogHandler(logging.Handler):
     """
     A simpler handler that just emits the message with level.
-    Useful if you don't need the full ColoredLogWidget.
+    FIXED: Now properly handles ColoredLogWidget and ColoredPlainTextWidget.
     """
 
     def __init__(self, log_widget, level=logging.NOTSET):
@@ -464,8 +457,9 @@ class SimpleLogHandler(logging.Handler):
         self.log_widget = None
 
     def emit(self, record):
+        """Emit a log record to the widget"""
         try:
-            # This is already correct (explicit None check)
+            # Rule 6: Input validation
             if self.log_widget is None:
                 logger.warning("SimpleLogHandler: log_widget is None")
                 return
@@ -475,7 +469,13 @@ class SimpleLogHandler(logging.Handler):
                 return
 
             msg = self.format(record)
-            self.log_widget.append_colored(msg, record.levelno)
+
+            # FIXED: Check if widget has append_colored method
+            if hasattr(self.log_widget, 'append_colored'):
+                self.log_widget.append_colored(msg, record.levelno)
+            else:
+                # Fallback for widgets without color support
+                self.log_widget.appendPlainText(msg)
 
         except Exception as e:
             logger.error(f"[SimpleLogHandler.emit] Failed: {e}", exc_info=True)
@@ -483,7 +483,7 @@ class SimpleLogHandler(logging.Handler):
 
 
 # Convenience function to set up logging
-def setup_colored_logging(log_widget: ColoredLogWidget,
+def setup_colored_logging(log_widget,
                           level=logging.INFO,
                           rate_limit_ms: Optional[int] = None,
                           clear_existing: bool = True) -> Optional[QtLogHandler]:
@@ -491,7 +491,7 @@ def setup_colored_logging(log_widget: ColoredLogWidget,
     Set up colored logging with a log widget.
 
     Args:
-        log_widget: ColoredLogWidget instance
+        log_widget: ColoredLogWidget or ColoredPlainTextWidget instance
         level: Logging level
         rate_limit_ms: Optional rate limiting
         clear_existing: Whether to remove existing handlers
@@ -500,7 +500,7 @@ def setup_colored_logging(log_widget: ColoredLogWidget,
         The created QtLogHandler instance or None on failure
     """
     try:
-        # Rule 6: Input validation - FIXED: Use explicit None check
+        # Rule 6: Input validation
         if log_widget is None:
             logger.error("setup_colored_logging called with None log_widget")
             return None

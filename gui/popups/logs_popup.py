@@ -1,13 +1,22 @@
+"""
+logs_popup.py
+=============
+High-performance log viewer popup with filtering, export, and syntax highlighting.
+"""
+
 import logging
 import logging.handlers
 import traceback
 from typing import Optional
 from collections import deque
-from datetime import datetime  # Moved import to top
+from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QApplication, \
-    QHBoxLayout, QCheckBox, QSpinBox, QGroupBox, QComboBox
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QApplication,
+    QHBoxLayout, QCheckBox, QSpinBox, QGroupBox, QComboBox, QLineEdit,
+    QFileDialog
+)
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -131,7 +140,7 @@ class LogPopup(QDialog):
                     width: 16px;
                     height: 16px;
                 }
-                QSpinBox, QComboBox {
+                QSpinBox, QComboBox, QLineEdit {
                     background: #21262d;
                     color: #e6edf3;
                     border: 1px solid #30363d;
@@ -142,6 +151,9 @@ class LogPopup(QDialog):
                 QSpinBox::up-button, QSpinBox::down-button {
                     background: #30363d;
                     border: none;
+                }
+                QLineEdit:focus {
+                    border: 1px solid #58a6ff;
                 }
             """)
 
@@ -167,8 +179,8 @@ class LogPopup(QDialog):
         self.level_combo = None
         self.wrap_check = None
         self.max_lines_spin = None
-        self.copy_filtered_btn = None  # Added missing attribute
-        self.export_btn = None  # Added missing attribute
+        self.copy_filtered_btn = None
+        self.export_btn = None
 
         # Message handling
         self._message_queue = deque(maxlen=10000)
@@ -190,10 +202,10 @@ class LogPopup(QDialog):
 
         # Level colors for syntax highlighting
         self._level_colors = {
-            'DEBUG': '#8b949e',  # Gray
-            'INFO': '#58a6ff',  # Blue
+            'DEBUG': '#8b949e',    # Gray
+            'INFO': '#58a6ff',     # Blue
             'WARNING': '#d29922',  # Yellow
-            'ERROR': '#f85149',  # Red
+            'ERROR': '#f85149',    # Red
             'CRITICAL': '#ff7b72'  # Bright red
         }
 
@@ -228,7 +240,6 @@ class LogPopup(QDialog):
         toolbar.setSpacing(10)
 
         # Filter input
-        from PyQt5.QtWidgets import QLineEdit
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("🔍 Filter logs...")
         self.filter_edit.setStyleSheet("""
@@ -279,6 +290,12 @@ class LogPopup(QDialog):
         """)
         self.level_combo.currentTextChanged.connect(self._on_filter_changed)
         toolbar.addWidget(self.level_combo)
+
+        # Case sensitive checkbox
+        self.case_sensitive_check = QCheckBox("Aa")
+        self.case_sensitive_check.setToolTip("Case sensitive filter")
+        self.case_sensitive_check.toggled.connect(self._on_case_sensitive_toggled)
+        toolbar.addWidget(self.case_sensitive_check)
 
         # Max lines spinbox
         toolbar.addWidget(QLabel("Max lines:"))
@@ -355,6 +372,7 @@ class LogPopup(QDialog):
         """Initialize filter settings"""
         self._filter_text = ""
         self._filter_level = "ALL"
+        self._case_sensitive = False
 
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
@@ -363,7 +381,7 @@ class LogPopup(QDialog):
         self.setMinimumSize(400, 300)
 
         layout = QVBoxLayout(self)
-        error_label = QLabel(f"Failed to initialize log viewer. Please check logs.")
+        error_label = QLabel("Failed to initialize log viewer. Please check logs.")
         error_label.setWordWrap(True)
         error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
         layout.addWidget(error_label)
@@ -404,6 +422,11 @@ class LogPopup(QDialog):
             # Add to queue
             self._message_queue.append(message)
 
+            # Also add to filtered queue for filter operations
+            self._filtered_queue.append(message)
+            if len(self._filtered_queue) > 10000:
+                self._filtered_queue.popleft()
+
         except Exception as e:
             logger.error(f"[LogPopup.append_log] Failed: {e}", exc_info=True)
 
@@ -429,11 +452,6 @@ class LogPopup(QDialog):
                         formatted_msg = self._format_message(msg)
                         self.log_widget.appendPlainText(formatted_msg)
                         processed += 1
-
-                        # Add to filtered queue for copy operations
-                        self._filtered_queue.append(msg)
-                        if len(self._filtered_queue) > 10000:
-                            self._filtered_queue.popleft()
 
                     except RuntimeError:
                         # Widget was deleted
@@ -470,10 +488,12 @@ class LogPopup(QDialog):
 
             # Text filter
             if self._filter_text:
-                if self._case_sensitive:
-                    return self._filter_text in message
-                else:
-                    return self._filter_text.lower() in message.lower()
+                filter_text = self._filter_text.strip()
+                if filter_text:
+                    if self._case_sensitive:
+                        return filter_text in message
+                    else:
+                        return filter_text.lower() in message.lower()
 
             return True
 
@@ -485,15 +505,15 @@ class LogPopup(QDialog):
         """Extract log level from message"""
         try:
             # Common log level patterns
-            if '| DEBUG |' in message or '|DEBUG|' in message:
+            if '| DEBUG |' in message or '|DEBUG|' in message or ' DEBUG ' in message:
                 return 'DEBUG'
-            elif '| INFO |' in message or '|INFO|' in message:
+            elif '| INFO |' in message or '|INFO|' in message or ' INFO ' in message:
                 return 'INFO'
-            elif '| WARNING |' in message or '|WARNING|' in message:
+            elif '| WARNING |' in message or '|WARNING|' in message or ' WARNING ' in message:
                 return 'WARNING'
-            elif '| ERROR |' in message or '|ERROR|' in message:
+            elif '| ERROR |' in message or '|ERROR|' in message or ' ERROR ' in message:
                 return 'ERROR'
-            elif '| CRITICAL |' in message or '|CRITICAL|' in message:
+            elif '| CRITICAL |' in message or '|CRITICAL|' in message or ' CRITICAL ' in message:
                 return 'CRITICAL'
             return 'INFO'
         except:
@@ -505,12 +525,37 @@ class LogPopup(QDialog):
             level = self._extract_level(message)
             color = self._level_colors.get(level, '#e6edf3')
 
-            # Apply color using ANSI color codes (if supported)
             # For now, return as-is since QPlainTextEdit doesn't support colors per line easily
             # This could be extended with QSyntaxHighlighter
             return message
         except:
             return message
+
+    def _apply_filters_to_existing(self):
+        """Re-apply filters to existing log content"""
+        try:
+            # Store current content from filtered queue (original messages)
+            if not self._filtered_queue:
+                return
+
+            # Clear widget
+            self.log_widget.clear()
+
+            # Re-add filtered lines from the filtered queue
+            messages_added = 0
+            for msg in list(self._filtered_queue):  # Use a copy to avoid modification during iteration
+                if msg and self._should_show_message(msg):
+                    try:
+                        formatted_msg = self._format_message(msg)
+                        self.log_widget.appendPlainText(formatted_msg)
+                        messages_added += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to add message during filter: {e}")
+
+            logger.debug(f"Re-filtered {messages_added} messages")
+
+        except Exception as e:
+            logger.error(f"[LogPopup._apply_filters_to_existing] Failed: {e}", exc_info=True)
 
     def _on_filter_changed(self):
         """Handle filter changes"""
@@ -524,27 +569,13 @@ class LogPopup(QDialog):
         except Exception as e:
             logger.error(f"[LogPopup._on_filter_changed] Failed: {e}", exc_info=True)
 
-    def _apply_filters_to_existing(self):
-        """Re-apply filters to existing log content"""
+    def _on_case_sensitive_toggled(self, checked: bool):
+        """Handle case sensitive toggle"""
         try:
-            # Store current content
-            current_content = self.log_widget.toPlainText()
-            if not current_content:
-                return
-
-            # Split into lines
-            lines = current_content.split('\n')
-
-            # Clear widget
-            self.log_widget.clear()
-
-            # Re-add filtered lines
-            for line in lines:
-                if line and self._should_show_message(line):
-                    self.log_widget.appendPlainText(line)
-
+            self._case_sensitive = checked
+            self._on_filter_changed()  # Re-apply filters
         except Exception as e:
-            logger.error(f"[LogPopup._apply_filters_to_existing] Failed: {e}", exc_info=True)
+            logger.error(f"[LogPopup._on_case_sensitive_toggled] Failed: {e}", exc_info=True)
 
     def _on_max_lines_changed(self, value: int):
         """Handle max lines change"""
@@ -640,8 +671,6 @@ class LogPopup(QDialog):
     def export_logs(self):
         """Export logs to file"""
         try:
-            from PyQt5.QtWidgets import QFileDialog
-
             # Get save filename
             filename, _ = QFileDialog.getSaveFileName(
                 self,
@@ -714,6 +743,7 @@ class LogPopup(QDialog):
             self.pause_btn = None
             self.filter_edit = None
             self.level_combo = None
+            self.case_sensitive_check = None
             self.wrap_check = None
             self.max_lines_spin = None
             self.export_btn = None

@@ -1800,19 +1800,22 @@ class _SignalGroupPanel(QWidget):
 
     def _load_preset(self, index: int):
         """Load a preset rule configuration from strategy_presets.py"""
-        if index <= 0:
-            return
+        try:
+            if index <= 0:
+                return
 
-        preset = self._presets_combo.currentText()
-        self._presets_combo.setCurrentIndex(0)
+            preset = self._presets_combo.currentText()
+            self._presets_combo.setCurrentIndex(0)
 
-        rules = get_preset_rules(self.signal, preset)
-        if not rules:
-            logger.warning(f"[_load_preset] No rules found for signal={self.signal!r}, preset={preset!r}")
-            return
+            rules = get_preset_rules(self.signal, preset)
+            if not rules:
+                logger.warning(f"[_load_preset] No rules found for signal={self.signal!r}, preset={preset!r}")
+                return
 
-        for rule in rules:
-            self._add_rule(rule)
+            for rule in rules:
+                self._add_rule(rule)
+        except Exception as e:
+            logger.error(f"[_SignalGroupPanel._load_preset] Failed: {e}", exc_info=True)
 
     def load(self, group_data: Dict):
         """Load group data into panel"""
@@ -2065,7 +2068,7 @@ class _SignalRulesTab(QWidget):
     def load(self, strategy: Dict):
         """Load strategy data into tabs"""
         try:
-            engine = strategy.get("engine", {})
+            engine = strategy.get("engine", {}) if strategy else {}
             if self.conflict_combo:
                 self.conflict_combo.setCurrentText(engine.get("conflict_resolution", "WAIT"))
 
@@ -2166,33 +2169,41 @@ class _InfoTab(QWidget):
     def load(self, strategy: Dict):
         """Load strategy metadata into tab"""
         try:
+            # FIXED: Safe access with defaults
             if self.name_edit:
-                self.name_edit.setText(strategy.get("name", ""))
+                self.name_edit.setText(strategy.get("name", "") if strategy else "")
             if self.desc_edit:
-                self.desc_edit.setPlainText(strategy.get("description", ""))
+                self.desc_edit.setPlainText(strategy.get("description", "") if strategy else "")
             if self.created_lbl:
-                self.created_lbl.setText(strategy.get("created_at", "—"))
+                created = strategy.get("created_at", "—") if strategy else "—"
+                self.created_lbl.setText(str(created))
             if self.updated_lbl:
-                self.updated_lbl.setText(strategy.get("updated_at", "—"))
+                updated = strategy.get("updated_at", "—") if strategy else "—"
+                self.updated_lbl.setText(str(updated))
 
-            engine = strategy.get("engine", {})
+            # Calculate statistics safely
             total_rules = 0
             indicators = set()
             enabled_count = 0
 
-            for signal in SIGNAL_GROUPS:  # signal is a string like "BUY_CALL"
-                group = engine.get(signal, {})  # Use string key directly
-                rules = group.get("rules", [])
-                total_rules += len(rules)
+            if strategy and "engine" in strategy:
+                engine = strategy.get("engine", {})
+                for signal in SIGNAL_GROUPS:
+                    group = engine.get(signal, {}) if isinstance(engine, dict) else {}
+                    rules = group.get("rules", []) if isinstance(group, dict) else []
+                    total_rules += len(rules)
 
-                if group.get("enabled", True):
-                    enabled_count += 1
+                    if isinstance(group, dict) and group.get("enabled", True):
+                        enabled_count += 1
 
-                for rule in rules:
-                    for side in ["lhs", "rhs"]:
-                        side_data = rule.get(side, {})
-                        if side_data.get("type") == "indicator":
-                            indicators.add(side_data.get("indicator", "").lower())
+                    for rule in rules:
+                        if isinstance(rule, dict):
+                            for side in ["lhs", "rhs"]:
+                                side_data = rule.get(side, {})
+                                if isinstance(side_data, dict) and side_data.get("type") == "indicator":
+                                    ind = side_data.get("indicator", "").lower()
+                                    if ind:
+                                        indicators.add(ind)
 
             if self.total_rules_lbl:
                 self.total_rules_lbl.setText(str(total_rules))
@@ -2200,8 +2211,16 @@ class _InfoTab(QWidget):
                 self.unique_indicators_lbl.setText(str(len(indicators)))
             if self.enabled_groups_lbl:
                 self.enabled_groups_lbl.setText(f"{enabled_count}/5")
+
         except Exception as e:
             logger.error(f"[_InfoTab.load] Failed: {e}", exc_info=True)
+            # Set safe defaults on error
+            if self.total_rules_lbl:
+                self.total_rules_lbl.setText("0")
+            if self.unique_indicators_lbl:
+                self.unique_indicators_lbl.setText("0")
+            if self.enabled_groups_lbl:
+                self.enabled_groups_lbl.setText("0/5")
 
     def collect(self) -> Dict:
         """Collect info tab data"""
@@ -2504,12 +2523,14 @@ class _StrategyListPanel(QWidget):
                     item = QListWidgetItem()
                     name = s["name"]
                     slug = s["slug"]
-                    is_active = s["is_active"]
+                    is_active = s.get("is_active", False) or (slug == active)
                     item.setText(("⚡ " if is_active else "   ") + name)
                     item.setData(Qt.UserRole, slug)
                     if is_active:
                         item.setForeground(QColor(BLUE))
-                        item.setFont(QFont("", -1, QFont.Bold))
+                        font = QFont()
+                        font.setBold(True)
+                        item.setFont(font)
                     self.list_widget.addItem(item)
                     if slug == self._current_slug:
                         self.list_widget.setCurrentItem(item)
@@ -2885,14 +2906,14 @@ class StrategyEditorWindow(QDialog):
                 self._rules_tab.load(strategy)
 
             # FEATURE 3: Load confidence threshold
-            engine = strategy.get("engine", {})
+            engine = strategy.get("engine", {}) if strategy else {}
             if self.confidence_threshold_spin:
-                threshold = engine.get("min_confidence", 0.6)
+                threshold = engine.get("min_confidence", 0.6) if isinstance(engine, dict) else 0.6
                 self.confidence_threshold_spin.setValue(float(threshold))
 
             self._set_dirty(False)
 
-            name = strategy.get("name", slug)
+            name = strategy.get("name", slug) if strategy else slug
             if self._title_lbl:
                 self._title_lbl.setText(name)
 

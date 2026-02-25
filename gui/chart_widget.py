@@ -1,18 +1,13 @@
-# chart_widget.py - Enhanced multi-instrument tabbed chart with advanced features
+# chart_widget.py - Simplified chart with market structure and detailed signal data
 """
-Enhanced chart widget with:
-- Real-time price updates with smooth animations
-- Multiple timeframe support (1m, 5m, 15m, 30m, 1h)
-- Drawing tools (trend lines, horizontal lines, fibonacci)
-- Multiple chart types (candlestick, line, area, bar, heikin-ashi)
-- Advanced indicators (RSI, MACD, Bollinger Bands, Volume Profile)
-- Order flow visualization (bid/ask, volume profile, market depth)
-- Trade annotations (entry/exit points, P&L zones)
-- Market structure with auto-detection (HH/HL/LH/LL)
-- Performance optimization with WebGL rendering
-- Export functionality (PNG, CSV)
-- Customizable color schemes
-- Keyboard shortcuts for quick actions
+Simplified chart widget with:
+- Market structure detection (HH/HL/LH/LL)
+- Trend line visualization
+- Support and resistance levels
+- Pivot points
+- Volume as simple bar chart
+- Detailed signal data tab with indicator values and rule results
+- Clean, minimal design with only Spot chart
 """
 
 from __future__ import annotations
@@ -21,25 +16,20 @@ import json
 import logging
 import logging.handlers
 import numpy as np
-import pandas as pd
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple, Callable, Union
-import traceback
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
-from plotly.colors import qualitative
-from PyQt5.QtCore import QObject, QSize, QTimer, pyqtSignal, Qt, QRectF, QPointF
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPixmap
+from PyQt5.QtCore import QSize, QTimer, pyqtSignal, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile, QWebEnginePage
 from PyQt5.QtWidgets import (
-    QTabWidget, QVBoxLayout, QWidget, QLabel, QFrame, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QScrollArea,
-    QSplitter, QGroupBox, QFormLayout, QFileDialog,
-    QMessageBox, QProgressBar, QPushButton, QDialog, QSpinBox, QDoubleSpinBox, QComboBox
+    QVBoxLayout, QWidget, QLabel, QHBoxLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
+    QGroupBox, QFileDialog, QMessageBox, QProgressBar, QTabWidget
 )
 
 # Rule 4: Structured logging
@@ -50,16 +40,6 @@ logger = logging.getLogger(__name__)
 # ENUMS AND DATA CLASSES
 # =============================================================================
 
-class ChartType(Enum):
-    CANDLESTICK = "Candlestick"
-    LINE = "Line"
-    AREA = "Area"
-    BAR = "Bar"
-    HEIKIN_ASHI = "Heikin-Ashi"
-    RENKO = "Renko"
-    POINT_AND_FIGURE = "Point & Figure"
-
-
 class TimeFrame(Enum):
     M1 = "1m"
     M5 = "5m"
@@ -69,27 +49,6 @@ class TimeFrame(Enum):
     H4 = "4h"
     D1 = "1d"
     W1 = "1w"
-
-
-class IndicatorType(Enum):
-    TREND = "Trend"
-    OSCILLATOR = "Oscillator"
-    VOLUME = "Volume"
-    VOLATILITY = "Volatility"
-    SUPPORT_RESISTANCE = "Support/Resistance"
-
-
-@dataclass
-class IndicatorSpec:
-    """Specification for a technical indicator"""
-    key: str
-    name: str
-    indicator_type: IndicatorType
-    panel_type: str  # "overlay" | "subplot"
-    default_params: Dict[str, Any]
-    color: str = "#58a6ff"
-    y_axis: str = "y"
-    render_fn: Optional[Callable] = None
 
 
 @dataclass
@@ -106,7 +65,7 @@ class PivotPoint:
 @dataclass
 class DrawingObject:
     """User-drawn object on chart"""
-    type: str  # 'trend_line', 'horizontal_line', 'vertical_line', 'fibonacci', 'rectangle', 'ellipse'
+    type: str  # 'trend_line', 'horizontal_line'
     points: List[Tuple[float, float]]
     color: str = "#58a6ff"
     width: int = 2
@@ -129,237 +88,12 @@ class TradeAnnotation:
     color: str = "#3fb950"
 
 
-class StructureType(Enum):
-    HH = "Higher High"
-    HL = "Higher Low"
-    LH = "Lower High"
-    LL = "Lower Low"
-    NONE = "None"
-
-
 # =============================================================================
-# INDICATOR REGISTRY
-# =============================================================================
-
-# Indicator registry with all available indicators
-INDICATOR_REGISTRY: Dict[str, IndicatorSpec] = {
-    # Moving Averages
-    "sma": IndicatorSpec(
-        key="sma",
-        name="Simple Moving Average",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"period": 20, "source": "close"},
-        color="#3fb950"
-    ),
-    "ema": IndicatorSpec(
-        key="ema",
-        name="Exponential Moving Average",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"period": 20, "source": "close"},
-        color="#58a6ff"
-    ),
-    "wma": IndicatorSpec(
-        key="wma",
-        name="Weighted Moving Average",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"period": 20, "source": "close"},
-        color="#d29922"
-    ),
-    "hma": IndicatorSpec(
-        key="hma",
-        name="Hull Moving Average",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"period": 20, "source": "close"},
-        color="#f0883e"
-    ),
-
-    # Bollinger Bands
-    "bb": IndicatorSpec(
-        key="bb",
-        name="Bollinger Bands",
-        indicator_type=IndicatorType.VOLATILITY,
-        panel_type="overlay",
-        default_params={"period": 20, "std_dev": 2, "source": "close"},
-        color="#58a6ff"
-    ),
-
-    # Keltner Channels
-    "kc": IndicatorSpec(
-        key="kc",
-        name="Keltner Channels",
-        indicator_type=IndicatorType.VOLATILITY,
-        panel_type="overlay",
-        default_params={"period": 20, "atr_period": 10, "multiplier": 2},
-        color="#f0883e"
-    ),
-
-    # Donchian Channels
-    "dc": IndicatorSpec(
-        key="dc",
-        name="Donchian Channels",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"period": 20},
-        color="#d29922"
-    ),
-
-    # RSI
-    "rsi": IndicatorSpec(
-        key="rsi",
-        name="RSI",
-        indicator_type=IndicatorType.OSCILLATOR,
-        panel_type="subplot",
-        default_params={"period": 14, "source": "close", "overbought": 70, "oversold": 30},
-        color="#58a6ff"
-    ),
-
-    # MACD
-    "macd": IndicatorSpec(
-        key="macd",
-        name="MACD",
-        indicator_type=IndicatorType.TREND,
-        panel_type="subplot",
-        default_params={"fast": 12, "slow": 26, "signal": 9},
-        color="#58a6ff"
-    ),
-
-    # Stochastic
-    "stoch": IndicatorSpec(
-        key="stoch",
-        name="Stochastic",
-        indicator_type=IndicatorType.OSCILLATOR,
-        panel_type="subplot",
-        default_params={"k_period": 14, "d_period": 3, "slowing": 3},
-        color="#3fb950"
-    ),
-
-    # CCI
-    "cci": IndicatorSpec(
-        key="cci",
-        name="CCI",
-        indicator_type=IndicatorType.OSCILLATOR,
-        panel_type="subplot",
-        default_params={"period": 20},
-        color="#f0883e"
-    ),
-
-    # Volume Profile
-    "volume_profile": IndicatorSpec(
-        key="volume_profile",
-        name="Volume Profile",
-        indicator_type=IndicatorType.VOLUME,
-        panel_type="overlay",
-        default_params={"rows": 24, "value_area": 70},
-        color="#58a6ff"
-    ),
-
-    # Market Profile
-    "market_profile": IndicatorSpec(
-        key="market_profile",
-        name="Market Profile",
-        indicator_type=IndicatorType.VOLUME,
-        panel_type="overlay",
-        default_params={"tpo_period": 30},
-        color="#3fb950"
-    ),
-
-    # VWAP
-    "vwap": IndicatorSpec(
-        key="vwap",
-        name="VWAP",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"period": "session"},
-        color="#f0883e"
-    ),
-
-    # ATR
-    "atr": IndicatorSpec(
-        key="atr",
-        name="ATR",
-        indicator_type=IndicatorType.VOLATILITY,
-        panel_type="subplot",
-        default_params={"period": 14},
-        color="#58a6ff"
-    ),
-
-    # ADX
-    "adx": IndicatorSpec(
-        key="adx",
-        name="ADX",
-        indicator_type=IndicatorType.TREND,
-        panel_type="subplot",
-        default_params={"period": 14},
-        color="#3fb950"
-    ),
-
-    # Ichimoku Cloud
-    "ichimoku": IndicatorSpec(
-        key="ichimoku",
-        name="Ichimoku Cloud",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={
-            "tenkan_period": 9,
-            "kijun_period": 26,
-            "senkou_b_period": 52,
-            "displacement": 26
-        },
-        color="#58a6ff"
-    ),
-
-    # Parabolic SAR
-    "psar": IndicatorSpec(
-        key="psar",
-        name="Parabolic SAR",
-        indicator_type=IndicatorType.TREND,
-        panel_type="overlay",
-        default_params={"step": 0.02, "max_step": 0.2},
-        color="#d29922"
-    ),
-
-    # Money Flow Index
-    "mfi": IndicatorSpec(
-        key="mfi",
-        name="Money Flow Index",
-        indicator_type=IndicatorType.VOLUME,
-        panel_type="subplot",
-        default_params={"period": 14},
-        color="#58a6ff"
-    ),
-
-    # OBV
-    "obv": IndicatorSpec(
-        key="obv",
-        name="On-Balance Volume",
-        indicator_type=IndicatorType.VOLUME,
-        panel_type="subplot",
-        default_params={},
-        color="#3fb950"
-    ),
-
-    # Volume-Weighted MACD
-    "vwmacd": IndicatorSpec(
-        key="vwmacd",
-        name="Volume-Weighted MACD",
-        indicator_type=IndicatorType.VOLUME,
-        panel_type="subplot",
-        default_params={"fast": 12, "slow": 26, "signal": 9},
-        color="#f0883e"
-    ),
-}
-
-
-# =============================================================================
-# MARKET STRUCTURE ANALYZER (Enhanced)
+# MARKET STRUCTURE ANALYZER
 # =============================================================================
 
 class MarketStructureAnalyzer:
-    """Advanced market structure analyzer with multi-timeframe support"""
+    """Market structure analyzer for pivot points and trend lines"""
 
     def __init__(self, left_bars: int = 5, right_bars: int = 5):
         self.left_bars = max(1, left_bars)
@@ -376,7 +110,7 @@ class MarketStructureAnalyzer:
     def find_pivot_points(self, high: List[float], low: List[float],
                           timestamps: Optional[List] = None) -> List[PivotPoint]:
         """
-        Find pivot points with improved detection and strength calculation
+        Find pivot points with strength calculation
         """
         try:
             if not high or not low or len(high) < self.left_bars + self.right_bars + 1:
@@ -527,7 +261,7 @@ class MarketStructureAnalyzer:
             self.trend_lines["resistance"].append((latest_lh.index, latest_lh.price))
 
     def get_market_phase(self, pivots: List[PivotPoint], lookback: int = 8) -> str:
-        """Determine market phase (uptrend, downtrend, ranging, volatile)"""
+        """Determine market phase (uptrend, downtrend, ranging)"""
         if len(pivots) < 4:
             return 'neutral'
 
@@ -546,14 +280,6 @@ class MarketStructureAnalyzer:
         # Calculate ratios
         uptrend_score = (hh + hl) / total
         downtrend_score = (lh + ll) / total
-        range_score = 1 - abs(uptrend_score - downtrend_score)
-
-        # Check volatility
-        if recent and len(recent) >= 2:
-            prices = [p.price for p in recent]
-            volatility = (max(prices) - min(prices)) / (sum(prices) / len(prices)) * 100
-            if volatility > 5:  # More than 5% range
-                return 'volatile'
 
         if uptrend_score > 0.7:
             return 'strong_uptrend'
@@ -563,192 +289,29 @@ class MarketStructureAnalyzer:
             return 'strong_downtrend'
         elif downtrend_score > 0.55:
             return 'downtrend'
-        elif range_score > 0.7:
-            return 'ranging'
         else:
-            return 'neutral'
+            return 'ranging'
 
 
 # =============================================================================
-# INDICATOR CALCULATIONS
+# SPOT CHART WIDGET
 # =============================================================================
 
-class IndicatorCalculator:
-    """Calculate technical indicators"""
-
-    @staticmethod
-    def sma(data: List[float], period: int) -> List[Optional[float]]:
-        """Simple Moving Average"""
-        if len(data) < period:
-            return [None] * len(data)
-
-        result = [None] * (period - 1)
-        for i in range(period - 1, len(data)):
-            sma = sum(data[i - period + 1:i + 1]) / period
-            result.append(sma)
-        return result
-
-    @staticmethod
-    def ema(data: List[float], period: int) -> List[Optional[float]]:
-        """Exponential Moving Average"""
-        if len(data) < period:
-            return [None] * len(data)
-
-        result = [None] * (period - 1)
-        multiplier = 2 / (period + 1)
-
-        # First EMA is SMA
-        ema = sum(data[:period]) / period
-        result.append(ema)
-
-        for i in range(period, len(data)):
-            ema = (data[i] - ema) * multiplier + ema
-            result.append(ema)
-
-        return result
-
-    @staticmethod
-    def rsi(data: List[float], period: int = 14) -> List[Optional[float]]:
-        """Relative Strength Index"""
-        if len(data) < period + 1:
-            return [None] * len(data)
-
-        result = [None] * period
-
-        gains = []
-        losses = []
-
-        for i in range(1, period + 1):
-            change = data[i] - data[i - 1]
-            gains.append(max(change, 0))
-            losses.append(max(-change, 0))
-
-        avg_gain = sum(gains) / period
-        avg_loss = sum(losses) / period
-
-        rs = avg_gain / avg_loss if avg_loss != 0 else 100
-        result.append(100 - (100 / (1 + rs)))
-
-        for i in range(period + 1, len(data)):
-            change = data[i] - data[i - 1]
-            gain = max(change, 0)
-            loss = max(-change, 0)
-
-            avg_gain = (avg_gain * (period - 1) + gain) / period
-            avg_loss = (avg_loss * (period - 1) + loss) / period
-
-            rs = avg_gain / avg_loss if avg_loss != 0 else 100
-            result.append(100 - (100 / (1 + rs)))
-
-        return result
-
-    @staticmethod
-    def macd(data: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, List[Optional[float]]]:
-        """MACD indicator"""
-        if len(data) < slow:
-            return {"macd": [None] * len(data), "signal": [None] * len(data), "histogram": [None] * len(data)}
-
-        ema_fast = IndicatorCalculator.ema(data, fast)
-        ema_slow = IndicatorCalculator.ema(data, slow)
-
-        macd_line = []
-        for f, s in zip(ema_fast, ema_slow):
-            if f is not None and s is not None:
-                macd_line.append(f - s)
-            else:
-                macd_line.append(None)
-
-        signal_line = IndicatorCalculator.ema([m for m in macd_line if m is not None], signal)
-        signal_line = [None] * (slow - 1) + signal_line
-
-        histogram = []
-        for m, s in zip(macd_line, signal_line):
-            if m is not None and s is not None:
-                histogram.append(m - s)
-            else:
-                histogram.append(None)
-
-        return {
-            "macd": macd_line,
-            "signal": signal_line,
-            "histogram": histogram
-        }
-
-    @staticmethod
-    def bollinger_bands(data: List[float], period: int = 20, std_dev: float = 2) -> Dict[str, List[Optional[float]]]:
-        """Bollinger Bands"""
-        if len(data) < period:
-            return {"upper": [None] * len(data), "middle": [None] * len(data), "lower": [None] * len(data)}
-
-        middle = IndicatorCalculator.sma(data, period)
-        upper = [None] * (period - 1)
-        lower = [None] * (period - 1)
-
-        for i in range(period - 1, len(data)):
-            window = data[i - period + 1:i + 1]
-            std = np.std(window)
-            upper.append(middle[i] + std_dev * std)
-            lower.append(middle[i] - std_dev * std)
-
-        return {
-            "upper": upper,
-            "middle": middle,
-            "lower": lower
-        }
-
-    @staticmethod
-    def vwap(data: Dict[str, List[float]], period: str = "session") -> List[Optional[float]]:
-        """Volume Weighted Average Price"""
-        high = data.get("high", [])
-        low = data.get("low", [])
-        close = data.get("close", [])
-        volume = data.get("volume", [])
-
-        if not all([high, low, close, volume]) or len(high) == 0:
-            return [None] * len(high)
-
-        # Typical price = (high + low + close) / 3
-        typical = [(h + l + c) / 3 for h, l, c in zip(high, low, close)]
-
-        cum_vol = 0
-        cum_tp_vol = 0
-        vwap_values = []
-
-        for tp, vol in zip(typical, volume):
-            if vol is not None and not np.isnan(vol) and vol > 0:
-                cum_vol += vol
-                cum_tp_vol += tp * vol
-
-            if cum_vol > 0:
-                vwap_values.append(cum_tp_vol / cum_vol)
-            else:
-                vwap_values.append(None)
-
-        return vwap_values
-
-
-# =============================================================================
-# ENHANCED CHART WIDGET
-# =============================================================================
-
-class EnhancedChartWidget(QWebEngineView):
+class SpotChartWidget(QWebEngineView):
     """
-    Enhanced market-structure candlestick chart with advanced features:
-    - Multiple chart types
-    - Drawing tools
-    - Advanced indicators
-    - Order flow visualization
+    Simplified chart widget focusing on Spot market structure:
+    - Candlestick/Line chart
+    - Volume as simple bar chart
+    - Pivot points (HH/HL/LH/LL)
+    - Trend lines
+    - Support/Resistance levels
     - Trade annotations
-    - Multi-timeframe support
     """
 
     # Signals
     chart_clicked = pyqtSignal(float, float)  # x, y
     trade_marked = pyqtSignal(dict)  # trade annotation
-    indicator_added = pyqtSignal(str, dict)  # indicator key, params
     timeframe_changed = pyqtSignal(str)  # new timeframe
-    chart_type_changed = pyqtSignal(str)  # new chart type
-    export_requested = pyqtSignal(str, str)  # format, data
 
     # Color scheme
     DARK_BG = "#0d1117"
@@ -761,11 +324,6 @@ class EnhancedChartWidget(QWebEngineView):
         "candle_up_wick": "#2ea043",
         "candle_down_wick": "#da3633",
         "line": "#58a6ff",
-        "area": "rgba(88, 166, 255, 0.3)",
-        "bar_up": "#3fb950",
-        "bar_down": "#f85149",
-        "heikin_ashi_up": "#3fb950",
-        "heikin_ashi_down": "#f85149",
         "pivot_high": "#f0883e",
         "pivot_low": "#58a6ff",
         "hh": "#7ee37d",
@@ -778,21 +336,7 @@ class EnhancedChartWidget(QWebEngineView):
         "resistance": "#f0883e",
         "volume_up": "rgba(63, 185, 80, 0.45)",
         "volume_down": "rgba(248, 81, 73, 0.45)",
-        "fibonacci_0": "#58a6ff",
-        "fibonacci_236": "#3fb950",
-        "fibonacci_382": "#d29922",
-        "fibonacci_500": "#f0883e",
-        "fibonacci_618": "#f85149",
-        "fibonacci_786": "#db6d28",
-        "fibonacci_100": "#7ee37d",
     }
-
-    # Indicator colors
-    INDICATOR_COLORS = [
-        "#58a6ff", "#3fb950", "#d29922", "#f0883e", "#f85149",
-        "#db6d28", "#7ee37d", "#89b4fa", "#a6e3a1", "#f9e2af",
-        "#fab387", "#eba0ac", "#cba6f7", "#94e2d5", "#89dceb"
-    ]
 
     def __init__(self, parent=None):
         # Rule 2: Safe defaults first
@@ -809,28 +353,25 @@ class EnhancedChartWidget(QWebEngineView):
             # Chart configuration
             self._config = None
             self._signal_engine = None
-            self._symbol = ""
+            self._symbol = "Spot Index"
             self._timeframe = TimeFrame.M5
-            self._chart_type = ChartType.CANDLESTICK
+            self._chart_type = "candlestick"  # 'candlestick' or 'line'
 
             # Data
             self._data: Dict[str, List] = {
                 "open": [], "high": [], "low": [], "close": [], "volume": [],
                 "timestamp": [], "datetime": []
             }
-            self._indicators: Dict[str, Dict] = {}
             self._drawings: List[DrawingObject] = []
             self._trade_annotations: List[TradeAnnotation] = []
 
             # Analysis
             self.analyzer = MarketStructureAnalyzer(left_bars=5, right_bars=5)
-            self.calculator = IndicatorCalculator()
             self._pivots: List[PivotPoint] = []
             self._market_phase = "neutral"
 
             # UI State
             self._drawing_mode = None
-            self._selected_indicator = None
             self._show_volume = True
             self._show_grid = True
             self._show_legend = True
@@ -858,10 +399,10 @@ class EnhancedChartWidget(QWebEngineView):
             # Initialize
             self._show_placeholder()
 
-            logger.info("EnhancedChartWidget initialized")
+            logger.info("SpotChartWidget initialized")
 
         except Exception as e:
-            logger.critical(f"[EnhancedChartWidget.__init__] Failed: {e}", exc_info=True)
+            logger.critical(f"[SpotChartWidget.__init__] Failed: {e}", exc_info=True)
             super().__init__(parent)
             self._show_error_placeholder(str(e))
 
@@ -869,19 +410,16 @@ class EnhancedChartWidget(QWebEngineView):
         """Initialize all attributes with safe defaults"""
         self._config = None
         self._signal_engine = None
-        self._symbol = ""
-        # self._timeframe = TimeFrame.M5
-        self._chart_type = ChartType.CANDLESTICK
+        self._symbol = "Spot Index"
+        self._timeframe = TimeFrame.M5
+        self._chart_type = "candlestick"
         self._data = {"open": [], "high": [], "low": [], "close": [], "volume": [], "timestamp": [], "datetime": []}
-        self._indicators = {}
         self._drawings = []
         self._trade_annotations = []
         self.analyzer = None
-        self.calculator = None
         self._pivots = []
         self._market_phase = "neutral"
         self._drawing_mode = None
-        self._selected_indicator = None
         self._show_volume = True
         self._show_grid = True
         self._show_legend = True
@@ -911,7 +449,7 @@ class EnhancedChartWidget(QWebEngineView):
             self.setPage(self._web_page)
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget._setup_web_engine] Failed: {e}")
+            logger.error(f"[SpotChartWidget._setup_web_engine] Failed: {e}")
 
     # =========================================================================
     # PUBLIC API
@@ -926,7 +464,7 @@ class EnhancedChartWidget(QWebEngineView):
             self._html_cache.clear()
             logger.debug("Chart config set")
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.set_config] Failed: {e}")
+            logger.error(f"[SpotChartWidget.set_config] Failed: {e}")
 
     def set_symbol(self, symbol: str) -> None:
         """Set chart symbol"""
@@ -944,12 +482,20 @@ class EnhancedChartWidget(QWebEngineView):
             if self._update_timer:
                 self._update_timer.start(50)
 
-    def set_chart_type(self, chart_type: ChartType) -> None:
-        """Set chart type and immediately re-render"""
+    def set_chart_type(self, chart_type: str) -> None:
+        """Set chart type ('candlestick' or 'line')"""
         self._chart_type = chart_type
         self._last_data_fingerprint = ""
         self._html_cache.clear()
-        self.chart_type_changed.emit(chart_type.value)
+        if self._data and self._data.get("close"):
+            self._pending_data = self._data
+            if self._update_timer:
+                self._update_timer.start(50)
+
+    def toggle_volume(self, show: bool) -> None:
+        """Toggle volume visibility"""
+        self._show_volume = show
+        self._last_data_fingerprint = ""
         if self._data and self._data.get("close"):
             self._pending_data = self._data
             if self._update_timer:
@@ -988,7 +534,7 @@ class EnhancedChartWidget(QWebEngineView):
                 self._update_timer.start(300)
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.update_data] Failed: {e}")
+            logger.error(f"[SpotChartWidget.update_data] Failed: {e}")
             self._error_count += 1
             if self._error_count >= self._max_errors:
                 self._show_error_placeholder(str(e))
@@ -1016,57 +562,7 @@ class EnhancedChartWidget(QWebEngineView):
             self.update_data(data)
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.update_chart] Failed: {e}")
-
-    def add_indicator(self, indicator_key: str, params: Dict[str, Any] = None) -> bool:
-        """Add an indicator to the chart"""
-        try:
-            if indicator_key not in INDICATOR_REGISTRY:
-                logger.warning(f"Unknown indicator: {indicator_key}")
-                return False
-
-            spec = INDICATOR_REGISTRY[indicator_key]
-            if params is None:
-                params = spec.default_params.copy()
-
-            # Calculate indicator values
-            indicator_data = self._calculate_indicator(indicator_key, params)
-            if indicator_data is None:
-                return False
-
-            # Store indicator
-            self._indicators[indicator_key] = {
-                "spec": spec,
-                "params": params,
-                "data": indicator_data,
-                "color": self.INDICATOR_COLORS[len(self._indicators) % len(self.INDICATOR_COLORS)]
-            }
-
-            self._last_data_fingerprint = ""
-            self.indicator_added.emit(indicator_key, params)
-
-            return True
-
-        except Exception as e:
-            logger.error(f"[EnhancedChartWidget.add_indicator] Failed: {e}")
-            return False
-
-    def remove_indicator(self, indicator_key: str) -> bool:
-        """Remove an indicator from the chart"""
-        try:
-            if indicator_key in self._indicators:
-                del self._indicators[indicator_key]
-                self._last_data_fingerprint = ""
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"[EnhancedChartWidget.remove_indicator] Failed: {e}")
-            return False
-
-    def clear_indicators(self) -> None:
-        """Remove all indicators"""
-        self._indicators.clear()
-        self._last_data_fingerprint = ""
+            logger.error(f"[SpotChartWidget.update_chart] Failed: {e}")
 
     def add_drawing(self, drawing: DrawingObject) -> None:
         """Add a drawing object"""
@@ -1095,30 +591,18 @@ class EnhancedChartWidget(QWebEngineView):
         self._last_data_fingerprint = ""
 
     def set_drawing_mode(self, mode: Optional[str]) -> None:
-        """Set drawing mode (trend_line, horizontal_line, fibonacci, etc.)"""
+        """Set drawing mode (trend_line, horizontal_line, etc.)"""
         self._drawing_mode = mode
 
     def export_chart(self, format: str = "png") -> None:
-        """Export chart as image or data"""
+        """Export chart as image"""
         try:
             if format == "png":
                 # Take screenshot
                 self.grab().save(f"chart_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 QMessageBox.information(self, "Export", "Chart exported as PNG")
-            elif format == "csv":
-                # Export data as CSV
-                filename, _ = QFileDialog.getSaveFileName(
-                    self, "Export Data", "", "CSV Files (*.csv)"
-                )
-                if filename:
-                    df = pd.DataFrame(self._data)
-                    df.to_csv(filename, index=False)
-                    QMessageBox.information(self, "Export", f"Data exported to {filename}")
-
-            self.export_requested.emit(format, "")
-
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.export_chart] Failed: {e}")
+            logger.error(f"[SpotChartWidget.export_chart] Failed: {e}")
             QMessageBox.critical(self, "Export Failed", str(e))
 
     def clear_cache(self) -> None:
@@ -1126,54 +610,36 @@ class EnhancedChartWidget(QWebEngineView):
         self._html_cache.clear()
         self._last_data_fingerprint = ""
 
+    def toggle_pivots(self, show: bool) -> None:
+        """Toggle pivot points visibility"""
+        self._show_pivots = show
+        self._last_data_fingerprint = ""
+        if self._data and self._data.get("close"):
+            self._pending_data = self._data
+            if self._update_timer:
+                self._update_timer.start(50)
+
+    def toggle_trend_lines(self, show: bool) -> None:
+        """Toggle trend lines visibility"""
+        self._show_trend_lines = show
+        self._last_data_fingerprint = ""
+        if self._data and self._data.get("close"):
+            self._pending_data = self._data
+            if self._update_timer:
+                self._update_timer.start(50)
+
+    def toggle_grid(self, show: bool) -> None:
+        """Toggle grid visibility"""
+        self._show_grid = show
+        self._last_data_fingerprint = ""
+        if self._data and self._data.get("close"):
+            self._pending_data = self._data
+            if self._update_timer:
+                self._update_timer.start(50)
+
     # =========================================================================
     # PRIVATE METHODS
     # =========================================================================
-
-    def _calculate_indicator(self, key: str, params: Dict[str, Any]) -> Optional[Dict]:
-        """Calculate indicator values"""
-        try:
-            close = self._data.get("close", [])
-            high = self._data.get("high", [])
-            low = self._data.get("low", [])
-            volume = self._data.get("volume", [])
-
-            if not close:
-                return None
-
-            if key == "sma":
-                period = params.get("period", 20)
-                return {"value": self.calculator.sma(close, period)}
-
-            elif key == "ema":
-                period = params.get("period", 20)
-                return {"value": self.calculator.ema(close, period)}
-
-            elif key == "rsi":
-                period = params.get("period", 14)
-                return {"value": self.calculator.rsi(close, period)}
-
-            elif key == "macd":
-                fast = params.get("fast", 12)
-                slow = params.get("slow", 26)
-                signal = params.get("signal", 9)
-                return self.calculator.macd(close, fast, slow, signal)
-
-            elif key == "bb":
-                period = params.get("period", 20)
-                std_dev = params.get("std_dev", 2)
-                return self.calculator.bollinger_bands(close, period, std_dev)
-
-            elif key == "vwap":
-                return {"value": self.calculator.vwap(self._data)}
-
-            else:
-                logger.warning(f"Indicator calculation not implemented: {key}")
-                return None
-
-        except Exception as e:
-            logger.error(f"[EnhancedChartWidget._calculate_indicator] Failed: {e}")
-            return None
 
     def _fingerprint(self, data: Dict) -> str:
         """Generate fingerprint for caching"""
@@ -1188,12 +654,11 @@ class EnhancedChartWidget(QWebEngineView):
             n = len(close)
             last_5 = close[-5:] if n >= 5 else close
 
-            # Include indicator and drawing count in fingerprint
-            ind_count = len(self._indicators)
+            # Include drawing and annotation count in fingerprint
             draw_count = len(self._drawings)
             trade_count = len(self._trade_annotations)
 
-            return f"{n}:{last_5}:{ind_count}:{draw_count}:{trade_count}:{self._chart_type.value}"
+            return f"{n}:{last_5}:{draw_count}:{trade_count}:{self._chart_type}:{self._show_pivots}:{self._show_trend_lines}:{self._show_volume}"
 
         except Exception as e:
             logger.debug(f"Fingerprint failed: {e}")
@@ -1242,10 +707,10 @@ class EnhancedChartWidget(QWebEngineView):
             self._market_phase = self.analyzer.get_market_phase(self._pivots)
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget._analyze_data] Failed: {e}")
+            logger.error(f"[SpotChartWidget._analyze_data] Failed: {e}")
 
     def _generate_chart_html(self, data: Dict[str, List]) -> Optional[str]:
-        """Generate Plotly HTML"""
+        """Generate Plotly HTML with bar chart volume"""
         if not data or not data.get("close"):
             return None
 
@@ -1266,62 +731,49 @@ class EnhancedChartWidget(QWebEngineView):
             else:
                 x = list(range(n))
 
-            # Determine number of rows (main + subplots for indicators)
+            # Determine number of rows
             has_volume = bool(self._show_volume and data.get("volume"))
-            subplot_count = 1  # Main price chart
-            subplot_titles = ["Price"]
-            row_heights = [0.6]
 
-            # Add indicator subplots
-            indicator_rows = {}
-            for key, ind in self._indicators.items():
-                if ind["spec"].panel_type == "subplot" and key not in indicator_rows:
-                    indicator_rows[key] = len(subplot_titles)
-                    subplot_titles.append(ind["spec"].name)
-                    row_heights.append(0.2)
-                    subplot_count += 1
-
-            # Add volume subplot
             if has_volume:
-                subplot_titles.append("Volume")
-                row_heights.append(0.2)
-                subplot_count += 1
+                # 2 rows: price chart + volume bar chart
+                fig = make_subplots(
+                    rows=2,
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.05,
+                    row_heights=[0.7, 0.3],
+                    subplot_titles=["Price", "Volume"]
+                )
 
-            # Create figure with subplots
-            fig = make_subplots(
-                rows=subplot_count,
-                cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.03,
-                row_heights=row_heights,
-                subplot_titles=subplot_titles,
-                specs=[[{"secondary_y": False}] for _ in range(subplot_count)]
-            )
+                # Add price trace (row 1)
+                self._add_price_trace(fig, data, x, 1)
+                self._add_pivots(fig, x, 1)
+                self._add_trend_lines(fig, x, 1)
+                self._add_drawings(fig, x, data, 1)
+                self._add_trade_annotations(fig, x, data, 1)
 
-            # Current row counter
-            current_row = 1
+                # Add volume trace as bar chart (row 2)
+                self._add_volume_trace(fig, data, x, 2)
 
-            # ===== MAIN PRICE CHART =====
-            self._add_price_trace(fig, data, x, current_row)
-            self._add_overlay_indicators(fig, x, current_row)
-            self._add_pivots(fig, x, current_row)
-            self._add_trend_lines(fig, x, current_row)
-            self._add_drawings(fig, x, data, current_row)
-            self._add_trade_annotations(fig, x, data, current_row)
+                # Apply layout for 2 rows
+                self._apply_layout(fig, 2)
 
-            # ===== INDICATOR SUBPLOTS =====
-            for key, ind in self._indicators.items():
-                if ind["spec"].panel_type == "subplot":
-                    row = indicator_rows[key] + 1  # +1 because main is row 1
-                    self._add_indicator_trace(fig, key, ind, x, row)
+            else:
+                # Single chart - no volume
+                fig = make_subplots(
+                    rows=1,
+                    cols=1,
+                    shared_xaxes=True,
+                    subplot_titles=["Price"]
+                )
 
-            # ===== VOLUME SUBPLOT =====
-            if has_volume:
-                volume_row = subplot_count
-                self._add_volume_trace(fig, data, x, volume_row)
+                self._add_price_trace(fig, data, x, 1)
+                self._add_pivots(fig, x, 1)
+                self._add_trend_lines(fig, x, 1)
+                self._add_drawings(fig, x, data, 1)
+                self._add_trade_annotations(fig, x, data, 1)
 
-            # ===== LAYOUT =====
-            self._apply_layout(fig, subplot_count)
+                self._apply_layout(fig, 1)
 
             # Convert to HTML
             html = fig.to_html(
@@ -1333,8 +785,6 @@ class EnhancedChartWidget(QWebEngineView):
                     "responsive": True,
                     "scrollZoom": True,
                     "doubleClick": "reset",
-                    "modeBarButtonsToAdd": ["drawline", "drawrect", "drawcircle", "eraseshape"],
-                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
                 }
             )
 
@@ -1345,7 +795,7 @@ class EnhancedChartWidget(QWebEngineView):
             return html
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget._generate_chart_html] Failed: {e}", exc_info=True)
+            logger.error(f"[SpotChartWidget._generate_chart_html] Failed: {e}", exc_info=True)
             return None
 
     def _add_price_trace(self, fig: go.Figure, data: Dict, x: List, row: int):
@@ -1355,10 +805,10 @@ class EnhancedChartWidget(QWebEngineView):
         low = self._clean_data(data.get("low", []))
         close = self._clean_data(data.get("close", []))
 
-        if self._chart_type == ChartType.CANDLESTICK:
+        if self._chart_type == "candlestick":
             fig.add_trace(go.Candlestick(
                 x=x, open=open_p, high=high, low=low, close=close,
-                name="Price",
+                name="Spot",
                 increasing=dict(
                     line=dict(color=self.CHART_COLORS["candle_up"]),
                     fillcolor=self.CHART_COLORS["candle_up"]
@@ -1369,156 +819,86 @@ class EnhancedChartWidget(QWebEngineView):
                 ),
                 showlegend=False,
             ), row=row, col=1)
-
-        elif self._chart_type == ChartType.LINE:
+        else:  # line chart
             fig.add_trace(go.Scatter(
-                x=x, y=close, name="Price",
+                x=x, y=close, name="Spot",
                 line=dict(color=self.CHART_COLORS["line"], width=2),
                 mode="lines",
                 showlegend=False,
             ), row=row, col=1)
 
-        elif self._chart_type == ChartType.AREA:
-            fig.add_trace(go.Scatter(
-                x=x, y=close, name="Price",
-                fill="tozeroy",
-                line=dict(color=self.CHART_COLORS["line"], width=2),
-                fillcolor=self.CHART_COLORS["area"],
-                mode="lines",
-                showlegend=False,
-            ), row=row, col=1)
+    def _add_volume_trace(self, fig: go.Figure, data: Dict, x: List, row: int):
+        """Add volume trace as simple bar chart"""
+        volume = self._clean_data(data.get("volume", []))
+        close = self._clean_data(data.get("close", []))
 
-        elif self._chart_type == ChartType.BAR:
-            colors = [self.CHART_COLORS["bar_up"] if c >= o else self.CHART_COLORS["bar_down"]
-                      for c, o in zip(close, open_p)]
-            fig.add_trace(go.Bar(
-                x=x, y=close, name="Price",
-                marker_color=colors,
-                showlegend=False,
-            ), row=row, col=1)
+        # Color volume based on price movement (simple up/down coloring)
+        vol_colors = []
+        for i, v in enumerate(volume):
+            if i == 0 or close[i] is None or close[i - 1] is None:
+                vol_colors.append(self.CHART_COLORS["volume_up"])
+            elif close[i] >= close[i - 1]:
+                vol_colors.append(self.CHART_COLORS["volume_up"])
+            else:
+                vol_colors.append(self.CHART_COLORS["volume_down"])
 
-        elif self._chart_type == ChartType.HEIKIN_ASHI:
-            # Calculate Heikin-Ashi — ha_open must be built iteratively
-            ha_close = [(o + h + l + c) / 4 for o, h, l, c in zip(open_p, high, low, close)]
-            ha_open = [open_p[0]]
-            for i in range(1, len(close)):
-                ha_open.append((ha_open[i - 1] + ha_close[i - 1]) / 2)
-            ha_high = [max(h, ha_open[i], ha_close[i]) for i, h in enumerate(high)]
-            ha_low  = [min(l, ha_open[i], ha_close[i]) for i, l in enumerate(low)]
-
-            fig.add_trace(go.Candlestick(
-                x=x, open=ha_open, high=ha_high, low=ha_low, close=ha_close,
-                name="Heikin-Ashi",
-                increasing=dict(
-                    line=dict(color=self.CHART_COLORS["heikin_ashi_up"]),
-                    fillcolor=self.CHART_COLORS["heikin_ashi_up"]
-                ),
-                decreasing=dict(
-                    line=dict(color=self.CHART_COLORS["heikin_ashi_down"]),
-                    fillcolor=self.CHART_COLORS["heikin_ashi_down"]
-                ),
-                showlegend=False,
-            ), row=row, col=1)
-
-    def _add_overlay_indicators(self, fig: go.Figure, x: List, row: int):
-        """Render all overlay indicators (MA, BB, VWAP, PSAR …) on the main price panel."""
-        for key, ind in self._indicators.items():
-            if ind["spec"].panel_type != "overlay":
-                continue
-            data  = ind["data"]
-            color = ind["color"]
-            name  = ind["spec"].name
-            try:
-                if key in ("sma", "ema", "wma", "hma"):
-                    vals = data.get("value", [])
-                    if any(v is not None for v in vals):
-                        fig.add_trace(go.Scatter(
-                            x=x, y=vals, name=name,
-                            line=dict(color=color, width=2), mode="lines", showlegend=True,
-                        ), row=row, col=1)
-
-                elif key == "bb":
-                    upper, middle, lower = data.get("upper", []), data.get("middle", []), data.get("lower", [])
-                    fig.add_trace(go.Scatter(x=x, y=upper, name="BB Upper",
-                        line=dict(color=color, width=1, dash="dash"), showlegend=True), row=row, col=1)
-                    fig.add_trace(go.Scatter(x=x, y=middle, name="BB Mid",
-                        line=dict(color=color, width=1), showlegend=False), row=row, col=1)
-                    fig.add_trace(go.Scatter(x=x, y=lower, name="BB Lower",
-                        line=dict(color=color, width=1, dash="dash"),
-                        fill="tonexty", fillcolor="rgba(88,166,255,0.07)",
-                        showlegend=False), row=row, col=1)
-
-                elif key == "vwap":
-                    vals = data.get("value", [])
-                    if any(v is not None for v in vals):
-                        fig.add_trace(go.Scatter(x=x, y=vals, name="VWAP",
-                            line=dict(color=color, width=2, dash="dash"), showlegend=True), row=row, col=1)
-
-                elif key == "psar":
-                    vals = data.get("value", [])
-                    if any(v is not None for v in vals):
-                        fig.add_trace(go.Scatter(x=x, y=vals, name="PSAR", mode="markers",
-                            marker=dict(size=4, color=color), showlegend=True), row=row, col=1)
-
-                else:
-                    vals = data.get("value", [])
-                    if vals and any(v is not None for v in vals):
-                        fig.add_trace(go.Scatter(x=x, y=vals, name=name,
-                            line=dict(color=color, width=2), showlegend=True), row=row, col=1)
-
-            except Exception as e:
-                logger.warning(f"[_add_overlay_indicators] {key}: {e}")
+        fig.add_trace(go.Bar(
+            x=x, y=volume, name="Volume",
+            marker_color=vol_colors,
+            hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+            showlegend=False,
+        ), row=row, col=1)
 
     def _add_pivots(self, fig: go.Figure, x: List, row: int):
         """Add pivot points to chart"""
         if not self._show_pivots or not self._pivots:
             return
 
-        px, py, pcol, ptext, psize = [], [], [], [], []
+        px_list, py_list, pcol_list, ptext_list, psize_list = [], [], [], [], []
 
         for p in self._pivots:
             try:
                 idx = p.index if p.index < len(x) else len(x) - 1
-                px.append(x[idx] if idx >= 0 else p.index)
-                py.append(p.price)
+                px_list.append(x[idx] if idx >= 0 else p.index)
+                py_list.append(p.price)
 
                 # Color based on structure
                 if p.structure == "HH":
-                    pcol.append(self.CHART_COLORS["hh"])
-                    ptext.append(f"HH {p.price:.2f}")
-                    psize.append(10 + p.strength * 3)
+                    pcol_list.append(self.CHART_COLORS["hh"])
+                    ptext_list.append(f"HH")
+                    psize_list.append(10 + p.strength * 3)
                 elif p.structure == "HL":
-                    pcol.append(self.CHART_COLORS["hl"])
-                    ptext.append(f"HL {p.price:.2f}")
-                    psize.append(10 + p.strength * 3)
+                    pcol_list.append(self.CHART_COLORS["hl"])
+                    ptext_list.append(f"HL")
+                    psize_list.append(10 + p.strength * 3)
                 elif p.structure == "LH":
-                    pcol.append(self.CHART_COLORS["lh"])
-                    ptext.append(f"LH {p.price:.2f}")
-                    psize.append(10 + p.strength * 3)
+                    pcol_list.append(self.CHART_COLORS["lh"])
+                    ptext_list.append(f"LH")
+                    psize_list.append(10 + p.strength * 3)
                 elif p.structure == "LL":
-                    pcol.append(self.CHART_COLORS["ll"])
-                    ptext.append(f"LL {p.price:.2f}")
-                    psize.append(10 + p.strength * 3)
+                    pcol_list.append(self.CHART_COLORS["ll"])
+                    ptext_list.append(f"LL")
+                    psize_list.append(10 + p.strength * 3)
                 else:
                     color = self.CHART_COLORS["pivot_high"] if p.type == 'high' else self.CHART_COLORS["pivot_low"]
-                    pcol.append(color)
-                    ptext.append(f"Pivot {p.price:.2f}")
-                    psize.append(8 + p.strength * 2)
+                    pcol_list.append(color)
+                    ptext_list.append(f"Pivot")
+                    psize_list.append(8 + p.strength * 2)
 
             except Exception as e:
                 logger.debug(f"Error adding pivot: {e}")
                 continue
 
-        if px:
+        if px_list:
             fig.add_trace(go.Scatter(
-                x=px, y=py, mode="markers+text", name="Pivots",
+                x=px_list, y=py_list, mode="markers+text", name="Pivots",
                 marker=dict(
-                    size=psize,
-                    color=pcol,
+                    size=psize_list,
+                    color=pcol_list,
                     symbol="circle",
                     line=dict(width=1, color="white")
                 ),
-                text=[t.split()[0] for t in ptext],  # Just HH/HL/LH/LL
+                text=ptext_list,
                 textposition="top center",
                 textfont=dict(size=9, color="white"),
                 hovertemplate="%{text}<br>Price: %{y:.2f}<extra></extra>",
@@ -1613,38 +993,6 @@ class EnhancedChartWidget(QWebEngineView):
                     showlegend=False,
                 ), row=row, col=1)
 
-            elif drawing.type == "fibonacci" and len(drawing.points) >= 2:
-                # Fibonacci retracement levels
-                x1, y1 = drawing.points[0]
-                x2, y2 = drawing.points[1]
-
-                if y2 > y1:
-                    high, low = y2, y1
-                else:
-                    high, low = y1, y2
-
-                diff = high - low
-                levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
-                colors = [
-                    self.CHART_COLORS["fibonacci_0"],
-                    self.CHART_COLORS["fibonacci_236"],
-                    self.CHART_COLORS["fibonacci_382"],
-                    self.CHART_COLORS["fibonacci_500"],
-                    self.CHART_COLORS["fibonacci_618"],
-                    self.CHART_COLORS["fibonacci_786"],
-                    self.CHART_COLORS["fibonacci_100"]
-                ]
-
-                for level, color in zip(levels, colors):
-                    y = high - diff * level
-                    fig.add_hline(
-                        y=y,
-                        line=dict(color=color, width=1, dash="dot"),
-                        row=row, col=1,
-                        annotation_text=f"{level * 100:.1f}% {y:.2f}",
-                        annotation_position="right"
-                    )
-
     def _add_trade_annotations(self, fig: go.Figure, x: List, data: Dict, row: int):
         """Add trade annotations to chart"""
         for trade in self._trade_annotations:
@@ -1705,108 +1053,6 @@ class EnhancedChartWidget(QWebEngineView):
                         row=row, col=1
                     )
 
-    def _add_indicator_trace(self, fig: go.Figure, key: str, ind: Dict, x: List, row: int):
-        """Add indicator trace to subplot"""
-        data = ind["data"]
-        color = ind["color"]
-
-        if key == "macd":
-            # MACD has multiple lines
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get("macd", []), name="MACD",
-                line=dict(color=color, width=2),
-                showlegend=True,
-            ), row=row, col=1)
-
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get("signal", []), name="Signal",
-                line=dict(color=self.CHART_COLORS["candle_down"], width=2),
-                showlegend=True,
-            ), row=row, col=1)
-
-            # Histogram — guard against None values from warm-up period
-            hist_data = data.get("histogram", [])
-            hist_colors = [
-                self.CHART_COLORS["candle_up"] if (h is not None and h >= 0)
-                else self.CHART_COLORS["candle_down"]
-                for h in hist_data
-            ]
-            fig.add_trace(go.Bar(
-                x=x, y=hist_data, name="Histogram",
-                marker_color=hist_colors,
-                showlegend=True,
-            ), row=row, col=1)
-
-        elif key == "bb":
-            # Bollinger Bands
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get("upper", []), name="Upper BB",
-                line=dict(color=color, width=1, dash="dash"),
-                showlegend=True,
-            ), row=row, col=1)
-
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get("middle", []), name="Middle BB",
-                line=dict(color=color, width=2),
-                showlegend=True,
-            ), row=row, col=1)
-
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get("lower", []), name="Lower BB",
-                line=dict(color=color, width=1, dash="dash"),
-                showlegend=True,
-                fill="tonexty",
-                fillcolor="rgba(88, 166, 255, 0.1)"
-            ), row=row, col=1)
-
-        elif key == "rsi":
-            # RSI with overbought/oversold lines
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get("value", []), name="RSI",
-                line=dict(color=color, width=2),
-                showlegend=True,
-            ), row=row, col=1)
-
-            # Overbought/Oversold lines
-            ob = ind["params"].get("overbought", 70)
-            os = ind["params"].get("oversold", 30)
-
-            fig.add_hline(y=ob, line=dict(color=self.CHART_COLORS["candle_down"], width=1, dash="dash"),
-                          row=row, col=1)
-            fig.add_hline(y=os, line=dict(color=self.CHART_COLORS["candle_up"], width=1, dash="dash"),
-                          row=row, col=1)
-
-        else:
-            # Simple single-line indicator
-            value_key = "value" if "value" in data else key
-            fig.add_trace(go.Scatter(
-                x=x, y=data.get(value_key, []), name=ind["spec"].name,
-                line=dict(color=color, width=2),
-                showlegend=True,
-            ), row=row, col=1)
-
-    def _add_volume_trace(self, fig: go.Figure, data: Dict, x: List, row: int):
-        """Add volume trace"""
-        volume = self._clean_data(data.get("volume", []))
-        close = self._clean_data(data.get("close", []))
-
-        # Color volume based on price movement
-        vol_colors = []
-        for i, v in enumerate(volume):
-            if i == 0 or close[i] is None or close[i - 1] is None:
-                vol_colors.append(self.CHART_COLORS["volume_up"])
-            elif close[i] >= close[i - 1]:
-                vol_colors.append(self.CHART_COLORS["volume_up"])
-            else:
-                vol_colors.append(self.CHART_COLORS["volume_down"])
-
-        fig.add_trace(go.Bar(
-            x=x, y=volume, name="Volume",
-            marker_color=vol_colors,
-            hovertemplate="Vol: %{y:,.0f}<extra></extra>",
-            showlegend=False,
-        ), row=row, col=1)
-
     def _apply_layout(self, fig: go.Figure, rows: int):
         """Apply layout styling"""
         # Title
@@ -1865,6 +1111,10 @@ class EnhancedChartWidget(QWebEngineView):
 
         # Price axis title
         fig.update_yaxes(title_text="Price", row=1, col=1)
+
+        # Volume axis title
+        if rows > 1:
+            fig.update_yaxes(title_text="Volume", row=2, col=1)
 
     def _get_custom_css(self) -> str:
         """Get custom CSS for HTML"""
@@ -1983,24 +1233,18 @@ class EnhancedChartWidget(QWebEngineView):
                         0% {{ transform: rotate(0deg); }}
                         100% {{ transform: rotate(360deg); }}
                     }}
-                    .hint {{
-                        color: #484f58;
-                        font-size: 12px;
-                        margin-top: 20px;
-                    }}
                 </style>
             </head>
             <body>
                 <div class="container">
                     <div class="spinner"></div>
                     <div class="msg">📊 {message}</div>
-                    <div class="hint">Select timeframe and indicators from toolbar</div>
                 </div>
             </body>
             </html>"""
             self.setHtml(html)
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget._show_placeholder] Failed: {e}")
+            logger.error(f"[SpotChartWidget._show_placeholder] Failed: {e}")
 
     def _show_error_placeholder(self, error_msg: str):
         """Show error message"""
@@ -2033,24 +1277,18 @@ class EnhancedChartWidget(QWebEngineView):
                         font-weight: bold;
                         margin-bottom: 15px;
                     }}
-                    .error-detail {{
-                        color: #8b949e;
-                        font-size: 12px;
-                        margin-top: 15px;
-                    }}
                 </style>
             </head>
             <body>
                 <div class="error">
                     <div class="error-title">❌ Chart Error</div>
                     <div>{error_msg}</div>
-                    <div class="error-detail">Check data source and try again</div>
                 </div>
             </body>
             </html>"""
             self.setHtml(html)
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget._show_error_placeholder] Failed: {e}")
+            logger.error(f"[SpotChartWidget._show_error_placeholder] Failed: {e}")
 
     def resizeEvent(self, event):
         """Handle resize event"""
@@ -2061,7 +1299,7 @@ class EnhancedChartWidget(QWebEngineView):
             if self._data and self._data.get("close"):
                 self.update_data(self._data)
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.resizeEvent] Failed: {e}")
+            logger.error(f"[SpotChartWidget.resizeEvent] Failed: {e}")
             super().resizeEvent(event)
 
     def mousePressEvent(self, event):
@@ -2071,18 +1309,17 @@ class EnhancedChartWidget(QWebEngineView):
 
             if self._drawing_mode:
                 # Convert screen coordinates to data coordinates
-                # This is simplified - would need proper coordinate mapping
                 pos = event.pos()
                 self.chart_clicked.emit(pos.x(), pos.y())
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.mousePressEvent] Failed: {e}")
+            logger.error(f"[SpotChartWidget.mousePressEvent] Failed: {e}")
             super().mousePressEvent(event)
 
     def cleanup(self):
         """Clean up resources before shutdown"""
         try:
-            logger.info("[EnhancedChartWidget] Starting cleanup")
+            logger.info("[SpotChartWidget] Starting cleanup")
 
             # Stop timer
             if self._update_timer and self._update_timer.isActive():
@@ -2090,7 +1327,6 @@ class EnhancedChartWidget(QWebEngineView):
 
             # Clear cache
             self._html_cache.clear()
-            self._indicators.clear()
             self._drawings.clear()
             self._trade_annotations.clear()
 
@@ -2098,38 +1334,35 @@ class EnhancedChartWidget(QWebEngineView):
             self._config = None
             self._signal_engine = None
             self.analyzer = None
-            self.calculator = None
             self._update_timer = None
             self._web_profile = None
             self._web_page = None
 
-            logger.info("[EnhancedChartWidget] Cleanup completed")
+            logger.info("[SpotChartWidget] Cleanup completed")
 
         except Exception as e:
-            logger.error(f"[EnhancedChartWidget.cleanup] Error: {e}")
-
-
+            logger.error(f"[SpotChartWidget.cleanup] Error: {e}")
 
 
 # =============================================================================
-# SIGNAL DATA TAB
+# DETAILED SIGNAL DATA TAB (FULLY PRESERVED)
 # =============================================================================
 
 # Shared colour map for all signal states
 _SIG_COLORS: Dict[str, str] = {
-    "BUY_CALL":  "#3fb950",
-    "BUY_PUT":   "#58a6ff",
+    "BUY_CALL": "#3fb950",
+    "BUY_PUT": "#58a6ff",
     "EXIT_CALL": "#f85149",
-    "EXIT_PUT":  "#f0883e",
-    "HOLD":      "#d29922",
-    "WAIT":      "#484f58",
+    "EXIT_PUT": "#f0883e",
+    "HOLD": "#d29922",
+    "WAIT": "#484f58",
 }
 
-_DARK   = "#0d1117"
-_CARD   = "#161b22"
+_DARK = "#0d1117"
+_CARD = "#161b22"
 _BORDER = "#30363d"
-_MUTED  = "#8b949e"
-_TEXT   = "#e6edf3"
+_MUTED = "#8b949e"
+_TEXT = "#e6edf3"
 
 
 def _mk_table_style() -> str:
@@ -2197,20 +1430,16 @@ def _mk_group_style(accent: str = _BORDER) -> str:
     """
 
 
-class EnhancedSignalDataTab(QWidget):
+class SignalDataTab(QWidget):
     """
-    Signal data panel.
-
-    Layout
-    ──────
-    [Signal badge] [Confidence bar] [Conflict pill]
-    [BUY CALL] [BUY PUT] [EXIT CALL] [EXIT PUT] [HOLD]   ← fired pills
-    ┌─────────────────────────────────────────────────────┐
-    │ Indicator Values  (4 cols: name / current / prev / Δ)│
-    ├─────────────────────────────────────────────────────┤
-    │ Rule Results      (4 cols: group / rule / detail / result) │
-    └─────────────────────────────────────────────────────┘
-    Updated HH:MM:SS
+    Fully detailed signal data panel with:
+    - Signal badge
+    - Confidence bar
+    - Conflict indicator
+    - Fired signal pills
+    - Indicator values table (4 cols: name / current / prev / Δ)
+    - Rule results table (4 cols: group / rule / detail / result)
+    - Timestamp
     """
 
     def __init__(self, parent=None):
@@ -2501,8 +1730,17 @@ class EnhancedSignalDataTab(QWidget):
             # ── confidence bar ─────────────────────────────────────
             raw_conf = option_signal.get("confidence", 0)
             try:
-                f = float(raw_conf)
-                pct = int(f * 100) if f <= 1.0 else int(f)
+                if isinstance(raw_conf, dict):
+                    # If confidence is a dict, calculate average
+                    if raw_conf:
+                        conf_values = [v for v in raw_conf.values() if isinstance(v, (int, float))]
+                        avg_conf = sum(conf_values) / len(conf_values) if conf_values else 0
+                        pct = int(avg_conf * 100)
+                    else:
+                        pct = 0
+                else:
+                    f = float(raw_conf)
+                    pct = int(f * 100) if f <= 1.0 else int(f)
                 pct = max(0, min(100, pct))
             except (TypeError, ValueError):
                 pct = 0
@@ -2566,10 +1804,10 @@ class EnhancedSignalDataTab(QWidget):
                 else:
                     for r in rules:
                         rows.append({
-                            "group":   group,
-                            "rule":    r.get("rule",   "?"),
-                            "detail":  str(r.get("detail", "—")),
-                            "result":  r.get("result", False),
+                            "group": group,
+                            "rule": r.get("rule", "?"),
+                            "detail": str(r.get("detail", "—")),
+                            "result": r.get("result", False),
                             "blocker": r.get("blocker", False),
                         })
 
@@ -2608,7 +1846,7 @@ class EnhancedSignalDataTab(QWidget):
             self.ts_label.setText(f"Updated  {datetime.now().strftime('%H:%M:%S')}")
 
         except Exception as e:
-            logger.error(f"[EnhancedSignalDataTab.refresh] {e}", exc_info=True)
+            logger.error(f"[SignalDataTab.refresh] {e}", exc_info=True)
 
     def _reset(self):
         self._apply_badge("WAIT")
@@ -2622,13 +1860,15 @@ class EnhancedSignalDataTab(QWidget):
         self.ts_label.setText("—")
 
 
-class EnhancedMultiChartWidget(QWidget):
+# =============================================================================
+# SIMPLE CHART WIDGET (Spot + Signal only)
+# =============================================================================
+
+class SimpleChartWidget(QWidget):
     """
-    Enhanced multi-chart widget with:
-    - Spot, Call, Put charts
-    - Signal data tab
-    - Drawing tools
-    - Indicator management
+    Simplified multi-chart widget with only:
+    - Spot chart (with volume as bar chart)
+    - Detailed Signal data tab
     """
 
     def __init__(self, parent=None):
@@ -2638,7 +1878,7 @@ class EnhancedMultiChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Tab widget
+        # Tab widget with only Spot and Signal tabs
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget::pane {
@@ -2653,7 +1893,7 @@ class EnhancedMultiChartWidget(QWidget):
                 border-bottom: none;
                 font-size: 10pt;
                 font-weight: bold;
-                min-width: 120px;
+                min-width: 150px;
                 height: 30px;
             }
             QTabBar::tab:selected {
@@ -2667,120 +1907,29 @@ class EnhancedMultiChartWidget(QWidget):
             }
         """)
 
-        # Create charts
-        self.spot_chart = EnhancedChartWidget()
-        self.call_chart = EnhancedChartWidget()
-        self.put_chart = EnhancedChartWidget()
-        self.signal_tab = EnhancedSignalDataTab()
-
+        # Create spot chart only (with volume as bar chart)
+        self.spot_chart = SpotChartWidget()
         self.spot_chart.set_symbol("Spot Index")
-        self.call_chart.set_symbol("ATM Call")
-        self.put_chart.set_symbol("ATM Put")
 
+        # Detailed signal data tab (fully preserved)
+        self.signal_tab = SignalDataTab()
+
+        # Add tabs - only Spot and Signal
         self.tabs.addTab(self.spot_chart, "📈 Spot")
-        self.tabs.addTab(self.call_chart, "☎ ATM Call")
-        self.tabs.addTab(self.put_chart, "🔻 ATM Put")
         self.tabs.addTab(self.signal_tab, "🔬 Signal Data")
 
         layout.addWidget(self.tabs, 1)
 
-        logger.info("EnhancedMultiChartWidget initialized")
-
-    def _get_indicator_params(self, spec: IndicatorSpec) -> Optional[Dict]:
-        """Show dialog to get indicator parameters"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"{spec.name} Parameters")
-        dialog.setStyleSheet("""
-            QDialog {
-                background: #0d1117;
-                color: #e6edf3;
-            }
-            QLabel {
-                color: #e6edf3;
-            }
-            QSpinBox, QDoubleSpinBox {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 3px;
-                padding: 5px;
-            }
-            QPushButton {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover {
-                background: #30363d;
-            }
-            QPushButton#apply {
-                background: #238636;
-            }
-            QPushButton#apply:hover {
-                background: #2ea043;
-            }
-        """)
-
-        layout = QFormLayout(dialog)
-
-        param_inputs = {}
-        for key, value in spec.default_params.items():
-            if isinstance(value, int):
-                spin = QSpinBox()
-                spin.setRange(1, 200)
-                spin.setValue(value)
-                param_inputs[key] = spin
-                layout.addRow(key.replace("_", " ").title() + ":", spin)
-            elif isinstance(value, float):
-                spin = QDoubleSpinBox()
-                spin.setRange(0.1, 100)
-                spin.setSingleStep(0.1)
-                spin.setValue(value)
-                param_inputs[key] = spin
-                layout.addRow(key.replace("_", " ").title() + ":", spin)
-            elif isinstance(value, str):
-                combo = QComboBox()
-                combo.addItems(["close", "high", "low", "open"])
-                combo.setCurrentText(value)
-                param_inputs[key] = combo
-                layout.addRow(key.replace("_", " ").title() + ":", combo)
-
-        # Buttons
-        button_layout = QHBoxLayout()
-        apply_btn = QPushButton("Apply")
-        apply_btn.setObjectName("apply")
-        apply_btn.clicked.connect(dialog.accept)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-
-        button_layout.addStretch()
-        button_layout.addWidget(apply_btn)
-        button_layout.addWidget(cancel_btn)
-        layout.addRow(button_layout)
-
-        if dialog.exec_() == QDialog.Accepted:
-            params = {}
-            for key, input_widget in param_inputs.items():
-                if isinstance(input_widget, (QSpinBox, QDoubleSpinBox)):
-                    params[key] = input_widget.value()
-                elif isinstance(input_widget, QComboBox):
-                    params[key] = input_widget.currentText()
-            return params
-
-        return None
+        logger.info("SimpleChartWidget initialized (Spot + Detailed Signal)")
 
     # Public API
 
     def set_config(self, config, signal_engine=None):
-        """Set configuration for all charts"""
+        """Set configuration for spot chart"""
         self.spot_chart.set_config(config, signal_engine)
-        self.call_chart.set_config(config, signal_engine)
-        self.put_chart.set_config(config, signal_engine)
 
     def update_charts(self, spot_data: dict, call_data: dict = None, put_data: dict = None):
-        """Update all charts and signal tab with new data"""
+        """Update spot chart and signal tab with new data"""
         try:
             if spot_data:
                 self.spot_chart.update_chart(spot_data)
@@ -2788,33 +1937,23 @@ class EnhancedMultiChartWidget(QWidget):
                 if option_signal:
                     self.signal_tab.refresh(option_signal)
 
-            if call_data:
-                self.call_chart.update_chart(call_data)
-
-            if put_data:
-                self.put_chart.update_chart(put_data)
-
         except Exception as e:
-            logger.error(f"[EnhancedMultiChartWidget.update_charts] Failed: {e}")
+            logger.error(f"[SimpleChartWidget.update_charts] Failed: {e}")
 
     def update_chart(self, trend_data: dict):
         """Backward compatibility"""
         self.update_charts(spot_data=trend_data)
 
     def clear_cache(self):
-        """Clear cache for all charts"""
+        """Clear cache for spot chart"""
         self.spot_chart.clear_cache()
-        self.call_chart.clear_cache()
-        self.put_chart.clear_cache()
 
     def cleanup(self):
         """Clean up resources"""
         self.spot_chart.cleanup()
-        self.call_chart.cleanup()
-        self.put_chart.cleanup()
 
 
 # Backward compatibility aliases
-ChartWidget = EnhancedChartWidget
-MultiChartWidget = EnhancedMultiChartWidget
-SignalDataTab = EnhancedSignalDataTab
+ChartWidget = SpotChartWidget
+MultiChartWidget = SimpleChartWidget
+SignalDataTab = SignalDataTab

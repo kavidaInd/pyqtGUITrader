@@ -643,6 +643,10 @@ sessions = SessionCRUD()
 # 8. Orders
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. Orders
+# ══════════════════════════════════════════════════════════════════════════════
+
 class OrderCRUD:
     TABLE = "orders"
 
@@ -752,6 +756,51 @@ class OrderCRUD:
             rows = db.fetchall(f"SELECT * FROM {self.TABLE} WHERE status='OPEN'")
         return [_row_to_dict(r) for r in rows]
 
+    # FEATURE 7: Add get_by_period method for trade history filtering
+    def get_by_period(self, period: str = 'today', db: DatabaseConnector = None) -> List[Dict[str, Any]]:
+        """
+        Get closed orders filtered by period.
+
+        Args:
+            period: 'today', 'this_week', or 'all'
+            db: Optional database connector
+
+        Returns:
+            List of order dictionaries
+        """
+        db = db or get_db()
+
+        try:
+            if period == 'today':
+                # Today's closed orders
+                rows = db.fetchall(
+                    f"""SELECT * FROM {self.TABLE} 
+                        WHERE status = 'CLOSED' 
+                        AND DATE(exited_at) = DATE('now', 'localtime')
+                        ORDER BY exited_at DESC"""
+                )
+            elif period == 'this_week':
+                # Last 7 days
+                rows = db.fetchall(
+                    f"""SELECT * FROM {self.TABLE} 
+                        WHERE status = 'CLOSED' 
+                        AND exited_at >= DATE('now', 'localtime', '-7 days')
+                        ORDER BY exited_at DESC"""
+                )
+            else:  # 'all' or any other value
+                # All closed orders
+                rows = db.fetchall(
+                    f"""SELECT * FROM {self.TABLE} 
+                        WHERE status = 'CLOSED' 
+                        ORDER BY exited_at DESC"""
+                )
+
+            return [_row_to_dict(r) for r in rows]
+
+        except Exception as e:
+            logger.error(f"[OrderCRUD.get_by_period] Failed: {e}", exc_info=True)
+            return []
+
     def update_stop_loss(self, order_id: int, stop_loss: float, db: DatabaseConnector = None) -> bool:
         db = db or get_db()
         try:
@@ -765,7 +814,6 @@ class OrderCRUD:
 
 
 orders = OrderCRUD()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 9. Generic Key-Value Store  (replaces Config / strategy_setting.json)

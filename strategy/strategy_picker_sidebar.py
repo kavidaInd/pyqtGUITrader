@@ -551,16 +551,29 @@ class StrategyPickerSidebar(QDialog):
         """Update active strategy card and confidence bars"""
         try:
             # Get current signal from trading app
+            signal_value = "WAIT"
+            confidence = {}
+            threshold = 0.6
+
             if self.trading_app is not None:
                 state = getattr(self.trading_app, "state", None)
                 if state is not None:
-                    trend = getattr(state, "derivative_trend", None) or {}
-                    sig_data = trend.get("option_signal", {})
-                    self._current_signal = sig_data.get("signal_value", "WAIT") if sig_data else "WAIT"
+                    # FIXED: Safely access option_signal_result
+                    signal_result = getattr(state, "option_signal_result", None)
+                    if signal_result and isinstance(signal_result, dict):
+                        signal_value = signal_result.get("signal_value", "WAIT")
+                        confidence = signal_result.get("confidence", {})
+                        threshold = signal_result.get("threshold", 0.6)
 
-                    # FEATURE 3: Get confidence scores
-                    confidence = sig_data.get("confidence", {}) if sig_data else {}
-                    threshold = sig_data.get("threshold", 0.6)
+                    # Fallback to derivative_trend if option_signal_result not available
+                    elif hasattr(state, "derivative_trend"):
+                        trend = state.derivative_trend
+                        if trend and isinstance(trend, dict):
+                            option_signal = trend.get("option_signal")
+                            if option_signal and isinstance(option_signal, dict):
+                                signal_value = option_signal.get("signal_value", "WAIT")
+                                confidence = option_signal.get("confidence", {})
+                                threshold = option_signal.get("threshold", 0.6)
 
             # Update active strategy
             active = strategy_manager.get_active()
@@ -569,7 +582,7 @@ class StrategyPickerSidebar(QDialog):
                 threshold = engine.get("min_confidence", 0.6)
 
                 if self._card is not None:
-                    self._card.update(active, self._current_signal, threshold)
+                    self._card.update(active, signal_value, threshold)
 
                 # Update confidence bars
                 for signal, bar in self._confidence_bars.items():

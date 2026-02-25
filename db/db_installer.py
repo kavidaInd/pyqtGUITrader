@@ -63,6 +63,7 @@ PRAGMA foreign_keys = ON;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS brokerage_setting (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
+    broker_type TEXT DEFAULT 'fyers',
     client_id    TEXT    NOT NULL DEFAULT '',
     secret_key   TEXT    NOT NULL DEFAULT '',
     redirect_uri TEXT    NOT NULL DEFAULT '',

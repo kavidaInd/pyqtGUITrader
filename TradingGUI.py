@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
 import BaseEnums
 from config import Config
 from gui.BrokerageSetting import BrokerageSetting
-from gui.BrokerageSettingGUI import BrokerageSettingGUI
+from gui.BrokerageSettingGUI import BrokerageSettingDialog
 from gui.DailyTradeSetting import DailyTradeSetting
 from gui.DailyTradeSettingGUI import DailyTradeSettingGUI
 from gui.FyersManualLoginPopup import FyersManualLoginPopup
@@ -1574,7 +1574,8 @@ class TradingGUI(QMainWindow):
     def _open_brokerage(self):
         """Open brokerage settings"""
         try:
-            dlg = BrokerageSettingGUI(self, self.brokerage_setting)
+            print(self.brokerage_setting)
+            dlg = BrokerageSettingDialog(self.brokerage_setting, self)
             dlg.exec_()
         except Exception as e:
             logger.error(f"[TradingGUI._open_brokerage] Failed: {e}", exc_info=True)
