@@ -321,7 +321,7 @@ _SINGLETON_SEEDS: Dict[str, str] = {
 # ─────────────────────────────────────────────────────────────────────────────
 EXPECTED_TABLES: Dict[str, List[str]] = {
     "brokerage_setting": [
-        "id", "client_id", "secret_key", "redirect_uri", "updated_at",
+        "id", "broker_type", "client_id", "secret_key", "redirect_uri", "updated_at",
     ],
     "daily_trade_setting": [
         "id", "exchange", "week", "derivative", "lot_size",
@@ -516,6 +516,9 @@ class DatabaseInstaller:
 
         Every statement uses IF NOT EXISTS — running this against a database
         that already has tables is completely safe; no data is lost.
+        After applying the schema, runs column-level migrations so that
+        existing databases gain any new columns (e.g. broker_type) without
+        being recreated.
         """
         before = self._existing_tables()
         try:
@@ -534,6 +537,30 @@ class DatabaseInstaller:
         result.tables_created = new_tables
         if new_tables:
             logger.info(f"[DB Installer] New tables installed: {new_tables}")
+
+        # ── Column-level migrations for existing databases ────────────────────
+        # Each entry: (table, column, add_sql)
+        # ALTER TABLE is a no-op if the column already exists (caught silently).
+        _COLUMN_MIGRATIONS = [
+            (
+                "brokerage_setting",
+                "broker_type",
+                "ALTER TABLE brokerage_setting ADD COLUMN broker_type TEXT DEFAULT 'fyers'",
+            ),
+        ]
+        for table, column, alter_sql in _COLUMN_MIGRATIONS:
+            existing_cols = self._existing_columns(table)
+            if column not in existing_cols:
+                try:
+                    self._conn.execute(alter_sql)
+                    self._conn.commit()
+                    logger.info(f"[DB Installer] Migration: added '{table}.{column}'")
+                    result.warnings.append(f"Column '{table}.{column}' was missing — added by migration.")
+                except Exception as exc:
+                    # SQLite ALTER TABLE does not support IF NOT EXISTS, so race
+                    # conditions (two processes starting simultaneously) are safe
+                    # to ignore; any other error is logged as a warning.
+                    logger.warning(f"[DB Installer] Column migration '{table}.{column}' skipped: {exc}")
 
     def _seed_singletons(self, result: InstallResult) -> None:
         """

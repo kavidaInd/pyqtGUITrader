@@ -17,9 +17,9 @@ import BaseEnums
 from config import Config
 from gui.BrokerageSetting import BrokerageSetting
 from gui.BrokerageSettingGUI import BrokerageSettingDialog
+from gui.Brokerloginpopup import BrokerLoginPopup
 from gui.DailyTradeSetting import DailyTradeSetting
 from gui.DailyTradeSettingGUI import DailyTradeSettingGUI
-from gui.FyersManualLoginPopup import FyersManualLoginPopup
 from gui.ProfitStoplossSetting import ProfitStoplossSetting
 from gui.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
 from gui.TradingModeSetting import TradingModeSetting
@@ -1370,7 +1370,8 @@ class TradingGUI(QMainWindow):
             brokerage_settings.triggered.connect(self._open_brokerage)
             settings_menu.addAction(brokerage_settings)
 
-            login_act = QAction("🔑 Manual Fyers Login", self)
+            broker_name = getattr(self.brokerage_setting, 'broker_type', 'Broker') or 'Broker'
+            login_act = QAction(f"🔑 Manual {broker_name.title()} Login", self)
             login_act.triggered.connect(self._open_login)
             settings_menu.addAction(login_act)
 
@@ -1574,7 +1575,6 @@ class TradingGUI(QMainWindow):
     def _open_brokerage(self):
         """Open brokerage settings"""
         try:
-            print(self.brokerage_setting)
             dlg = BrokerageSettingDialog(self.brokerage_setting, self)
             dlg.exec_()
         except Exception as e:
@@ -1583,12 +1583,13 @@ class TradingGUI(QMainWindow):
     def _open_login_for_token_expiry(self, reason: str = None):
         """Open login popup for token expiry"""
         try:
-            logger.info("Opening FyersManualLoginPopup due to token expiry")
-            reason_msg = reason or "Your Fyers access token has expired or is invalid."
-            dlg = FyersManualLoginPopup(self, self.brokerage_setting, reason=reason_msg)
+            broker_name = getattr(self.brokerage_setting, 'broker_type', 'Broker') or 'Broker'
+            logger.info(f"Opening BrokerLoginPopup for {broker_name} due to token expiry")
+            reason_msg = reason or f"Your {broker_name.title()} access token has expired or is invalid."
+            dlg = BrokerLoginPopup(self, self.brokerage_setting, reason=reason_msg)
             dlg.login_completed.connect(lambda _: self._reload_broker())
             result = dlg.exec_()
-            if result == FyersManualLoginPopup.Accepted:
+            if result == BrokerLoginPopup.Accepted:
                 logger.info("Re-authentication completed successfully")
             else:
                 logger.warning("Re-authentication dialog was cancelled")
@@ -1602,7 +1603,7 @@ class TradingGUI(QMainWindow):
     def _open_login(self):
         """Open login popup"""
         try:
-            dlg = FyersManualLoginPopup(self, self.brokerage_setting)
+            dlg = BrokerLoginPopup(self, self.brokerage_setting)
             dlg.exec_()
             self._reload_broker()
         except Exception as e:

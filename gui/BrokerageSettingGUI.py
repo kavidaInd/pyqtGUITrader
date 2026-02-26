@@ -11,11 +11,11 @@ import webbrowser
 from typing import Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPixmap, QPalette, QColor
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QWidget, QLabel, QComboBox, QLineEdit,
                              QPushButton, QMessageBox, QGroupBox, QFormLayout,
-                             QFrame, QCheckBox, QScrollArea)
+                             QFrame, QScrollArea)
 
 from broker.BrokerFactory import BrokerType, BrokerFactory
 from gui.BrokerageSetting import BrokerageSetting
@@ -411,7 +411,9 @@ class BrokerageSettingDialog(QDialog):
 
         self.broker_combo = QComboBox()
         for bt, name in BROKER_DISPLAY_OPTIONS:
-            self.broker_combo.addItem(f"{name}  ({bt})", bt)
+            # Store the str value (e.g. "fyers") as item data so findData() works
+            # regardless of whether BrokerType subclasses str or not.
+            self.broker_combo.addItem(f"{name}  ({bt})", str(bt))
 
         # Set current selection
         index = self.broker_combo.findData(self.broker_type)
@@ -714,12 +716,15 @@ class BrokerageSettingDialog(QDialog):
     def _on_broker_changed(self, index: int):
         """Handle broker selection change."""
         if index >= 0:
-            self.broker_type = self.broker_combo.currentData()
+            # currentData() is str because we store str(bt) in addItem(); keep consistent.
+            self.broker_type = str(self.broker_combo.currentData())
             self._update_hints()
 
     def _update_hints(self):
         """Update UI hints based on selected broker."""
-        bt = self.broker_type
+        bt_str = self.broker_type  # str, e.g. "fyers"
+        # BROKER_HINTS is keyed by BrokerType enum, so resolve the enum from the str value
+        bt = next((b for b in BROKER_ORDER if str(b) == bt_str), BrokerType.FYERS)
         hints = BROKER_HINTS.get(bt, BROKER_HINTS[BrokerType.FYERS])
 
         # Update labels
@@ -763,14 +768,15 @@ class BrokerageSettingDialog(QDialog):
 
     def _open_login_url(self):
         """Attempt to construct and open the broker login URL."""
-        bt = self.broker_type
+        bt_str = self.broker_type
+        bt = next((b for b in BROKER_ORDER if str(b) == bt_str), None)
         api_key = self.client_id_entry.text().strip()
         if not api_key:
             QMessageBox.warning(self, "Missing", "Please enter Client ID / API Key first.")
             return
 
         urls = {
-            BrokerType.FYERS:     f"https://api.fyers.in/api/v2/generate-authcode?client_id={api_key}&redirect_uri={self.redirect_entry.text()}&response_type=code&state=algotrade",
+            BrokerType.FYERS:     f"https://api-t1.fyers.in/api/v3/generate-authcode?client_id={api_key}&redirect_uri={self.redirect_entry.text()}&response_type=code&state=algotrade",
             BrokerType.ZERODHA:   f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}",
             BrokerType.UPSTOX:    f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={api_key}&redirect_uri={self.redirect_entry.text()}",
             BrokerType.ICICI:     f"https://api.icicidirect.com/apiuser/login?api_key={api_key}",
@@ -843,7 +849,7 @@ class BrokerageSettingDialog(QDialog):
             return
 
         try:
-            bt = self.broker_type
+            bt = self.broker_type  # always str (e.g. "fyers")
             if not bt:
                 QMessageBox.critical(self, "Error", "Please select a broker.")
                 return
@@ -892,6 +898,9 @@ class BrokerageSettingDialog(QDialog):
                 # Emit signal
                 self.settings_saved.emit(self.broker_setting)
                 self.operation_finished.emit()
+
+                # Reset flag before auto-close so the guard doesn't stick
+                self._save_in_progress = False
 
                 # Auto-close after success
                 QTimer.singleShot(1500, self.accept)
@@ -955,7 +964,9 @@ class BrokerageSettingDialog(QDialog):
                 logger.warning("Closing while save in progress")
 
             self.cleanup()
-            self.settings_saved.emit(self.broker_setting)
+            # Do NOT emit settings_saved here — it was already emitted in _save() on
+            # success, and broker_setting is None after cleanup() so emitting would
+            # push None to any connected slot.
             event.accept()
 
         except Exception as e:

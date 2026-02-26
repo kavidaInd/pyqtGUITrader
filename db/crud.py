@@ -46,7 +46,7 @@ class BrokerageCRUD:
     """CRUD for the singleton brokerage_setting row."""
 
     TABLE = "brokerage_setting"
-    FIELDS = ("client_id", "secret_key", "redirect_uri")
+    FIELDS = ("broker_type", "client_id", "secret_key", "redirect_uri")
 
     def get(self, db: DatabaseConnector = None) -> Dict[str, str]:
         """Return the current brokerage credentials."""
@@ -56,6 +56,7 @@ class BrokerageCRUD:
 
     def update(
             self,
+            broker_type: str = None,
             client_id: str = None,
             secret_key: str = None,
             redirect_uri: str = None,
@@ -65,18 +66,20 @@ class BrokerageCRUD:
         db = db or get_db()
         current = self.get(db)
         data = {
-            "client_id": client_id if client_id is not None else current.get("client_id", ""),
-            "secret_key": secret_key if secret_key is not None else current.get("secret_key", ""),
+            "broker_type":  broker_type  if broker_type  is not None else current.get("broker_type",  "fyers"),
+            "client_id":    client_id    if client_id    is not None else current.get("client_id",    ""),
+            "secret_key":   secret_key   if secret_key   is not None else current.get("secret_key",   ""),
             "redirect_uri": redirect_uri if redirect_uri is not None else current.get("redirect_uri", ""),
             "updated_at": _NOW(),
         }
         try:
             db.execute(
                 f"""UPDATE {self.TABLE}
-                    SET client_id=:client_id, secret_key=:secret_key,
-                        redirect_uri=:redirect_uri, updated_at=:updated_at
+                    SET broker_type=?, client_id=?, secret_key=?,
+                        redirect_uri=?, updated_at=?
                     WHERE id = 1""",
-                tuple(data.values()),
+                (data["broker_type"], data["client_id"], data["secret_key"],
+                 data["redirect_uri"], data["updated_at"]),
             )
             return True
         except Exception as e:
@@ -86,6 +89,7 @@ class BrokerageCRUD:
     def save(self, data: Dict[str, str], db: DatabaseConnector = None) -> bool:
         """Overwrite all credential fields from a dict (mirrors from_dict)."""
         return self.update(
+            broker_type=data.get("broker_type", "fyers"),
             client_id=data.get("client_id", ""),
             secret_key=data.get("secret_key", ""),
             redirect_uri=data.get("redirect_uri", ""),
@@ -93,15 +97,17 @@ class BrokerageCRUD:
         )
 
     def validate(self, db: DatabaseConnector = None) -> Dict[str, bool]:
-        """Return a per-field validity map."""
+        """Return a per-field validity map. broker_type always valid if non-empty."""
         row = self.get(db)
         return {f: bool(row.get(f)) for f in self.FIELDS}
 
     def is_complete(self, db: DatabaseConnector = None) -> bool:
-        return all(self.validate(db).values())
+        v = self.validate(db)
+        # broker_type has a default so only the three credential fields are required
+        return all(v.get(f, False) for f in ("client_id", "secret_key", "redirect_uri"))
 
     def clear(self, db: DatabaseConnector = None) -> bool:
-        return self.save({"client_id": "", "secret_key": "", "redirect_uri": ""}, db)
+        return self.save({"broker_type": "fyers", "client_id": "", "secret_key": "", "redirect_uri": ""}, db)
 
 
 brokerage = BrokerageCRUD()
@@ -549,7 +555,7 @@ class TokenCRUD:
             return False
 
     def clear(self, db: DatabaseConnector = None) -> bool:
-        return self.save_token("", db=db)
+        return self.save_token("", refresh_token="", db=db)
 
 
 tokens = TokenCRUD()
