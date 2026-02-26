@@ -10,7 +10,7 @@ import traceback
 from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel, QTabWidget
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel, QTabWidget, QHBoxLayout
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

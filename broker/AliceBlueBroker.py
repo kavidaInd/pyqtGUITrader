@@ -594,3 +594,189 @@ class AliceBlueBroker(BaseBroker):
                 return None
         logger.critical(f"[AliceBlue.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Alice Blue (pya3) WebSocket.
+
+        Alice Blue's pya3 SDK streams ticks via start_websocket().
+        Instruments are pya3 Instrument objects (retrieved by exchange + symbol).
+        """
+        try:
+            if not self.alice:
+                logger.error("AliceBlueBroker.create_websocket: alice not initialized — login first")
+                return None
+
+            self._ws_on_tick    = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close   = on_close
+            self._ws_on_error   = on_error
+
+            logger.info("AliceBlueBroker: WebSocket callbacks stored")
+            return {"__alice__": self.alice}
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """
+        Start Alice Blue WebSocket via start_websocket().
+
+        pya3 start_websocket() is blocking — WebSocketManager wraps in thread.
+        """
+        try:
+            if ws_obj is None:
+                return
+            alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
+            if alice is None:
+                return
+
+            def _on_tick(tick_data):
+                self._ws_on_tick(tick_data)
+
+            def _on_open():
+                logger.info("AliceBlueBroker: WebSocket opened")
+                self._ws_on_connect()
+
+            def _on_close():
+                logger.info("AliceBlueBroker: WebSocket closed")
+                self._ws_on_close("connection closed")
+
+            def _on_error(ws, error):
+                logger.error(f"AliceBlueBroker WS error: {error}")
+                self._ws_on_error(str(error))
+
+            alice.start_websocket(
+                socket_open_callback=_on_open,
+                socket_close_callback=_on_close,
+                socket_error_callback=_on_error,
+                subscription_callback=_on_tick,
+                run_in_background=True,   # non-blocking
+            )
+            logger.info("AliceBlueBroker: start_websocket() called")
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to Alice Blue live feed.
+
+        pya3 subscribe() takes a list of Instrument objects.
+        Instruments are resolved via alice.get_instrument_by_symbol().
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+            alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
+            if alice is None:
+                return
+
+            instruments = []
+            for sym in symbols:
+                inst = self._resolve_alice_instrument(alice, sym)
+                if inst:
+                    instruments.append(inst)
+
+            if not instruments:
+                logger.warning("AliceBlueBroker.ws_subscribe: no valid instruments")
+                return
+
+            alice.subscribe(instruments)
+            logger.info(f"AliceBlueBroker: subscribed {len(instruments)} instruments")
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from Alice Blue live feed."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
+            if alice is None:
+                return
+            instruments = [self._resolve_alice_instrument(alice, s) for s in symbols]
+            instruments = [i for i in instruments if i]
+            if instruments:
+                alice.unsubscribe(instruments)
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close Alice Blue WebSocket."""
+        try:
+            if ws_obj is None:
+                return
+            alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
+            if alice and hasattr(alice, "close_websocket"):
+                alice.close_websocket()
+            self._ws_on_close("disconnected")
+            logger.info("AliceBlueBroker: WebSocket closed")
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize an Alice Blue pya3 tick.
+
+        pya3 tick dict fields: symbol, ltp, ltq, ltt, atp,
+        volume, best_bid_price, best_ask_price,
+        open, high, low, prev_close, oi.
+        """
+        try:
+            if not isinstance(raw_tick, dict):
+                return None
+
+            ltp = raw_tick.get("ltp") or raw_tick.get("LTP")
+            if ltp is None:
+                return None
+
+            raw_symbol = raw_tick.get("symbol", "")
+            # pya3 returns instrument object or string symbol
+            if hasattr(raw_symbol, "tradingsymbol"):
+                symbol_str = f"NSE:{raw_symbol.tradingsymbol}"
+            else:
+                symbol_str = f"NSE:{raw_symbol}" if ":" not in str(raw_symbol) else str(raw_symbol)
+
+            return {
+                "symbol":    symbol_str,
+                "ltp":       float(ltp),
+                "timestamp": str(raw_tick.get("ltt", "")),
+                "bid":       raw_tick.get("best_bid_price"),
+                "ask":       raw_tick.get("best_ask_price"),
+                "volume":    raw_tick.get("volume"),
+                "oi":        raw_tick.get("oi"),
+                "open":      raw_tick.get("open"),
+                "high":      raw_tick.get("high"),
+                "low":       raw_tick.get("low"),
+                "close":     raw_tick.get("prev_close"),
+            }
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_alice_instrument(self, alice, symbol: str):
+        """
+        Resolve generic NSE:SYMBOL → pya3 Instrument object.
+        Caches results for the session.
+        """
+        try:
+            cache = getattr(self, "_alice_inst_cache", {})
+            if symbol in cache:
+                return cache[symbol]
+
+            upper  = symbol.upper()
+            bare   = symbol.split(":")[-1]
+            exchange = "NFO" if "NFO:" in upper else "NSE"
+
+            inst = alice.get_instrument_by_symbol(exchange, bare)
+            if inst is None and exchange == "NSE":
+                inst = alice.get_instrument_by_symbol("NSE", f"{bare}-EQ")
+
+            cache[symbol] = inst
+            self._alice_inst_cache = cache
+            return inst
+        except Exception as e:
+            logger.warning(f"AliceBlueBroker._resolve_alice_instrument({symbol}): {e}")
+            return None

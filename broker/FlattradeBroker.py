@@ -682,3 +682,181 @@ class FlattradeBroker(BaseBroker):
                 return None
         logger.critical(f"[Flattrade.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Flattrade (NorenApi) WebSocket.
+
+        Flattrade uses the same NorenRestApiPy WebSocket as Shoonya.
+        Symbols use "NSE|TOKEN" format same as Shoonya.
+        """
+        try:
+            if not self.api:
+                logger.error("FlattradeBroker.create_websocket: api not initialized — set_session first")
+                return None
+
+            self._ws_on_tick    = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close   = on_close
+            self._ws_on_error   = on_error
+
+            logger.info("FlattradeBroker: WebSocket callbacks stored")
+            return {"__ft_api__": self.api, "__user_id__": self.user_id}
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """Start Flattrade NorenApi WebSocket."""
+        try:
+            if ws_obj is None:
+                return
+            api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
+            if api is None:
+                return
+
+            def _on_open():
+                logger.info("FlattradeBroker: WebSocket opened")
+                self._ws_on_connect()
+
+            def _on_message(msg):
+                self._ws_on_tick(msg)
+
+            def _on_error(msg):
+                logger.error(f"FlattradeBroker WS error: {msg}")
+                self._ws_on_error(str(msg))
+
+            def _on_close():
+                logger.info("FlattradeBroker: WebSocket closed")
+                self._ws_on_close("connection closed")
+
+            api.start_websocket(
+                order_update_callback=_on_message,
+                subscribe_callback=_on_message,
+                socket_open_callback=_on_open,
+                socket_close_callback=_on_close,
+                socket_error_callback=_on_error,
+            )
+            logger.info("FlattradeBroker: WebSocket started")
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Subscribe to Flattrade live feed (same token format as Shoonya)."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
+            if api is None:
+                return
+
+            ft_syms = []
+            for sym in symbols:
+                ft_sym = self._resolve_ft_symbol(sym)
+                if ft_sym:
+                    ft_syms.append(ft_sym)
+
+            if ft_syms:
+                api.subscribe(ft_syms)
+                logger.info(f"FlattradeBroker: subscribed {len(ft_syms)} symbols")
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from Flattrade live feed."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
+            if api is None:
+                return
+            ft_syms = [self._resolve_ft_symbol(s) for s in symbols]
+            ft_syms = [s for s in ft_syms if s]
+            if ft_syms:
+                api.unsubscribe(ft_syms)
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close Flattrade WebSocket."""
+        try:
+            if ws_obj is None:
+                return
+            api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
+            if api and hasattr(api, "close_websocket"):
+                api.close_websocket()
+            self._ws_on_close("disconnected")
+            logger.info("FlattradeBroker: WebSocket disconnected")
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize a Flattrade NorenApi tick (identical structure to Shoonya).
+
+        Fields: t (type), e (exchange), tk (token), lp (last price),
+        ft (feed time), v (volume), oi (OI), bp1/sp1 (bid/ask), o/h/lo/c.
+        """
+        try:
+            if not isinstance(raw_tick, dict):
+                return None
+            if raw_tick.get("t") not in ("sf", "tf", "if"):
+                return None
+
+            lp = raw_tick.get("lp")
+            if lp is None:
+                return None
+
+            exch   = raw_tick.get("e", "NSE")
+            token  = raw_tick.get("tk", "")
+            symbol = f"{exch}:{token}"
+
+            return {
+                "symbol":    symbol,
+                "ltp":       float(lp),
+                "timestamp": str(raw_tick.get("ft", "")),
+                "bid":       float(raw_tick["bp1"]) if raw_tick.get("bp1") else None,
+                "ask":       float(raw_tick["sp1"]) if raw_tick.get("sp1") else None,
+                "volume":    raw_tick.get("v"),
+                "oi":        raw_tick.get("oi"),
+                "open":      float(raw_tick["o"])  if raw_tick.get("o")  else None,
+                "high":      float(raw_tick["h"])  if raw_tick.get("h")  else None,
+                "low":       float(raw_tick["lo"]) if raw_tick.get("lo") else None,
+                "close":     float(raw_tick["c"])  if raw_tick.get("c")  else None,
+            }
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_ft_symbol(self, symbol: str) -> Optional[str]:
+        """
+        Map generic NSE:SYMBOL → Flattrade exchange|token string.
+
+        Uses NorenApi searchscrip() to look up the instrument token.
+        Results are cached for the session.
+        """
+        try:
+            cache = getattr(self, "_ft_sym_cache", {})
+            if symbol in cache:
+                return cache[symbol]
+
+            exchange = "NFO" if "NFO:" in symbol.upper() else "NSE"
+            bare     = symbol.split(":")[-1]
+
+            if not self.api:
+                return None
+
+            ret = self.api.searchscrip(exchange=exchange, searchtext=bare)
+            if ret and ret.get("values"):
+                token  = ret["values"][0].get("token")
+                if token:
+                    result = f"{exchange}|{token}"
+                    cache[symbol] = result
+                    self._ft_sym_cache = cache
+                    return result
+            return None
+        except Exception as e:
+            logger.warning(f"FlattradeBroker._resolve_ft_symbol({symbol}): {e}")
+            return None

@@ -1,3 +1,64 @@
+"""
+Application Status Bar Module
+==============================
+Enhanced status bar component for the PyQt5 trading dashboard.
+
+This module provides a comprehensive status bar that displays real-time information
+about the application state, ongoing operations, and performance metrics. It features
+animated indicators, tooltips, and visual feedback for various system states.
+
+Architecture:
+    The status bar is composed of several specialized components:
+
+    1. **AnimatedLabel**: Custom QLabel with blinking/pulsing animations for active states
+    2. **StatusToolTip**: Custom tooltip showing detailed operation timing
+    3. **AppStatusBar**: Main status bar container with three sections:
+        - Left section: Status indicator, text, and timestamp
+        - Middle section: Operation indicators (fetching, processing, orders, positions)
+        - Right section: Performance metrics (CPU, uptime, message rate)
+
+Key Features:
+    - **Visual Status Indicators**: Color-coded status icon (green=active, red=stopped)
+    - **Operation Tracking**: Icons for history fetching, processing, orders, positions
+    - **Connection Status**: Visual indicator for broker connectivity
+    - **Animations**: Blinking and pulsing effects for important states
+    - **Tooltips**: Hover tooltips with operation duration information
+    - **Progress Bar**: Indeterminate/determinate progress for long operations
+    - **Performance Metrics**: Uptime, message rate, CPU usage display
+    - **Safety Timeout**: Automatic reset of stuck animations/indicators
+
+Design Principles:
+    - Rule 2: Safe defaults for all attributes
+    - Rule 4: Structured logging throughout
+    - Rule 6: Input validation on all public methods
+    - Rule 8: Proper cleanup on shutdown
+
+Dependencies:
+    - PyQt5.QtCore: QPropertyAnimation, QEasingCurve, QTimer, Qt
+    - PyQt5.QtWidgets: QHBoxLayout, QLabel, QFrame, QProgressBar, QWidget
+
+Usage:
+    status_bar = AppStatusBar(parent_window)
+
+    # Update status from application state
+    status_bar.update_status({
+        'status': 'Running',
+        'fetching_history': True,
+        'processing': False,
+        'order_pending': True,
+        'has_position': True,
+        'connection_status': 'Connected'
+    }, mode='algo', app_running=True)
+
+    # Show progress for long operations
+    status_bar.show_progress(45, "Loading data...")
+
+    # Update metrics
+    status_bar.update_metrics({'cpu': 12.5, 'message_count': 1250})
+
+Version: 1.0.0
+"""
+
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -10,7 +71,25 @@ logger = logging.getLogger(__name__)
 
 
 class AnimatedLabel(QLabel):
-    """Label with blinking animation for active states"""
+    """
+    Label with blinking and pulsing animations for active states.
+
+    This class extends QLabel to provide animated visual feedback for
+    various application states. It supports multiple animation types:
+        - BLINK: Opacity fades in and out
+        - PULSE: Text scales up and down
+        - FADE: Slow opacity transition (custom variant)
+
+    The animations are implemented using QPropertyAnimation on custom
+    properties (opacity and scale) to create smooth transitions.
+
+    Attributes:
+        BLINK: Constant for blink animation type
+        PULSE: Constant for pulse animation type
+        FADE: Constant for fade animation type
+        _opacity: Current opacity value (0.0-1.0)
+        _scale: Current scale factor (0.5-2.0)
+    """
 
     # Add more animation types
     BLINK = "blink"
@@ -18,6 +97,13 @@ class AnimatedLabel(QLabel):
     FADE = "fade"
 
     def __init__(self, text="", parent=None):
+        """
+        Initialize animated label with default properties.
+
+        Args:
+            text: Initial label text
+            parent: Parent widget
+        """
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
@@ -25,19 +111,21 @@ class AnimatedLabel(QLabel):
             super().__init__(text, parent)
             self._opacity = 1.0
             self._scale = 1.0
+
+            # Blink animation (opacity)
             self._animation = QPropertyAnimation(self, b"opacity")
-            self._animation.setDuration(800)
+            self._animation.setDuration(800)  # 800ms per cycle
             self._animation.setStartValue(1.0)
             self._animation.setEndValue(0.3)
-            self._animation.setLoopCount(-1)
+            self._animation.setLoopCount(-1)  # Infinite loop
             self._animation.setEasingCurve(QEasingCurve.InOutQuad)
 
-            # Pulse animation (scale effect)
+            # Pulse animation (scale)
             self._pulse_animation = QPropertyAnimation(self, b"scale")
-            self._pulse_animation.setDuration(1000)
+            self._pulse_animation.setDuration(1000)  # 1000ms per cycle
             self._pulse_animation.setStartValue(1.0)
             self._pulse_animation.setEndValue(1.2)
-            self._pulse_animation.setLoopCount(-1)
+            self._pulse_animation.setLoopCount(-1)  # Infinite loop
             self._pulse_animation.setEasingCurve(QEasingCurve.InOutQuad)
 
             logger.debug("AnimatedLabel initialized")
@@ -51,7 +139,12 @@ class AnimatedLabel(QLabel):
             self._pulse_animation = None
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
+        """
+        Rule 2: Initialize all attributes with safe defaults.
+
+        Ensures that all instance variables exist even if initialization fails,
+        preventing attribute errors during error handling or cleanup.
+        """
         self._opacity = 1.0
         self._scale = 1.0
         self._animation = None
@@ -61,7 +154,12 @@ class AnimatedLabel(QLabel):
         self._animation_type = self.BLINK
 
     def get_opacity(self) -> float:
-        """Get current opacity value"""
+        """
+        Get current opacity value.
+
+        Returns:
+            float: Current opacity between 0.0 and 1.0
+        """
         try:
             return self._opacity
         except Exception as e:
@@ -69,7 +167,15 @@ class AnimatedLabel(QLabel):
             return 1.0
 
     def set_opacity(self, value: float) -> None:
-        """Set opacity value and update stylesheet"""
+        """
+        Set opacity value and update stylesheet.
+
+        Args:
+            value: New opacity value (clamped to 0.0-1.0)
+
+        Updates the label's stylesheet with RGBA color based on current
+        opacity and stored base color.
+        """
         try:
             if not isinstance(value, (int, float)):
                 logger.warning(f"set_opacity called with non-numeric value: {value}")
@@ -99,11 +205,21 @@ class AnimatedLabel(QLabel):
     opacity = pyqtProperty(float, get_opacity, set_opacity)
 
     def get_scale(self) -> float:
-        """Get current scale value"""
+        """
+        Get current scale value.
+
+        Returns:
+            float: Current scale factor between 0.5 and 2.0
+        """
         return self._scale
 
     def set_scale(self, value: float) -> None:
-        """Set scale value"""
+        """
+        Set scale value and refresh display.
+
+        Args:
+            value: New scale factor (clamped to 0.5-2.0)
+        """
         try:
             self._scale = max(0.5, min(2.0, float(value)))
             self.set_opacity(self._opacity)  # Refresh stylesheet
@@ -113,7 +229,17 @@ class AnimatedLabel(QLabel):
     scale = pyqtProperty(float, get_scale, set_scale)
 
     def start_animation(self, animation_type: str = BLINK, color: str = "#3fb950") -> None:
-        """Start animation of specified type"""
+        """
+        Start animation of specified type.
+
+        Args:
+            animation_type: One of BLINK, PULSE, or FADE
+            color: Base color for the animation (hex format)
+
+        Note:
+            Multiple animation types cannot run simultaneously.
+            Starting a new animation stops any currently running one.
+        """
         try:
             self._base_color = color
             self._animation_type = animation_type
@@ -129,7 +255,7 @@ class AnimatedLabel(QLabel):
                     self._pulsing = True
                     logger.debug("Pulse animation started")
             elif animation_type == self.FADE:
-                # Custom fade effect
+                # Custom fade effect - slower, deeper fade
                 self._animation.setStartValue(1.0)
                 self._animation.setEndValue(0.1)
                 self._animation.setDuration(1500)
@@ -140,7 +266,11 @@ class AnimatedLabel(QLabel):
             logger.error(f"[AnimatedLabel.start_animation] Failed: {e}", exc_info=True)
 
     def stop_animation(self) -> None:
-        """Stop all animations and reset"""
+        """
+        Stop all animations and reset to normal state.
+
+        Stops both blink and pulse animations and resets opacity/scale to 1.0.
+        """
         try:
             if self._animation:
                 self._animation.stop()
@@ -158,9 +288,27 @@ class AnimatedLabel(QLabel):
 
 
 class StatusToolTip(QLabel):
-    """Custom tooltip for showing detailed status"""
+    """
+    Custom tooltip for showing detailed status information.
+
+    This class provides a styled tooltip that can be shown at specific
+    positions, used for displaying detailed operation information when
+    hovering over status indicators.
+
+    Features:
+        - Custom dark theme styling matching the application
+        - Auto-sizing based on content
+        - Position control for precise placement
+        - Automatic hiding when mouse leaves
+    """
 
     def __init__(self, parent=None):
+        """
+        Initialize custom tooltip.
+
+        Args:
+            parent: Parent widget
+        """
         super().__init__(parent)
         self.setStyleSheet("""
             QLabel {
@@ -177,21 +325,75 @@ class StatusToolTip(QLabel):
         self.hide()
 
     def show_at_position(self, text: str, pos):
-        """Show tooltip at specified position"""
+        """
+        Show tooltip at specified screen position.
+
+        Args:
+            text: Tooltip text to display
+            pos: QPoint screen position where tooltip should appear
+                 (will be adjusted to avoid going off-screen)
+        """
         self.setText(text)
         self.adjustSize()
         self.move(pos.x() + 20, pos.y() - self.height() - 10)
         self.show()
 
     def hide_event(self, event):
-        """Handle hide event"""
+        """
+        Handle hide event.
+
+        Args:
+            event: QHideEvent (ignored)
+        """
         self.hide()
 
 
 class AppStatusBar(QFrame):
-    """Enhanced status bar showing application state, operations, and performance metrics"""
+    """
+    Enhanced status bar showing application state, operations, and performance metrics.
+
+    This is the main status bar component that provides a comprehensive view of
+    the application's current state. It's divided into three logical sections:
+
+    1. **Status Section** (left):
+        - Color-coded status icon (red/green/yellow)
+        - Status text (e.g., "Running", "Stopped", "Error")
+        - Current timestamp
+
+    2. **Operations Section** (middle):
+        - Icons for ongoing operations (history fetch, processing, orders)
+        - Position indicator when trade is active
+        - Connection status indicator
+        - Progress bar for long operations
+        - Animated blink indicator for active states
+
+    3. **Metrics Section** (right):
+        - Performance metrics (CPU usage)
+        - Uptime counter
+        - Message rate (ticks/second)
+
+    Features:
+        - Hover tooltips with operation duration
+        - Automatic operation timing tracking
+        - Safety timeout to reset stuck indicators
+        - Smooth animations for state changes
+        - Comprehensive error handling
+
+    Attributes:
+        _current_status: Current status text
+        _current_mode: Trading mode ("algo" or "manual")
+        _app_running: Whether application is running
+        _operation_start_times: Dict tracking when each operation started
+        _metrics: Dict of current performance metrics
+    """
 
     def __init__(self, parent=None):
+        """
+        Initialize the enhanced status bar.
+
+        Args:
+            parent: Parent widget
+        """
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
@@ -277,7 +479,7 @@ class AppStatusBar(QFrame):
             self._update_timer.timeout.connect(self._update_dynamic_info)
             self._update_timer.start(1000)  # Update every second
 
-            # Safety timer
+            # Safety timer to prevent stuck animations
             self._safety_timer = QTimer()
             self._safety_timer.setSingleShot(True)
             self._safety_timer.timeout.connect(self._safety_update)
@@ -291,7 +493,12 @@ class AppStatusBar(QFrame):
             self._safe_defaults_init()
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
+        """
+        Rule 2: Initialize all attributes with safe defaults.
+
+        Ensures that all instance variables exist even if initialization fails,
+        preventing attribute errors during error handling or cleanup.
+        """
         self.status_icon = None
         self.status_label = None
         self.mode_label = None
@@ -319,7 +526,12 @@ class AppStatusBar(QFrame):
         self._metrics = {}
 
     def _create_status_section(self, layout):
-        """Create left status section"""
+        """
+        Create left status section with status icon, text, and timestamp.
+
+        Args:
+            layout: Parent layout to add the section to
+        """
         # Status container
         status_container = QWidget()
         status_layout = QHBoxLayout(status_container)
@@ -346,7 +558,12 @@ class AppStatusBar(QFrame):
         layout.addWidget(self._create_separator())
 
     def _create_operations_section(self, layout):
-        """Create middle operations section"""
+        """
+        Create middle operations section with mode indicator and operation icons.
+
+        Args:
+            layout: Parent layout to add the section to
+        """
         # Operations container
         ops_container = QWidget()
         ops_layout = QHBoxLayout(ops_container)
@@ -391,7 +608,12 @@ class AppStatusBar(QFrame):
         layout.addWidget(self._create_separator())
 
     def _create_metrics_section(self, layout):
-        """Create right performance metrics section"""
+        """
+        Create right performance metrics section.
+
+        Args:
+            layout: Parent layout to add the section to
+        """
         self.metrics_container = QWidget()
         metrics_layout = QHBoxLayout(self.metrics_container)
         metrics_layout.setContentsMargins(0, 0, 0, 0)
@@ -415,14 +637,29 @@ class AppStatusBar(QFrame):
         layout.addWidget(self.metrics_container, 1)  # Stretch to fill
 
     def _create_separator(self) -> QFrame:
-        """Create a vertical separator"""
+        """
+        Create a vertical separator line.
+
+        Returns:
+            QFrame: Styled vertical separator
+        """
         sep = QFrame()
         sep.setObjectName("separator")
         sep.setFrameShape(QFrame.VLine)
         return sep
 
     def _create_op_indicator(self, icon: str, tooltip: str, color: str) -> QLabel:
-        """Create an operation indicator label with hover tooltip"""
+        """
+        Create an operation indicator label with hover tooltip.
+
+        Args:
+            icon: Emoji or text for the indicator
+            tooltip: Tooltip text to show on hover
+            color: Default color for the indicator (when active)
+
+        Returns:
+            QLabel: Configured indicator label
+        """
         try:
             if not isinstance(icon, str):
                 icon = "?"
@@ -456,7 +693,13 @@ class AppStatusBar(QFrame):
             return label
 
     def _show_op_tooltip(self, label: QLabel, base_tooltip: str):
-        """Show detailed tooltip for operation"""
+        """
+        Show detailed tooltip for operation with timing information.
+
+        Args:
+            label: The indicator label being hovered
+            base_tooltip: Base tooltip text to display
+        """
         try:
             # Create detailed tooltip with timing info
             tooltip_text = base_tooltip
@@ -478,18 +721,38 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar._show_op_tooltip] Failed: {e}")
 
     def _hide_op_tooltip(self):
-        """Hide operation tooltip"""
+        """Hide operation tooltip."""
         if hasattr(self, '_tooltip') and self._tooltip:
             self._tooltip.hide()
 
     def update_status(self, status_info: Dict[str, Any], mode: str, app_running: bool) -> None:
         """
-        Update status bar based on application state
+        Update status bar based on application state.
+
+        This is the main update method that refreshes all status bar components
+        based on the current application state.
 
         Args:
-            status_info: Dict with status information
-            mode: 'algo' or 'manual'
-            app_running: Whether app is running
+            status_info: Dictionary with status information. Expected keys:
+                - status: Status text (e.g., "Running", "Error")
+                - fetching_history: Boolean indicating history fetch in progress
+                - processing: Boolean indicating tick processing active
+                - order_pending: Boolean indicating pending orders
+                - has_position: Boolean indicating active position
+                - connection_status: String "Connected" or "Disconnected"
+                - progress: Optional progress percentage (0-100)
+            mode: Trading mode ('algo' or 'manual')
+            app_running: Whether application is currently running
+
+        Example:
+            status_bar.update_status({
+                'status': 'Processing',
+                'fetching_history': True,
+                'order_pending': False,
+                'has_position': True,
+                'connection_status': 'Connected',
+                'progress': 45
+            }, mode='algo', app_running=True)
         """
         try:
             # Input validation
@@ -525,7 +788,7 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar.update_status] Failed: {e}", exc_info=True)
 
     def _update_mode_display(self):
-        """Update mode indicator display"""
+        """Update mode indicator display based on current mode."""
         if self.mode_label is None:
             return
 
@@ -540,7 +803,12 @@ class AppStatusBar(QFrame):
             logger.error(f"Failed to update mode label: {e}")
 
     def _update_status_display(self, status_info: Dict[str, Any]):
-        """Update status text and icon"""
+        """
+        Update status text and icon based on current state.
+
+        Args:
+            status_info: Status information dictionary
+        """
         if self.status_icon is None or self.status_label is None:
             return
 
@@ -556,7 +824,7 @@ class AppStatusBar(QFrame):
             if self.timestamp_label:
                 self.timestamp_label.setText(datetime.now().strftime("%H:%M:%S"))
 
-            # Update status icon color
+            # Update status icon color based on state
             if self._app_running:
                 if status_info.get('fetching_history', False):
                     self.status_icon.setStyleSheet("color: #f0883e; font-size: 14px;")
@@ -573,7 +841,12 @@ class AppStatusBar(QFrame):
             logger.error(f"Failed to update status display: {e}")
 
     def _update_operation_indicators(self, status_info: Dict[str, Any]):
-        """Update operation indicators and track durations"""
+        """
+        Update operation indicators and track operation durations.
+
+        Args:
+            status_info: Status information dictionary with boolean flags
+        """
         operations = [
             ('fetching_history', self.op_fetch, "#f0883e"),
             ('processing', self.op_process, "#58a6ff"),
@@ -584,7 +857,7 @@ class AppStatusBar(QFrame):
         for key, label, color in operations:
             active = bool(status_info.get(key, False))
 
-            # Track operation duration
+            # Track operation duration for tooltips
             if active:
                 if key not in self._operation_start_times:
                     self._operation_start_times[key] = datetime.now()
@@ -596,7 +869,12 @@ class AppStatusBar(QFrame):
             self._update_op_indicator(label, active, color)
 
     def _update_connection_status(self, status_info: Dict[str, Any]):
-        """Update connection status indicator"""
+        """
+        Update connection status indicator.
+
+        Args:
+            status_info: Status information dictionary with connection_status key
+        """
         if self.op_connection is None:
             return
 
@@ -616,7 +894,12 @@ class AppStatusBar(QFrame):
             logger.error(f"Failed to update connection status: {e}")
 
     def _update_progress_bar(self, status_info: Dict[str, Any]):
-        """Update progress bar display"""
+        """
+        Update progress bar display.
+
+        Args:
+            status_info: Status information dictionary with progress key
+        """
         if self.progress_bar is None:
             return
 
@@ -636,7 +919,12 @@ class AppStatusBar(QFrame):
             logger.error(f"Failed to update progress bar: {e}")
 
     def _update_blink_animation(self, status_info: Dict[str, Any]):
-        """Update blink animation for important states"""
+        """
+        Update blink animation for important states.
+
+        Args:
+            status_info: Status information dictionary with state flags
+        """
         if self.blink_label is None:
             return
 
@@ -665,7 +953,14 @@ class AppStatusBar(QFrame):
             logger.error(f"Failed to update blink animation: {e}")
 
     def _update_dynamic_info(self):
-        """Update dynamic information (uptime, rates, etc.)"""
+        """
+        Update dynamic information (uptime, rates, etc.) every second.
+
+        This method is called by the update timer to refresh:
+            - Application uptime
+            - Performance metrics
+            - Message rates
+        """
         try:
             if not self._app_running:
                 return
@@ -694,7 +989,14 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar._update_dynamic_info] Failed: {e}")
 
     def _update_op_indicator(self, label: Optional[QLabel], active: bool, color: str) -> None:
-        """Update operation indicator color based on active state"""
+        """
+        Update operation indicator color based on active state.
+
+        Args:
+            label: The indicator label to update
+            active: Whether the operation is active
+            color: Color to use when active
+        """
         if label is None:
             return
 
@@ -729,12 +1031,18 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar._update_op_indicator] Failed: {e}", exc_info=True)
 
     def _schedule_safety_update(self):
-        """Schedule a safety update to ensure UI consistency"""
+        """Schedule a safety update to ensure UI consistency after long operations."""
         if self._safety_timer and not self._safety_timer.isActive():
             self._safety_timer.start(10000)  # 10 second safety timeout
 
     def _safety_update(self):
-        """Safety update to ensure UI doesn't get stuck in wrong state"""
+        """
+        Safety update to ensure UI doesn't get stuck in wrong state.
+
+        This method checks for operations that have been active too long
+        and resets them, preventing the UI from getting stuck in an
+        inconsistent state.
+        """
         try:
             logger.debug("Running safety update")
 
@@ -759,7 +1067,15 @@ class AppStatusBar(QFrame):
             logger.error(f"Safety update failed: {e}")
 
     def update_metrics(self, metrics: Dict[str, Any]):
-        """Update performance metrics from outside"""
+        """
+        Update performance metrics from external sources.
+
+        Args:
+            metrics: Dictionary with performance metrics:
+                - cpu: CPU usage percentage
+                - message_count: Total messages received
+                - Additional metrics as needed
+        """
         try:
             self._metrics.update(metrics)
 
@@ -777,7 +1093,14 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar.update_metrics] Failed: {e}")
 
     def show_progress(self, value: int, text: str = "", determinate: bool = True) -> None:
-        """Show progress bar with value"""
+        """
+        Show progress bar with specified value.
+
+        Args:
+            value: Progress percentage (0-100) for determinate mode
+            text: Optional text to display on progress bar
+            determinate: True for determinate progress, False for indeterminate
+        """
         if self.progress_bar is None:
             return
 
@@ -799,7 +1122,7 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar.show_progress] Failed: {e}")
 
     def hide_progress(self) -> None:
-        """Hide progress bar"""
+        """Hide progress bar."""
         if self.progress_bar:
             try:
                 self.progress_bar.setVisible(False)
@@ -808,7 +1131,11 @@ class AppStatusBar(QFrame):
                 logger.error(f"[AppStatusBar.hide_progress] Failed: {e}")
 
     def reset(self):
-        """Reset status bar to initial state"""
+        """
+        Reset status bar to initial state.
+
+        Clears all operation timers and resets all indicators to default state.
+        """
         try:
             self._operation_start_times.clear()
             self._current_status = "Ready"
@@ -823,7 +1150,12 @@ class AppStatusBar(QFrame):
 
     # Rule 8: Cleanup method
     def cleanup(self):
-        """Clean up resources before shutdown"""
+        """
+        Clean up resources before application shutdown.
+
+        Rule 8: Proper resource cleanup to prevent memory leaks.
+        Stops animations, timers, and clears references.
+        """
         try:
             logger.info("[AppStatusBar] Starting cleanup")
 

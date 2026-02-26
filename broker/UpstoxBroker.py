@@ -652,3 +652,208 @@ class UpstoxBroker(BaseBroker):
                 return None
         logger.critical(f"[Upstox.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Upstox MarketDataStreamer.
+
+        Upstox v2 streams market data via protobuf over WebSocket.
+        The SDK's MarketDataStreamer handles auth automatically using
+        the access_token set in the configuration.
+        """
+        try:
+            import upstox_client  # type: ignore
+            from upstox_client import MarketDataStreamer  # type: ignore
+
+            access_token = getattr(self.state, "token", None) if self.state else None
+            if not access_token:
+                logger.error("UpstoxBroker.create_websocket: no access_token — call login first")
+                return None
+
+            configuration = upstox_client.Configuration()
+            configuration.access_token = access_token
+
+            streamer = MarketDataStreamer(
+                upstox_client.ApiClient(configuration),
+                [],          # instruments list — populated in ws_subscribe
+                "full",      # mode: "ltpc" | "full" | "option_greeks"
+            )
+
+            streamer.on("message", on_tick)
+            streamer.on("open",    lambda: on_connect())
+            streamer.on("close",   lambda: on_close("connection closed"))
+            streamer.on("error",   lambda e: on_error(str(e)))
+
+            logger.info("UpstoxBroker: MarketDataStreamer object created")
+            return streamer
+        except ImportError:
+            logger.error("UpstoxBroker: upstox_client not installed — pip install upstox-python-sdk")
+            return None
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """Start Upstox MarketDataStreamer (non-blocking)."""
+        try:
+            if ws_obj is None:
+                return
+            ws_obj.connect()
+            logger.info("UpstoxBroker: MarketDataStreamer connect() called")
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to Upstox live feed.
+
+        Upstox uses instrument_key format: "NSE_EQ|ISIN" or "NSE_INDEX|Nifty 50".
+        Generic NSE:SYMBOL is mapped via _resolve_upstox_key().
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+
+            keys = []
+            for sym in symbols:
+                key = self._resolve_upstox_key(sym)
+                if key:
+                    keys.append(key)
+
+            if not keys:
+                logger.warning("UpstoxBroker.ws_subscribe: no valid instrument keys")
+                return
+
+            ws_obj.subscribe(keys, "full")
+            logger.info(f"UpstoxBroker: subscribed {len(keys)} instrument keys")
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from Upstox live feed."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            keys = [self._resolve_upstox_key(s) for s in symbols]
+            keys = [k for k in keys if k]
+            if keys:
+                ws_obj.unsubscribe(keys)
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Stop Upstox MarketDataStreamer."""
+        try:
+            if ws_obj is None:
+                return
+            if hasattr(ws_obj, "disconnect"):
+                ws_obj.disconnect()
+            logger.info("UpstoxBroker: MarketDataStreamer disconnected")
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize an Upstox MarketDataStreamer tick.
+
+        Upstox sends protobuf-decoded dicts with fields depending on mode:
+        Full mode: instrument_key, ltp, open, high, low, close, volume,
+                   oi, bid_price, ask_price, timestamp.
+        """
+        try:
+            if not isinstance(raw_tick, dict):
+                return None
+
+            feeds = raw_tick.get("feeds", {})
+            if not feeds:
+                return None
+
+            results = []
+            for instrument_key, feed_data in feeds.items():
+                full_feed = feed_data.get("ff", {}).get("marketFF", {}) or \
+                            feed_data.get("ff", {}).get("indexFF", {})
+                if not full_feed:
+                    continue
+                ltpc  = full_feed.get("ltpc", {})
+                ltp   = ltpc.get("ltp")
+                if ltp is None:
+                    continue
+
+                ohlc_data = full_feed.get("dayOhlc", {})
+                depth     = full_feed.get("marketLevel", {})
+                bid_data  = depth.get("bidAskQuote", [{}])
+                ask_data  = depth.get("bidAskQuote", [{}])
+
+                # Convert instrument_key back to app format
+                # "NSE_EQ|INE002A01018" → "NSE:INE002A01018"
+                sym_parts = instrument_key.split("|")
+                exch      = sym_parts[0].split("_")[0] if sym_parts else "NSE"
+                bare_sym  = sym_parts[1] if len(sym_parts) > 1 else instrument_key
+                symbol    = f"{exch}:{bare_sym}"
+
+                ts = full_feed.get("ltt") or raw_tick.get("currentTs", "")
+
+                results.append({
+                    "symbol":    symbol,
+                    "ltp":       float(ltp),
+                    "timestamp": str(ts),
+                    "bid":       bid_data[0].get("bp") if bid_data else None,
+                    "ask":       ask_data[-1].get("sp") if ask_data else None,
+                    "volume":    full_feed.get("vtt"),
+                    "oi":        full_feed.get("oi"),
+                    "open":      ohlc_data.get("open"),
+                    "high":      ohlc_data.get("high"),
+                    "low":       ohlc_data.get("low"),
+                    "close":     ohlc_data.get("close"),
+                })
+
+            # Return first tick — WebSocketManager handles one at a time
+            return results[0] if results else None
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_upstox_key(self, symbol: str) -> Optional[str]:
+        """
+        Map generic NSE:SYMBOL → Upstox instrument_key.
+
+        Index symbols: "NSE:NIFTY50-INDEX" → "NSE_INDEX|Nifty 50"
+        Equity/F&O: "NSE:RELIANCE" → "NSE_EQ|ISIN" (requires instruments lookup)
+
+        Fallback: return "NSE_EQ|<bare_symbol>" for unknown symbols.
+        """
+        try:
+            cache = getattr(self, "_upstox_key_cache", {})
+            if symbol in cache:
+                return cache[symbol]
+
+            upper = symbol.upper()
+            bare  = symbol.split(":")[-1]
+
+            # Known index mappings
+            index_map = {
+                "NIFTY50-INDEX": "NSE_INDEX|Nifty 50",
+                "NIFTY 50":      "NSE_INDEX|Nifty 50",
+                "BANKNIFTY":     "NSE_INDEX|Nifty Bank",
+                "SENSEX":        "BSE_INDEX|SENSEX",
+            }
+            for k, v in index_map.items():
+                if k in upper:
+                    cache[symbol] = v
+                    self._upstox_key_cache = cache
+                    return v
+
+            if "NFO:" in upper:
+                key = f"NFO_FO|{bare}"
+            elif "BSE:" in upper:
+                key = f"BSE_EQ|{bare}"
+            else:
+                key = f"NSE_EQ|{bare}"
+
+            cache[symbol] = key
+            self._upstox_key_cache = cache
+            return key
+        except Exception:
+            return None

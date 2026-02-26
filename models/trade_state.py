@@ -1,36 +1,72 @@
 """
-trade_state.py
-==============
-Thread-safe TradeState for the Algo Trading Dashboard.
+Trade State Module
+==================
+Thread-safe central state container for the Algo Trading Dashboard.
+
+This module provides a thread-safe implementation of the trading system's
+central state object, managing all mutable data that needs to be shared
+across multiple threads. It replaces the original dataclass with a fully
+thread-safe version while maintaining identical attribute names and behavior.
 
 THREADING MODEL
 ---------------
 Three concurrent actors touch this object:
 
-  1. WebSocket thread  (Stage 1) — writes price fields on every tick
-  2. Thread-pool       (Stage 2) — reads prices, writes position/signal state
-  3. GUI / QTimer               — reads everything for display
+  1. **WebSocket thread (Stage 1)** — writes price fields on every tick
+     (high frequency, many writes per second)
+  2. **Thread-pool (Stage 2)** — reads prices, writes position/signal state
+     (moderate frequency, decision making)
+  3. **GUI / QTimer** — reads everything for display
+     (low frequency, periodic UI updates)
 
-A single `threading.RLock` (re-entrant so the same thread can nest
-acquisitions) guards every field.  Access is through @property / @setter
-pairs so all call-sites remain identical to the original dataclass —
-zero caller changes required.
+DESIGN PRINCIPLES
+-----------------
+1. **Single RLock** - A single `threading.RLock` (re-entrant lock) guards every
+   field. This allows the same thread to nest acquisitions safely.
 
-DESIGN RULES
-------------
-- Every __get__ and __set__ of a mutable field acquires _lock.
+2. **Property-based Access** - Every field is accessed through @property/@setter
+   pairs, so all call-sites remain identical to the original dataclass —
+   zero caller changes required.
+
+3. **Atomic Operations** - Critical operations (batch price updates, snapshots,
+   reset) are performed in a single lock acquisition to ensure consistency.
+
+4. **Minimal Lock Hold Time** - I/O operations (logging, callbacks) are performed
+   outside the lock to minimize contention.
+
+5. **Defensive Copying** - Collections and complex objects are returned as
+   shallow copies so callers cannot mutate shared state.
+
+Thread Safety Rules:
+- Every __get__ and __set__ of a mutable field acquires _lock
 - Computed properties (should_buy_call, etc.) acquire the lock for the
-  whole expression to prevent torn reads mid-expression.
+  whole expression to prevent torn reads mid-expression
 - Heavy objects (DataFrames, dicts, lists) are stored under the lock and
-  returned as shallow copies so callers cannot mutate shared state.
+  returned as shallow copies
 - `get_snapshot()` returns a plain-dict copy of all scalar fields — safe
-  to hand to the GUI thread without holding any lock.
+  to hand to the GUI thread without holding any lock
 - `get_position_snapshot()` atomically reads every field needed for an
-  entry/exit decision — use this in Stage 2 rather than N individual
-  property reads.
+  entry/exit decision — use this in Stage 2 rather than N individual property reads
 - `update_prices()` batch-updates all price fields in one acquisition to
-  minimise lock overhead on the hot WebSocket path.
-- `reset_trade_attributes()` is fully atomic (single lock acquisition).
+  minimise lock overhead on the hot WebSocket path
+- `reset_trade_attributes()` is fully atomic (single lock acquisition)
+
+Data Flow:
+    WebSocket Thread (Stage 1)
+        ↓
+    update_prices()  ← batch price update (1 lock)
+        ↓
+    Stage 2 Thread (Thread Pool)
+        ↓
+    get_position_snapshot() ← atomic decision data
+        ↓
+    decision logic → write results
+        ↓
+    GUI Thread
+        ↓
+    get_snapshot() ← full state for display
+
+Version: 2.0.0
 """
 
 import copy
@@ -75,7 +111,11 @@ def _default_trend_dict() -> Dict[str, Any]:
 def _default_signal_result() -> Dict[str, Any]:
     """
     Factory for a neutral / unavailable option_signal_result.
+
     FEATURE 3: Added confidence and explanation fields.
+
+    Returns a dictionary with all expected signal result fields initialized
+    to safe default values.
     """
     try:
         return {
@@ -110,10 +150,23 @@ class TradeState:
     """
     Central container for all mutable trading state.
 
-    Drop-in replacement for the original @dataclass version:
-    identical attribute names, same default values, same convenience
-    properties — with a threading.RLock added so reads and writes from
-    the WS thread, thread-pool, and GUI timer cannot interleave.
+    This class serves as the single source of truth for all trading-related
+    state that needs to be shared across threads. It provides thread-safe
+    access to over 60 fields including prices, positions, orders, risk
+    parameters, and signal results.
+
+    The class is designed as a drop-in replacement for the original @dataclass
+    version: identical attribute names, same default values, same convenience
+    properties — with a threading.RLock added so reads and writes from the
+    WS thread, thread-pool, and GUI timer cannot interleave.
+
+    Key Design Points:
+        - All fields are private (underscore-prefixed) with public properties
+        - Collections are returned as copies to prevent external mutation
+        - Batch operations (update_prices, reset_trade_attributes) minimize
+          lock acquisitions
+        - Snapshot methods provide atomic, consistent views of related fields
+        - I/O is performed outside locks to minimize contention
 
     Quick-start
     -----------
@@ -140,6 +193,15 @@ class TradeState:
     # ------------------------------------------------------------------
 
     def __init__(self):
+        """
+        Initialize TradeState with default values for all fields.
+
+        The lock (_lock) is set via object.__setattr__ because our own
+        __setattr__ references _lock before the instance is ready.
+
+        All fields are initialized to safe defaults to ensure the object
+        is in a valid state even if initialization fails partially.
+        """
         try:
             # _lock must be set via object.__setattr__ because our own
             # __setattr__ references _lock before the instance is ready.
@@ -277,7 +339,15 @@ class TradeState:
     # ------------------------------------------------------------------
 
     def _get(self, attr: str) -> Any:
-        """Thread-safe get with error handling"""
+        """
+        Thread-safe get with error handling.
+
+        Args:
+            attr: Attribute name to retrieve
+
+        Returns:
+            Any: Attribute value, or None if error
+        """
         try:
             with self._lock:
                 return object.__getattribute__(self, attr)
@@ -289,7 +359,13 @@ class TradeState:
             return None
 
     def _set(self, attr: str, value: Any) -> None:
-        """Thread-safe set with error handling"""
+        """
+        Thread-safe set with error handling.
+
+        Args:
+            attr: Attribute name to set
+            value: Value to assign
+        """
         try:
             with self._lock:
                 object.__setattr__(self, attr, value)
@@ -309,6 +385,7 @@ class TradeState:
 
     @property
     def option_trend(self) -> Dict[str, Any]:
+        """Current option trend data (shallow copy)."""
         try:
             with self._lock:
                 return copy.copy(self._option_trend) if self._option_trend else _default_trend_dict()
@@ -318,6 +395,7 @@ class TradeState:
 
     @option_trend.setter
     def option_trend(self, value: Dict[str, Any]) -> None:
+        """Set option trend data."""
         try:
             with self._lock:
                 self._option_trend = value if value is not None else _default_trend_dict()
@@ -326,6 +404,7 @@ class TradeState:
 
     @property
     def derivative_trend(self) -> Dict[str, Any]:
+        """Current derivative trend data (shallow copy)."""
         try:
             with self._lock:
                 return copy.copy(self._derivative_trend) if self._derivative_trend else _default_trend_dict()
@@ -335,6 +414,7 @@ class TradeState:
 
     @derivative_trend.setter
     def derivative_trend(self, value: Dict[str, Any]) -> None:
+        """Set derivative trend data."""
         try:
             with self._lock:
                 self._derivative_trend = value if value is not None else _default_trend_dict()
@@ -343,6 +423,7 @@ class TradeState:
 
     @property
     def call_trend(self) -> Dict[str, Any]:
+        """Current call option trend data (shallow copy)."""
         try:
             with self._lock:
                 return copy.copy(self._call_trend) if self._call_trend else _default_trend_dict()
@@ -352,6 +433,7 @@ class TradeState:
 
     @call_trend.setter
     def call_trend(self, value: Dict[str, Any]) -> None:
+        """Set call option trend data."""
         try:
             with self._lock:
                 self._call_trend = value if value is not None else _default_trend_dict()
@@ -360,6 +442,7 @@ class TradeState:
 
     @property
     def put_trend(self) -> Dict[str, Any]:
+        """Current put option trend data (shallow copy)."""
         try:
             with self._lock:
                 return copy.copy(self._put_trend) if self._put_trend else _default_trend_dict()
@@ -369,6 +452,7 @@ class TradeState:
 
     @put_trend.setter
     def put_trend(self, value: Dict[str, Any]) -> None:
+        """Set put option trend data."""
         try:
             with self._lock:
                 self._put_trend = value if value is not None else _default_trend_dict()
@@ -381,10 +465,12 @@ class TradeState:
 
     @property
     def token(self) -> Optional[str]:
+        """Broker authentication token."""
         return self._get("_token")
 
     @token.setter
     def token(self, value: Optional[str]) -> None:
+        """Set broker authentication token."""
         self._set("_token", value)
 
     # ------------------------------------------------------------------
@@ -393,26 +479,32 @@ class TradeState:
 
     @property
     def current_index_data(self) -> Candle:
+        """Current index candle data."""
         return self._get("_current_index_data")
 
     @current_index_data.setter
     def current_index_data(self, value: Candle) -> None:
+        """Set current index candle data."""
         self._set("_current_index_data", value)
 
     @property
     def current_put_data(self) -> Optional[pd.DataFrame]:
+        """Current put option historical data."""
         return self._get("_current_put_data")
 
     @current_put_data.setter
     def current_put_data(self, value: Optional[pd.DataFrame]) -> None:
+        """Set current put option historical data."""
         self._set("_current_put_data", value)
 
     @property
     def current_call_data(self) -> Optional[pd.DataFrame]:
+        """Current call option historical data."""
         return self._get("_current_call_data")
 
     @current_call_data.setter
     def current_call_data(self, value: Optional[pd.DataFrame]) -> None:
+        """Set current call option historical data."""
         self._set("_current_call_data", value)
 
     # ------------------------------------------------------------------
@@ -421,34 +513,42 @@ class TradeState:
 
     @property
     def call_option(self) -> Optional[str]:
+        """ATM call option symbol."""
         return self._get("_call_option")
 
     @call_option.setter
     def call_option(self, value: Optional[str]) -> None:
+        """Set ATM call option symbol."""
         self._set("_call_option", value)
 
     @property
     def put_option(self) -> Optional[str]:
+        """ATM put option symbol."""
         return self._get("_put_option")
 
     @put_option.setter
     def put_option(self, value: Optional[str]) -> None:
+        """Set ATM put option symbol."""
         self._set("_put_option", value)
 
     @property
     def current_trading_symbol(self) -> Optional[str]:
+        """Currently active trading symbol (if any)."""
         return self._get("_current_trading_symbol")
 
     @current_trading_symbol.setter
     def current_trading_symbol(self, value: Optional[str]) -> None:
+        """Set current trading symbol."""
         self._set("_current_trading_symbol", value)
 
     @property
     def derivative(self) -> str:
+        """Underlying derivative symbol (e.g., NIFTY50-INDEX)."""
         return self._get("_derivative")
 
     @derivative.setter
     def derivative(self, value: str) -> None:
+        """Set underlying derivative symbol."""
         self._set("_derivative", value)
 
     # ------------------------------------------------------------------
@@ -458,42 +558,52 @@ class TradeState:
 
     @property
     def derivative_current_price(self) -> float:
+        """Current price of the underlying derivative."""
         return self._get("_derivative_current_price")
 
     @derivative_current_price.setter
     def derivative_current_price(self, value: float) -> None:
+        """Set current derivative price."""
         self._set("_derivative_current_price", value)
 
     @property
     def current_price(self) -> Optional[float]:
+        """Current price of the active option position."""
         return self._get("_current_price")
 
     @current_price.setter
     def current_price(self, value: Optional[float]) -> None:
+        """Set current option price."""
         self._set("_current_price", value)
 
     @property
     def highest_current_price(self) -> Optional[float]:
+        """Highest price reached during current trade."""
         return self._get("_highest_current_price")
 
     @highest_current_price.setter
     def highest_current_price(self, value: Optional[float]) -> None:
+        """Set highest price for current trade."""
         self._set("_highest_current_price", value)
 
     @property
     def put_current_close(self) -> Optional[float]:
+        """Current price of put option (bid or ask depending on position)."""
         return self._get("_put_current_close")
 
     @put_current_close.setter
     def put_current_close(self, value: Optional[float]) -> None:
+        """Set current put option price."""
         self._set("_put_current_close", value)
 
     @property
     def call_current_close(self) -> Optional[float]:
+        """Current price of call option (bid or ask depending on position)."""
         return self._get("_call_current_close")
 
     @call_current_close.setter
     def call_current_close(self, value: Optional[float]) -> None:
+        """Set current call option price."""
         self._set("_call_current_close", value)
 
     # ------------------------------------------------------------------
@@ -515,8 +625,27 @@ class TradeState:
         Atomically update all price fields in **one** lock acquisition.
 
         Replaces the original Stage-1 update_market_state() pattern of
-        setting each property individually.  Call from the WS thread:
+        setting each property individually. This method is optimized for
+        the high-frequency WebSocket thread.
 
+        Rules
+        -----
+        - derivative_ltp → always stored if provided
+        - call / put price → use ask when in a position (buying back),
+                             use bid when not in a position (for entry calc)
+        - current_price   → stored directly if provided; callers can also
+                            let on_message derive it from call/put close
+
+        Args:
+            derivative_ltp: Last traded price of underlying
+            current_price: Direct current price (if known)
+            call_ask: Ask price of call option
+            call_bid: Bid price of call option
+            put_ask: Ask price of put option
+            put_bid: Bid price of put option
+            has_position: Whether a position is currently held (determines ask/bid selection)
+
+        Example:
             state.update_prices(
                 derivative_ltp = ltp,
                 call_ask       = ask_price,
@@ -525,14 +654,6 @@ class TradeState:
                 put_bid        = put_bid,
                 has_position   = bool(state.current_position),
             )
-
-        Rules
-        -----
-        - derivative_ltp  → always stored if provided
-        - call / put price → use ask when in a position (buying back),
-                             use bid when not in a position (for entry calc)
-        - current_price   → stored directly if provided; callers can also
-                            let on_message derive it from call/put close
         """
         try:
             with self._lock:
@@ -569,26 +690,32 @@ class TradeState:
 
     @property
     def derivative_history_df(self) -> Optional[pd.DataFrame]:
+        """Historical OHLC data for derivative."""
         return self._get("_derivative_history_df")
 
     @derivative_history_df.setter
     def derivative_history_df(self, value: Optional[pd.DataFrame]) -> None:
+        """Set derivative historical data."""
         self._set("_derivative_history_df", value)
 
     @property
     def option_history_df(self) -> Optional[pd.DataFrame]:
+        """Historical OHLC data for options."""
         return self._get("_option_history_df")
 
     @option_history_df.setter
     def option_history_df(self, value: Optional[pd.DataFrame]) -> None:
+        """Set option historical data."""
         self._set("_option_history_df", value)
 
     @property
     def last_index_updated(self) -> Optional[float]:
+        """Timestamp of last index update."""
         return self._get("_last_index_updated")
 
     @last_index_updated.setter
     def last_index_updated(self, value: Optional[float]) -> None:
+        """Set last index update timestamp."""
         self._set("_last_index_updated", value)
 
     # ------------------------------------------------------------------
@@ -597,6 +724,7 @@ class TradeState:
 
     @property
     def orders(self) -> List[Dict[str, Any]]:
+        """List of pending orders (shallow copy)."""
         try:
             with self._lock:
                 return list(self._orders) if self._orders else []
@@ -606,6 +734,7 @@ class TradeState:
 
     @orders.setter
     def orders(self, value: List[Dict[str, Any]]) -> None:
+        """Set orders list."""
         try:
             with self._lock:
                 self._orders = list(value) if value is not None else []
@@ -613,7 +742,12 @@ class TradeState:
             logger.error(f"[orders setter] Failed: {e}", exc_info=True)
 
     def append_order(self, order: Dict[str, Any]) -> None:
-        """Thread-safe append — prefer over orders = orders + [order]."""
+        """
+        Thread-safe append to orders list.
+
+        Args:
+            order: Order dictionary to append
+        """
         try:
             with self._lock:
                 self._orders.append(order)
@@ -621,7 +755,15 @@ class TradeState:
             logger.error(f"[append_order] Failed: {e}", exc_info=True)
 
     def remove_order(self, order_id: str) -> bool:
-        """Thread-safe removal by id. Returns True if the order was found."""
+        """
+        Thread-safe removal by id.
+
+        Args:
+            order_id: Order ID to remove
+
+        Returns:
+            bool: True if the order was found and removed
+        """
         try:
             with self._lock:
                 before = len(self._orders)
@@ -633,6 +775,7 @@ class TradeState:
 
     @property
     def confirmed_orders(self) -> List[Dict[str, Any]]:
+        """List of confirmed orders (shallow copy)."""
         try:
             with self._lock:
                 return list(self._confirmed_orders) if self._confirmed_orders else []
@@ -642,6 +785,7 @@ class TradeState:
 
     @confirmed_orders.setter
     def confirmed_orders(self, value: List[Dict[str, Any]]) -> None:
+        """Set confirmed orders list."""
         try:
             with self._lock:
                 self._confirmed_orders = list(value) if value is not None else []
@@ -649,7 +793,12 @@ class TradeState:
             logger.error(f"[confirmed_orders setter] Failed: {e}", exc_info=True)
 
     def extend_confirmed_orders(self, orders: List[Dict[str, Any]]) -> None:
-        """Thread-safe extend — prefer over confirmed_orders = confirmed_orders + list."""
+        """
+        Thread-safe extend for confirmed orders.
+
+        Args:
+            orders: List of orders to append
+        """
         try:
             with self._lock:
                 self._confirmed_orders.extend(orders)
@@ -662,22 +811,27 @@ class TradeState:
 
     @property
     def current_position(self) -> Optional[str]:
+        """Current position type (CALL/PUT) or None."""
         return self._get("_current_position")
 
     @current_position.setter
     def current_position(self, value: Optional[str]) -> None:
+        """Set current position."""
         self._set("_current_position", value)
 
     @property
     def previous_position(self) -> Optional[str]:
+        """Previous position type (for reset logic)."""
         return self._get("_previous_position")
 
     @previous_position.setter
     def previous_position(self, value: Optional[str]) -> None:
+        """Set previous position."""
         self._set("_previous_position", value)
 
     @property
     def current_order_id(self) -> Dict[str, int]:
+        """Mapping of order IDs (shallow copy)."""
         try:
             with self._lock:
                 return dict(self._current_order_id) if self._current_order_id else {}
@@ -687,6 +841,7 @@ class TradeState:
 
     @current_order_id.setter
     def current_order_id(self, value: Dict[str, int]) -> None:
+        """Set order ID mapping."""
         try:
             with self._lock:
                 self._current_order_id = dict(value) if value is not None else {}
@@ -695,34 +850,42 @@ class TradeState:
 
     @property
     def current_buy_price(self) -> Optional[float]:
+        """Entry price of current position."""
         return self._get("_current_buy_price")
 
     @current_buy_price.setter
     def current_buy_price(self, value: Optional[float]) -> None:
+        """Set entry price."""
         self._set("_current_buy_price", value)
 
     @property
     def positions_hold(self) -> int:
+        """Number of positions currently held."""
         return self._get("_positions_hold")
 
     @positions_hold.setter
     def positions_hold(self, value: int) -> None:
+        """Set positions held count."""
         self._set("_positions_hold", int(value))
 
     @property
     def order_pending(self) -> bool:
+        """Whether an order is pending execution."""
         return self._get("_order_pending")
 
     @order_pending.setter
     def order_pending(self, value: bool) -> None:
+        """Set order pending status."""
         self._set("_order_pending", bool(value))
 
     @property
     def take_profit_type(self) -> Optional[str]:
+        """Type of take profit (STOP/TRAILING)."""
         return self._get("_take_profit_type")
 
     @take_profit_type.setter
     def take_profit_type(self, value: Optional[str]) -> None:
+        """Set take profit type."""
         self._set("_take_profit_type", value)
 
     # ------------------------------------------------------------------
@@ -731,90 +894,112 @@ class TradeState:
 
     @property
     def index_stop_loss(self) -> Optional[float]:
+        """Stop loss based on index price."""
         return self._get("_index_stop_loss")
 
     @index_stop_loss.setter
     def index_stop_loss(self, value: Optional[float]) -> None:
+        """Set index-based stop loss."""
         self._set("_index_stop_loss", value)
 
     @property
     def stop_loss(self) -> Optional[float]:
+        """Option price stop loss level."""
         return self._get("_stop_loss")
 
     @stop_loss.setter
     def stop_loss(self, value: Optional[float]) -> None:
+        """Set option price stop loss."""
         self._set("_stop_loss", value)
 
     @property
     def tp_point(self) -> Optional[float]:
+        """Take profit price level."""
         return self._get("_tp_point")
 
     @tp_point.setter
     def tp_point(self, value: Optional[float]) -> None:
+        """Set take profit level."""
         self._set("_tp_point", value)
 
     @property
     def tp_percentage(self) -> float:
+        """Take profit percentage."""
         return self._get("_tp_percentage")
 
     @tp_percentage.setter
     def tp_percentage(self, value: float) -> None:
+        """Set take profit percentage."""
         self._set("_tp_percentage", float(value))
 
     @property
     def stoploss_percentage(self) -> float:
+        """Stop loss percentage."""
         return self._get("_stoploss_percentage")
 
     @stoploss_percentage.setter
     def stoploss_percentage(self, value: float) -> None:
+        """Set stop loss percentage."""
         self._set("_stoploss_percentage", float(value))
 
     @property
     def original_profit_per(self) -> float:
+        """Original (non-trailed) profit percentage."""
         return self._get("_original_profit_per")
 
     @original_profit_per.setter
     def original_profit_per(self, value: float) -> None:
+        """Set original profit percentage."""
         self._set("_original_profit_per", float(value))
 
     @property
     def original_stoploss_per(self) -> float:
+        """Original (non-trailed) stop loss percentage."""
         return self._get("_original_stoploss_per")
 
     @original_stoploss_per.setter
     def original_stoploss_per(self, value: float) -> None:
+        """Set original stop loss percentage."""
         self._set("_original_stoploss_per", float(value))
 
     @property
     def trailing_first_profit(self) -> float:
+        """First profit level at which trailing activates."""
         return self._get("_trailing_first_profit")
 
     @trailing_first_profit.setter
     def trailing_first_profit(self, value: float) -> None:
+        """Set first trailing profit level."""
         self._set("_trailing_first_profit", float(value))
 
     @property
     def max_profit(self) -> float:
+        """Maximum allowed profit percentage."""
         return self._get("_max_profit")
 
     @max_profit.setter
     def max_profit(self, value: float) -> None:
+        """Set maximum profit percentage."""
         self._set("_max_profit", float(value))
 
     @property
     def profit_step(self) -> float:
+        """Step size for trailing profit updates."""
         return self._get("_profit_step")
 
     @profit_step.setter
     def profit_step(self, value: float) -> None:
+        """Set profit step size."""
         self._set("_profit_step", float(value))
 
     @property
     def loss_step(self) -> float:
+        """Step size for trailing stop updates."""
         return self._get("_loss_step")
 
     @loss_step.setter
     def loss_step(self, value: float) -> None:
+        """Set loss step size."""
         self._set("_loss_step", float(value))
 
     # ------------------------------------------------------------------
@@ -823,26 +1008,32 @@ class TradeState:
 
     @property
     def interval(self) -> Optional[str]:
+        """Timeframe interval for analysis."""
         return self._get("_interval")
 
     @interval.setter
     def interval(self, value: Optional[str]) -> None:
+        """Set analysis interval."""
         self._set("_interval", value)
 
     @property
     def expiry(self) -> int:
+        """Option expiry week/week identifier."""
         return self._get("_expiry")
 
     @expiry.setter
     def expiry(self, value: int) -> None:
+        """Set expiry identifier."""
         self._set("_expiry", int(value))
 
     @property
     def lot_size(self) -> int:
+        """Trading lot size (must be positive)."""
         return self._get("_lot_size")
 
     @lot_size.setter
     def lot_size(self, value: int) -> None:
+        """Set lot size with validation."""
         try:
             if int(value) <= 0:
                 logger.error(f"lot_size must be positive, got {value}")
@@ -853,50 +1044,62 @@ class TradeState:
 
     @property
     def account_balance(self) -> float:
+        """Current account balance."""
         return self._get("_account_balance")
 
     @account_balance.setter
     def account_balance(self, value: float) -> None:
+        """Set account balance."""
         self._set("_account_balance", float(value))
 
     @property
     def max_num_of_option(self) -> int:
+        """Maximum number of option contracts allowed."""
         return self._get("_max_num_of_option")
 
     @max_num_of_option.setter
     def max_num_of_option(self, value: int) -> None:
+        """Set maximum option contracts."""
         self._set("_max_num_of_option", int(value))
 
     @property
     def lower_percentage(self) -> float:
+        """Lower percentage threshold for trading."""
         return self._get("_lower_percentage")
 
     @lower_percentage.setter
     def lower_percentage(self, value: float) -> None:
+        """Set lower percentage threshold."""
         self._set("_lower_percentage", float(value))
 
     @property
     def cancel_after(self) -> int:
+        """Seconds after which to cancel pending orders."""
         return self._get("_cancel_after")
 
     @cancel_after.setter
     def cancel_after(self, value: int) -> None:
+        """Set cancel timeout."""
         self._set("_cancel_after", int(value))
 
     @property
     def capital_reserve(self) -> float:
+        """Capital reserve percentage."""
         return self._get("_capital_reserve")
 
     @capital_reserve.setter
     def capital_reserve(self, value: float) -> None:
+        """Set capital reserve percentage."""
         self._set("_capital_reserve", float(value))
 
     @property
     def sideway_zone_trade(self) -> bool:
+        """Whether to trade in sideways market."""
         return self._get("_sideway_zone_trade")
 
     @sideway_zone_trade.setter
     def sideway_zone_trade(self, value: bool) -> None:
+        """Set sideways trading flag."""
         self._set("_sideway_zone_trade", bool(value))
 
     # ------------------------------------------------------------------
@@ -905,34 +1108,42 @@ class TradeState:
 
     @property
     def call_lookback(self) -> int:
+        """Lookback periods for call option calculations."""
         return self._get("_call_lookback")
 
     @call_lookback.setter
     def call_lookback(self, value: int) -> None:
+        """Set call lookback."""
         self._set("_call_lookback", int(value))
 
     @property
     def put_lookback(self) -> int:
+        """Lookback periods for put option calculations."""
         return self._get("_put_lookback")
 
     @put_lookback.setter
     def put_lookback(self, value: int) -> None:
+        """Set put lookback."""
         self._set("_put_lookback", int(value))
 
     @property
     def original_call_lookback(self) -> int:
+        """Original (non-adjusted) call lookback."""
         return self._get("_original_call_lookback")
 
     @original_call_lookback.setter
     def original_call_lookback(self, value: int) -> None:
+        """Set original call lookback."""
         self._set("_original_call_lookback", int(value))
 
     @property
     def original_put_lookback(self) -> int:
+        """Original (non-adjusted) put lookback."""
         return self._get("_original_put_lookback")
 
     @original_put_lookback.setter
     def original_put_lookback(self, value: int) -> None:
+        """Set original put lookback."""
         self._set("_original_put_lookback", int(value))
 
     # ------------------------------------------------------------------
@@ -941,50 +1152,62 @@ class TradeState:
 
     @property
     def current_trade_started_time(self) -> Optional[datetime]:
+        """Timestamp when current trade started."""
         return self._get("_current_trade_started_time")
 
     @current_trade_started_time.setter
     def current_trade_started_time(self, value: Optional[datetime]) -> None:
+        """Set trade start time."""
         self._set("_current_trade_started_time", value)
 
     @property
     def last_status_check(self) -> Optional[datetime]:
+        """Last time trade status was checked."""
         return self._get("_last_status_check")
 
     @last_status_check.setter
     def last_status_check(self, value: Optional[datetime]) -> None:
+        """Set last status check time."""
         self._set("_last_status_check", value)
 
     @property
     def current_trade_confirmed(self) -> bool:
+        """Whether current trade is confirmed (order executed)."""
         return self._get("_current_trade_confirmed")
 
     @current_trade_confirmed.setter
     def current_trade_confirmed(self, value: bool) -> None:
+        """Set trade confirmation status."""
         self._set("_current_trade_confirmed", bool(value))
 
     @property
     def percentage_change(self) -> Optional[float]:
+        """Percentage change since entry."""
         return self._get("_percentage_change")
 
     @percentage_change.setter
     def percentage_change(self, value: Optional[float]) -> None:
+        """Set percentage change."""
         self._set("_percentage_change", value)
 
     @property
     def current_pnl(self) -> Optional[float]:
+        """Current profit/loss amount."""
         return self._get("_current_pnl")
 
     @current_pnl.setter
     def current_pnl(self, value: Optional[float]) -> None:
+        """Set current P&L."""
         self._set("_current_pnl", value)
 
     @property
     def reason_to_exit(self) -> Optional[str]:
+        """Reason for last exit (for logging/display)."""
         return self._get("_reason_to_exit")
 
     @reason_to_exit.setter
     def reason_to_exit(self, value: Optional[str]) -> None:
+        """Set exit reason."""
         self._set("_reason_to_exit", value)
 
     # ------------------------------------------------------------------
@@ -993,29 +1216,32 @@ class TradeState:
 
     @property
     def last_slippage(self) -> Optional[float]:
-        """Slippage from last order fill (positive = worse price)"""
+        """Slippage from last order fill (positive = worse price)."""
         return self._get("_last_slippage")
 
     @last_slippage.setter
     def last_slippage(self, value: Optional[float]) -> None:
+        """Set last slippage value."""
         self._set("_last_slippage", value)
 
     @property
     def order_attempts(self) -> int:
-        """Number of order attempts made (for metrics)"""
+        """Number of order attempts made (for metrics)."""
         return self._get("_order_attempts")
 
     @order_attempts.setter
     def order_attempts(self, value: int) -> None:
+        """Set order attempts count."""
         self._set("_order_attempts", int(value))
 
     @property
     def last_order_attempt_time(self) -> Optional[datetime]:
-        """Timestamp of last order attempt"""
+        """Timestamp of last order attempt."""
         return self._get("_last_order_attempt_time")
 
     @last_order_attempt_time.setter
     def last_order_attempt_time(self, value: Optional[datetime]) -> None:
+        """Set last order attempt time."""
         self._set("_last_order_attempt_time", value)
 
     # ------------------------------------------------------------------
@@ -1024,20 +1250,22 @@ class TradeState:
 
     @property
     def last_mtf_summary(self) -> Optional[str]:
-        """Human-readable summary of last MTF filter decision"""
+        """Human-readable summary of last MTF filter decision."""
         return self._get("_last_mtf_summary")
 
     @last_mtf_summary.setter
     def last_mtf_summary(self, value: Optional[str]) -> None:
+        """Set MTF summary."""
         self._set("_last_mtf_summary", value)
 
     @property
     def mtf_allowed(self) -> bool:
-        """Whether last MTF filter allowed entry"""
+        """Whether last MTF filter allowed entry."""
         return self._get("_mtf_allowed")
 
     @mtf_allowed.setter
     def mtf_allowed(self, value: bool) -> None:
+        """Set MTF allowed flag."""
         self._set("_mtf_allowed", bool(value))
 
     @property
@@ -1052,6 +1280,7 @@ class TradeState:
 
     @mtf_results.setter
     def mtf_results(self, value: Dict[str, str]) -> None:
+        """Set MTF results."""
         try:
             with self._lock:
                 self._mtf_results = dict(value) if value is not None else {}
@@ -1064,14 +1293,17 @@ class TradeState:
 
     @property
     def market_trend(self) -> Optional[int]:
+        """Overall market trend indicator."""
         return self._get("_market_trend")
 
     @market_trend.setter
     def market_trend(self, value: Optional[int]) -> None:
+        """Set market trend."""
         self._set("_market_trend", value)
 
     @property
     def supertrend_reset(self) -> Optional[Dict[str, Any]]:
+        """Supertrend reset state (shallow copy)."""
         try:
             with self._lock:
                 return copy.copy(self._supertrend_reset) if self._supertrend_reset else None
@@ -1081,6 +1313,7 @@ class TradeState:
 
     @supertrend_reset.setter
     def supertrend_reset(self, value: Optional[Dict[str, Any]]) -> None:
+        """Set supertrend reset state."""
         try:
             with self._lock:
                 self._supertrend_reset = value
@@ -1089,6 +1322,7 @@ class TradeState:
 
     @property
     def b_band(self) -> Optional[Dict[str, Any]]:
+        """Bollinger Band values (shallow copy)."""
         try:
             with self._lock:
                 return copy.copy(self._b_band) if self._b_band else None
@@ -1098,6 +1332,7 @@ class TradeState:
 
     @b_band.setter
     def b_band(self, value: Optional[Dict[str, Any]]) -> None:
+        """Set Bollinger Band values."""
         try:
             with self._lock:
                 self._b_band = value
@@ -1106,6 +1341,7 @@ class TradeState:
 
     @property
     def all_symbols(self) -> List[str]:
+        """List of all subscribed symbols (shallow copy)."""
         try:
             with self._lock:
                 return list(self._all_symbols) if self._all_symbols else []
@@ -1115,6 +1351,7 @@ class TradeState:
 
     @all_symbols.setter
     def all_symbols(self, value: List[str]) -> None:
+        """Set all symbols list."""
         try:
             with self._lock:
                 self._all_symbols = list(value) if value is not None else []
@@ -1123,47 +1360,53 @@ class TradeState:
 
     @property
     def option_price_update(self) -> Optional[bool]:
+        """Whether option prices have been updated."""
         return self._get("_option_price_update")
 
     @option_price_update.setter
     def option_price_update(self, value: Optional[bool]) -> None:
+        """Set option price update flag."""
         self._set("_option_price_update", value)
 
     @property
     def calculated_pcr(self) -> Optional[float]:
+        """Calculated Put-Call Ratio."""
         return self._get("_calculated_pcr")
 
     @calculated_pcr.setter
     def calculated_pcr(self, value: Optional[float]) -> None:
+        """Set calculated PCR."""
         self._set("_calculated_pcr", value)
 
     @property
     def current_pcr(self) -> float:
+        """Current Put-Call Ratio."""
         return self._get("_current_pcr")
 
     @current_pcr.setter
     def current_pcr(self, value: float) -> None:
+        """Set current PCR."""
         self._set("_current_pcr", float(value))
 
     @property
     def trend(self) -> Any:
+        """Current trend value (type varies by detector)."""
         return self._get("_trend")
 
     @trend.setter
     def trend(self, value: Any) -> None:
+        """Set trend value."""
         self._set("_trend", value)
 
     @property
     def current_pcr_vol(self) -> Optional[float]:
+        """Current PCR based on volume."""
         return self._get("_current_pcr_vol")
 
     @current_pcr_vol.setter
     def current_pcr_vol(self, value: Optional[float]) -> None:
+        """Set volume-based PCR."""
         self._set("_current_pcr_vol", value)
-
-    # ------------------------------------------------------------------
-    # Option chain
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Option chain
@@ -1171,7 +1414,7 @@ class TradeState:
 
     @property
     def option_chain(self) -> Dict[str, Any]:
-        """Option chain data (bid/ask for calculating mid-price)"""
+        """Option chain data (bid/ask for calculating mid-price)."""
         try:
             with self._lock:
                 # Use object.__getattribute__ to bypass property getter
@@ -1186,6 +1429,7 @@ class TradeState:
 
     @option_chain.setter
     def option_chain(self, value: Dict[str, Any]) -> None:
+        """Set option chain data."""
         try:
             with self._lock:
                 # Use object.__setattr__ to bypass property setter
@@ -1202,6 +1446,7 @@ class TradeState:
 
     @property
     def option_signal_result(self) -> Optional[Dict[str, Any]]:
+        """Complete signal result dictionary (shallow copy)."""
         try:
             with self._lock:
                 # shallow copy — callers must not mutate returned dict
@@ -1212,6 +1457,7 @@ class TradeState:
 
     @option_signal_result.setter
     def option_signal_result(self, value: Optional[Dict[str, Any]]) -> None:
+        """Set signal result."""
         try:
             with self._lock:
                 self._option_signal_result = value
@@ -1238,6 +1484,7 @@ class TradeState:
 
     @property
     def should_buy_call(self) -> bool:
+        """True if signal indicates BUY_CALL."""
         try:
             return self.option_signal == "BUY_CALL"
         except Exception as e:
@@ -1246,6 +1493,7 @@ class TradeState:
 
     @property
     def should_buy_put(self) -> bool:
+        """True if signal indicates BUY_PUT."""
         try:
             return self.option_signal == "BUY_PUT"
         except Exception as e:
@@ -1254,6 +1502,7 @@ class TradeState:
 
     @property
     def should_sell_call(self) -> bool:
+        """True if signal indicates EXIT_CALL."""
         try:
             return self.option_signal == "EXIT_CALL"
         except Exception as e:
@@ -1262,6 +1511,7 @@ class TradeState:
 
     @property
     def should_sell_put(self) -> bool:
+        """True if signal indicates EXIT_PUT."""
         try:
             return self.option_signal == "EXIT_PUT"
         except Exception as e:
@@ -1270,6 +1520,7 @@ class TradeState:
 
     @property
     def should_hold(self) -> bool:
+        """True if signal indicates HOLD."""
         try:
             return self.option_signal == "HOLD"
         except Exception as e:
@@ -1278,6 +1529,7 @@ class TradeState:
 
     @property
     def should_wait(self) -> bool:
+        """True if signal indicates WAIT (no clear signal)."""
         try:
             return self.option_signal == "WAIT"
         except Exception as e:
@@ -1341,12 +1593,44 @@ class TradeState:
         """
         Atomically read every field needed for entry / exit decisions.
 
+        This method provides a consistent snapshot of all fields required
+        for making trading decisions. Using this single call instead of
+        multiple property reads ensures that all values are from the same
+        point in time.
+
         Recommended usage in Stage-2 (_process_message_stage2):
 
             snap = state.get_position_snapshot()
             if snap["current_price"] and snap["stop_loss"]:
                 if snap["current_price"] <= snap["stop_loss"]:
                     ...exit...
+
+        Returns:
+            Dict[str, Any]: Snapshot containing:
+                - current_position
+                - previous_position
+                - current_trade_confirmed
+                - order_pending
+                - positions_hold
+                - current_buy_price
+                - current_price
+                - highest_current_price
+                - derivative_current_price
+                - call_current_close
+                - put_current_close
+                - stop_loss
+                - tp_point
+                - index_stop_loss
+                - tp_percentage
+                - stoploss_percentage
+                - percentage_change
+                - current_pnl
+                - reason_to_exit
+                - option_signal
+                - signal_conflict
+                - last_slippage (FEATURE 2)
+                - last_mtf_summary (FEATURE 6)
+                - mtf_allowed (FEATURE 6)
         """
         try:
             with self._lock:
@@ -1388,7 +1672,13 @@ class TradeState:
             return {}
 
     def get_option_signal_snapshot(self) -> Dict[str, Any]:
-        """Thread-safe shallow copy of option_signal_result for GUI reads."""
+        """
+        Thread-safe shallow copy of option_signal_result for GUI reads.
+
+        Returns:
+            Dict[str, Any]: Complete signal result dictionary, or default
+                           if no signal available.
+        """
         try:
             with self._lock:
                 if not self._option_signal_result:
@@ -1405,6 +1695,11 @@ class TradeState:
 
         DataFrames are represented as shape strings to avoid copying
         potentially large objects.
+
+        Returns:
+            Dict[str, Any]: Complete state snapshot with all fields.
+                           DataFrames are summarized as strings to avoid
+                           large data transfer to GUI.
         """
         try:
             with self._lock:
@@ -1519,6 +1814,11 @@ class TradeState:
         """
         Atomically reset all trade-lifecycle fields in one lock acquisition.
 
+        This method clears all state related to the current trade and
+        prepares for the next trade. It captures audit information before
+        resetting, then calls the provided log function (outside the lock)
+        to record the completed trade.
+
         Parameters
         ----------
         current_position:
@@ -1526,6 +1826,12 @@ class TradeState:
         log_fn:
             Optional callable (e.g. logger.info) — called *outside* the
             lock so we never do I/O while holding it.
+
+        Example:
+            state.reset_trade_attributes(
+                current_position="CALL",
+                log_fn=lambda msg: logger.info(msg)
+            )
         """
         audit = {}
         try:
@@ -1599,6 +1905,7 @@ class TradeState:
     # ==================================================================
 
     def __repr__(self) -> str:
+        """String representation for debugging."""
         try:
             with self._lock:
                 pos = self._current_position

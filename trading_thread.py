@@ -4,8 +4,7 @@ from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 
-# Import the custom exception from Broker
-from broker.Broker import TokenExpiredError
+from broker.BaseBroker import TokenExpiredError
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

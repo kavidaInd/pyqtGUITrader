@@ -1,10 +1,60 @@
 """
-indicator_registry.py
-=====================
+Indicator Registry Module
+=========================
 Registry of all available pandas_ta indicators with their parameters and metadata.
-This provides a single source of truth for indicator definitions used throughout the app.
 
-FEATURE 3: Added support for rule weights and confidence scoring metadata.
+This module provides a single source of truth for indicator definitions used
+throughout the application. It centralizes:
+    - Indicator names and categories
+    - Default parameters for each indicator
+    - Parameter types and descriptions
+    - Validation logic for parameters
+    - FEATURE 3: Confidence scoring metadata and helper functions
+
+Architecture:
+    The registry serves as a metadata repository for technical indicators:
+
+    1. **Indicator Categories**: Organizes indicators by type (Momentum, Trend, etc.)
+    2. **Default Parameters**: Standard parameters for each indicator
+    3. **Parameter Metadata**: Types, descriptions, and validation rules
+    4. **FEATURE 3**: Weight suggestions and confidence scoring utilities
+
+Key Features:
+    - **Centralized Definitions**: Single source of truth for all indicators
+    - **Parameter Validation**: Type checking and range validation
+    - **Category Organization**: Indicators grouped by functional category
+    - **Help System**: Comprehensive indicator help with parameter descriptions
+    - **FEATURE 3**: Confidence scoring infrastructure:
+        - Suggested weights for each indicator based on reliability
+        - Signal group importance weights
+        - Confidence threshold profiles
+        - Utility functions for confidence calculation
+
+Dependencies:
+    - pandas_ta: Optional, for runtime indicator availability
+    - logging: For structured logging
+
+Usage:
+    from indicator_registry import (
+        get_all_indicators,
+        get_indicator_params,
+        validate_parameters,
+        get_suggested_weight  # FEATURE 3
+    )
+
+    # Get default parameters for RSI
+    params = get_indicator_params("rsi")
+
+    # Validate user-provided parameters
+    errors = validate_parameters("macd", {"fast": 12, "slow": 26})
+
+    # FEATURE 3: Get suggested weight
+    weight = get_suggested_weight("adx")  # Returns 2.0
+
+    # FEATURE 3: Calculate confidence from rule results
+    confidence = calculate_rule_confidence(rule_results)
+
+Version: 2.0.0 (with FEATURE 3 enhancements)
 """
 
 import logging.handlers
@@ -23,7 +73,19 @@ logger = logging.getLogger(__name__)
 
 # Get all available indicators from pandas_ta
 def get_all_indicators() -> List[str]:
-    """Return list of all available indicator names from pandas_ta"""
+    """
+    Return list of all available indicator names from pandas_ta.
+
+    This function dynamically inspects the pandas_ta module to get all
+    callable functions that don't start with underscore.
+
+    Returns:
+        List[str]: Sorted list of indicator names, or empty list if pandas_ta not available
+
+    Note:
+        This provides runtime discovery of indicators, complementing the
+        static registry with any indicators that might be added to pandas_ta.
+    """
     try:
         if ta is None:
             logger.warning("pandas_ta not available")
@@ -37,6 +99,7 @@ def get_all_indicators() -> List[str]:
 
 
 # Core indicators with their typical parameters
+# Organized by functional category for easier navigation
 INDICATOR_CATEGORIES = {
     "Momentum": [
         "rsi", "stoch", "stochrsi", "macd", "cci", "tsi", "uo", "ao",
@@ -78,6 +141,7 @@ except Exception as e:
     ALL_INDICATORS = []
 
 # Default parameters for each indicator
+# These are the recommended starting parameters for each indicator
 INDICATOR_DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     # Momentum
     "rsi": {"length": 14, "scalar": 100, "drift": 1},
@@ -166,6 +230,7 @@ INDICATOR_DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
 }
 
 # Parameter types for UI
+# Maps parameter names to their expected Python types for UI validation
 PARAMETER_TYPES = {
     "int": ["length", "fast", "slow", "signal", "k", "d", "smooth_k", "lookback",
             "lower_length", "upper_length", "fast_period", "slow_period", "signal_period",
@@ -177,6 +242,7 @@ PARAMETER_TYPES = {
 }
 
 # Parameter descriptions for tooltips
+# Human-readable explanations for each parameter
 PARAMETER_DESCRIPTIONS = {
     "length": "Number of periods",
     "fast": "Fast period length",
@@ -212,6 +278,7 @@ PARAMETER_DESCRIPTIONS = {
 
 # Recommended weights for different indicator types
 # Higher weights for more reliable indicators
+# These values are used in confidence scoring calculations
 INDICATOR_WEIGHT_SUGGESTIONS = {
     # Momentum (medium-high reliability)
     "rsi": 1.5,
@@ -274,6 +341,7 @@ INDICATOR_WEIGHT_SUGGESTIONS = {
 }
 
 # Signal group importance (for overall confidence)
+# Some signal groups are more important than others
 SIGNAL_GROUP_WEIGHTS = {
     "BUY_CALL": 1.0,
     "BUY_PUT": 1.0,
@@ -282,7 +350,7 @@ SIGNAL_GROUP_WEIGHTS = {
     "HOLD": 0.8,  # Hold signals less important
 }
 
-# Confidence threshold suggestions
+# Confidence threshold suggestions for different risk profiles
 CONFIDENCE_THRESHOLD_SUGGESTIONS = {
     "conservative": 0.7,
     "moderate": 0.6,
@@ -292,7 +360,16 @@ CONFIDENCE_THRESHOLD_SUGGESTIONS = {
 
 
 def get_indicator_params(indicator: str) -> Dict[str, Any]:
-    """Get default parameters for an indicator"""
+    """
+    Get default parameters for an indicator.
+
+    Args:
+        indicator: Indicator name (case-insensitive)
+
+    Returns:
+        Dict[str, Any]: Dictionary of parameter names and default values.
+                       Empty dict if indicator not found.
+    """
     try:
         if indicator is None:
             logger.warning("get_indicator_params called with None indicator")
@@ -307,7 +384,15 @@ def get_indicator_params(indicator: str) -> Dict[str, Any]:
 
 
 def get_param_type(param: str) -> str:
-    """Determine the type of a parameter for UI validation"""
+    """
+    Determine the type of a parameter for UI validation.
+
+    Args:
+        param: Parameter name
+
+    Returns:
+        str: Type name: "int", "float", "bool", or "string"
+    """
     try:
         if param is None:
             logger.warning("get_param_type called with None param")
@@ -328,7 +413,15 @@ def get_param_type(param: str) -> str:
 
 
 def get_param_description(param: str) -> str:
-    """Get description for a parameter"""
+    """
+    Get description for a parameter (for tooltips).
+
+    Args:
+        param: Parameter name
+
+    Returns:
+        str: Human-readable description
+    """
     try:
         if param is None:
             logger.warning("get_param_description called with None param")
@@ -341,7 +434,12 @@ def get_param_description(param: str) -> str:
 
 
 def get_indicators_by_category() -> Dict[str, List[str]]:
-    """Return indicators organized by category"""
+    """
+    Return indicators organized by category.
+
+    Returns:
+        Dict[str, List[str]]: Dictionary mapping category names to lists of indicators
+    """
     try:
         # Return a deep copy to prevent modification
         result = {}
@@ -354,7 +452,15 @@ def get_indicators_by_category() -> Dict[str, List[str]]:
 
 
 def get_indicator_display_name(indicator: str) -> str:
-    """Get a display name with proper formatting"""
+    """
+    Get a display name with proper formatting (uppercase).
+
+    Args:
+        indicator: Indicator name
+
+    Returns:
+        str: Formatted display name
+    """
     try:
         if indicator is None:
             logger.warning("get_indicator_display_name called with None indicator")
@@ -367,7 +473,15 @@ def get_indicator_display_name(indicator: str) -> str:
 
 
 def get_indicator_category(indicator: str) -> str:
-    """Get the category of an indicator"""
+    """
+    Get the category of an indicator.
+
+    Args:
+        indicator: Indicator name
+
+    Returns:
+        str: Category name ("Momentum", "Trend", etc.) or "Others" if not found
+    """
     try:
         if indicator is None:
             logger.warning("get_indicator_category called with None indicator")
@@ -384,7 +498,15 @@ def get_indicator_category(indicator: str) -> str:
 
 
 def validate_indicator(indicator: str) -> bool:
-    """Validate if an indicator exists in the registry"""
+    """
+    Validate if an indicator exists in the registry.
+
+    Args:
+        indicator: Indicator name
+
+    Returns:
+        bool: True if indicator exists, False otherwise
+    """
     try:
         if indicator is None:
             return False
@@ -397,7 +519,19 @@ def validate_indicator(indicator: str) -> bool:
 def validate_parameters(indicator: str, params: Dict[str, Any]) -> Dict[str, str]:
     """
     Validate parameters for an indicator.
-    Returns a dict of parameter_name -> error_message for invalid parameters.
+
+    This function performs comprehensive validation:
+        - Type checking (int, float, bool, string)
+        - Range validation for common parameters
+        - Reasonable value bounds
+
+    Args:
+        indicator: Indicator name
+        params: Dictionary of parameter names and values to validate
+
+    Returns:
+        Dict[str, str]: Dictionary mapping parameter names to error messages.
+                       Empty dict if no errors.
     """
     errors = {}
     try:
@@ -462,7 +596,23 @@ def validate_parameters(indicator: str, params: Dict[str, Any]) -> Dict[str, str
 
 
 def get_indicator_help(indicator: str) -> Dict[str, Any]:
-    """Get comprehensive help information for an indicator"""
+    """
+    Get comprehensive help information for an indicator.
+
+    Returns a dictionary containing:
+        - name: Indicator name
+        - display_name: Formatted display name
+        - category: Indicator category
+        - default_params: Default parameters
+        - description: Brief description
+        - parameters: List of parameter info with name, type, description, default
+
+    Args:
+        indicator: Indicator name
+
+    Returns:
+        Dict[str, Any]: Comprehensive help information
+    """
     try:
         if indicator is None:
             logger.warning("get_indicator_help called with None indicator")
@@ -498,11 +648,17 @@ def get_suggested_weight(indicator: str) -> float:
     """
     Get suggested weight for an indicator based on its reliability.
 
+    Higher weights for more reliable indicators (e.g., ADX, Supertrend).
+    Used in confidence scoring calculations.
+
     Args:
         indicator: Indicator name
 
     Returns:
-        Suggested weight (default 1.0)
+        float: Suggested weight (default 1.0)
+
+    Example:
+        weight = get_suggested_weight("adx")  # Returns 2.0
     """
     try:
         if indicator is None:
@@ -519,10 +675,10 @@ def get_signal_group_weight(signal_group: str) -> float:
     Get weight for a signal group (for overall confidence calculation).
 
     Args:
-        signal_group: Signal group name (BUY_CALL, BUY_PUT, etc.)
+        signal_group: Signal group name (BUY_CALL, BUY_PUT, EXIT_CALL, etc.)
 
     Returns:
-        Signal group weight (default 1.0)
+        float: Signal group weight (default 1.0)
     """
     try:
         return SIGNAL_GROUP_WEIGHTS.get(signal_group, 1.0)
@@ -536,10 +692,17 @@ def get_threshold_suggestion(profile: str = "moderate") -> float:
     Get confidence threshold suggestion based on risk profile.
 
     Args:
-        profile: 'conservative', 'moderate', 'aggressive', 'very_aggressive'
+        profile: Risk profile string:
+            - 'conservative': 0.7 (requires high confidence)
+            - 'moderate': 0.6 (balanced)
+            - 'aggressive': 0.5 (accepts moderate confidence)
+            - 'very_aggressive': 0.4 (accepts low confidence)
 
     Returns:
-        Suggested confidence threshold
+        float: Suggested confidence threshold
+
+    Example:
+        threshold = get_threshold_suggestion("conservative")  # Returns 0.7
     """
     try:
         return CONFIDENCE_THRESHOLD_SUGGESTIONS.get(profile, 0.6)
@@ -552,11 +715,23 @@ def calculate_rule_confidence(rule_results: List[Dict[str, Any]]) -> float:
     """
     Calculate confidence score from a list of rule results.
 
+    Confidence = (sum of weights of passed rules) / (sum of total weights)
+
     Args:
-        rule_results: List of rule result dicts with 'result' and 'weight' keys
+        rule_results: List of rule result dicts with 'result' and 'weight' keys.
+                     Each dict should have the structure returned by
+                     DynamicSignalEngine._evaluate_group().
 
     Returns:
-        Confidence score (0.0 to 1.0)
+        float: Confidence score (0.0 to 1.0)
+
+    Example:
+        rules = [
+            {"result": True, "weight": 2.0},
+            {"result": False, "weight": 1.0},
+            {"result": True, "weight": 1.5}
+        ]
+        confidence = calculate_rule_confidence(rules)  # Returns (2.0+1.5)/(2.0+1.0+1.5) = 0.7
     """
     try:
         if not rule_results:
@@ -583,7 +758,12 @@ def get_rule_weight_range() -> Dict[str, Any]:
     Get valid range for rule weights.
 
     Returns:
-        Dict with min, max, default, and step values
+        Dict with min, max, default, step, and description:
+            - min: Minimum allowed weight
+            - max: Maximum allowed weight
+            - default: Default weight
+            - step: Increment step for UI sliders
+            - description: Human-readable description
     """
     try:
         return {
@@ -602,12 +782,25 @@ def get_confidence_display_info(confidence: float, threshold: float) -> Dict[str
     """
     Get display information for a confidence value.
 
+    Provides UI-friendly information for displaying confidence scores:
+        - Color code based on confidence relative to threshold
+        - Label (PASS/NEAR/FAIL)
+        - Formatted percentage string
+
     Args:
         confidence: Confidence score (0.0 to 1.0)
         threshold: Confidence threshold
 
     Returns:
-        Dict with color, label, and status
+        Dict with keys:
+            - color: Hex color code for UI
+            - label: Status label ("PASS", "NEAR", "FAIL")
+            - status: Machine-readable status ("passed", "near", "failed")
+            - percent: Formatted percentage string (e.g., "75%")
+
+    Example:
+        info = get_confidence_display_info(0.75, 0.6)
+        # Returns {"color": "#3fb950", "label": "PASS", "status": "passed", "percent": "75%"}
     """
     try:
         if confidence >= threshold:
@@ -638,7 +831,7 @@ def get_confidence_display_info(confidence: float, threshold: float) -> Dict[str
 
 # Rule 8: Cleanup function
 def cleanup():
-    """Clean up resources (minimal for this module)"""
+    """Clean up resources (minimal for this module)."""
     try:
         logger.info("[indicator_registry] Cleanup completed")
     except Exception as e:

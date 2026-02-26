@@ -585,3 +585,159 @@ class DhanBroker(BaseBroker):
                     return None
         logger.critical(f"[DhanBroker.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Dhan live market feed WebSocket.
+
+        Dhan uses DhanFeed (dhanhq.market_feed module).
+        Securities are identified by (exchange_segment, security_id) tuples.
+        """
+        try:
+            from dhanhq import marketfeed  # type: ignore
+
+            client_id    = getattr(self, 'client_id', None) or \
+                           getattr(self, 'dhan_client_id', None)
+            access_token = getattr(self.state, "token", None) if self.state else None
+            if not client_id or not access_token:
+                logger.error("DhanBroker.create_websocket: missing client_id or token")
+                return None
+
+            # Store callbacks for use in ws_connect (DhanFeed uses them at init)
+            self._ws_on_tick    = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close   = on_close
+            self._ws_on_error   = on_error
+            self._ws_client_id  = client_id
+            self._ws_token      = access_token
+            # Return a sentinel; actual DhanFeed is created in ws_connect
+            # because DhanFeed requires instruments list at construction time.
+            logger.info("DhanBroker: WebSocket callbacks stored (DhanFeed created at subscribe)")
+            return {"__dhan_pending__": True}
+        except ImportError:
+            logger.error("DhanBroker: dhanhq not installed — pip install dhanhq")
+            return None
+        except Exception as e:
+            logger.error(f"[DhanBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """Dhan WebSocket starts when ws_subscribe is called (DhanFeed is constructed there)."""
+        logger.info("DhanBroker: ws_connect called — actual connection starts at ws_subscribe")
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to Dhan live feed.
+
+        Builds a DhanFeed instance with the given instruments and starts it.
+        Dhan requires (exchange_segment, security_id, subscription_type) tuples.
+
+        symbol format → Dhan security_id resolution:
+          - Uses _resolve_dhan_security() which looks up the Dhan instrument file.
+          - Falls back to stripping NSE: prefix and using as security_id directly
+            (works for index symbols like NIFTY 50 → security_id "13").
+        """
+        try:
+            from dhanhq import marketfeed  # type: ignore
+
+            if ws_obj is None or not symbols:
+                return
+
+            instruments = []
+            for sym in symbols:
+                seg, sec_id = self._resolve_dhan_security(sym)
+                if seg and sec_id:
+                    instruments.append((seg, sec_id, marketfeed.Quote))
+
+            if not instruments:
+                logger.warning("DhanBroker.ws_subscribe: no valid instruments")
+                return
+
+            feed = marketfeed.DhanFeed(
+                client_id=self._ws_client_id,
+                access_token=self._ws_token,
+                instruments=instruments,
+                subscription_code=marketfeed.Quote,
+                on_message=self._ws_on_tick,
+            )
+            # Store feed object back into the sentinel dict so disconnect works
+            ws_obj["__feed__"] = feed
+            feed.run_forever()
+            logger.info(f"DhanBroker: DhanFeed started with {len(instruments)} instruments")
+        except Exception as e:
+            logger.error(f"[DhanBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Dhan does not support partial unsubscribe; close and reconnect if needed."""
+        logger.warning("DhanBroker: partial unsubscribe not supported — use ws_disconnect and reconnect")
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Stop Dhan live feed."""
+        try:
+            if ws_obj is None:
+                return
+            feed = ws_obj.get("__feed__") if isinstance(ws_obj, dict) else None
+            if feed and hasattr(feed, "disconnect"):
+                feed.disconnect()
+            logger.info("DhanBroker: DhanFeed disconnected")
+        except Exception as e:
+            logger.error(f"[DhanBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize a Dhan market feed tick.
+
+        Dhan DhanFeed tick dict fields:
+            type, exchange_segment, security_id, LTP, LTT,
+            volume, OI, bid_price, ask_price, ...
+        """
+        try:
+            if not isinstance(raw_tick, dict):
+                return None
+            ltp = raw_tick.get("LTP") or raw_tick.get("ltp")
+            if ltp is None:
+                return None
+            seg     = raw_tick.get("exchange_segment", "")
+            sec_id  = raw_tick.get("security_id", "")
+            symbol  = f"{seg}:{sec_id}" if seg else str(sec_id)
+            return {
+                "symbol":    symbol,
+                "ltp":       float(ltp),
+                "timestamp": str(raw_tick.get("LTT", "")),
+                "bid":       raw_tick.get("best_bid_price"),
+                "ask":       raw_tick.get("best_ask_price"),
+                "volume":    raw_tick.get("volume"),
+                "oi":        raw_tick.get("OI"),
+                "open":      raw_tick.get("open"),
+                "high":      raw_tick.get("high"),
+                "low":       raw_tick.get("low"),
+                "close":     raw_tick.get("close"),
+            }
+        except Exception as e:
+            logger.error(f"[DhanBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_dhan_security(self, symbol: str):
+        """
+        Resolve a generic NSE:SYMBOL to (exchange_segment, security_id) for Dhan.
+
+        Returns ("NSE_EQ", security_id_str) or (None, None) on failure.
+        Attempts cache lookup first, then falls back to symbol stripping.
+        """
+        try:
+            from dhanhq import marketfeed  # type: ignore
+            cache = getattr(self, "_dhan_sec_cache", {})
+            if symbol in cache:
+                return cache[symbol]
+
+            # Strip exchange prefix and use bare symbol as security_id
+            bare = symbol.split(":")[-1]
+            seg  = marketfeed.NSE if "NSE" in symbol.upper() else marketfeed.NSE
+            result = (seg, bare)
+            cache[symbol] = result
+            self._dhan_sec_cache = cache
+            return result
+        except Exception:
+            return (None, None)

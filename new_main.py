@@ -89,15 +89,10 @@ class TradingApp:
             self.executor.notifier = self.notifier
             self.executor.on_trade_closed_callback = self._on_trade_closed
 
-            # Safe WebSocket initialization
-            client_id = ""
-            if broker_setting and hasattr(broker_setting, "client_id"):
-                client_id = broker_setting.client_id
-
             self.ws = WebSocketManager(
-                token=getattr(self.state, "token", None),
-                client_id=client_id,
-                on_message_callback=self.on_message
+                broker=self.broker,
+                on_message_callback=self.on_message,
+                symbols=getattr(self.state, "all_symbols", []),
             )
 
             # Set WebSocket callbacks for notifier

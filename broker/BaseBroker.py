@@ -5,14 +5,21 @@ Abstract base class defining the unified broker interface.
 All broker implementations must inherit from this class.
 
 Supported brokers:
-- Fyers (fyers_apiv3)
-- Zerodha (kiteconnect)
-- Dhan (dhanhq)
+- Fyers      (fyers_apiv3)
+- Zerodha    (kiteconnect)
+- Dhan       (dhanhq)
+- AngelOne   (smartapi-python)
+- Upstox     (upstox-python-sdk)
+- Shoonya    (NorenRestApiPy)
+- Kotak Neo  (neo_api_client)
+- ICICI      (breeze-connect)
+- AliceBlue  (pya3)
+- Flattrade  (NorenRestApiPy)
 """
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,10 @@ class BaseBroker(ABC):
 
     Every broker must implement these methods so the rest of the
     application can work with any broker without modification.
+
+    WebSocket methods (create_websocket, ws_connect, ws_subscribe,
+    ws_unsubscribe, ws_disconnect, normalize_tick) allow WebSocketManager
+    to drive live data for any broker without broker-specific code.
     """
 
     # ── Order side constants (universal) ──────────────────────────────────────
@@ -51,7 +62,7 @@ class BaseBroker(ABC):
     MAX_REQUESTS_PER_SECOND = 10
     MAX_RETRIES = 3
 
-    # ── Abstract methods every broker must implement ───────────────────────────
+    # ── Abstract REST methods every broker must implement ──────────────────────
 
     @abstractmethod
     def get_profile(self) -> Optional[Dict]:
@@ -130,6 +141,95 @@ class BaseBroker(ABC):
     @abstractmethod
     def cleanup(self) -> None:
         """Release resources on shutdown."""
+
+    # ── Abstract WebSocket methods every broker must implement ─────────────────
+
+    @abstractmethod
+    def create_websocket(
+        self,
+        on_tick: Callable,
+        on_connect: Callable,
+        on_close: Callable,
+        on_error: Callable,
+    ) -> Any:
+        """
+        Create and return the broker's native WebSocket/streaming object.
+
+        The returned object will be passed back to ws_connect(),
+        ws_subscribe(), ws_unsubscribe(), and ws_disconnect(), so the broker
+        can hold any internal state it needs inside the object.
+
+        Args:
+            on_tick    : callable(raw_tick) — called for each incoming tick.
+                         normalize_tick() converts it before passing upstream.
+            on_connect : callable() — called once connection is established.
+            on_close   : callable(message) — called when connection closes.
+            on_error   : callable(message) — called on connection errors.
+
+        Returns:
+            Broker-native WebSocket object, or None if creation fails.
+        """
+
+    @abstractmethod
+    def ws_connect(self, ws_obj: Any) -> None:
+        """
+        Start the WebSocket connection.
+
+        May be blocking (if the broker SDK runs its own event loop) or
+        non-blocking. For blocking SDKs, WebSocketManager wraps this in a
+        daemon thread automatically.
+
+        Args:
+            ws_obj: the object returned by create_websocket().
+        """
+
+    @abstractmethod
+    def ws_subscribe(self, ws_obj: Any, symbols: List[str]) -> None:
+        """
+        Subscribe to live tick data for the given symbols.
+
+        The broker translates from app-generic NSE:SYMBOL format to its own
+        symbol/token format internally.
+
+        Args:
+            ws_obj  : the object returned by create_websocket().
+            symbols : list of symbol strings in app-generic format.
+        """
+
+    @abstractmethod
+    def ws_unsubscribe(self, ws_obj: Any, symbols: List[str]) -> None:
+        """
+        Unsubscribe from live tick data for the given symbols.
+
+        Args:
+            ws_obj  : the object returned by create_websocket().
+            symbols : list of symbol strings in app-generic format.
+        """
+
+    @abstractmethod
+    def ws_disconnect(self, ws_obj: Any) -> None:
+        """
+        Cleanly close the WebSocket connection.
+
+        Args:
+            ws_obj: the object returned by create_websocket().
+        """
+
+    @abstractmethod
+    def normalize_tick(self, raw_tick: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize a broker-specific tick into a unified dict.
+
+        Returns a dict with at minimum:
+            {
+                "symbol"    : str,   # app-generic NSE:SYMBOL format
+                "ltp"       : float, # last traded price
+                "timestamp" : str,   # ISO-8601 or epoch string
+            }
+        and optionally: bid, ask, volume, oi, open, high, low, close.
+
+        Returns None if the tick cannot be parsed (e.g. heartbeat frames).
+        """
 
     # ── Shared utility ─────────────────────────────────────────────────────────
 

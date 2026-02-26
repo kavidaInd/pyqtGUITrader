@@ -536,3 +536,130 @@ class FyersBroker(BaseBroker):
 
         logger.critical(f"[{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Fyers v3 data WebSocket.
+
+        Access token format required by Fyers: "client_id:access_token".
+        Symbols use Fyers format: "NSE:NIFTY50-INDEX", "NSE:NIFTY24DECFUT", etc.
+        """
+        try:
+            from fyers_apiv3.FyersWebsocket import data_ws  # type: ignore
+
+            token = getattr(self.state, "token", None) if self.state else None
+            if not self.client_id or not token:
+                logger.error("FyersBroker.create_websocket: missing client_id or token")
+                return None
+
+            access_token = f"{self.client_id}:{token}"
+
+            socket = data_ws.FyersDataSocket(
+                access_token=access_token,
+                log_path="",
+                litemode=False,
+                write_to_file=False,
+                reconnect=False,
+                on_connect=on_connect,
+                on_close=on_close,
+                on_error=on_error,
+                on_message=on_tick,
+            )
+            logger.info("FyersBroker: WebSocket object created")
+            return socket
+        except ImportError:
+            logger.error("FyersBroker: fyers_apiv3 not installed — pip install fyers_apiv3")
+            return None
+        except Exception as e:
+            logger.error(f"[FyersBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """Start Fyers WebSocket (non-blocking — SDK manages its own thread)."""
+        try:
+            if ws_obj is None:
+                logger.error("FyersBroker.ws_connect: ws_obj is None")
+                return
+            ws_obj.connect()
+            logger.info("FyersBroker: WebSocket connect() called")
+        except Exception as e:
+            logger.error(f"[FyersBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to Fyers SymbolUpdate and OnOrders channels.
+
+        Fyers symbols must have exchange prefix: "NSE:NIFTY50-INDEX".
+        Plain symbols without prefix are auto-prefixed.
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+            fyers_syms = [s if ":" in s else f"NSE:{s}" for s in symbols]
+            for data_type in ("SymbolUpdate", "OnOrders"):
+                try:
+                    ws_obj.subscribe(symbols=fyers_syms, data_type=data_type)
+                    logger.info(f"FyersBroker: subscribed {len(fyers_syms)} symbols ({data_type})")
+                except Exception as e:
+                    logger.error(f"FyersBroker.ws_subscribe({data_type}): {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"[FyersBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from Fyers channels."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            fyers_syms = [s if ":" in s else f"NSE:{s}" for s in symbols]
+            for data_type in ("SymbolUpdate", "OnOrders"):
+                try:
+                    ws_obj.unsubscribe(symbols=fyers_syms, data_type=data_type)
+                except Exception as e:
+                    logger.error(f"FyersBroker.ws_unsubscribe({data_type}): {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"[FyersBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close Fyers WebSocket."""
+        try:
+            if ws_obj is None:
+                return
+            if hasattr(ws_obj, "close_connection"):
+                ws_obj.close_connection()
+            logger.info("FyersBroker: WebSocket disconnected")
+        except Exception as e:
+            logger.error(f"[FyersBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize a Fyers tick to the unified format.
+
+        Fyers SymbolUpdate tick fields:
+            symbol, ltp, timestamp, bid_price, ask_price,
+            volume, open_price, high_price, low_price, prev_close_price, oi
+        """
+        try:
+            if not isinstance(raw_tick, dict):
+                return None
+            symbol = raw_tick.get("symbol")
+            ltp = raw_tick.get("ltp")
+            if symbol is None or ltp is None:
+                return None
+            return {
+                "symbol":    symbol,
+                "ltp":       float(ltp),
+                "timestamp": str(raw_tick.get("timestamp", "")),
+                "bid":       raw_tick.get("bid_price"),
+                "ask":       raw_tick.get("ask_price"),
+                "volume":    raw_tick.get("volume"),
+                "oi":        raw_tick.get("oi"),
+                "open":      raw_tick.get("open_price"),
+                "high":      raw_tick.get("high_price"),
+                "low":       raw_tick.get("low_price"),
+                "close":     raw_tick.get("prev_close_price"),
+            }
+        except Exception as e:
+            logger.error(f"[FyersBroker.normalize_tick] {e}", exc_info=True)
+            return None

@@ -606,3 +606,169 @@ class KotakNeoBroker(BaseBroker):
                 return None
         logger.critical(f"[KotakNeo.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Kotak Neo WebSocket via neo_api_client.
+
+        NeoAPI has built-in WebSocket support through client.on_message,
+        client.subscribe() and client.un_subscribe() methods.
+        """
+        try:
+            if not hasattr(self, 'client') or self.client is None:
+                logger.error("KotakNeoBroker.create_websocket: client not initialized — login first")
+                return None
+
+            self._ws_on_tick    = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close   = on_close
+            self._ws_on_error   = on_error
+
+            logger.info("KotakNeoBroker: WebSocket callbacks stored")
+            return {"__neo_client__": self.client}
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """
+        Start Kotak Neo WebSocket.
+
+        NeoAPI WebSocket is started by calling client.subscribe() which
+        internally opens the WebSocket connection. Here we set up the
+        message callback and call subscribe() in ws_subscribe().
+        """
+        try:
+            if ws_obj is None:
+                return
+            client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
+            if client is None:
+                logger.error("KotakNeoBroker.ws_connect: no client")
+                return
+
+            # Attach message handler
+            client.on_message = lambda msg: self._ws_on_tick(msg)
+            logger.info("KotakNeoBroker: on_message callback attached")
+            self._ws_on_connect()
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to Kotak Neo live feed.
+
+        NeoAPI subscribe() takes instrument_tokens as a list.
+        Translates generic symbols to Kotak Neo instrument_token format.
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+            client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
+            if client is None:
+                return
+
+            tokens = []
+            for sym in symbols:
+                token = self._resolve_neo_token(sym)
+                if token:
+                    tokens.append(token)
+
+            if not tokens:
+                logger.warning("KotakNeoBroker.ws_subscribe: no valid tokens")
+                return
+
+            client.subscribe(
+                instrument_tokens=tokens,
+                isIndex=False,
+                isDepth=False,
+            )
+            logger.info(f"KotakNeoBroker: subscribed {len(tokens)} tokens")
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from Kotak Neo live feed."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
+            if client is None:
+                return
+            tokens = [self._resolve_neo_token(s) for s in symbols]
+            tokens = [t for t in tokens if t]
+            if tokens:
+                client.un_subscribe(instrument_tokens=tokens)
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close Kotak Neo WebSocket."""
+        try:
+            if ws_obj is None:
+                return
+            client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
+            if client and hasattr(client, "un_subscribe_all"):
+                client.un_subscribe_all()
+            self._ws_on_close("disconnected")
+            logger.info("KotakNeoBroker: WebSocket disconnected")
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize a Kotak Neo live feed tick.
+
+        NeoAPI tick dict fields: token, ltp, ltq, ltt, tbq, tsq,
+        open, high, low, close, oi, bq1/bp1/sq1/sp1 (depth).
+        """
+        try:
+            if isinstance(raw_tick, str):
+                import json
+                raw_tick = json.loads(raw_tick)
+            if not isinstance(raw_tick, dict):
+                return None
+
+            ltp = raw_tick.get("ltp") or raw_tick.get("LTP")
+            if ltp is None:
+                return None
+
+            token  = raw_tick.get("tk") or raw_tick.get("token", "")
+            symbol = f"NSE:{token}"
+
+            return {
+                "symbol":    symbol,
+                "ltp":       float(ltp),
+                "timestamp": str(raw_tick.get("ltt", "")),
+                "bid":       raw_tick.get("bp1"),
+                "ask":       raw_tick.get("sp1"),
+                "volume":    raw_tick.get("v") or raw_tick.get("tbq"),
+                "oi":        raw_tick.get("oi"),
+                "open":      raw_tick.get("o") or raw_tick.get("open"),
+                "high":      raw_tick.get("h") or raw_tick.get("high"),
+                "low":       raw_tick.get("lo") or raw_tick.get("low"),
+                "close":     raw_tick.get("c") or raw_tick.get("close"),
+            }
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_neo_token(self, symbol: str) -> Optional[str]:
+        """
+        Map generic NSE:SYMBOL → Kotak Neo instrument_token.
+
+        Kotak Neo uses numeric token strings. Without the instruments CSV,
+        we return the bare symbol as a best-effort fallback.
+        For production, download the instrument file and build a proper cache.
+        """
+        try:
+            cache = getattr(self, "_neo_token_cache", {})
+            if symbol in cache:
+                return cache[symbol]
+            bare = symbol.split(":")[-1]
+            cache[symbol] = bare
+            self._neo_token_cache = cache
+            return bare
+        except Exception:
+            return None

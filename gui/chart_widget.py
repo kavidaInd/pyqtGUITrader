@@ -187,7 +187,7 @@ class MarketStructureAnalyzer:
             pivots = self._identify_structure(pivots)
 
             # Update trend lines
-            self._update_trend_lines(pivots)
+            # self._update_trend_lines(pivots)
 
             return pivots
 
@@ -665,7 +665,7 @@ class SpotChartWidget(QWebEngineView):
             return ""
 
     def _perform_update(self):
-        """Perform chart update"""
+        """Perform chart update - filtered for today only"""
         if self._pending_data is None:
             return
 
@@ -673,13 +673,20 @@ class SpotChartWidget(QWebEngineView):
         self._pending_data = None
 
         try:
-            # Run analysis
-            self._analyze_data(data)
+            # Filter data to show only today
+            filtered_data = self._filter_today_data(data)
 
-            # Generate HTML
-            html = self._generate_chart_html(data)
+            if not filtered_data or not filtered_data.get("close"):
+                self._show_placeholder("No data for today")
+                return
+
+            # Run analysis on filtered data
+            self._analyze_data(filtered_data)
+
+            # Generate HTML with filtered data
+            html = self._generate_chart_html(filtered_data)
             if html:
-                fp = self._fingerprint(data)
+                fp = self._fingerprint(filtered_data)
                 if fp and len(self._html_cache) < self._max_cache_size:
                     self._html_cache[fp] = html
                 self.setHtml(html)
@@ -689,6 +696,45 @@ class SpotChartWidget(QWebEngineView):
         except Exception as e:
             logger.error(f"Chart update error: {e}", exc_info=True)
             self._show_error_placeholder(str(e))
+
+    def _filter_today_data(self, data: Dict[str, List]) -> Dict[str, List]:
+        """Filter data to show only today's trading session"""
+        try:
+            timestamps = data.get("timestamp", [])
+            if not timestamps:
+                return data
+
+            # Get today's date (midnight)
+            import datetime
+            now = datetime.datetime.now()
+            today_start = datetime.datetime(now.year, now.month, now.day).timestamp()
+
+            # Find indices for today's data
+            today_indices = []
+            for i, ts in enumerate(timestamps):
+                if ts >= today_start:
+                    today_indices.append(i)
+
+            if not today_indices:
+                # If no timestamps from today, take last 50 bars as fallback
+                logger.warning("No today's data found, using last 50 bars")
+                n = len(timestamps)
+                start_idx = max(0, n - 50)
+                today_indices = list(range(start_idx, n))
+
+            # Filter all arrays to keep only today's indices
+            filtered_data = {}
+            for key, values in data.items():
+                if isinstance(values, (list, tuple)) and len(values) == len(timestamps):
+                    filtered_data[key] = [values[i] for i in today_indices]
+                else:
+                    filtered_data[key] = values  # Keep non-list data as is
+
+            return filtered_data
+
+        except Exception as e:
+            logger.error(f"[SpotChartWidget._filter_today_data] Failed: {e}")
+            return data  # Return original on error
 
     def _analyze_data(self, data: Dict[str, List]) -> None:
         """Analyze market structure"""
@@ -1928,14 +1974,12 @@ class SimpleChartWidget(QWidget):
         """Set configuration for spot chart"""
         self.spot_chart.set_config(config, signal_engine)
 
-    def update_charts(self, spot_data: dict, call_data: dict = None, put_data: dict = None):
+    def update_charts(self, spot_data: dict):
         """Update spot chart and signal tab with new data"""
         try:
+
             if spot_data:
                 self.spot_chart.update_chart(spot_data)
-                option_signal = spot_data.get("option_signal")
-                if option_signal:
-                    self.signal_tab.refresh(option_signal)
 
         except Exception as e:
             logger.error(f"[SimpleChartWidget.update_charts] Failed: {e}")

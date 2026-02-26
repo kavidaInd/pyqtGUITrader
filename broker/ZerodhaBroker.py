@@ -610,3 +610,170 @@ class ZerodhaBroker(BaseBroker):
                 return None
         logger.critical(f"[ZerodhaBroker.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create Zerodha KiteTicker.
+
+        KiteTicker receives ticks as a list of dicts (one per subscribed token).
+        Symbols must be mapped to integer instrument_tokens for subscription;
+        this broker caches the mapping in self._ws_token_map.
+        """
+        try:
+            from kiteconnect import KiteTicker  # type: ignore
+
+            api_key = self.api_key
+            access_token = getattr(self.state, "token", None) if self.state else None
+            if not api_key or not access_token:
+                logger.error("ZerodhaBroker.create_websocket: missing api_key or access_token")
+                return None
+
+            ticker = KiteTicker(api_key, access_token)
+
+            # KiteTicker uses attribute-style callback assignment
+            ticker.on_ticks   = on_tick      # called with list of tick dicts
+            ticker.on_connect = lambda ws, response: on_connect()
+            ticker.on_close   = lambda ws, code, reason: on_close(f"{code}: {reason}")
+            ticker.on_error   = lambda ws, code, reason: on_error(f"{code}: {reason}")
+
+            # Cache for symbol → instrument_token mapping (populated lazily)
+            if not hasattr(self, "_ws_token_map"):
+                self._ws_token_map: Dict[str, int] = {}
+
+            logger.info("ZerodhaBroker: KiteTicker object created")
+            return ticker
+        except ImportError:
+            logger.error("ZerodhaBroker: kiteconnect not installed — pip install kiteconnect")
+            return None
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """
+        Start KiteTicker (blocking — SDK blocks in its own thread).
+        WebSocketManager must call this inside a daemon thread.
+        """
+        try:
+            if ws_obj is None:
+                return
+            ws_obj.connect(threaded=True)   # threaded=True → non-blocking
+            logger.info("ZerodhaBroker: KiteTicker connect() called (threaded)")
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to Zerodha live ticks.
+
+        Translates generic NSE:SYMBOL → instrument_token (int).
+        Uses _get_instrument_token() which caches results.
+        Subscribes in FULL mode for depth + LTP data.
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+            from kiteconnect import KiteTicker  # type: ignore
+
+            tokens = []
+            for sym in symbols:
+                exchange, tradingsymbol = self._split_symbol(self._format_symbol(sym))
+                token = self._get_instrument_token(exchange, tradingsymbol)
+                if token:
+                    tokens.append(token)
+                    self._ws_token_map[token] = sym  # reverse map for normalize
+                else:
+                    logger.warning(f"ZerodhaBroker.ws_subscribe: no token for {sym}")
+
+            if not tokens:
+                logger.warning("ZerodhaBroker.ws_subscribe: no valid tokens to subscribe")
+                return
+
+            ws_obj.subscribe(tokens)
+            ws_obj.set_mode(KiteTicker.MODE_FULL, tokens)
+            logger.info(f"ZerodhaBroker: subscribed {len(tokens)} tokens")
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from Zerodha ticks."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            tokens = []
+            for sym in symbols:
+                exchange, tradingsymbol = self._split_symbol(self._format_symbol(sym))
+                token = self._get_instrument_token(exchange, tradingsymbol)
+                if token:
+                    tokens.append(token)
+            if tokens:
+                ws_obj.unsubscribe(tokens)
+                logger.info(f"ZerodhaBroker: unsubscribed {len(tokens)} tokens")
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close KiteTicker."""
+        try:
+            if ws_obj is None:
+                return
+            ws_obj.close()
+            logger.info("ZerodhaBroker: KiteTicker closed")
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize a Zerodha tick.
+
+        KiteTicker delivers ticks as a list; WebSocketManager passes each
+        item individually. Each item is a dict with instrument_token as key.
+
+        Zerodha tick fields: instrument_token, last_price, timestamp,
+        ohlc, volume, oi, buy/sell depth arrays.
+        """
+        try:
+            # KiteTicker sends a list — handle both list and single dict
+            if isinstance(raw_tick, list):
+                # If list, normalize first item (WebSocketManager calls per tick)
+                if not raw_tick:
+                    return None
+                raw_tick = raw_tick[0]
+
+            if not isinstance(raw_tick, dict):
+                return None
+
+            instrument_token = raw_tick.get("instrument_token")
+            ltp = raw_tick.get("last_price")
+            if ltp is None:
+                return None
+
+            # Resolve symbol from cached token map
+            token_map = getattr(self, "_ws_token_map", {})
+            symbol = token_map.get(instrument_token, f"TOKEN:{instrument_token}")
+
+            ohlc = raw_tick.get("ohlc", {})
+            depth = raw_tick.get("depth", {})
+            buys  = depth.get("buy", [{}])
+            sells = depth.get("sell", [{}])
+
+            ts = raw_tick.get("timestamp") or raw_tick.get("exchange_timestamp")
+
+            return {
+                "symbol":    symbol,
+                "ltp":       float(ltp),
+                "timestamp": str(ts) if ts else "",
+                "bid":       buys[0].get("price")  if buys  else None,
+                "ask":       sells[0].get("price") if sells else None,
+                "volume":    raw_tick.get("volume"),
+                "oi":        raw_tick.get("oi"),
+                "open":      ohlc.get("open"),
+                "high":      ohlc.get("high"),
+                "low":       ohlc.get("low"),
+                "close":     ohlc.get("close"),
+            }
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.normalize_tick] {e}", exc_info=True)
+            return None

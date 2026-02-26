@@ -1,14 +1,52 @@
 """
-dynamic_signal_engine_db.py
-============================
+Dynamic Signal Engine Module
+=============================
 Database-backed DynamicSignalEngine for option trading that works with StrategyManager.
-Signals: BUY_CALL, BUY_PUT, EXIT_CALL, EXIT_PUT, HOLD, WAIT
+
+This module provides a flexible, rule-based signal generation engine for option trading.
+It evaluates multiple technical indicators against configurable rules to produce
+trading signals: BUY_CALL, BUY_PUT, EXIT_CALL, EXIT_PUT, HOLD, or WAIT.
 
 FEATURE 3: Signal Confidence Voting System
-- Weighted rule evaluation
-- Confidence scoring per group
-- Minimum confidence threshold
-- Human-readable explanations
+------------------------------------------
+The engine implements a sophisticated voting system:
+    - Each rule has a weight (default 1.0)
+    - Confidence = sum(passed_weights) / sum(total_weights) per signal group
+    - Minimum confidence threshold (configurable) suppresses weak signals
+    - Human-readable explanations of evaluation results
+
+Architecture:
+    The engine operates as a rule evaluation system:
+
+    1. **Signal Groups**: Five independent signal groups (BUY_CALL, BUY_PUT, etc.)
+    2. **Rules**: Each group contains multiple rules with logical operators
+    3. **Indicators**: Rules compare indicator values, columns, or scalars
+    4. **Operators**: Support for comparison and crossover detection
+    5. **Resolution**: Final signal determined from fired groups with conflict resolution
+
+Key Features:
+    - **Strategy Integration**: Load/save configuration from StrategyManager
+    - **Rule Weights**: Each rule contributes to confidence scoring (FEATURE 3)
+    - **Confidence Threshold**: Minimum confidence to fire a signal (FEATURE 3)
+    - **Conflict Resolution**: Handle simultaneous BUY_CALL/BUY_PUT
+    - **Indicator Caching**: Computed indicators cached within evaluation
+    - **Comprehensive Output**: Detailed rule results with values and explanations
+    - **Graceful Degradation**: Handles missing data, indicators, or libraries
+
+Dependencies:
+    - pandas: Data manipulation
+    - pandas_ta: Technical indicator calculations (optional)
+    - numpy: Numerical operations
+
+Signals:
+    - BUY_CALL: Bullish signal for call option
+    - BUY_PUT: Bearish signal for put option
+    - EXIT_CALL: Exit existing call position
+    - EXIT_PUT: Exit existing put position
+    - HOLD: Hold current position (no action)
+    - WAIT: No clear signal (default)
+
+Version: 2.0.0 (with FEATURE 3 enhancements)
 """
 
 from __future__ import annotations
@@ -32,6 +70,17 @@ except ImportError:
 
 
 class OptionSignal(str, Enum):
+    """
+    Enumeration of all possible trading signals.
+
+    Values:
+        BUY_CALL: Enter long call position
+        BUY_PUT: Enter long put position
+        EXIT_CALL: Exit existing call position
+        EXIT_PUT: Exit existing put position
+        HOLD: No action, continue holding
+        WAIT: No clear signal, wait for better conditions
+    """
     BUY_CALL = "BUY_CALL"
     BUY_PUT = "BUY_PUT"
     EXIT_CALL = "EXIT_CALL"
@@ -50,21 +99,27 @@ class OptionSignal(str, Enum):
             return cls.WAIT
 
 
+# List of all signal groups that can fire
 SIGNAL_GROUPS = [OptionSignal.BUY_CALL, OptionSignal.BUY_PUT,
                  OptionSignal.EXIT_CALL, OptionSignal.EXIT_PUT,
                  OptionSignal.HOLD]
 
+# Human-readable labels for UI display
 SIGNAL_LABELS: Dict[str, str] = {
     "BUY_CALL": "📈  Buy Call", "BUY_PUT": "📉  Buy Put",
     "EXIT_CALL": "🔴  Exit Call", "EXIT_PUT": "🔵  Exit Put", "HOLD": "⏸   Hold",
 }
+
+# Color codes for UI theming
 SIGNAL_COLORS: Dict[str, str] = {
     "BUY_CALL": "#a6e3a1", "BUY_PUT": "#89b4fa", "EXIT_CALL": "#f38ba8",
     "EXIT_PUT": "#fab387", "HOLD": "#f9e2af", "WAIT": "#585b70",
 }
 
+# Supported operators for rule conditions
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
 
+# Mapping from indicator names to pandas_ta function names
 INDICATOR_MAP: Dict[str, str] = {
     "rsi": "rsi", "ema": "ema", "sma": "sma", "wma": "wma", "macd": "macd", "bbands": "bbands",
     "atr": "atr", "adx": "adx", "cci": "cci", "stoch": "stoch", "roc": "roc", "mom": "mom",
@@ -72,7 +127,11 @@ INDICATOR_MAP: Dict[str, str] = {
     "donchian": "donchian", "psar": "psar", "tema": "tema", "dema": "dema", "hma": "hma",
     "zlma": "zlma", "slope": "slope", "linreg": "linreg",
 }
+
+# Standard OHLCV column names expected in DataFrames
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+
+# Default parameters for each indicator type
 INDICATOR_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "rsi": {"length": 14}, "ema": {"length": 20}, "sma": {"length": 20}, "wma": {"length": 20},
     "macd": {"fast": 12, "slow": 26, "signal": 9}, "bbands": {"length": 20, "std": 2.0},
@@ -85,6 +144,8 @@ INDICATOR_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "tema": {"length": 20}, "dema": {"length": 20}, "hma": {"length": 20}, "zlma": {"length": 20},
     "slope": {"length": 1}, "linreg": {"length": 14},
 }
+
+# Hints for selecting the correct column from multi-column indicator results
 INDICATOR_COLUMN_HINTS: Dict[str, str] = {
     "macd": "MACD_12_26_9", "bbands": "BBM_20_2.0", "stoch": "STOCHk_14_3_3",
     "supertrend": "SUPERT_7_3.0", "kc": "KCBe_20_1.5", "donchian": "DCM_20_20", "adx": "ADX_14",
@@ -92,7 +153,17 @@ INDICATOR_COLUMN_HINTS: Dict[str, str] = {
 
 
 def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any]) -> Optional[pd.Series]:
-    """Compute indicator with error handling"""
+    """
+    Compute technical indicator with error handling.
+
+    Args:
+        df: OHLCV DataFrame
+        indicator: Indicator name (e.g., "rsi", "ema")
+        params: Parameters for the indicator
+
+    Returns:
+        Optional[pd.Series]: Indicator values, or None if computation fails
+    """
     try:
         if ta is None:
             logger.warning("pandas_ta not available, cannot compute indicator")
@@ -129,6 +200,7 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
             if result is None:
                 return None
 
+            # Extract appropriate column from multi-column result
             if isinstance(result, pd.DataFrame):
                 hint = INDICATOR_COLUMN_HINTS.get(indicator.lower())
                 if hint and hint in result.columns:
@@ -158,7 +230,22 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
 
 
 def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, Any]) -> Optional[pd.Series]:
-    """Resolve a side (LHS/RHS) to a pandas Series"""
+    """
+    Resolve a side (LHS/RHS) of a rule to a pandas Series.
+
+    Side definitions can be:
+        - Scalar: Constant value
+        - Column: Direct column from DataFrame
+        - Indicator: Computed technical indicator
+
+    Args:
+        df: OHLCV DataFrame
+        side_def: Side definition dictionary
+        cache: Cache for computed indicators to avoid recalculation
+
+    Returns:
+        Optional[pd.Series]: Series of values, or None if resolution fails
+    """
     try:
         if df is None:
             logger.warning("_resolve_side called with None df")
@@ -189,7 +276,7 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
         indicator = side_def.get("indicator", "").lower()
         params = side_def.get("params", INDICATOR_DEFAULTS.get(indicator, {}))
 
-        # Create cache key
+        # Create cache key for performance
         try:
             cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}"
         except Exception as e:
@@ -207,7 +294,20 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
 
 
 def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Optional[float], Optional[float]]:
-    """Returns (result: bool, lhs_val: float|None, rhs_val: float|None)."""
+    """
+    Apply comparison operator to two series.
+
+    Args:
+        lhs: Left-hand side series
+        op: Operator string (>, <, >=, <=, ==, !=, crosses_above, crosses_below)
+        rhs: Right-hand side series
+
+    Returns:
+        Tuple[bool, Optional[float], Optional[float]]:
+            - Result of comparison
+            - Last value of LHS (if available)
+            - Last value of RHS (if available)
+    """
     try:
         if lhs is None or rhs is None:
             logger.warning(f"Operator '{op}' called with None series")
@@ -263,7 +363,17 @@ def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Opti
 
 
 def _rule_to_string(rule: Dict[str, Any]) -> str:
-    """Convert rule dict to readable string"""
+    """
+    Convert rule dictionary to human-readable string.
+
+    FEATURE 3: Includes rule weight in string representation.
+
+    Args:
+        rule: Rule dictionary with lhs, op, rhs, and optional weight
+
+    Returns:
+        str: Human-readable rule description
+    """
     try:
         if rule is None:
             return "Invalid rule"
@@ -298,12 +408,31 @@ def _rule_to_string(rule: Dict[str, Any]) -> str:
 class DynamicSignalEngine:
     """
     Dynamic signal engine that uses strategy configuration from StrategyManager.
-    Each instance is tied to a specific strategy slug.
+
+    Each instance is tied to a specific strategy slug and evaluates rules against
+    OHLCV data to generate trading signals. The engine supports:
+        - Multiple signal groups (BUY_CALL, BUY_PUT, etc.)
+        - Configurable rules with logical operators (AND/OR)
+        - Technical indicators from pandas_ta
+        - FEATURE 3: Rule weights and confidence scoring
+        - FEATURE 3: Minimum confidence threshold
+        - FEATURE 3: Human-readable explanations
 
     FEATURE 3: Signal Confidence Voting System
-    - Each rule has a weight (default 1.0)
-    - Confidence = sum(passed_weights) / sum(total_weights)
-    - Signals below min_confidence are suppressed
+        - Each rule has a weight (default 1.0)
+        - Confidence = sum(passed_weights) / sum(total_weights) per group
+        - Signals below min_confidence are suppressed
+        - Weights allow prioritizing certain rules over others
+
+    Example:
+        engine = DynamicSignalEngine("my_strategy")
+        result = engine.evaluate(df)
+        if result["signal"] == OptionSignal.BUY_CALL:
+            place_buy_call()
+
+        # FEATURE 3: Check confidence
+        if result["confidence"]["BUY_CALL"] >= 0.7:
+            print("High confidence signal!")
     """
 
     DEFAULT_CONFIG: Dict[str, Any] = {
@@ -356,7 +485,15 @@ class DynamicSignalEngine:
         self._manager = None
 
     def _key(self, signal: Union[str, OptionSignal]) -> str:
-        """Get config key for signal"""
+        """
+        Get configuration key for a signal.
+
+        Args:
+            signal: Signal as string or OptionSignal enum
+
+        Returns:
+            str: String key for config dictionary
+        """
         try:
             if signal is None:
                 return ""
@@ -467,7 +604,12 @@ class DynamicSignalEngine:
             return False
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary"""
+        """
+        Convert configuration to dictionary.
+
+        Returns:
+            Dict[str, Any]: Configuration dictionary suitable for saving
+        """
         try:
             return {k: {"logic": v["logic"], "rules": list(v["rules"]), "enabled": v["enabled"]}
                     for k, v in self.config.items()}
@@ -476,7 +618,12 @@ class DynamicSignalEngine:
             return {}
 
     def from_dict(self, d: Dict[str, Any]) -> None:
-        """Load config from dictionary"""
+        """
+        Load configuration from dictionary.
+
+        Args:
+            d: Configuration dictionary
+        """
         try:
             if d is None:
                 logger.warning("from_dict called with None")
@@ -517,7 +664,16 @@ class DynamicSignalEngine:
             logger.error(f"[from_dict] Failed: {e}", exc_info=True)
 
     def add_rule(self, signal: Union[str, OptionSignal], rule: Dict[str, Any]) -> bool:
-        """Add a rule to a signal group"""
+        """
+        Add a rule to a signal group.
+
+        Args:
+            signal: Target signal group
+            rule: Rule dictionary with lhs, op, rhs, and optional weight
+
+        Returns:
+            bool: True if rule added successfully
+        """
         try:
             k = self._key(signal)
             if k not in self.config:
@@ -541,7 +697,16 @@ class DynamicSignalEngine:
             return False
 
     def remove_rule(self, signal: Union[str, OptionSignal], index: int) -> bool:
-        """Remove a rule by index"""
+        """
+        Remove a rule by index.
+
+        Args:
+            signal: Target signal group
+            index: Rule index to remove
+
+        Returns:
+            bool: True if rule removed successfully
+        """
         try:
             k = self._key(signal)
             rules = self.config.get(k, {}).get("rules", [])
@@ -556,7 +721,17 @@ class DynamicSignalEngine:
             return False
 
     def update_rule(self, signal: Union[str, OptionSignal], index: int, rule: Dict[str, Any]) -> bool:
-        """Update a rule by index"""
+        """
+        Update a rule by index.
+
+        Args:
+            signal: Target signal group
+            index: Rule index to update
+            rule: New rule definition
+
+        Returns:
+            bool: True if rule updated successfully
+        """
         try:
             k = self._key(signal)
             rules = self.config.get(k, {}).get("rules", [])
@@ -577,7 +752,15 @@ class DynamicSignalEngine:
             return False
 
     def get_rules(self, signal: Union[str, OptionSignal]) -> List[Dict[str, Any]]:
-        """Get all rules for a signal"""
+        """
+        Get all rules for a signal.
+
+        Args:
+            signal: Target signal group
+
+        Returns:
+            List[Dict[str, Any]]: List of rule dictionaries
+        """
         try:
             k = self._key(signal)  # FIXED: Get key first
             return list(self.config.get(k, {}).get("rules", []))
@@ -586,7 +769,13 @@ class DynamicSignalEngine:
             return []
 
     def set_logic(self, signal: Union[str, OptionSignal], logic: str) -> None:
-        """Set logic (AND/OR) for a signal group"""
+        """
+        Set logic (AND/OR) for a signal group.
+
+        Args:
+            signal: Target signal group
+            logic: "AND" or "OR"
+        """
         try:
             k = self._key(signal)
             if k in self.config and logic.upper() in ("AND", "OR"):
@@ -596,7 +785,15 @@ class DynamicSignalEngine:
             logger.error(f"[set_logic] Failed for {signal}: {e}", exc_info=True)
 
     def get_logic(self, signal: Union[str, OptionSignal]) -> str:
-        """Get logic for a signal group"""
+        """
+        Get logic for a signal group.
+
+        Args:
+            signal: Target signal group
+
+        Returns:
+            str: "AND" or "OR"
+        """
         try:
             k = self._key(signal)
             return self.config.get(k, {}).get("logic", "AND")
@@ -605,7 +802,13 @@ class DynamicSignalEngine:
             return "AND"
 
     def set_enabled(self, signal: Union[str, OptionSignal], enabled: bool) -> None:
-        """Enable/disable a signal group"""
+        """
+        Enable/disable a signal group.
+
+        Args:
+            signal: Target signal group
+            enabled: True to enable, False to disable
+        """
         try:
             k = self._key(signal)
             if k in self.config:
@@ -615,7 +818,15 @@ class DynamicSignalEngine:
             logger.error(f"[set_enabled] Failed for {signal}: {e}", exc_info=True)
 
     def is_enabled(self, signal: Union[str, OptionSignal]) -> bool:
-        """Check if a signal group is enabled"""
+        """
+        Check if a signal group is enabled.
+
+        Args:
+            signal: Target signal group
+
+        Returns:
+            bool: True if enabled
+        """
         try:
             k = self._key(signal)
             return bool(self.config.get(k, {}).get("enabled", True))
@@ -625,7 +836,17 @@ class DynamicSignalEngine:
 
     # FEATURE 3: Rule weight management
     def set_rule_weight(self, signal: Union[str, OptionSignal], index: int, weight: float) -> bool:
-        """Set weight for a specific rule"""
+        """
+        Set weight for a specific rule.
+
+        Args:
+            signal: Target signal group
+            index: Rule index
+            weight: New weight value
+
+        Returns:
+            bool: True if weight set successfully
+        """
         try:
             k = self._key(signal)
             rules = self.config.get(k, {}).get("rules", [])
@@ -639,7 +860,16 @@ class DynamicSignalEngine:
             return False
 
     def get_rule_weight(self, signal: Union[str, OptionSignal], index: int) -> float:
-        """Get weight for a specific rule"""
+        """
+        Get weight for a specific rule.
+
+        Args:
+            signal: Target signal group
+            index: Rule index
+
+        Returns:
+            float: Rule weight (default 1.0)
+        """
         try:
             k = self._key(signal)
             rules = self.config.get(k, {}).get("rules", [])
@@ -651,7 +881,15 @@ class DynamicSignalEngine:
             return 1.0
 
     def rule_descriptions(self, signal: Union[str, OptionSignal]) -> List[str]:
-        """Get human-readable rule descriptions with weights"""
+        """
+        Get human-readable rule descriptions with weights.
+
+        Args:
+            signal: Target signal group
+
+        Returns:
+            List[str]: List of rule descriptions
+        """
         try:
             k = self._key(signal)  # FIXED: Get key first
             return [_rule_to_string(r) for r in self.config.get(k, {}).get("rules", [])]
@@ -666,8 +904,17 @@ class DynamicSignalEngine:
 
         FEATURE 3: Returns confidence score and total weight.
 
+        Args:
+            signal: Signal group to evaluate
+            df: OHLCV DataFrame
+            cache: Indicator cache
+
         Returns:
-            Tuple[bool, List[Dict], float, float]: (fired, rule_results, confidence, total_weight)
+            Tuple[bool, List[Dict], float, float]:
+                - fired: Whether group fired
+                - rule_results: Detailed results per rule
+                - confidence: Confidence score (0-1)
+                - total_weight: Sum of all rule weights
         """
         try:
             k = self._key(signal)
@@ -756,19 +1003,24 @@ class DynamicSignalEngine:
         """
         FEATURE 3: Enhanced evaluation with confidence scoring.
 
+        Evaluates all signal groups against the provided data and returns
+        a comprehensive result dictionary.
+
+        Args:
+            df: OHLCV DataFrame with at least 2 rows for crossover detection
+
         Returns:
-          {
-            "signal":           OptionSignal,
-            "signal_value":     str,
-            "fired":            {group: bool, ...},
-            "rule_results":     {group: [{rule, result, lhs_value, rhs_value, detail, weight},...], ...},
-            "indicator_values": {cache_key: {"last": float, "prev": float}, ...},
-            "conflict":         bool,
-            "available":        bool,
-            "confidence":       {group: float, ...},  # Confidence scores per group
-            "threshold":        float,                 # Min confidence threshold
-            "explanation":      str,                   # Human-readable explanation
-          }
+            Dict[str, Any]: Result dictionary containing:
+                - signal: OptionSignal enum value
+                - signal_value: String signal value
+                - fired: Dict of which groups fired
+                - rule_results: Detailed results per rule per group
+                - indicator_values: Last and previous values for computed indicators
+                - conflict: Whether BUY_CALL and BUY_PUT both fired
+                - available: Whether evaluation was possible
+                - confidence: Confidence scores per group (FEATURE 3)
+                - threshold: Minimum confidence threshold (FEATURE 3)
+                - explanation: Human-readable explanation (FEATURE 3)
         """
         neutral = self._neutral_result()
 
@@ -851,7 +1103,16 @@ class DynamicSignalEngine:
             return neutral
 
     def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float]) -> str:
-        """FEATURE 3: Generate human-readable explanation of last evaluation"""
+        """
+        FEATURE 3: Generate human-readable explanation of last evaluation.
+
+        Args:
+            fired: Dict of which groups fired
+            confidences: Dict of confidence scores per group
+
+        Returns:
+            str: Human-readable explanation string
+        """
         try:
             parts = []
             for sig, is_fired in fired.items():
@@ -867,11 +1128,31 @@ class DynamicSignalEngine:
     def evaluate_with_confidence(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
         FEATURE 3: Alias for evaluate() - maintains backward compatibility.
+
+        Args:
+            df: OHLCV DataFrame
+
+        Returns:
+            Dict[str, Any]: Same as evaluate()
         """
         return self.evaluate(df)
 
     def _resolve(self, fired: Dict[str, bool]) -> OptionSignal:
-        """Resolve final signal from fired groups"""
+        """
+        Resolve final signal from fired groups.
+
+        Priority order:
+            1. Exit signals take precedence over entry signals
+            2. Hold signals prevent entry but not exit
+            3. Conflict between BUY_CALL and BUY_PUT resolved by conflict_resolution
+            4. Default to WAIT if nothing fired
+
+        Args:
+            fired: Dict of which groups fired
+
+        Returns:
+            OptionSignal: Resolved final signal
+        """
         try:
             bc = fired.get("BUY_CALL", False)
             bp = fired.get("BUY_PUT", False)
@@ -901,7 +1182,12 @@ class DynamicSignalEngine:
 
     @staticmethod
     def _neutral_result() -> Dict[str, Any]:
-        """Return neutral result when evaluation is not possible"""
+        """
+        Return neutral result when evaluation is not possible.
+
+        Returns:
+            Dict[str, Any]: Neutral result with available=False
+        """
         try:
             return {
                 "signal": OptionSignal.WAIT,
@@ -921,7 +1207,12 @@ class DynamicSignalEngine:
 
     @property
     def last_cache(self) -> Optional[Dict[str, Any]]:
-        """Get last evaluation cache"""
+        """
+        Get last evaluation cache.
+
+        Returns:
+            Optional[Dict[str, Any]]: Cache from most recent evaluation
+        """
         try:
             return self._last_cache
         except Exception as e:
@@ -930,7 +1221,11 @@ class DynamicSignalEngine:
 
     # Rule 8: Cleanup method
     def cleanup(self) -> None:
-        """Clean up resources before shutdown"""
+        """
+        Clean up resources before shutdown.
+
+        Rule 8: Proper resource cleanup to prevent memory leaks.
+        """
         try:
             logger.info("[DynamicSignalEngine] Starting cleanup")
             self._last_cache = None
@@ -946,6 +1241,9 @@ def build_example_config() -> Dict[str, Any]:
     Build an example configuration with weights.
 
     FEATURE 3: Includes rule weights.
+
+    Returns:
+        Dict[str, Any]: Example configuration dictionary with weighted rules
     """
     try:
         return {

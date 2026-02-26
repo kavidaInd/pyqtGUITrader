@@ -32,8 +32,8 @@ from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
-from broker.BaseBroker import BaseBroker, TokenExpiredError
 
+from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
 
@@ -637,3 +637,213 @@ class AngelOneBroker(BaseBroker):
                     return None
         logger.critical(f"[AngelOne.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create AngelOne SmartWebSocket v2.
+
+        Requires: auth_token (jwtToken), api_key, client_code, feed_token.
+        SmartWebSocket v2 is the current official streaming API.
+
+        feed_token is obtained after login() via self._feed_token.
+        """
+        try:
+            from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
+
+            auth_token   = getattr(self.state, "token", None) if self.state else None
+            feed_token   = getattr(self, "_feed_token", None)
+            api_key      = getattr(self, "api_key", None)
+            client_code  = getattr(self, "client_code", None)
+
+            if not auth_token or not feed_token or not api_key or not client_code:
+                logger.error(
+                    "AngelOneBroker.create_websocket: missing auth_token/feed_token/api_key/client_code. "
+                    "Call broker.login() before starting WebSocket."
+                )
+                return None
+
+            sws = SmartWebSocketV2(
+                auth_token=auth_token,
+                api_key=api_key,
+                client_code=client_code,
+                feed_token=feed_token,
+            )
+
+            # SmartWebSocketV2 callbacks
+            sws.on_open    = lambda wsapp: on_connect()
+            sws.on_message = lambda wsapp, msg: on_tick(msg)
+            sws.on_error   = lambda wsapp, err: on_error(str(err))
+            sws.on_close   = lambda wsapp, code, msg: on_close(f"{code}: {msg}")
+
+            logger.info("AngelOneBroker: SmartWebSocketV2 object created")
+            return sws
+        except ImportError:
+            logger.error("AngelOneBroker: SmartApi not installed — pip install smartapi-python")
+            return None
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """
+        Start SmartWebSocketV2 (blocking — must run in daemon thread).
+        WebSocketManager wraps this in a thread automatically.
+        """
+        try:
+            if ws_obj is None:
+                return
+            # connect() blocks; WebSocketManager calls this in a daemon thread
+            ws_obj.connect()
+            logger.info("AngelOneBroker: SmartWebSocketV2 connect() returned")
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to AngelOne live feed (SmartWebSocketV2 subscription mode 1 = LTP).
+
+        Symbols are encoded as (exchange_type, token) tuples.
+        Uses _resolve_angel_token() to map NSE:SYMBOL → exchange_type + token.
+
+        subscription_mode: 1=LTP, 2=Quote, 3=SnapQuote
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+
+            from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
+
+            token_list = []
+            for sym in symbols:
+                exch_type, angel_token = self._resolve_angel_token(sym)
+                if angel_token:
+                    token_list.append({
+                        "exchangeType": exch_type,
+                        "tokens": [angel_token],
+                    })
+
+            if not token_list:
+                logger.warning("AngelOneBroker.ws_subscribe: no valid tokens")
+                return
+
+            ws_obj.subscribe(
+                correlation_id="trading_app",
+                mode=SmartWebSocketV2.ONE,     # LTP mode
+                token_list=token_list,
+            )
+            logger.info(f"AngelOneBroker: subscribed {len(token_list)} token groups")
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from AngelOne live feed."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
+
+            token_list = []
+            for sym in symbols:
+                exch_type, angel_token = self._resolve_angel_token(sym)
+                if angel_token:
+                    token_list.append({"exchangeType": exch_type, "tokens": [angel_token]})
+
+            if token_list:
+                ws_obj.unsubscribe(
+                    correlation_id="trading_app",
+                    mode=SmartWebSocketV2.ONE,
+                    token_list=token_list,
+                )
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close SmartWebSocketV2."""
+        try:
+            if ws_obj is None:
+                return
+            if hasattr(ws_obj, "close_connection"):
+                ws_obj.close_connection()
+            logger.info("AngelOneBroker: SmartWebSocketV2 closed")
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize AngelOne SmartWebSocketV2 tick.
+
+        LTP mode (mode=1) fields: token, exchange_type, last_traded_price,
+        last_traded_quantity, average_traded_price, volume_trade_for_the_day,
+        total_buy_quantity, total_sell_quantity, open_price_of_the_day,
+        high_price_of_the_day, low_price_of_the_day, closed_price.
+
+        Prices are in paise (1/100 rupee) → divide by 100.
+        """
+        try:
+            if not isinstance(raw_tick, dict):
+                return None
+            ltp_raw = raw_tick.get("last_traded_price")
+            if ltp_raw is None:
+                return None
+            ltp = float(ltp_raw) / 100.0   # convert paise → rupees
+
+            token       = raw_tick.get("token", "")
+            exch_type   = raw_tick.get("exchange_type", 1)
+            exch_prefix = {1: "NSE", 2: "NFO", 3: "BSE", 4: "MCX"}.get(exch_type, "NSE")
+            symbol      = f"{exch_prefix}:{token}"
+
+            def to_rupees(v):
+                return float(v) / 100.0 if v is not None else None
+
+            return {
+                "symbol":    symbol,
+                "ltp":       ltp,
+                "timestamp": str(raw_tick.get("exchange_timestamp", "")),
+                "bid":       None,
+                "ask":       None,
+                "volume":    raw_tick.get("volume_trade_for_the_day"),
+                "oi":        raw_tick.get("open_interest"),
+                "open":      to_rupees(raw_tick.get("open_price_of_the_day")),
+                "high":      to_rupees(raw_tick.get("high_price_of_the_day")),
+                "low":       to_rupees(raw_tick.get("low_price_of_the_day")),
+                "close":     to_rupees(raw_tick.get("closed_price")),
+            }
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_angel_token(self, symbol: str):
+        """
+        Resolve generic NSE:SYMBOL → (exchange_type_int, angel_token_str).
+
+        exchange_type: 1=NSE, 2=NFO, 3=BSE, 4=MCX.
+        angel_token: numeric string from AngelOne instrument list.
+
+        For simplicity, returns (1, bare_symbol) when instrument file
+        lookup is not available. In production, download the instrument
+        JSON from AngelOne and build a proper cache.
+        """
+        try:
+            cache = getattr(self, "_angel_token_cache", {})
+            if symbol in cache:
+                return cache[symbol]
+
+            upper = symbol.upper()
+            if "NFO:" in upper:
+                exch_type = 2
+            elif "BSE:" in upper:
+                exch_type = 3
+            elif "MCX:" in upper:
+                exch_type = 4
+            else:
+                exch_type = 1
+
+            bare = symbol.split(":")[-1]
+            result = (exch_type, bare)
+            cache[symbol] = result
+            self._angel_token_cache = cache
+            return result
+        except Exception:
+            return (1, None)

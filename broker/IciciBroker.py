@@ -716,3 +716,173 @@ class IciciBroker(BaseBroker):
                 return None
         logger.critical(f"[ICICI.{context}] Max retries reached.")
         return None
+
+    # ── WebSocket interface ────────────────────────────────────────────────────
+
+    def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
+        """
+        Create ICICI Breeze WebSocket.
+
+        BreezeConnect has built-in WebSocket via breeze.ws_connect() and
+        breeze.subscribe_feeds(). Callbacks are set via breeze.on_ticks.
+
+        Note: ICICI Breeze requires a static IP since the SEBI 2025 circular.
+        Ensure your server IP is whitelisted in the Breeze developer portal.
+        """
+        try:
+            if not self.breeze:
+                logger.error("IciciBroker.create_websocket: breeze not initialized — call generate_session first")
+                return None
+
+            self._ws_on_tick    = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close   = on_close
+            self._ws_on_error   = on_error
+
+            # Attach tick callback on the breeze client
+            self.breeze.on_ticks = lambda ticks: self._ws_on_tick(ticks)
+
+            logger.info("IciciBroker: Breeze WebSocket callbacks configured")
+            return {"__breeze__": self.breeze}
+        except Exception as e:
+            logger.error(f"[IciciBroker.create_websocket] {e}", exc_info=True)
+            return None
+
+    def ws_connect(self, ws_obj) -> None:
+        """Start ICICI Breeze WebSocket connection."""
+        try:
+            if ws_obj is None:
+                return
+            breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
+            if breeze is None:
+                return
+            breeze.ws_connect()
+            logger.info("IciciBroker: Breeze ws_connect() called")
+            self._ws_on_connect()
+        except Exception as e:
+            logger.error(f"[IciciBroker.ws_connect] {e}", exc_info=True)
+
+    def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
+        """
+        Subscribe to ICICI Breeze live feed.
+
+        Breeze subscribe_feeds() uses stock_code, exchange_code and
+        get_exchange_quotes feed_type. One call per symbol.
+
+        symbol: "NSE:NIFTY50-INDEX" → stock_code="NIFTY", exchange_code="NSE"
+        """
+        try:
+            if ws_obj is None or not symbols:
+                return
+            breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
+            if breeze is None:
+                return
+
+            for sym in symbols:
+                exch, stock_code = self._resolve_breeze_symbol(sym)
+                if not stock_code:
+                    continue
+                try:
+                    breeze.subscribe_feeds(
+                        exchange_code=exch,
+                        stock_code=stock_code,
+                        product_type="cash",
+                        expiry_date="",
+                        strike_price="",
+                        right="",
+                        get_exchange_quotes=True,
+                        get_market_depth=False,
+                    )
+                    logger.info(f"IciciBroker: subscribed {exch}:{stock_code}")
+                except Exception as e:
+                    logger.error(f"IciciBroker.ws_subscribe({sym}): {e}")
+        except Exception as e:
+            logger.error(f"[IciciBroker.ws_subscribe] {e}", exc_info=True)
+
+    def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
+        """Unsubscribe from ICICI Breeze live feed."""
+        try:
+            if ws_obj is None or not symbols:
+                return
+            breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
+            if breeze is None:
+                return
+            for sym in symbols:
+                exch, stock_code = self._resolve_breeze_symbol(sym)
+                if stock_code:
+                    breeze.unsubscribe_feeds(
+                        exchange_code=exch,
+                        stock_code=stock_code,
+                        product_type="cash",
+                        expiry_date="",
+                        strike_price="",
+                        right="",
+                        get_exchange_quotes=True,
+                        get_market_depth=False,
+                    )
+        except Exception as e:
+            logger.error(f"[IciciBroker.ws_unsubscribe] {e}", exc_info=True)
+
+    def ws_disconnect(self, ws_obj) -> None:
+        """Close ICICI Breeze WebSocket."""
+        try:
+            if ws_obj is None:
+                return
+            breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
+            if breeze and hasattr(breeze, "ws_disconnect"):
+                breeze.ws_disconnect()
+            self._ws_on_close("disconnected")
+            logger.info("IciciBroker: Breeze ws_disconnect() called")
+        except Exception as e:
+            logger.error(f"[IciciBroker.ws_disconnect] {e}", exc_info=True)
+
+    def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
+        """
+        Normalize an ICICI Breeze tick.
+
+        Breeze on_ticks delivers a list of dicts per subscription.
+        Each dict: stock_code, exchange_code, last, open, high, low, close,
+                   best_bid_price, best_offer_price, total_quantity.
+        """
+        try:
+            if isinstance(raw_tick, list):
+                raw_tick = raw_tick[0] if raw_tick else None
+            if not isinstance(raw_tick, dict):
+                return None
+
+            ltp = raw_tick.get("last") or raw_tick.get("ltp")
+            if ltp is None:
+                return None
+
+            stock_code = raw_tick.get("stock_code", "")
+            exch       = raw_tick.get("exchange_code", "NSE")
+            symbol     = f"{exch}:{stock_code}"
+
+            return {
+                "symbol":    symbol,
+                "ltp":       float(ltp),
+                "timestamp": str(raw_tick.get("exchange_feed_time", "")),
+                "bid":       raw_tick.get("best_bid_price"),
+                "ask":       raw_tick.get("best_offer_price"),
+                "volume":    raw_tick.get("total_quantity"),
+                "oi":        raw_tick.get("open_interest"),
+                "open":      raw_tick.get("open"),
+                "high":      raw_tick.get("high"),
+                "low":       raw_tick.get("low"),
+                "close":     raw_tick.get("close"),
+            }
+        except Exception as e:
+            logger.error(f"[IciciBroker.normalize_tick] {e}", exc_info=True)
+            return None
+
+    def _resolve_breeze_symbol(self, symbol: str):
+        """Map generic NSE:SYMBOL → (exchange_code, stock_code) for Breeze."""
+        try:
+            upper = symbol.upper()
+            bare  = symbol.split(":")[-1]
+            # Strip Fyers-style suffixes like -INDEX, 50-INDEX
+            stock_code = bare.replace("-INDEX", "").replace("50", "")
+            exch = "NFO" if "NFO:" in upper else "NSE"
+            return exch, stock_code
+        except Exception:
+            return "NSE", None
