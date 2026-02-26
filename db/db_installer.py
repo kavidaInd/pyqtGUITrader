@@ -1,43 +1,25 @@
 """
-Database Installer Module
-=========================
-Self-contained database installer for the Trading Application.
+db/db_installer.py
+------------------
+Self-contained database installer for the Trading App.
 
-This module provides a complete, idempotent database installation and health-check
-system. The full SQLite schema is embedded directly in this file — no external
-schema.sql file is required. This is the **single entry-point** that must be
-called before any other database activity.
+The full SQLite schema is embedded directly in this file — no external
+schema.sql is required.  This is the **single entry-point** that must be
+called before any other database activity.  It is completely safe to call
+on every app start; all operations are idempotent.
 
-Architecture:
-    The module implements a comprehensive database management system:
+What it does on each startup
+─────────────────────────────
+1. Ensures the config/ directory (or wherever the DB lives) exists.
+2. Opens (or creates) trading.db.
+3. Applies the embedded schema — every statement uses IF NOT EXISTS,
+   so existing tables and data are never touched or dropped.
+4. Seeds default singleton rows for settings tables (INSERT OR IGNORE).
+5. Runs a column-level health-check on every expected table.
+6. Returns an InstallResult the caller can inspect or show in a dialog.
 
-    1. **Embedded Schema**: Complete SQL schema defined as a string constant
-    2. **Idempotent Operations**: All CREATE statements use IF NOT EXISTS
-    3. **Column Migrations**: Automatic addition of new columns to existing tables
-    4. **Singleton Seeding**: INSERT OR IGNORE for settings tables
-    5. **Health Check**: Full verification of tables and columns
-    6. **Cached Results**: Startup result cached to avoid repeated I/O
-
-Key Features:
-    - Creates database directory if it doesn't exist
-    - Applies complete schema with all 15+ tables
-    - Seeds default rows for singleton tables
-    - Runs column-level migrations for schema updates
-    - Comprehensive health check with detailed reporting
-    - Returns InstallResult with detailed diagnostics
-    - CLI support for manual verification
-
-What it does on each startup:
-    1. Ensures the config/ directory (or wherever the DB lives) exists
-    2. Opens (or creates) trading.db
-    3. Applies the embedded schema — every statement uses IF NOT EXISTS,
-       so existing tables and data are never touched or dropped
-    4. Seeds default singleton rows for settings tables (INSERT OR IGNORE)
-    5. Runs column-level migrations for any new columns added in updates
-    6. Performs a health-check on every expected table and column
-    7. Returns an InstallResult the caller can inspect or show in a dialog
-
-Usage (add to the very top of your main / GUI entry-point):
+Usage (add to the very top of your main / GUI entry-point)
+──────────────────────────────────────────────────────────
     from db.db_installer import run_startup_check
 
     result = run_startup_check()
@@ -45,10 +27,9 @@ Usage (add to the very top of your main / GUI entry-point):
         print(result.summary())   # or show a QMessageBox
         sys.exit(1)
 
-CLI:
+CLI
+───
     python -m db.db_installer
-
-Version: 2.0.0
 """
 
 from __future__ import annotations
@@ -71,15 +52,14 @@ DEFAULT_DB_PATH: str = os.environ.get("TRADING_DB_PATH", "config/trading.db")
 # ─────────────────────────────────────────────────────────────────────────────
 # EMBEDDED SCHEMA
 # All CREATE TABLE / CREATE INDEX statements use IF NOT EXISTS so this block
-# is always safe to execute against an existing database. No data is ever lost.
+# is always safe to execute against an existing database.
 # ─────────────────────────────────────────────────────────────────────────────
 SCHEMA_SQL: str = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 -- ============================================================
--- 1. Brokerage credentials (Fyers, Zerodha, etc.)
--- Stores API credentials for broker authentication
+-- 1. Brokerage credentials (Fyers)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS brokerage_setting (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
@@ -92,7 +72,6 @@ CREATE TABLE IF NOT EXISTS brokerage_setting (
 
 -- ============================================================
 -- 2. Daily trade settings
--- Configures trading symbol, lot size, intervals, etc.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS daily_trade_setting (
     id                 INTEGER PRIMARY KEY CHECK (id = 1),
@@ -113,7 +92,6 @@ CREATE TABLE IF NOT EXISTS daily_trade_setting (
 
 -- ============================================================
 -- 3. Profit / Stoploss settings
--- Configures take profit, stop loss, and trailing parameters
 -- ============================================================
 CREATE TABLE IF NOT EXISTS profit_stoploss_setting (
     id                     INTEGER PRIMARY KEY CHECK (id = 1),
@@ -129,7 +107,6 @@ CREATE TABLE IF NOT EXISTS profit_stoploss_setting (
 
 -- ============================================================
 -- 4. Trading mode settings
--- Controls SIM/PAPER/LIVE modes and simulation parameters
 -- ============================================================
 CREATE TABLE IF NOT EXISTS trading_mode_setting (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -147,7 +124,6 @@ CREATE TABLE IF NOT EXISTS trading_mode_setting (
 
 -- ============================================================
 -- 5. Strategies  (replaces per-slug JSON files)
--- Stores trading strategy definitions with JSON blobs
 -- ============================================================
 CREATE TABLE IF NOT EXISTS strategies (
     slug         TEXT    PRIMARY KEY,
@@ -159,7 +135,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 
--- Active strategy pointer table
+-- Active strategy pointer
 CREATE TABLE IF NOT EXISTS strategy_active (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
     active_slug  TEXT    REFERENCES strategies(slug) ON DELETE SET NULL,
@@ -168,7 +144,6 @@ CREATE TABLE IF NOT EXISTS strategy_active (
 
 -- ============================================================
 -- 6. Broker auth tokens  (replaces config/access_token file)
--- Stores OAuth tokens for broker authentication
 -- ============================================================
 CREATE TABLE IF NOT EXISTS broker_tokens (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
@@ -181,7 +156,6 @@ CREATE TABLE IF NOT EXISTS broker_tokens (
 
 -- ============================================================
 -- 7. Trade sessions  (one row per trading session / day run)
--- Tracks individual trading sessions with metadata
 -- ============================================================
 CREATE TABLE IF NOT EXISTS trade_sessions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -202,7 +176,6 @@ CREATE TABLE IF NOT EXISTS trade_sessions (
 
 -- ============================================================
 -- 8. Orders  (one row per individual order placed)
--- Complete audit trail for all orders with lifecycle tracking
 -- ============================================================
 CREATE TABLE IF NOT EXISTS orders (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,14 +201,12 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 
--- Indexes for performance optimization
 CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status  ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_exited_at ON orders(exited_at);
 
 -- ============================================================
 -- 9. Generic key-value store  (replaces Config / strategy_setting.json)
--- Flexible storage for any application configuration
 -- ============================================================
 CREATE TABLE IF NOT EXISTS app_kv (
     key        TEXT    PRIMARY KEY,
@@ -245,7 +216,6 @@ CREATE TABLE IF NOT EXISTS app_kv (
 
 -- ============================================================
 -- 10. Risk Manager settings  (FEATURE 1)
--- Daily loss limits, trade caps, and profit targets
 -- ============================================================
 CREATE TABLE IF NOT EXISTS risk_settings (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -257,7 +227,6 @@ CREATE TABLE IF NOT EXISTS risk_settings (
 
 -- ============================================================
 -- 11. Signal Engine settings  (FEATURE 3)
--- Minimum confidence threshold for trade signals
 -- ============================================================
 CREATE TABLE IF NOT EXISTS signal_settings (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -267,7 +236,6 @@ CREATE TABLE IF NOT EXISTS signal_settings (
 
 -- ============================================================
 -- 12. Telegram Notifier settings  (FEATURE 4)
--- Bot token and chat ID for Telegram notifications
 -- ============================================================
 CREATE TABLE IF NOT EXISTS telegram_settings (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -279,7 +247,6 @@ CREATE TABLE IF NOT EXISTS telegram_settings (
 
 -- ============================================================
 -- 13. Multi-Timeframe Filter settings  (FEATURE 6)
--- Configuration for MTF signal validation
 -- ============================================================
 CREATE TABLE IF NOT EXISTS mtf_settings (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -293,7 +260,6 @@ CREATE TABLE IF NOT EXISTS mtf_settings (
 
 -- ============================================================
 -- 14. Daily P&L tracking  (FEATURE 5 - cached values)
--- Aggregated daily performance metrics
 -- ============================================================
 CREATE TABLE IF NOT EXISTS daily_pnl (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -311,7 +277,6 @@ CREATE INDEX IF NOT EXISTS idx_daily_pnl_date ON daily_pnl(date);
 
 -- ============================================================
 -- 15. WebSocket connection stats  (for monitoring)
--- Tracks connection health and statistics
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ws_stats (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -323,11 +288,28 @@ CREATE TABLE IF NOT EXISTS ws_stats (
     reconnects_count     INTEGER NOT NULL DEFAULT 0,
     created_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
+
+-- ============================================================
+-- License activation record  (SaaS license system)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS license_activations (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    license_key    TEXT    NOT NULL DEFAULT '',
+    order_id       TEXT    NOT NULL DEFAULT '',
+    email          TEXT    NOT NULL DEFAULT '',
+    plan           TEXT    NOT NULL DEFAULT '',
+    customer_name  TEXT    NOT NULL DEFAULT '',
+    expires_at     TEXT    NOT NULL DEFAULT '',
+    activated_at   TEXT    NOT NULL DEFAULT '',
+    last_verified  TEXT    NOT NULL DEFAULT '',
+    machine_id     TEXT    NOT NULL DEFAULT '',
+    updated_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Seed statements — INSERT OR IGNORE so user data is never overwritten
-# These ensure each singleton table has exactly one row (id=1)
 # ─────────────────────────────────────────────────────────────────────────────
 _SINGLETON_SEEDS: Dict[str, str] = {
     "brokerage_setting":
@@ -354,7 +336,6 @@ _SINGLETON_SEEDS: Dict[str, str] = {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Health-check manifest  (table -> minimum expected columns)
-# Defines the complete expected schema for validation
 # ─────────────────────────────────────────────────────────────────────────────
 EXPECTED_TABLES: Dict[str, List[str]] = {
     "brokerage_setting": [
@@ -398,6 +379,7 @@ EXPECTED_TABLES: Dict[str, List[str]] = {
         "reason_to_exit", "created_at", "updated_at",
     ],
     "app_kv": ["key", "value", "updated_at"],
+    "license_activations": ["id", "license_key", "order_id", "email", "plan", "expires_at", "machine_id"],
     "risk_settings": [
         "id", "max_daily_loss", "max_trades_per_day", "daily_target", "updated_at",
     ],
@@ -427,25 +409,6 @@ EXPECTED_TABLES: Dict[str, List[str]] = {
 
 @dataclass
 class InstallResult:
-    """
-    Comprehensive result object returned by the database installer.
-
-    Contains detailed diagnostic information about the database installation
-    and health-check process. Can be displayed to users or logged for debugging.
-
-    Attributes:
-        ok: Overall success flag
-        db_path: Path to the database file
-        db_created: Whether a new database was created
-        tables_created: List of tables that were created in this run
-        missing_tables: Tables that are expected but missing
-        missing_columns: Dictionary of table -> missing columns
-        errors: List of error messages
-        warnings: List of warning messages
-
-    Methods:
-        summary(): Returns a human-readable summary string
-    """
     ok: bool = True
     db_path: str = DEFAULT_DB_PATH
     db_created: bool = False
@@ -456,12 +419,6 @@ class InstallResult:
     warnings: List[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        """
-        Generate a human-readable summary of the installation result.
-
-        Returns:
-            str: Formatted summary string suitable for display in console or dialog.
-        """
         lines = [
             f"Database : {self.db_path}",
             f"Status   : {'OK' if self.ok else 'FAILED'}",
@@ -489,31 +446,10 @@ class InstallResult:
 class DatabaseInstaller:
     """
     Handles first-time installation and every-startup health-check.
-
-    This class implements the complete database installation pipeline:
-        1. Ensure directory exists
-        2. Open/create database connection
-        3. Apply schema (idempotent)
-        4. Seed singleton rows
-        5. Run column migrations
-        6. Perform health check
-        7. Return detailed results
-
-    The installer is entirely self-contained — uses only the Python standard library.
-    All operations are idempotent and safe to run on every application start.
-
-    Attributes:
-        db_path: Path to the SQLite database file
-        _conn: Internal database connection (managed internally)
+    Entirely self-contained — uses only the Python stdlib.
     """
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
-        """
-        Initialize the database installer.
-
-        Args:
-            db_path: Path to the SQLite database file.
-        """
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
 
@@ -522,19 +458,7 @@ class DatabaseInstaller:
     def run(self) -> InstallResult:
         """
         Execute the full install + health-check pipeline.
-
-        This method orchestrates the entire database setup process:
-            1. Creates directory if needed
-            2. Opens database connection
-            3. Applies schema
-            4. Seeds singleton rows
-            5. Runs health check
-            6. Collects results
-
-        Returns:
-            InstallResult: Complete diagnostic information about the installation.
-                          This method never raises exceptions - all errors are
-                          captured in the result object.
+        Always returns an InstallResult — never raises.
         """
         result = InstallResult(db_path=self.db_path)
         try:
@@ -571,12 +495,7 @@ class DatabaseInstaller:
     # ── Pipeline steps ────────────────────────────────────────────────────────
 
     def _ensure_directory(self, result: InstallResult) -> None:
-        """
-        Create parent directory for the DB file if it does not exist.
-
-        Args:
-            result: InstallResult object to record any errors.
-        """
+        """Create parent directory for the DB file if it does not exist."""
         db_dir = Path(self.db_path).parent
         try:
             if db_dir and not db_dir.exists():
@@ -589,12 +508,7 @@ class DatabaseInstaller:
             logger.error(f"[DB Installer] {msg}")
 
     def _open_connection(self, result: InstallResult) -> None:
-        """
-        Open (or create) the SQLite file and configure pragmas.
-
-        Args:
-            result: InstallResult object to record any errors and db_created flag.
-        """
+        """Open (or create) the SQLite file and configure pragmas."""
         db_file = Path(self.db_path)
         result.db_created = not db_file.exists()
         try:
@@ -622,10 +536,8 @@ class DatabaseInstaller:
         Every statement uses IF NOT EXISTS — running this against a database
         that already has tables is completely safe; no data is lost.
         After applying the schema, runs column-level migrations so that
-        existing databases gain any new columns without being recreated.
-
-        Args:
-            result: InstallResult object to record created tables and any errors.
+        existing databases gain any new columns (e.g. broker_type) without
+        being recreated.
         """
         before = self._existing_tables()
         try:
@@ -672,11 +584,7 @@ class DatabaseInstaller:
     def _seed_singletons(self, result: InstallResult) -> None:
         """
         Guarantee exactly one row exists in each singleton settings table.
-
-        Uses INSERT OR IGNORE — never overwrites existing user data.
-
-        Args:
-            result: InstallResult object to record any warnings.
+        INSERT OR IGNORE — never overwrites existing user data.
         """
         for table, sql in _SINGLETON_SEEDS.items():
             try:
@@ -693,11 +601,7 @@ class DatabaseInstaller:
     def _health_check(self, result: InstallResult) -> None:
         """
         Verify every expected table and its required columns exist.
-
         Also confirms singleton rows are present in settings tables.
-
-        Args:
-            result: InstallResult object to record missing tables/columns and errors.
         """
         existing_tables = self._existing_tables()
 
@@ -742,12 +646,6 @@ class DatabaseInstaller:
     # ── Introspection helpers ─────────────────────────────────────────────────
 
     def _existing_tables(self) -> set:
-        """
-        Get the set of all tables currently in the database.
-
-        Returns:
-            set: Names of all tables in the database.
-        """
         try:
             rows = self._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -758,15 +656,6 @@ class DatabaseInstaller:
             return set()
 
     def _existing_columns(self, table: str) -> set:
-        """
-        Get the set of all columns for a given table.
-
-        Args:
-            table: Table name to inspect
-
-        Returns:
-            set: Names of all columns in the table.
-        """
         try:
             rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
             return {r[1] for r in rows}   # index 1 = column name
@@ -777,9 +666,6 @@ class DatabaseInstaller:
             return set()
 
     def _close_connection(self) -> None:
-        """
-        Close the database connection if it's open.
-        """
         if self._conn:
             try:
                 self._conn.close()
@@ -800,22 +686,16 @@ def run_startup_check(db_path: str = DEFAULT_DB_PATH) -> InstallResult:
     """
     Run the installer / health-check and cache the result.
 
-    This is the main entry point for application startup. It ensures the
-    database is properly initialized and all tables exist. The result is
-    cached so subsequent calls within the same process return immediately.
+    Subsequent calls within the same process return the cached result
+    immediately (no I/O).  Call reset_startup_check() to force a re-run
+    (useful in tests).
 
     Args:
-        db_path: Path to the SQLite file. Defaults to config/trading.db
+        db_path: Path to the SQLite file.  Defaults to config/trading.db
                  or the TRADING_DB_PATH environment variable.
 
     Returns:
         InstallResult with .ok, .summary(), and detailed diagnostic fields.
-
-    Example:
-        result = run_startup_check()
-        if not result.ok:
-            print(result.summary())
-            sys.exit(1)
     """
     global _startup_result
     if _startup_result is not None:
@@ -827,12 +707,7 @@ def run_startup_check(db_path: str = DEFAULT_DB_PATH) -> InstallResult:
 
 
 def reset_startup_check() -> None:
-    """
-    Clear the cached result so run_startup_check() will execute again.
-
-    This is primarily useful for testing scenarios where a fresh database
-    check is needed.
-    """
+    """Clear the cached result so run_startup_check() will execute again."""
     global _startup_result
     _startup_result = None
 
@@ -842,15 +717,6 @@ def reset_startup_check() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    """
-    Command-line interface for database installation and verification.
-    
-    Usage:
-        python -m db.db_installer
-    
-    This allows manual database setup and health-check outside of the
-    main application, useful for debugging and maintenance.
-    """
     import sys
 
     logging.basicConfig(

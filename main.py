@@ -1,501 +1,425 @@
-#!/usr/bin/env python3
 """
-Algo Trading Dashboard - Main Application Entry Point
-=====================================================
-PyQt5-based graphical user interface for algorithmic trading operations.
+app_main.py
+===========
+Application entry point for the Algo Trading SaaS.
 
-This module serves as the primary entry point for the trading application,
-providing comprehensive error handling, logging infrastructure, database
-initialization, and graceful shutdown management.
+Replaces any existing main.py / run.py.  Every feature that must run
+before the main window is shown is sequenced here:
 
-Key Features:
-    - Multi-level logging with rotation and separation by severity
-    - Global exception handling to prevent crashes
-    - Automatic database verification and initialization
-    - High-DPI display support for modern monitors
-    - Graceful shutdown with resource cleanup
-    - User-friendly error dialogs for critical failures
+  Step 1 — DB initialisation (schema + migrations)
+  Step 2 — License verification (blocks if not activated / expired)
+  Step 3 — Auto-update check (blocks on mandatory, optional banner otherwise)
+  Step 4 — Main window launch
 
-Architecture:
-    The application follows a robust initialization sequence:
-    1. Logging system setup
-    2. Global exception handler installation
-    3. Database verification and seeding
-    4. Qt application creation with high-DPI support
-    5. Main window instantiation and display
-    6. Event loop execution with error handling
-    7. Cleanup on exit
+Activation gate
+───────────────
+  If verify_on_startup() returns ok=False the ActivationDialog is shown
+  modally.  The app only continues after successful activation.
+  The main window is never instantiated until the license is valid.
 
-Author: Development Team
-Version: 1.0.0
+Auto-update gate
+────────────────
+  • OPTIONAL update → UpdateBanner is injected into TradingGUI's toolbar.
+  • MANDATORY update → MandatoryUpdateDialog blocks the main window.
+    - User clicks "Download & Install" → progress dialog, installer launched, app exits.
+    - User clicks "Exit" → sys.exit(1).
+
+Usage
+─────
+  python app_main.py
+  # or as the entry_point in setup.cfg / pyproject.toml:
+  #   algotrade = app_main:main
 """
 
-# PYQT: New entry point for PyQt5 application
+from __future__ import annotations
+
 import logging
 import logging.handlers
 import os
 import sys
 import traceback
-from datetime import datetime
+from typing import Optional
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QMessageBox
+# ── Bootstrap logging before any other import ─────────────────────────────────
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
 
-from TradingGUI import TradingGUI
-
-# Import database installer
-from db.db_installer import run_startup_check
-
-# Rule 4: Structured logging - setup at module level
+_log_file = os.path.join(LOG_DIR, "algotrade.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.handlers.RotatingFileHandler(
+            _log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        ),
+    ],
+)
 logger = logging.getLogger(__name__)
 
 
-def setup_logging():
-    """
-    Configure comprehensive logging infrastructure for the entire application.
+# ── Deferred Qt import (so logging is set up before PyQt crashes) ─────────────
+def _qt_app() -> "QApplication":
+    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtCore import Qt
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("Algo Trading Pro")
+    app.setOrganizationName("YourCompany")
+    return app
 
-    Rule 4: Structured logging implementation with multiple handlers for
-    different log levels and destinations.
 
-    Creates a rotating file log system with:
-        - Main application log (DEBUG level): All application events
-        - Error log (ERROR level): Only errors and critical issues
-        - Console output (WARNING level): Important events for development
-        - Crash log (CRITICAL level): Fatal errors requiring investigation
-
-    Log Format:
-        timestamp | log-level | module.function:line | message
-
-    Example:
-        2024-01-15 14:30:45 | INFO     | main.setup_logging:42 | Logging initialized
-
-    Returns:
-        bool: True if logging setup successful, False if fallback to basic logging
-
-    Note:
-        If directory creation or file handlers fail, falls back to basic console
-        logging to ensure log visibility.
-    """
+def _apply_dark_palette(app):
+    """Apply a global dark palette before any window opens."""
     try:
-        # Create logs directory if it doesn't exist
-        log_dir = os.path.join(os.getcwd(), 'logs')
-        os.makedirs(log_dir, exist_ok=True)
+        from PyQt5.QtGui import QPalette, QColor
+        from PyQt5.QtCore import Qt
+        dark = QPalette()
+        dark.setColor(QPalette.Window, QColor("#0d1117"))
+        dark.setColor(QPalette.WindowText, QColor("#e6edf3"))
+        dark.setColor(QPalette.Base, QColor("#161b22"))
+        dark.setColor(QPalette.AlternateBase, QColor("#21262d"))
+        dark.setColor(QPalette.Text, QColor("#e6edf3"))
+        dark.setColor(QPalette.Button, QColor("#21262d"))
+        dark.setColor(QPalette.ButtonText, QColor("#e6edf3"))
+        dark.setColor(QPalette.Highlight, QColor("#388bfd"))
+        dark.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        app.setPalette(dark)
+    except Exception as e:
+        logger.warning(f"Could not apply dark palette: {e}")
 
-        # Create formatter with detailed information for forensic analysis
-        formatter = logging.Formatter(
-            fmt='%(asctime)s | %(levelname)-8s | %(name)s.%(funcName)s:%(lineno)d | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
 
-        # Main application log - rotating file handler (10MB per file, keep 10 backups)
-        # Captures all DEBUG and above events for comprehensive auditing
-        main_handler = logging.handlers.RotatingFileHandler(
-            os.path.join(log_dir, 'trading_app.log'),
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=10,  # Keep 10 rotated files
-            encoding='utf-8'
-        )
-        main_handler.setLevel(logging.DEBUG)
-        main_handler.setFormatter(formatter)
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1 — Database
+# ─────────────────────────────────────────────────────────────────────────────
 
-        # Error log - separate file for errors only
-        # Facilitates quick error investigation without wading through debug logs
-        error_handler = logging.handlers.RotatingFileHandler(
-            os.path.join(log_dir, 'errors.log'),
-            maxBytes=5 * 1024 * 1024,  # 5MB
-            backupCount=5,  # Keep 5 rotated files
-            encoding='utf-8'
-        )
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(formatter)
+def _run_db_init() -> bool:
+    """Initialise / migrate the SQLite database. Returns True on success."""
+    try:
+        from db.db_installer import run_startup_check
+        result = run_startup_check()
+        if not result.ok:
+            logger.critical(f"DB initialisation failed:\n{result.summary()}")
+            return False
+        logger.info("DB initialisation OK")
+        return True
+    except Exception:
+        logger.critical("DB initialisation raised an exception", exc_info=True)
+        return False
 
-        # Console handler for development (warnings and above)
-        # Provides real-time feedback during development and debugging
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.WARNING)
-        console_handler.setFormatter(formatter)
 
-        # Crash log - for unhandled exceptions
-        # Dedicated file for critical failures requiring immediate attention
-        crash_handler = logging.handlers.RotatingFileHandler(
-            os.path.join(log_dir, 'crash.log'),
-            maxBytes=5 * 1024 * 1024,  # 5MB
-            backupCount=3,  # Keep 3 rotated files
-            encoding='utf-8'
-        )
-        crash_handler.setLevel(logging.CRITICAL)
-        crash_handler.setFormatter(formatter)
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2 — License gate
+# ─────────────────────────────────────────────────────────────────────────────
 
-        # Get root logger and configure
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.DEBUG)
+def _run_license_gate(qt_app) -> bool:
+    """
+    Verify the license.  Shows ActivationDialog if needed.
+    Returns True if the app should continue.
+    """
+    from license.license_manager import license_manager
+    from license.activation_dialog import ActivationDialog
+    from PyQt5.QtWidgets import QMessageBox
 
-        # Remove any existing handlers to avoid duplicate logging
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
+    result = license_manager.verify_on_startup()
+    logger.info(f"License check: {result}")
 
-        # Add our configured handlers
-        root_logger.addHandler(main_handler)
-        root_logger.addHandler(error_handler)
-        root_logger.addHandler(console_handler)
-        root_logger.addHandler(crash_handler)
-
-        # Log startup banner with system information
-        logger.info("=" * 60)
-        logger.info(f"Algo Trading Dashboard starting at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"Python version: {sys.version}")
-        logger.info(f"Log directory: {log_dir}")
-        logger.info("=" * 60)
-
+    if result.ok:
+        if result.offline:
+            logger.warning(f"Running in offline grace mode: {result.reason}")
         return True
 
-    except Exception as e:
-        # Fallback to basic logging if setup fails
-        # Ensures some logging capability even in degraded mode
-        print(f"CRITICAL: Failed to setup logging: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
+    # Not activated / expired / revoked → show dialog
+    reason_map = {
+        "not_activated": "",
+        "trial_expired": "Your 7-day free trial has ended.",
+        "expired": "Your license has expired. Please renew to continue.",
+        "revoked": "Your license has been deactivated. Contact support.",
+        "invalid_machine": (
+            "This installation is not authorised for this machine. "
+            "Contact support to transfer your license."
+        ),
+        "order_cancelled": "Your order was cancelled or refunded.",
+    }
+    display_reason = reason_map.get(result.reason, result.reason)
 
-        # Basic console logging as fallback
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s | %(levelname)s | %(message)s'
+    # Pre-fill email when upgrading from an expired trial
+    prefill_email = license_manager.get_cached_email() if result.reason in (
+        "trial_expired", "expired"
+    ) else ""
+    # Open on "activate" tab if trial has expired, otherwise default "trial" tab
+    start_tab = "activate" if result.reason in ("trial_expired", "expired") else "trial"
+
+    while True:
+        dlg = ActivationDialog(
+            parent=None,
+            reason=display_reason,
+            prefill_email=prefill_email,
+            start_on_tab=start_tab,
         )
-        return False
+        dlg_result = dlg.exec_()
 
-
-def initialize_database():
-    """
-    Perform comprehensive database initialization and verification.
-
-    Checks database integrity on application startup, creates required tables
-    if missing, and seeds default configuration data. Provides detailed
-    feedback about the database state and any issues encountered.
-
-    The initialization process:
-        1. Verifies database connection and accessibility
-        2. Checks for existence of all required tables
-        3. Validates table schemas (column presence)
-        4. Creates missing tables automatically
-        5. Seeds default configuration values
-        6. Reports detailed status for troubleshooting
-
-    Returns:
-        bool: True if database is ready for use, False if critical errors exist
-
-    Note:
-        On failure, displays user-friendly error dialog with specific details
-        about missing tables or columns to aid troubleshooting.
-
-    See Also:
-        db.db_installer.run_startup_check() for implementation details
-    """
-    try:
-        logger.info("=" * 60)
-        logger.info("Checking database installation...")
-
-        # Run the database installer which performs comprehensive checks
-        result = run_startup_check()
-
-        if result.ok:
-            logger.info("✅ Database check passed successfully")
-            if result.db_created:
-                logger.info("   New database created with all tables")
-            if result.tables_created:
-                logger.info(f"   Tables created: {', '.join(result.tables_created)}")
-            if result.warnings:
-                for warning in result.warnings:
-                    logger.warning(f"   ⚠ {warning}")
+        from PyQt5.QtWidgets import QDialog
+        if dlg_result == QDialog.Accepted:
+            logger.info("Activation dialog accepted — proceeding")
             return True
         else:
-            logger.error("❌ Database check FAILED")
-            logger.error(f"   Errors: {result.errors}")
-            logger.error(f"   Missing tables: {result.missing_tables}")
-            if result.missing_columns:
-                for table, cols in result.missing_columns.items():
-                    logger.error(f"   Table '{table}' missing columns: {cols}")
-
-            # Show user-friendly error dialog with actionable information
-            error_msg = (
-                f"Database initialization failed!\n\n"
-                f"Missing tables: {', '.join(result.missing_tables) if result.missing_tables else 'None'}\n"
-                f"Errors: {', '.join(result.errors) if result.errors else 'Unknown'}\n\n"
-                f"Please check the logs and ensure the database is accessible."
-            )
-            QMessageBox.critical(None, "Database Error", error_msg)
-
-            return False
-
-    except Exception as e:
-        logger.critical(f"Database initialization error: {e}", exc_info=True)
-        QMessageBox.critical(
-            None,
-            "Database Error",
-            f"Failed to initialize database:\n{e}\n\nApplication will exit."
-        )
-        return False
-
-
-def handle_exception(exc_type, exc_value, exc_traceback):
-    """
-    Global exception handler for all unhandled exceptions.
-
-    Rule 1: Comprehensive error handling - intercepts any exception not caught
-    elsewhere, logs it comprehensively, and optionally displays to user.
-
-    This hook is installed via sys.excepthook and catches exceptions that would
-    otherwise crash the application or be lost to stderr.
-
-    Args:
-        exc_type: Type of the exception (e.g., ValueError, TypeError)
-        exc_value: The exception instance with details
-        exc_traceback: Traceback object for stack trace
-
-    Behavior:
-        - KeyboardInterrupt is passed through to allow normal termination
-        - All other exceptions are logged with full traceback
-        - If Qt application exists, shows user-friendly error dialog
-        - Ensures no exception goes unreported
-
-    Note:
-        This is the last line of defense - exceptions caught here indicate
-        bugs that should be fixed in normal code paths.
-    """
-    # Ignore keyboard interrupt to allow clean termination with Ctrl+C
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-
-    # Log the exception with full context for debugging
-    logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
-
-    # Also write to stderr for immediate visibility
-    print("FATAL: Unhandled exception occurred!", file=sys.stderr)
-    traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
-
-    # Show error dialog if QApplication exists (user-friendly notification)
-    try:
-        app = QApplication.instance()
-        if app and isinstance(app, QApplication):
-            error_msg = f"Fatal Error: {exc_type.__name__}: {exc_value}\n\nCheck logs for details."
-            QMessageBox.critical(None, "Application Error", error_msg)
-    except Exception as e:
-        logger.error(f"Failed to show error dialog: {e}", exc_info=True)
-
-
-def main():
-    """
-    Primary application entry point with comprehensive lifecycle management.
-
-    Orchestrates the entire application startup, execution, and shutdown sequence:
-
-    Phase 1 - Initialization:
-        - Configure logging infrastructure
-        - Install global exception handler
-        - Verify database integrity
-
-    Phase 2 - Qt Setup:
-        - Configure high-DPI support for modern displays
-        - Create QApplication instance
-        - Process initial events for responsiveness
-
-    Phase 3 - UI Creation:
-        - Instantiate main TradingGUI window
-        - Display window and ensure rendering
-        - Process events to prevent UI freezes
-
-    Phase 4 - Event Loop:
-        - Enter Qt event loop (app.exec_())
-        - Handle keyboard interrupts gracefully
-        - Catch and log loop errors
-
-    Phase 5 - Cleanup:
-        - Log shutdown information
-        - Call registered cleanup handlers
-        - Return appropriate exit code
-
-    Returns:
-        int: Exit code (0 for success, 1 for errors)
-
-    Rule 1: Wrapped in comprehensive try/except to catch any startup failures.
-    Rule 7: Processes events at key points to ensure UI responsiveness.
-    Rule 8: Implements graceful shutdown with proper resource cleanup.
-    """
-    # Rule 1: Wrap entire main in try/except to catch any initialization errors
-    try:
-        # Phase 1: Setup logging first - critical for debugging any subsequent failures
-        setup_logging()
-
-        # Rule 1: Set global exception hook to catch unhandled exceptions
-        sys.excepthook = handle_exception
-
-        logger.info("Starting PyQt5 application...")
-
-        # ==================================================================
-        # DATABASE INITIALIZATION - Run before anything else
-        # Ensures data layer is ready before UI attempts to access it
-        # ==================================================================
-        if not initialize_database():
-            logger.critical("Database initialization failed - exiting")
-            return 1  # Exit with error code
-
-        # Phase 2: Qt Application Setup
-        # PYQT: High-DPI support - preserve exact attributes for proper scaling
-        # These attributes ensure crisp display on high-resolution monitors
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-        # Create application instance (required before any widgets)
-        app = QApplication(sys.argv)
-        app.setApplicationName("Algo Trading Dashboard")
-
-        # Rule 7: UI Responsiveness - ensure app processes events
-        # Process any queued events to prevent UI freezes during startup
-        app.processEvents()
-
-        logger.info("QApplication created successfully")
-
-        # Phase 3: Create and display main window
-        try:
-            window = TradingGUI()
-            window.show()
-            logger.info("Main window created and shown")
-
-            # Rule 7: Process events again to ensure window renders completely
-            # This prevents the "white window" syndrome during startup
-            app.processEvents()
-
-        except Exception as e:
-            logger.critical(f"Failed to create main window: {e}", exc_info=True)
-            QMessageBox.critical(
+            # User closed the dialog without activating
+            reply = QMessageBox.question(
                 None,
-                "Initialization Error",
-                f"Failed to create main window:\n{e}\n\nPlease check the logs for details."
+                "Exit?",
+                "The application requires a valid license to run.\n\nExit the application?",
+                QMessageBox.Yes | QMessageBox.No,
             )
-            return 1
+            if reply == QMessageBox.Yes:
+                return False
+            # Otherwise loop — show dialog again
 
-        # Phase 4: Enter Qt event loop (blocks until application exits)
-        exit_code = 0
-        try:
-            logger.info("Entering Qt event loop")
-            exit_code = app.exec_()  # Blocks here until app.quit() is called
-            logger.info(f"Qt event loop exited with code {exit_code}")
 
-        except KeyboardInterrupt:
-            # Handle Ctrl+C gracefully
-            logger.info("Received keyboard interrupt")
-            # Allow Qt to handle cleanup by quitting normally
-            app.quit()
-            exit_code = 0
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3 — Auto-update check
+# ─────────────────────────────────────────────────────────────────────────────
 
-        except Exception as e:
-            # Catch any unexpected exceptions in the event loop
-            logger.critical(f"Error in event loop: {e}", exc_info=True)
-            exit_code = 1
+def _run_update_check(qt_app) -> Optional["UpdateInfo"]:
+    """
+    Synchronous update check (runs before main window).
+    Returns UpdateInfo so the caller can:
+      - Skip / pass it to the GUI for an optional banner.
+      - Block on mandatory update.
+    """
+    try:
+        from license.auto_updater import auto_updater, UpdateType
+        info = auto_updater.check_for_update()
+        logger.info(f"Update check: {info}")
+        return info
+    except Exception:
+        logger.warning("Update check failed", exc_info=True)
+        return None
 
-        finally:
-            # Phase 5: Cleanup
-            logger.info("Application shutting down")
-            logging.shutdown()  # Ensure all log messages are flushed
 
-        return exit_code
+def _handle_mandatory_update(update_info, qt_app) -> bool:
+    """
+    Show MandatoryUpdateDialog.  Blocks until update is launched or user exits.
+    Returns False → caller should sys.exit().
+    """
+    from license.activation_dialog import MandatoryUpdateDialog
+    from license.auto_updater import auto_updater, DownloadProgress
+    from PyQt5.QtWidgets import QDialog
+    from PyQt5.QtCore import QThread, pyqtSignal
+
+    class _DownloadThread(QThread):
+        progress = pyqtSignal(float, str)
+        done = pyqtSignal(bool)
+
+        def __init__(self, info, updater):
+            super().__init__()
+            self._info = info
+            self._updater = updater
+
+        def run(self):
+            def _cb(p: DownloadProgress):
+                status = (
+                    f"Downloading… {p.percent:.0f}%"
+                    if not p.done else "Installing…"
+                )
+                if p.error:
+                    status = f"Error: {p.error}"
+                self.progress.emit(p.percent, status)
+
+            ok = self._updater.download_and_install(self._info, _cb)
+            self.done.emit(ok)
+
+    dlg = MandatoryUpdateDialog(update_info)
+    thread = _DownloadThread(update_info, auto_updater)
+
+    thread.progress.connect(lambda pct, msg: dlg.set_progress(pct, msg))
+    thread.done.connect(lambda ok: (
+        dlg.accept() if ok else dlg.set_progress(0, "Download failed. Try again.")
+    ))
+
+    def _start_download():
+        thread.start()
+
+    dlg.update_requested.connect(_start_download)
+    result = dlg.exec_()
+
+    if result == QDialog.Rejected:
+        sys.exit(1)
+
+    return False  # app should not continue — installer is running
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4 — Main window
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _launch_main_window(qt_app, update_info=None) -> int:
+    """Create TradingGUI, inject optional update banner, enter event loop."""
+    from TradingGUI import TradingGUI
+    from config import Config
+
+    config = Config()
+    window = TradingGUI(config=config)
+
+    # Inject optional update banner into the main window
+    if update_info and update_info.available:
+        _inject_update_banner(window, update_info)
+
+    # Inject trial expiry banner if the user is on a trial
+    _inject_trial_banner(window)
+
+    window.show()
+    return qt_app.exec_()
+
+
+def _inject_update_banner(window: "TradingGUI", update_info) -> None:
+    """
+    Prepend UpdateBanner to TradingGUI's central widget layout.
+    Safe — does nothing if the window layout doesn't support it.
+    """
+    try:
+        from license.activation_dialog import UpdateBanner
+        from license.auto_updater import auto_updater
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout
+
+        banner = UpdateBanner(
+            version=update_info.latest_version,
+            notes=update_info.release_notes or "",
+            parent=window,
+        )
+
+        def _start_update():
+            from license.activation_dialog import MandatoryUpdateDialog
+            # Reuse the mandatory dialog for the optional flow
+            dlg = MandatoryUpdateDialog(update_info, parent=window)
+            dlg.update_requested.connect(lambda: _download_in_thread(dlg))
+            dlg.exec_()
+
+        def _download_in_thread(dlg):
+            import threading
+            from license.auto_updater import DownloadProgress
+
+            def _run():
+                def _cb(p: DownloadProgress):
+                    # Qt signal proxy via QTimer
+                    from PyQt5.QtCore import QMetaObject, Qt
+                    pct = p.percent
+                    msg = f"Downloading… {pct:.0f}%" if not p.done else "Installing…"
+                    if p.error:
+                        msg = f"Error: {p.error}"
+                    QMetaObject.invokeMethod(
+                        dlg, "set_progress",
+                        Qt.QueuedConnection,
+                    )
+
+                auto_updater.download_and_install(update_info, _cb)
+
+            threading.Thread(target=_run, daemon=True, name="OptionalUpdate").start()
+
+        banner.update_requested.connect(_start_update)
+        banner.dismissed.connect(banner.deleteLater)
+
+        # Insert at top of central widget's layout
+        central = window.centralWidget()
+        if central:
+            layout = central.layout()
+            if layout:
+                layout.insertWidget(0, banner)
+                logger.info("Update banner injected into main window")
 
     except Exception as e:
-        # Last resort error handling for catastrophic failures
-        print(f"FATAL ERROR IN MAIN: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
+        logger.warning(f"Could not inject update banner: {e}", exc_info=True)
 
-        # Try to show error dialog if possible (Qt may not be initialized)
-        try:
-            app = QApplication.instance()
-            if app:
-                QMessageBox.critical(
-                    None,
-                    "Fatal Error",
-                    f"Fatal error during startup:\n{e}\n\nApplication will exit."
-                )
-        except:
-            pass  # Nothing more we can do if even error dialog fails
 
+def _inject_trial_banner(window: "TradingGUI") -> None:
+    """
+    If the active license is a trial, inject a TrialExpiryBanner at the top
+    of the main window.  Clicking "Upgrade Now" opens the ActivationDialog
+    directly on the "Activate License" tab.
+    """
+    try:
+        from license.license_manager import license_manager, PLAN_TRIAL
+        info = license_manager.get_local_info()
+        if info.get("plan") != PLAN_TRIAL:
+            return
+
+        days = int(info.get("days_remaining", 0))
+
+        from license.activation_dialog import TrialExpiryBanner, ActivationDialog
+        banner = TrialExpiryBanner(days_remaining=days, parent=window)
+
+        def _open_upgrade():
+            dlg = ActivationDialog(
+                parent=window,
+                reason="",
+                prefill_email=info.get("email", ""),
+                start_on_tab="activate",
+            )
+            from PyQt5.QtWidgets import QDialog
+            if dlg.exec_() == QDialog.Accepted:
+                # Reload the window title / status to reflect paid plan
+                banner.hide()
+
+        banner.upgrade_clicked.connect(_open_upgrade)
+        banner.dismissed.connect(banner.deleteLater)
+
+        central = window.centralWidget()
+        if central and central.layout():
+            central.layout().insertWidget(0, banner)
+            logger.info(f"Trial expiry banner injected ({days} day(s) remaining)")
+
+    except Exception as e:
+        logger.warning(f"Could not inject trial banner: {e}", exc_info=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    logger.info("=" * 60)
+    logger.info("  Algo Trading Pro — starting up")
+    logger.info("=" * 60)
+
+    # ── Step 1: DB ────────────────────────────────────────────────────────────
+    if not _run_db_init():
+        from PyQt5.QtWidgets import QApplication, QMessageBox
+        _app = _qt_app()
+        QMessageBox.critical(
+            None, "Database Error",
+            "Database initialisation failed.\n"
+            "Check the logs/ folder for details.\n\n"
+            "The application will now exit."
+        )
         return 1
 
+    # ── Step 2: Qt app object ─────────────────────────────────────────────────
+    qt_app = _qt_app()
+    _apply_dark_palette(qt_app)
 
-def cleanup():
-    """
-    Global cleanup function for resource release on application exit.
+    # ── Step 3: License ───────────────────────────────────────────────────────
+    if not _run_license_gate(qt_app):
+        logger.info("License gate rejected — exiting")
+        return 1
 
-    Rule 8: Ensures all resources are properly released when the application
-    terminates, preventing memory leaks and file handle exhaustion.
+    # ── Step 4: Update check ──────────────────────────────────────────────────
+    update_info = _run_update_check(qt_app)
 
-    Registered via atexit to run regardless of how the application exits
-    (normal termination, exception, or signal).
+    if update_info and update_info.available:
+        from license.auto_updater import UpdateType
+        if update_info.update_type == UpdateType.MANDATORY:
+            logger.info("Mandatory update required — blocking launch")
+            _handle_mandatory_update(update_info, qt_app)
+            return 0  # installer is running; _handle exits via sys.exit
 
-    Cleanup operations:
-        1. Process any pending Qt events to ensure clean state
-        2. Close all top-level windows gracefully
-        3. Allow windows to perform their own cleanup
-        4. Process close events to ensure they're handled
-        5. Log completion status
+    # ── Step 5: Main window ───────────────────────────────────────────────────
+    exit_code = _launch_main_window(qt_app, update_info=update_info)
+    logger.info(f"Application exited with code {exit_code}")
+    return exit_code
 
-    Note:
-        This runs after the Qt event loop has exited but before the Python
-        interpreter shuts down.
-    """
-    try:
-        logger.info("Performing global cleanup...")
-
-        # Get QApplication instance (may be None if never created)
-        app = QApplication.instance()
-        if app:
-            # Process any pending events to ensure clean state
-            app.processEvents()
-
-            # Close all top-level windows gracefully
-            # This allows each widget to perform its own cleanup
-            for widget in app.topLevelWidgets():
-                try:
-                    widget.close()  # Triggers closeEvent which can be overridden
-                except Exception as e:
-                    logger.warning(f"Error closing widget {widget}: {e}")
-
-            # Process close events to ensure they're handled
-            app.processEvents()
-
-        logger.info("Global cleanup completed")
-
-    except Exception as e:
-        logger.error(f"Error during global cleanup: {e}", exc_info=True)
-
-
-# Rule 8: Register cleanup function to run on interpreter exit
-# This ensures cleanup happens even if main() exits unexpectedly
-import atexit
-
-atexit.register(cleanup)
 
 if __name__ == "__main__":
-    """
-    Script entry point with minimal error handling wrapper.
-
-    This guard ensures the main() function is only called when the script is
-    executed directly, not when imported as a module.
-
-    The minimal wrapper provides:
-        - Final exception barrier around main()
-        - Consistent exit code propagation
-        - Absolute last-resort error logging
-
-    Returns:
-        Exit code to the operating system (0 for success, non-zero for errors)
-    """
-    exit_code = 1
     try:
-        exit_code = main()
-    except Exception as e:
-        # Absolute last resort error handling
-        # This should theoretically never be reached due to handlers in main()
-        print(f"CRITICAL UNHANDLED EXCEPTION: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        exit_code = 1
-    finally:
-        # Always exit with appropriate code
-        sys.exit(exit_code)
+        sys.exit(main())
+    except Exception:
+        logger.critical("Unhandled exception at top level", exc_info=True)
+        sys.exit(1)
