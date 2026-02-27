@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
                              QGroupBox, QHBoxLayout)
 
-from gui import DailyTradeSetting
+from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

@@ -3,7 +3,7 @@ Utils/BrokerLoginPopup.py
 =========================
 Generic multi-broker PyQt5 login dialog.
 
-Replaces FyersManualLoginPopup with a broker-agnostic design.
+Replaces with a broker-agnostic design.
 The popup adapts its UI to the active broker's auth method via BrokerLoginHelper.
 
 Auth method variants handled:
@@ -41,7 +41,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 
-from Utils.BrokerLoginHelper import BrokerLoginHelper
+from gui.brokerage_settings.BrokerLoginHelper import BrokerLoginHelper
 
 logger = logging.getLogger(__name__)
 

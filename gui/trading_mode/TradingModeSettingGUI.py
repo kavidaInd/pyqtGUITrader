@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
-from gui.TradingModeSetting import TradingMode, TradingModeSetting
+from gui.trading_mode.TradingModeSetting import TradingMode, TradingModeSetting
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

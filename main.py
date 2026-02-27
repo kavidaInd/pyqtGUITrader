@@ -13,9 +13,13 @@ before the main window is shown is sequenced here:
 
 Activation gate
 ───────────────
-  If verify_on_startup() returns ok=False the ActivationDialog is shown
-  modally.  The app only continues after successful activation.
-  The main window is never instantiated until the license is valid.
+  Free / unactivated users: app starts immediately.  No startup gate.
+  Paper trading and historical backtesting are always available for free.
+  The license gate fires only when a user attempts to start LIVE trading
+  (handled inside TradingGUI._start_app via license_manager.is_live_trading_allowed()).
+
+  If a stored paid license fails verification (revoked/expired/machine mismatch)
+  the ActivationDialog is still shown on startup so the user can re-activate.
 
 Auto-update gate
 ────────────────
@@ -39,6 +43,9 @@ import os
 import sys
 import traceback
 from typing import Optional
+
+import PyQt5.QtCore
+PyQt5.QtCore.QCoreApplication.setAttribute(PyQt5.QtCore.Qt.AA_ShareOpenGLContexts, True)
 
 # ── Bootstrap logging before any other import ─────────────────────────────────
 LOG_DIR = "logs"
@@ -74,14 +81,14 @@ def _apply_dark_palette(app):
         from PyQt5.QtGui import QPalette, QColor
         from PyQt5.QtCore import Qt
         dark = QPalette()
-        dark.setColor(QPalette.Window, QColor("#0d1117"))
-        dark.setColor(QPalette.WindowText, QColor("#e6edf3"))
-        dark.setColor(QPalette.Base, QColor("#161b22"))
-        dark.setColor(QPalette.AlternateBase, QColor("#21262d"))
-        dark.setColor(QPalette.Text, QColor("#e6edf3"))
-        dark.setColor(QPalette.Button, QColor("#21262d"))
-        dark.setColor(QPalette.ButtonText, QColor("#e6edf3"))
-        dark.setColor(QPalette.Highlight, QColor("#388bfd"))
+        dark.setColor(QPalette.Window,          QColor("#0d1117"))
+        dark.setColor(QPalette.WindowText,      QColor("#e6edf3"))
+        dark.setColor(QPalette.Base,            QColor("#161b22"))
+        dark.setColor(QPalette.AlternateBase,   QColor("#21262d"))
+        dark.setColor(QPalette.Text,            QColor("#e6edf3"))
+        dark.setColor(QPalette.Button,          QColor("#21262d"))
+        dark.setColor(QPalette.ButtonText,      QColor("#e6edf3"))
+        dark.setColor(QPalette.Highlight,       QColor("#388bfd"))
         dark.setColor(QPalette.HighlightedText, QColor("#ffffff"))
         app.setPalette(dark)
     except Exception as e:
@@ -113,143 +120,77 @@ def _run_db_init() -> bool:
 
 def _run_license_gate(qt_app) -> bool:
     """
-    Verify the license.  Shows ActivationDialog if needed.
-    Returns True if the app should continue.
+    Soft license check on startup.
+
+    - not_activated / trial_expired / expired → app starts freely.
+      Free users land straight in the app; paper + backtest always work.
+      The live-trading gate is enforced inside TradingGUI._start_app.
+
+    - revoked / invalid_machine / order_cancelled → hard block.
+      These indicate misuse or support issues that need resolving before
+      the app should run at all.
+
+    Returns True if the app should continue launching.
     """
     from license.license_manager import license_manager
     from license.activation_dialog import ActivationDialog
-    from PyQt5.QtWidgets import QMessageBox
+    from PyQt5.QtWidgets import QMessageBox, QDialog
 
     result = license_manager.verify_on_startup()
     logger.info(f"License check: {result}")
 
+    # ── Happy path: valid paid/trial license ─────────────────────────────
     if result.ok:
         if result.offline:
             logger.warning(f"Running in offline grace mode: {result.reason}")
         return True
 
-    # Not activated / expired / revoked → show dialog
+    # ── Soft failures: no license yet, or expired — let the user in freely ─
+    SOFT_REASONS = {"not_activated", "trial_expired", "expired"}
+    if result.reason in SOFT_REASONS:
+        logger.info(
+            f"No active paid license ({result.reason!r}) — "
+            "starting in free mode (paper/backtest only)"
+        )
+        return True
+
+    # ── Hard failures: revoke, machine mismatch, cancelled order ─────────
     reason_map = {
-        "not_activated": "",
-        "trial_expired": "Your 7-day free trial has ended.",
-        "expired": "Your license has expired. Please renew to continue.",
-        "revoked": "Your license has been deactivated. Contact support.",
+        "revoked":         "Your license has been deactivated. Please contact support.",
         "invalid_machine": (
-            "This installation is not authorised for this machine. "
-            "Contact support to transfer your license."
+            "This machine is not authorised for your license. "
+            "Contact support to transfer your license to this machine."
         ),
         "order_cancelled": "Your order was cancelled or refunded.",
     }
     display_reason = reason_map.get(result.reason, result.reason)
 
-    # Pre-fill email when upgrading from an expired trial
-    prefill_email = license_manager.get_cached_email() if result.reason in (
-        "trial_expired", "expired"
-    ) else ""
-    # Open on "activate" tab if trial has expired, otherwise default "trial" tab
-    start_tab = "activate" if result.reason in ("trial_expired", "expired") else "trial"
-
     while True:
         dlg = ActivationDialog(
             parent=None,
             reason=display_reason,
-            prefill_email=prefill_email,
-            start_on_tab=start_tab,
+            prefill_email=license_manager.get_cached_email(),
+            start_on_tab="activate",
         )
         dlg_result = dlg.exec_()
 
-        from PyQt5.QtWidgets import QDialog
         if dlg_result == QDialog.Accepted:
-            logger.info("Activation dialog accepted — proceeding")
+            logger.info("Re-activation accepted — proceeding")
             return True
         else:
-            # User closed the dialog without activating
             reply = QMessageBox.question(
                 None,
                 "Exit?",
-                "The application requires a valid license to run.\n\nExit the application?",
+                "Your license could not be verified.\n\nExit the application?",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
                 return False
-            # Otherwise loop — show dialog again
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3 — Auto-update check
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _run_update_check(qt_app) -> Optional["UpdateInfo"]:
-    """
-    Synchronous update check (runs before main window).
-    Returns UpdateInfo so the caller can:
-      - Skip / pass it to the GUI for an optional banner.
-      - Block on mandatory update.
-    """
-    try:
-        from license.auto_updater import auto_updater, UpdateType
-        info = auto_updater.check_for_update()
-        logger.info(f"Update check: {info}")
-        return info
-    except Exception:
-        logger.warning("Update check failed", exc_info=True)
-        return None
-
-
-def _handle_mandatory_update(update_info, qt_app) -> bool:
-    """
-    Show MandatoryUpdateDialog.  Blocks until update is launched or user exits.
-    Returns False → caller should sys.exit().
-    """
-    from license.activation_dialog import MandatoryUpdateDialog
-    from license.auto_updater import auto_updater, DownloadProgress
-    from PyQt5.QtWidgets import QDialog
-    from PyQt5.QtCore import QThread, pyqtSignal
-
-    class _DownloadThread(QThread):
-        progress = pyqtSignal(float, str)
-        done = pyqtSignal(bool)
-
-        def __init__(self, info, updater):
-            super().__init__()
-            self._info = info
-            self._updater = updater
-
-        def run(self):
-            def _cb(p: DownloadProgress):
-                status = (
-                    f"Downloading… {p.percent:.0f}%"
-                    if not p.done else "Installing…"
-                )
-                if p.error:
-                    status = f"Error: {p.error}"
-                self.progress.emit(p.percent, status)
-
-            ok = self._updater.download_and_install(self._info, _cb)
-            self.done.emit(ok)
-
-    dlg = MandatoryUpdateDialog(update_info)
-    thread = _DownloadThread(update_info, auto_updater)
-
-    thread.progress.connect(lambda pct, msg: dlg.set_progress(pct, msg))
-    thread.done.connect(lambda ok: (
-        dlg.accept() if ok else dlg.set_progress(0, "Download failed. Try again.")
-    ))
-
-    def _start_download():
-        thread.start()
-
-    dlg.update_requested.connect(_start_download)
-    result = dlg.exec_()
-
-    if result == QDialog.Rejected:
-        sys.exit(1)
-
-    return False  # app should not continue — installer is running
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 4 — Main window
+# Step 3 — Main window
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _launch_main_window(qt_app, update_info=None) -> int:
@@ -258,7 +199,7 @@ def _launch_main_window(qt_app, update_info=None) -> int:
     from config import Config
 
     config = Config()
-    window = TradingGUI(config=config)
+    window = TradingGUI()
 
     # Inject optional update banner into the main window
     if update_info and update_info.available:
@@ -282,9 +223,9 @@ def _inject_update_banner(window: "TradingGUI", update_info) -> None:
         from PyQt5.QtWidgets import QWidget, QVBoxLayout
 
         banner = UpdateBanner(
-            version=update_info.latest_version,
-            notes=update_info.release_notes or "",
-            parent=window,
+            version = update_info.latest_version,
+            notes   = update_info.release_notes or "",
+            parent  = window,
         )
 
         def _start_update():
@@ -401,18 +342,8 @@ def main() -> int:
         logger.info("License gate rejected — exiting")
         return 1
 
-    # ── Step 4: Update check ──────────────────────────────────────────────────
-    update_info = _run_update_check(qt_app)
-
-    if update_info and update_info.available:
-        from license.auto_updater import UpdateType
-        if update_info.update_type == UpdateType.MANDATORY:
-            logger.info("Mandatory update required — blocking launch")
-            _handle_mandatory_update(update_info, qt_app)
-            return 0  # installer is running; _handle exits via sys.exit
-
     # ── Step 5: Main window ───────────────────────────────────────────────────
-    exit_code = _launch_main_window(qt_app, update_info=update_info)
+    exit_code = _launch_main_window(qt_app)
     logger.info(f"Application exited with code {exit_code}")
     return exit_code
 

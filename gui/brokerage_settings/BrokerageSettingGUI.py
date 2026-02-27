@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QFrame, QScrollArea)
 
 from broker.BrokerFactory import BrokerType, BrokerFactory
-from gui.BrokerageSetting import BrokerageSetting
+from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
 
 logger = logging.getLogger(__name__)
 

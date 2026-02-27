@@ -26,34 +26,34 @@ from PyQt5.QtWidgets import (
 )
 
 from license.license_manager import (
-    LicenseManager, LicenseResult, license_manager, PLAN_TRIAL,
+    LicenseManager, LicenseResult, license_manager, PLAN_TRIAL, TRIAL_DURATION_DAYS,
 )
 
 logger = logging.getLogger(__name__)
 
 # ── Shared colour palette ──────────────────────────────────────────────────────
-_BG       = "#0d1117"
-_SURFACE  = "#161b22"
-_BORDER   = "#30363d"
-_ACCENT   = "#238636"   # green  — paid
+_BG = "#0d1117"
+_SURFACE = "#161b22"
+_BORDER = "#30363d"
+_ACCENT = "#238636"  # green  — paid
 _ACCENT_H = "#2ea043"
-_TRIAL    = "#1f6feb"   # blue   — trial (visually distinct from paid)
-_TRIAL_H  = "#388bfd"
-_TEXT     = "#e6edf3"
-_SUBTEXT  = "#8b949e"
-_ERROR    = "#f85149"
-_WARN     = "#d29922"
-_WARN_BG  = "#272115"
+_TRIAL = "#1f6feb"  # blue   — trial (visually distinct from paid)
+_TRIAL_H = "#388bfd"
+_TEXT = "#e6edf3"
+_SUBTEXT = "#8b949e"
+_ERROR = "#f85149"
+_WARN = "#d29922"
+_WARN_BG = "#272115"
 
 
 # ── Worker threads ─────────────────────────────────────────────────────────────
 
 class _TrialWorker(QThread):
-    result_ready = pyqtSignal(object)   # LicenseResult
+    result_ready = pyqtSignal(object)  # LicenseResult
 
     def __init__(self, email: str, manager: LicenseManager):
         super().__init__()
-        self._email   = email
+        self._email = email
         self._manager = manager
 
     def run(self):
@@ -61,13 +61,13 @@ class _TrialWorker(QThread):
 
 
 class _ActivationWorker(QThread):
-    result_ready = pyqtSignal(object)   # LicenseResult
+    result_ready = pyqtSignal(object)  # LicenseResult
 
     def __init__(self, order_id: str, email: str, manager: LicenseManager):
         super().__init__()
         self._order_id = order_id
-        self._email    = email
-        self._manager  = manager
+        self._email = email
+        self._manager = manager
 
     def run(self):
         self.result_ready.emit(self._manager.activate(self._order_id, self._email))
@@ -163,21 +163,21 @@ class ActivationDialog(QDialog):
     start_on_tab  — "trial" (default) or "activate".
     """
 
-    activation_success = pyqtSignal(object)   # LicenseResult
+    activation_success = pyqtSignal(object)  # LicenseResult
 
     def __init__(
-        self,
-        parent=None,
-        reason: str = "",
-        manager: LicenseManager = None,
-        prefill_email: str = "",
-        start_on_tab: str = "trial",
+            self,
+            parent=None,
+            reason: str = "",
+            manager: LicenseManager = None,
+            prefill_email: str = "",
+            start_on_tab: str = "trial",
     ):
         super().__init__(parent)
-        self._reason        = reason
-        self._manager       = manager or license_manager
+        self._reason = reason
+        self._manager = manager or license_manager
         self._prefill_email = prefill_email
-        self._start_on_tab  = start_on_tab
+        self._start_on_tab = start_on_tab
         self._worker: Optional[QThread] = None
 
         self.setWindowTitle("Algo Trading Pro")
@@ -224,7 +224,7 @@ class ActivationDialog(QDialog):
 
         # Tabs
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._build_trial_tab(),    "🎁  Free Trial")
+        self._tabs.addTab(self._build_trial_tab(), "🎁  Free Trial")
         self._tabs.addTab(self._build_activate_tab(), "🔑  Activate License")
         if self._start_on_tab == "activate":
             self._tabs.setCurrentIndex(1)
@@ -243,7 +243,7 @@ class ActivationDialog(QDialog):
 
     def _build_trial_tab(self) -> QWidget:
         page = QWidget()
-        lay  = QVBoxLayout(page)
+        lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(0)
 
@@ -256,10 +256,10 @@ class ActivationDialog(QDialog):
         bl.setContentsMargins(16, 12, 16, 12)
         bl.setSpacing(6)
         for feat in (
-            "✅  Full access to all features for 7 days",
-            "✅  Live trading, paper trading & backtesting",
-            "✅  All 10 broker integrations included",
-            "✅  No credit card required",
+                "✅  Full access to all features for 7 days",
+                "✅  Live trading, paper trading & backtesting",
+                "✅  All 10 broker integrations included",
+                "✅  No credit card required",
         ):
             fl = QLabel(feat)
             fl.setStyleSheet(f"color: {_TEXT}; font-size: 12px;")
@@ -316,7 +316,7 @@ class ActivationDialog(QDialog):
 
     def _build_activate_tab(self) -> QWidget:
         page = QWidget()
-        lay  = QVBoxLayout(page)
+        lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(0)
 
@@ -409,7 +409,7 @@ class ActivationDialog(QDialog):
     @pyqtSlot()
     def _on_activate(self):
         order_id = self._order_input.text().strip()
-        email    = self._activate_email.text().strip()
+        email = self._activate_email.text().strip()
         if not order_id:
             self._set_activate_status("❌  Please enter your Order ID.", _ERROR)
             self._order_input.setFocus()
@@ -479,7 +479,7 @@ class TrialExpiryBanner(QFrame):
     """
 
     upgrade_clicked = pyqtSignal()
-    dismissed       = pyqtSignal()
+    dismissed = pyqtSignal()
 
     def __init__(self, days_remaining: int, parent=None):
         super().__init__(parent)
@@ -488,10 +488,10 @@ class TrialExpiryBanner(QFrame):
 
     def _build(self):
         urgent = self._days <= 2
-        bg     = "#2d1b1e" if urgent else _WARN_BG
-        border = _ERROR    if urgent else _WARN
-        color  = _ERROR    if urgent else _WARN
-        icon   = "🔴" if urgent else "⏳"
+        bg = "#2d1b1e" if urgent else _WARN_BG
+        border = _ERROR if urgent else _WARN
+        color = _ERROR if urgent else _WARN
+        icon = "🔴" if urgent else "⏳"
 
         self.setStyleSheet(
             f"QFrame {{ background: {bg}; border-bottom: 2px solid {border}; }}"
@@ -542,12 +542,12 @@ class UpdateBanner(QFrame):
     """
 
     update_requested = pyqtSignal()
-    dismissed        = pyqtSignal()
+    dismissed = pyqtSignal()
 
     def __init__(self, version: str, notes: str, parent=None):
         super().__init__(parent)
         self._version = version
-        self._notes   = notes
+        self._notes = notes
         self._build()
 
     def _build(self):
@@ -579,6 +579,214 @@ class UpdateBanner(QFrame):
         )
         close_btn.clicked.connect(lambda: (self.dismissed.emit(), self.hide()))
         layout.addWidget(close_btn)
+
+
+# ── LiveTradingUpgradeDialog ──────────────────────────────────────────────────
+
+class LiveTradingUpgradeDialog(QDialog):
+    """
+    Focused, in-context upsell shown the moment a free/trial user tries to
+    start live trading.  Unlike the generic ActivationDialog this one is
+    purpose-built for conversion:
+
+      • Explains exactly WHY they are seeing it (they clicked Start in LIVE mode)
+      • Lists what they get with a paid license
+      • Has a single clear CTA: "Activate License"
+      • Has a secondary "Continue in Paper Mode" escape hatch so they are
+        never hard-blocked — they can always keep using the app
+
+    Signals
+    ───────
+    activated          — user successfully entered order_id + email and activated
+    switch_to_paper    — user chose to switch to paper mode instead of upgrading
+    """
+
+    activated = pyqtSignal(object)  # LicenseResult
+    switch_to_paper = pyqtSignal()
+
+    def __init__(self, parent=None, manager: LicenseManager = None):
+        super().__init__(parent)
+        self._manager = manager or license_manager
+        self._worker: Optional[QThread] = None
+
+        self.setWindowTitle("Live Trading — Upgrade Required")
+        self.setModal(True)
+        self.setFixedWidth(480)
+        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.setStyleSheet(_DIALOG_CSS)
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 28, 32, 28)
+        root.setSpacing(0)
+
+        # ── Header ─────────────────────────────────────────────────────────
+        title = QLabel("📈  Live Trading Requires a License")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        root.addWidget(title)
+
+        root.addSpacing(6)
+        sub = QLabel(
+            "Paper trading and historical backtesting are always free."
+            "Activate a license to trade with real money."
+        )
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color: {_SUBTEXT}; font-size: 12px;")
+        root.addWidget(sub)
+
+        root.addSpacing(18)
+
+        # ── Benefits box ───────────────────────────────────────────────────
+        box = QFrame()
+        box.setStyleSheet(
+            f"background: #0f2a1a; border: 1px solid {_ACCENT}; border-radius: 8px;"
+        )
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(16, 12, 16, 12)
+        bl.setSpacing(6)
+        for item in (
+                "✅  Live trading across all 10 supported brokers",
+                "✅  Automated algo + manual order placement",
+                "✅  Real-time WebSocket tick data",
+                "✅  1-year license  ·  1 machine",
+        ):
+            lbl = QLabel(item)
+            lbl.setStyleSheet(f"color: {_TEXT}; font-size: 12px;")
+            bl.addWidget(lbl)
+        root.addWidget(box)
+
+        root.addSpacing(20)
+
+        # ── Activation form ────────────────────────────────────────────────
+        form = QFrame()
+        form.setStyleSheet(
+            f"background: {_SURFACE}; border: 1px solid {_BORDER}; border-radius: 8px;"
+        )
+        fl = QVBoxLayout(form)
+        fl.setContentsMargins(20, 16, 20, 16)
+        fl.setSpacing(10)
+
+        lbl_o = QLabel("Order ID")
+        lbl_o.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {_SUBTEXT};")
+        fl.addWidget(lbl_o)
+        self._order_input = QLineEdit()
+        self._order_input.setPlaceholderText("e.g.  ORD-20240101-12345")
+        self._order_input.returnPressed.connect(self._on_activate)
+        fl.addWidget(self._order_input)
+
+        lbl_e = QLabel("Email Address")
+        lbl_e.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {_SUBTEXT};")
+        fl.addWidget(lbl_e)
+        self._email_input = QLineEdit()
+        self._email_input.setPlaceholderText("you@example.com")
+
+        # Pre-fill email if we have it stored from a trial
+        try:
+            from license.license_manager import license_manager as _lm
+            cached = _lm.get_cached_email()
+            if cached:
+                self._email_input.setText(cached)
+        except Exception:
+            pass
+
+        self._email_input.returnPressed.connect(self._on_activate)
+        fl.addWidget(self._email_input)
+
+        root.addWidget(form)
+        root.addSpacing(12)
+
+        # ── Status / spinner ───────────────────────────────────────────────
+        self._status_lbl = QLabel("")
+        self._status_lbl.setAlignment(Qt.AlignCenter)
+        self._status_lbl.setWordWrap(True)
+        self._status_lbl.setStyleSheet("font-size: 12px;")
+        self._status_lbl.hide()
+        root.addWidget(self._status_lbl)
+
+        self._spinner = QProgressBar()
+        self._spinner.setRange(0, 0)
+        self._spinner.setFixedHeight(5)
+        self._spinner.setStyleSheet(
+            f"QProgressBar::chunk {{ background: {_ACCENT}; border-radius: 2px; }}"
+        )
+        self._spinner.hide()
+        root.addWidget(self._spinner)
+
+        root.addSpacing(8)
+
+        # ── Primary CTA ────────────────────────────────────────────────────
+        self._activate_btn = QPushButton("🔑  Activate & Enable Live Trading")
+        self._activate_btn.setObjectName("activateBtn")
+        self._activate_btn.setFixedHeight(46)
+        self._activate_btn.clicked.connect(self._on_activate)
+        root.addWidget(self._activate_btn)
+
+        root.addSpacing(8)
+
+        # ── Secondary escape hatch ─────────────────────────────────────────
+        paper_btn = QPushButton("Continue in Paper Trading Mode Instead")
+        paper_btn.setStyleSheet(
+            f"background: transparent; color: {_SUBTEXT}; border: none; "
+            f"font-size: 12px; text-decoration: underline;"
+        )
+        paper_btn.setCursor(Qt.PointingHandCursor)
+        paper_btn.clicked.connect(self._on_paper)
+        root.addWidget(paper_btn)
+
+        self.adjustSize()
+
+    # ── Slots ──────────────────────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _on_activate(self):
+        order_id = self._order_input.text().strip()
+        email = self._email_input.text().strip()
+        if not order_id:
+            self._show_status(f"❌  Please enter your Order ID.", _ERROR)
+            self._order_input.setFocus()
+            return
+        if not email or "@" not in email:
+            self._show_status(f"❌  Please enter a valid email address.", _ERROR)
+            self._email_input.setFocus()
+            return
+
+        self._set_loading(True)
+        self._show_status("Contacting activation server…", _SUBTEXT)
+        self._worker = _ActivationWorker(order_id, email, self._manager)
+        self._worker.result_ready.connect(self._on_result)
+        self._worker.start()
+
+    @pyqtSlot(object)
+    def _on_result(self, result: LicenseResult):
+        self._set_loading(False)
+        if result.ok:
+            name = result.customer_name or self._email_input.text().strip()
+            self._show_status(f"✅  Activated!  Welcome, {name}.", _ACCENT_H)
+            self.activated.emit(result)
+            QTimer.singleShot(1200, self.accept)
+        else:
+            self._show_status(f"❌  {result.reason or 'Activation failed.'}", _ERROR)
+
+    @pyqtSlot()
+    def _on_paper(self):
+        self.switch_to_paper.emit()
+        self.reject()
+
+    # ── UI helpers ─────────────────────────────────────────────────────────
+
+    def _set_loading(self, on: bool):
+        self._activate_btn.setEnabled(not on)
+        self._order_input.setEnabled(not on)
+        self._email_input.setEnabled(not on)
+        self._spinner.setVisible(on)
+
+    def _show_status(self, msg: str, color: str = _TEXT):
+        self._status_lbl.setText(msg)
+        self._status_lbl.setStyleSheet(f"font-size: 12px; color: {color};")
+        self._status_lbl.show()
 
 
 # ── MandatoryUpdateDialog ──────────────────────────────────────────────────────

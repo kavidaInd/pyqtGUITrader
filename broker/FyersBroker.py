@@ -18,9 +18,9 @@ from dateutil.relativedelta import relativedelta
 from requests.exceptions import Timeout, ConnectionError
 
 from broker.BaseBroker import BaseBroker, TokenExpiredError
-from gui.BrokerageSetting import BrokerageSetting
 from db.connector import get_db
 from db.crud import tokens
+from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
 
 try:
     from fyers_apiv3 import fyersModel

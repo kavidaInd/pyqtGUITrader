@@ -19,8 +19,8 @@ from Utils.notifier import Notifier
 from broker.BaseBroker import TokenExpiredError
 from broker.BrokerFactory import BrokerFactory
 from data.websocket_manager import WebSocketManager
-from gui.DailyTradeSetting import DailyTradeSetting
-from gui.ProfitStoplossSetting import ProfitStoplossSetting
+from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
+from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
 from models.trade_state import TradeState
 from strategy.dynamic_signal_engine import DynamicSignalEngine
 from strategy.multi_tf_filter import MultiTimeframeFilter

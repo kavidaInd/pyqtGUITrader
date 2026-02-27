@@ -8,7 +8,7 @@ from PyQt5.QtGui import QFont, QDoubleValidator
 from BaseEnums import STOP, TRAILING, logger
 import threading
 
-from gui import ProfitStoplossSetting
+from gui.profit_loss import ProfitStoplossSetting
 
 
 class ProfitStoplossSettingGUI(QDialog):

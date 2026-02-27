@@ -69,6 +69,9 @@ OFFLINE_GRACE_DAYS: int = 3  # paid plans only — trials must verify online
 TRIAL_DURATION_DAYS: int = 7
 APP_VERSION: str = "1.0.0"
 
+# DEVELOPMENT MODE - Set to True to bypass server checks during development
+DEVELOPMENT_MODE: bool = True  # ← Set to False for production
+
 # Plan name constants
 PLAN_TRIAL = "trial"
 PLAN_STANDARD = "standard"
@@ -225,6 +228,21 @@ class LicenseManager:
         if not email or "@" not in email:
             return LicenseResult(ok=False, reason="Please enter a valid email address.")
 
+        # DEVELOPMENT MODE: Always succeed
+        if DEVELOPMENT_MODE:
+            logger.info(f"DEVELOPMENT MODE: Trial activated for {email}")
+            expires_at = (datetime.now() + timedelta(days=TRIAL_DURATION_DAYS)).isoformat()
+            result = LicenseResult(
+                ok=True,
+                license_key=f"DEV_TRIAL_{hashlib.md5(email.encode()).hexdigest()[:8]}",
+                expires_at=expires_at,
+                plan=PLAN_TRIAL,
+                customer_name=email.split('@')[0],
+                days_remaining=TRIAL_DURATION_DAYS,
+            )
+            self._persist("DEV_TRIAL", email, result)
+            return result
+
         try:
             resp = requests.post(
                 f"{self.server_url}/api/v1/trial",
@@ -290,6 +308,21 @@ class LicenseManager:
         if not order_id or not email:
             return LicenseResult(ok=False, reason="Order ID and email are required.")
 
+        # DEVELOPMENT MODE: Always succeed
+        if DEVELOPMENT_MODE:
+            logger.info(f"DEVELOPMENT MODE: License activated for {email} with order {order_id}")
+            expires_at = (datetime.now() + timedelta(days=365)).isoformat()
+            result = LicenseResult(
+                ok=True,
+                license_key=f"DEV_PAID_{hashlib.md5(f'{email}{order_id}'.encode()).hexdigest()[:8]}",
+                expires_at=expires_at,
+                plan=PLAN_PRO,
+                customer_name=email.split('@')[0],
+                days_remaining=365,
+            )
+            self._persist(order_id, email, result)
+            return result
+
         try:
             resp = requests.post(
                 f"{self.server_url}/api/v1/activate",
@@ -342,6 +375,21 @@ class LicenseManager:
 
         license_key = kv.get(_KV_LICENSE_KEY, "")
         current_plan = kv.get(_KV_PLAN, "")
+
+        # DEVELOPMENT MODE: Always succeed if there's a local license
+        if DEVELOPMENT_MODE:
+            if license_key:
+                logger.info("DEVELOPMENT MODE: License verified successfully")
+                days_remaining = int(kv.get(_KV_DAYS_REMAINING, 7))
+                return LicenseResult(
+                    ok=True,
+                    license_key=license_key,
+                    expires_at=kv.get(_KV_EXPIRES_AT, ""),
+                    plan=current_plan,
+                    customer_name=kv.get(_KV_CUSTOMER_NAME, ""),
+                    days_remaining=days_remaining,
+                )
+            return LicenseResult(ok=False, reason="not_activated")
 
         if not license_key:
             return LicenseResult(ok=False, reason="not_activated")

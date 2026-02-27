@@ -1,383 +1,539 @@
 """
-license/auto_updater.py
-=======================
-Over-the-air (OTA) update engine for the Algo Trading SaaS.
+license/license_manager.py
+==========================
+Client-side license engine for the Algo Trading SaaS.
 
-How it works
-────────────
-1. On startup, AutoUpdater.check_for_update() queries:
-       GET  {server}/api/v1/version
-   Response: { latest_version, download_url, release_notes, is_mandatory,
-               min_version, checksum_sha256 }
+Plans
+─────
+  trial    — 7-day free trial, one per machine ever (server-enforced)
+  standard — paid, 1-year, 1 machine
+  pro      — paid, 1-year, up to 3 machines
 
-2. If latest_version > APP_VERSION:
-   - NotificationType.OPTIONAL → show a non-blocking banner in the GUI.
-   - NotificationType.MANDATORY → block app start, force update dialog.
+Flows
+─────
+  Trial (first run):
+    1. User enters email only → POST /api/v1/trial
+    2. Server checks machine_id has never had a trial
+    3. Returns { status:"trial_activated", license_key, expires_at, days_remaining }
+    4. Stored locally with plan="trial"
 
-3. User clicks "Update Now":
-   - File is downloaded to a temp path with progress tracking.
-   - SHA-256 checksum is verified before anything is extracted.
-   - A platform-aware installer script is written to disk.
-   - The installer is launched and the current process exits.
+  Paid activation:
+    1. User enters order_id + email → POST /api/v1/activate
+    2. Returns { status:"activated", license_key, expires_at, plan, customer_name }
+    3. Replaces any existing trial record on the same machine
 
-Installer strategy (platform-specific)
-───────────────────────────────────────
-  Windows  : downloads a .exe / .msi → runs via subprocess
-  macOS    : downloads a .dmg / .pkg → opens via subprocess
-  Linux    : downloads a .tar.gz → extracts and runs install.sh
+  Every startup:
+    POST /api/v1/verify { license_key, machine_id, app_version }
+    Trial : NO offline grace — must verify online (prevents clock manipulation)
+    Paid  : OFFLINE_GRACE_DAYS tolerance when server is unreachable
 
-File formats
-────────────
-  The server's download_url should point to a platform-specific binary that
-  can self-install.  For a PyInstaller-based app the simplest approach is:
-    Windows : NSIS or InnoSetup installer .exe
-    macOS   : .pkg or signed .dmg
-    Linux   : tarball containing an install.sh
+Server contract
+───────────────
+  POST /api/v1/trial
+      body : { email, machine_id, app_version }
+      200  : { status:"trial_activated", license_key, expires_at, days_remaining }
+      400  : { status:"error", reason:"trial_already_used"|"invalid_email"|... }
 
-  Alternatively, supply a Python .zip that the updater unzips over the
-  current installation (simpler for early-stage SaaS).
+  POST /api/v1/activate
+      body : { order_id, email, machine_id, app_version }
+      200  : { status:"activated", license_key, expires_at, plan,
+               customer_name, days_remaining }
+      400  : { status:"error", reason:"..." }
 
-Server contract (GET /api/v1/version)
-──────────────────────────────────────
-  {
-    "latest_version":  "1.2.0",
-    "download_url":    "https://cdn.yourdomain.com/releases/1.2.0/installer.exe",
-    "release_notes":   "Bug fixes and improvements.",
-    "is_mandatory":    false,
-    "min_version":     "1.0.0",
-    "checksum_sha256": "abc123..."
-  }
+  POST /api/v1/verify
+      body : { license_key, machine_id, app_version }
+      200  : { valid:true,  plan, expires_at, days_remaining, customer_name }
+      200  : { valid:false, reason:"trial_expired"|"expired"|"revoked"|... }
+
+  GET  /api/v1/version
+      200  : { latest_version, download_url, release_notes, is_mandatory }
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import platform
-import shutil
-import stat
-import subprocess
-import sys
-import tempfile
-import threading
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Callable, Optional
+import uuid
+from datetime import datetime, timedelta
+from typing import Dict
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-ACTIVATION_SERVER_URL: str = "https://your-activation-server.com"   # ← same as license_manager
-APP_VERSION: str = "1.0.0"       # must match license_manager.APP_VERSION
-REQUEST_TIMEOUT: int = 15
-DOWNLOAD_TIMEOUT: int = 300       # 5 min max for large installers
-CHUNK_SIZE: int = 65_536          # 64 KB download chunks
+# ── Configuration ──────────────────────────────────────────────────────────────
+ACTIVATION_SERVER_URL: str = "https://your-activation-server.com"   # ← change this
+REQUEST_TIMEOUT: int        = 15
+OFFLINE_GRACE_DAYS: int     = 3      # paid plans only — trials must verify online
+TRIAL_DURATION_DAYS: int    = 7
+APP_VERSION: str            = "1.0.0"
+
+# Plan name constants
+PLAN_TRIAL    = "trial"
+PLAN_STANDARD = "standard"
+PLAN_PRO      = "pro"
+
+# KV store keys
+_KV_LICENSE_KEY    = "license:license_key"
+_KV_ORDER_ID       = "license:order_id"
+_KV_EMAIL          = "license:email"
+_KV_MACHINE_ID     = "license:machine_id"
+_KV_EXPIRES_AT     = "license:expires_at"
+_KV_PLAN           = "license:plan"
+_KV_CUSTOMER_NAME  = "license:customer_name"
+_KV_LAST_VERIFY_AT = "license:last_verify_at"
+_KV_LAST_VERIFY_OK = "license:last_verify_ok"
+_KV_DAYS_REMAINING = "license:days_remaining"
 
 
-# ── Result types ──────────────────────────────────────────────────────────────
+# ── Machine fingerprint ────────────────────────────────────────────────────────
 
-class UpdateType(Enum):
-    NONE      = "none"
-    OPTIONAL  = "optional"
-    MANDATORY = "mandatory"
+def _get_machine_id() -> str:
+    """
+    Stable anonymous machine fingerprint, persisted in the KV store.
+
+    Because the fingerprint is written to SQLite before being sent to the server,
+    reinstalling the app recreates the same ID from the same hardware — making it
+    impossible to obtain a second trial by reinstalling.
+    """
+    try:
+        from db.crud import kv
+        stored = kv.get(_KV_MACHINE_ID)
+        if stored:
+            return stored
+        parts = [
+            platform.node(),
+            platform.processor(),
+            platform.machine(),
+            str(uuid.getnode()),   # MAC-address-derived integer
+        ]
+        fingerprint = hashlib.sha256("|".join(filter(None, parts)).encode()).hexdigest()[:32]
+        kv.set(_KV_MACHINE_ID, fingerprint)
+        return fingerprint
+    except Exception as e:
+        logger.warning(f"Could not generate machine_id: {e}")
+        return hashlib.sha256(platform.node().encode()).hexdigest()[:32]
 
 
-@dataclass
-class UpdateInfo:
-    update_type:      UpdateType  = UpdateType.NONE
-    latest_version:   str         = ""
-    current_version:  str         = APP_VERSION
-    download_url:     str         = ""
-    release_notes:    str         = ""
-    checksum_sha256:  str         = ""
-    min_version:      str         = ""
-    error:            str         = ""
+# ── Result type ────────────────────────────────────────────────────────────────
+
+class LicenseResult:
+    """Returned by start_trial(), activate(), and verify_on_startup()."""
+
+    def __init__(
+        self,
+        ok: bool,
+        reason: str = "",
+        license_key: str = "",
+        expires_at: str = "",
+        plan: str = "",
+        customer_name: str = "",
+        days_remaining: int = 0,
+        offline: bool = False,
+    ):
+        self.ok             = ok
+        self.reason         = reason
+        self.license_key    = license_key
+        self.expires_at     = expires_at
+        self.plan           = plan
+        self.customer_name  = customer_name
+        self.days_remaining = days_remaining
+        self.offline        = offline
 
     @property
-    def available(self) -> bool:
-        return self.update_type != UpdateType.NONE
+    def is_trial(self) -> bool:
+        return self.plan == PLAN_TRIAL
+
+    @property
+    def is_paid(self) -> bool:
+        return self.plan in (PLAN_STANDARD, PLAN_PRO)
+
+    def __repr__(self):
+        return (
+            f"LicenseResult(ok={self.ok}, plan={self.plan!r}, "
+            f"days_remaining={self.days_remaining}, offline={self.offline})"
+        )
 
 
-@dataclass
-class DownloadProgress:
-    total_bytes:     int   = 0
-    received_bytes:  int   = 0
-    percent:         float = 0.0
-    done:            bool  = False
-    error:           str   = ""
+# ── Main class ─────────────────────────────────────────────────────────────────
 
-
-# ── Version comparison ────────────────────────────────────────────────────────
-
-def _parse_version(v: str):
-    """Return a tuple of ints for comparison, e.g. '1.2.3' → (1, 2, 3)."""
-    try:
-        return tuple(int(x) for x in v.strip().split(".")[:3])
-    except (ValueError, AttributeError):
-        return (0, 0, 0)
-
-
-def _version_gt(a: str, b: str) -> bool:
-    """Return True if version a > version b."""
-    return _parse_version(a) > _parse_version(b)
-
-
-def _version_lt(a: str, b: str) -> bool:
-    return _parse_version(a) < _parse_version(b)
-
-
-# ── Main class ────────────────────────────────────────────────────────────────
-
-class AutoUpdater:
+class LicenseManager:
     """
-    Handles update checking and downloading.
-    Use the module-level `auto_updater` singleton.
+    Singleton license manager.
+    Use the module-level `license_manager` instance.
     """
 
     def __init__(self, server_url: str = ACTIVATION_SERVER_URL):
-        self.server_url      = server_url.rstrip("/")
-        self._update_info:   Optional[UpdateInfo] = None
-        self._download_path: Optional[str] = None
+        self.server_url = server_url.rstrip("/")
+        self.machine_id = _get_machine_id()
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ── Query helpers ──────────────────────────────────────────────────────────
 
-    def check_for_update(self) -> UpdateInfo:
-        """
-        Query the server for the latest version.
-
-        Safe to call in a background thread. Returns UpdateInfo immediately
-        (never blocks the UI for more than REQUEST_TIMEOUT seconds).
-        """
+    def is_locally_activated(self) -> bool:
+        """Quick check — does any local license record exist?"""
         try:
-            resp = requests.get(
-                f"{self.server_url}/api/v1/version",
-                params={"current_version": APP_VERSION, "platform": _get_platform()},
+            from db.crud import kv
+            return bool(kv.get(_KV_LICENSE_KEY))
+        except Exception:
+            return False
+
+    def get_local_plan(self) -> str:
+        """Return the cached plan string ('trial', 'standard', 'pro', or '')."""
+        try:
+            from db.crud import kv
+            return kv.get(_KV_PLAN, "") or ""
+        except Exception:
+            return ""
+
+    def get_cached_email(self) -> str:
+        """Return stored email — used to pre-fill the upgrade form after trial expiry."""
+        try:
+            from db.crud import kv
+            return kv.get(_KV_EMAIL, "") or ""
+        except Exception:
+            return ""
+
+    def get_local_info(self) -> Dict:
+        """Full cached record — used by About / License status dialogs."""
+        try:
+            from db.crud import kv
+            return {
+                "order_id":       kv.get(_KV_ORDER_ID, ""),
+                "email":          kv.get(_KV_EMAIL, ""),
+                "plan":           kv.get(_KV_PLAN, ""),
+                "expires_at":     kv.get(_KV_EXPIRES_AT, ""),
+                "customer_name":  kv.get(_KV_CUSTOMER_NAME, ""),
+                "machine_id":     self.machine_id,
+                "last_verify":    kv.get(_KV_LAST_VERIFY_AT, ""),
+                "days_remaining": kv.get(_KV_DAYS_REMAINING, 0),
+            }
+        except Exception:
+            return {}
+
+    # ── Trial activation ───────────────────────────────────────────────────────
+
+    def start_trial(self, email: str) -> LicenseResult:
+        """
+        Register a free 7-day trial for this machine.
+
+        The server enforces ONE trial per machine_id for all time.  Reinstalling
+        the app will not grant a second trial because the machine_id is derived
+        from hardware and already stored in the DB before the first request.
+        """
+        email = email.strip().lower()
+        if not email or "@" not in email:
+            return LicenseResult(ok=False, reason="Please enter a valid email address.")
+
+        try:
+            resp = requests.post(
+                f"{self.server_url}/api/v1/trial",
+                json={
+                    "email":       email,
+                    "machine_id":  self.machine_id,
+                    "app_version": APP_VERSION,
+                },
                 timeout=REQUEST_TIMEOUT,
             )
             data = resp.json()
 
-            latest   = data.get("latest_version", APP_VERSION)
-            download = data.get("download_url", "")
-            notes    = data.get("release_notes", "")
-            checksum = data.get("checksum_sha256", "")
-            is_mandatory = bool(data.get("is_mandatory", False))
-            min_version  = data.get("min_version", "0.0.0")
-
-            # Force update if current is below minimum required version
-            if _version_lt(APP_VERSION, min_version):
-                is_mandatory = True
-
-            if _version_gt(latest, APP_VERSION):
-                update_type = UpdateType.MANDATORY if is_mandatory else UpdateType.OPTIONAL
-                info = UpdateInfo(
-                    update_type     = update_type,
-                    latest_version  = latest,
-                    download_url    = download,
-                    release_notes   = notes,
-                    checksum_sha256 = checksum,
-                    min_version     = min_version,
+            if resp.status_code == 200 and data.get("status") == "trial_activated":
+                result = LicenseResult(
+                    ok             = True,
+                    license_key    = data["license_key"],
+                    expires_at     = data["expires_at"],
+                    plan           = PLAN_TRIAL,
+                    customer_name  = email,
+                    days_remaining = int(data.get("days_remaining", TRIAL_DURATION_DAYS)),
                 )
+                self._persist("TRIAL", email, result)
                 logger.info(
-                    f"Update available: {APP_VERSION} → {latest} "
-                    f"({'MANDATORY' if is_mandatory else 'optional'})"
+                    f"Trial activated: expires={result.expires_at}, "
+                    f"days_remaining={result.days_remaining}"
                 )
-            else:
-                info = UpdateInfo(update_type=UpdateType.NONE, latest_version=latest)
-                logger.info(f"App is up to date (v{APP_VERSION})")
+                return result
 
-            self._update_info = info
-            return info
+            reason = data.get("reason", "")
+            friendly = {
+                "trial_already_used": (
+                    "A free trial has already been used on this machine.\n\n"
+                    "Purchase a license to continue using Algo Trading Pro."
+                ),
+                "invalid_email": "Please enter a valid email address.",
+            }.get(reason, data.get("message") or "Trial activation failed. Please try again.")
+            return LicenseResult(ok=False, reason=friendly)
+
+        except requests.exceptions.ConnectionError:
+            return LicenseResult(
+                ok=False,
+                reason=(
+                    "Cannot reach the activation server.\n\n"
+                    "An internet connection is required to start your free trial."
+                ),
+            )
+        except requests.exceptions.Timeout:
+            return LicenseResult(ok=False, reason="Server timed out. Please try again.")
+        except Exception as e:
+            logger.error(f"[LicenseManager.start_trial] {e}", exc_info=True)
+            return LicenseResult(ok=False, reason=f"Unexpected error: {e}")
+
+    # ── Paid activation ────────────────────────────────────────────────────────
+
+    def activate(self, order_id: str, email: str) -> LicenseResult:
+        """
+        Activate a paid license for this machine.
+        Seamlessly upgrades a machine that previously had a trial.
+        """
+        order_id = order_id.strip()
+        email    = email.strip().lower()
+
+        if not order_id or not email:
+            return LicenseResult(ok=False, reason="Order ID and email are required.")
+
+        try:
+            resp = requests.post(
+                f"{self.server_url}/api/v1/activate",
+                json={
+                    "order_id":    order_id,
+                    "email":       email,
+                    "machine_id":  self.machine_id,
+                    "app_version": APP_VERSION,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            data = resp.json()
+
+            if resp.status_code == 200 and data.get("status") == "activated":
+                result = LicenseResult(
+                    ok             = True,
+                    license_key    = data["license_key"],
+                    expires_at     = data["expires_at"],
+                    plan           = data.get("plan", PLAN_STANDARD),
+                    customer_name  = data.get("customer_name", ""),
+                    days_remaining = int(data.get("days_remaining", 365)),
+                )
+                self._persist(order_id, email, result)
+                logger.info(f"License activated: plan={result.plan}, expires={result.expires_at}")
+                return result
+
+            reason = data.get("reason") or data.get("message") or "Activation failed."
+            return LicenseResult(ok=False, reason=reason)
+
+        except requests.exceptions.ConnectionError:
+            return LicenseResult(
+                ok=False, reason="Cannot reach activation server. Check your internet connection."
+            )
+        except requests.exceptions.Timeout:
+            return LicenseResult(ok=False, reason="Server timed out. Please try again.")
+        except Exception as e:
+            logger.error(f"[LicenseManager.activate] {e}", exc_info=True)
+            return LicenseResult(ok=False, reason=f"Unexpected error: {e}")
+
+    # ── Startup verification ───────────────────────────────────────────────────
+
+    def verify_on_startup(self) -> LicenseResult:
+        """
+        Verify the license against the server on every app start.
+
+        Trial  : Must be online — no offline grace period at all.
+        Paid   : Falls back to OFFLINE_GRACE_DAYS cached grace when unreachable.
+        """
+        from db.crud import kv
+
+        license_key  = kv.get(_KV_LICENSE_KEY, "")
+        current_plan = kv.get(_KV_PLAN, "")
+
+        if not license_key:
+            return LicenseResult(ok=False, reason="not_activated")
+
+        try:
+            resp = requests.post(
+                f"{self.server_url}/api/v1/verify",
+                json={
+                    "license_key": license_key,
+                    "machine_id":  self.machine_id,
+                    "app_version": APP_VERSION,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            data = resp.json()
+
+            if data.get("valid"):
+                plan           = data.get("plan", current_plan)
+                days_remaining = int(data.get("days_remaining", 0))
+                result = LicenseResult(
+                    ok             = True,
+                    license_key    = license_key,
+                    expires_at     = data.get("expires_at", ""),
+                    plan           = plan,
+                    customer_name  = data.get("customer_name", ""),
+                    days_remaining = days_remaining,
+                )
+                kv.update_many({
+                    _KV_LAST_VERIFY_AT: datetime.now().isoformat(),
+                    _KV_LAST_VERIFY_OK: True,
+                    _KV_PLAN:           plan,
+                    _KV_DAYS_REMAINING: days_remaining,
+                })
+                if data.get("expires_at"):
+                    kv.set(_KV_EXPIRES_AT, data["expires_at"])
+                logger.info(
+                    f"License verified online: plan={plan}, days_remaining={days_remaining}"
+                )
+                return result
+
+            # Server returned valid:false
+            reason = data.get("reason", "License is no longer valid.")
+            if reason in ("revoked", "invalid_machine"):
+                self._clear_local()
+            elif reason in ("expired", "trial_expired"):
+                # Keep email so dialog can pre-fill the upgrade form
+                self._soft_clear()
+            logger.warning(f"Verification failed: {reason}")
+            return LicenseResult(ok=False, reason=reason)
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            logger.info("Update check skipped — server unreachable")
-            return UpdateInfo(update_type=UpdateType.NONE, error="server_unreachable")
-        except Exception as e:
-            logger.error(f"[AutoUpdater.check_for_update] {e}", exc_info=True)
-            return UpdateInfo(update_type=UpdateType.NONE, error=str(e))
-
-    def check_in_background(
-        self,
-        callback: Callable[[UpdateInfo], None],
-    ) -> None:
-        """
-        Run check_for_update() in a daemon thread.
-        `callback` is called on the background thread with the result —
-        use Qt signals to marshal back to the GUI thread.
-        """
-        def _run():
-            info = self.check_for_update()
-            try:
-                callback(info)
-            except Exception as e:
-                logger.error(f"AutoUpdater callback error: {e}", exc_info=True)
-
-        t = threading.Thread(target=_run, daemon=True, name="UpdateCheck")
-        t.start()
-
-    def download_and_install(
-        self,
-        info: UpdateInfo,
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
-    ) -> bool:
-        """
-        Download the update installer and launch it.
-
-        progress_callback is called periodically with a DownloadProgress object.
-        Returns True if the installer was launched successfully.
-        The current process will exit after a short delay.
-        """
-        if not info.download_url:
-            logger.error("No download URL in UpdateInfo")
-            return False
-
-        try:
-            # ── 1. Download ──────────────────────────────────────────────────
-            suffix = _installer_suffix()
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                prefix=f"algotrade_update_{info.latest_version}_",
-                suffix=suffix,
-            )
-            os.close(tmp_fd)
-
-            logger.info(f"Downloading update from {info.download_url}")
-            progress = DownloadProgress()
-
-            with requests.get(
-                info.download_url, stream=True, timeout=DOWNLOAD_TIMEOUT
-            ) as r:
-                r.raise_for_status()
-                total = int(r.headers.get("content-length", 0))
-                progress.total_bytes = total
-                received = 0
-                sha256 = hashlib.sha256()
-
-                with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                        if chunk:
-                            f.write(chunk)
-                            sha256.update(chunk)
-                            received += len(chunk)
-                            progress.received_bytes = received
-                            progress.percent = (
-                                (received / total * 100) if total > 0 else 0.0
-                            )
-                            if progress_callback:
-                                try:
-                                    progress_callback(progress)
-                                except Exception:
-                                    pass
-
-            # ── 2. Checksum verify ───────────────────────────────────────────
-            if info.checksum_sha256:
-                actual = sha256.hexdigest()
-                if actual.lower() != info.checksum_sha256.lower():
-                    logger.error(
-                        f"Checksum mismatch: expected {info.checksum_sha256}, got {actual}"
-                    )
-                    progress.error = "checksum_mismatch"
-                    if progress_callback:
-                        progress_callback(progress)
-                    os.unlink(tmp_path)
-                    return False
-                logger.info("Checksum verified ✓")
-
-            # ── 3. Make executable (POSIX) ────────────────────────────────────
-            if platform.system() != "Windows":
-                st = os.stat(tmp_path)
-                os.chmod(tmp_path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP)
-
-            self._download_path = tmp_path
-
-            # ── 4. Launch installer ───────────────────────────────────────────
-            progress.done = True
-            if progress_callback:
-                progress_callback(progress)
-
-            launched = self._launch_installer(tmp_path, info.latest_version)
-            if launched:
-                logger.info(f"Installer launched: {tmp_path}")
-                # Give the installer a moment to start, then exit
-                threading.Timer(2.0, lambda: os._exit(0)).start()
-            return launched
-
-        except Exception as e:
-            logger.error(f"[AutoUpdater.download_and_install] {e}", exc_info=True)
-            if progress_callback:
-                p = DownloadProgress(error=str(e))
-                progress_callback(p)
-            return False
-
-    # ── Platform-specific installer launcher ──────────────────────────────────
-
-    def _launch_installer(self, path: str, version: str) -> bool:
-        system = platform.system()
-        try:
-            if system == "Windows":
-                # NSIS / InnoSetup installers accept /SILENT
-                subprocess.Popen([path, "/SILENT"], close_fds=True)
-
-            elif system == "Darwin":
-                if path.endswith(".dmg"):
-                    subprocess.Popen(["open", path])
-                elif path.endswith(".pkg"):
-                    subprocess.Popen(["sudo", "installer", "-pkg", path, "-target", "/"])
-                else:
-                    subprocess.Popen(["open", path])
-
-            else:  # Linux
-                if path.endswith(".tar.gz") or path.endswith(".tgz"):
-                    return self._linux_tarball_install(path)
-                else:
-                    subprocess.Popen([path])
-
-            return True
-        except Exception as e:
-            logger.error(f"[AutoUpdater._launch_installer] {e}", exc_info=True)
-            return False
-
-    def _linux_tarball_install(self, tarball_path: str) -> bool:
-        """Extract tarball and run install.sh if present."""
-        try:
-            import tarfile
-            extract_dir = tempfile.mkdtemp(prefix="algotrade_update_")
-            with tarfile.open(tarball_path) as tf:
-                tf.extractall(extract_dir)
-
-            install_sh = os.path.join(extract_dir, "install.sh")
-            if os.path.exists(install_sh):
-                os.chmod(install_sh, 0o755)
-                subprocess.Popen(
-                    ["bash", install_sh],
-                    cwd=extract_dir,
-                    close_fds=True,
+            # Trials never get offline grace
+            if current_plan == PLAN_TRIAL:
+                return LicenseResult(
+                    ok=False,
+                    reason=(
+                        "Could not verify your trial license.\n\n"
+                        "An internet connection is required to use the free trial."
+                    ),
                 )
-                return True
+            return self._offline_fallback()
 
-            logger.warning("install.sh not found in tarball — extraction complete at " + extract_dir)
-            return True
         except Exception as e:
-            logger.error(f"[AutoUpdater._linux_tarball_install] {e}", exc_info=True)
-            return False
+            logger.error(f"[LicenseManager.verify_on_startup] {e}", exc_info=True)
+            if current_plan == PLAN_TRIAL:
+                return LicenseResult(ok=False, reason=f"License check error: {e}")
+            return self._offline_fallback()
+
+    # ── Deactivation ──────────────────────────────────────────────────────────
+
+    def is_live_trading_allowed(self) -> bool:
+        """
+        Returns True if the current license allows live trading.
+
+        Free / unactivated users  → False  (paper + backtest only)
+        Trial users               → False  (paper + backtest only)
+        Paid users (standard/pro) → True
+        """
+        plan = self.get_local_plan()
+        return plan in (PLAN_STANDARD, PLAN_PRO)
+
+    def deactivate(self):
+        """Remove the local activation record (support / reinstall use)."""
+        self._clear_local()
+        logger.info("Local license record cleared.")
+
+    # ── Internal helpers ───────────────────────────────────────────────────────
+
+    def _persist(self, order_id: str, email: str, result: LicenseResult):
+        try:
+            from db.crud import kv
+            kv.update_many({
+                _KV_LICENSE_KEY:    result.license_key,
+                _KV_ORDER_ID:       order_id,
+                _KV_EMAIL:          email,
+                _KV_EXPIRES_AT:     result.expires_at,
+                _KV_PLAN:           result.plan,
+                _KV_CUSTOMER_NAME:  result.customer_name,
+                _KV_LAST_VERIFY_AT: datetime.now().isoformat(),
+                _KV_LAST_VERIFY_OK: True,
+                _KV_DAYS_REMAINING: result.days_remaining,
+            })
+        except Exception as e:
+            logger.error(f"[LicenseManager._persist] {e}", exc_info=True)
+
+    def _clear_local(self):
+        """Wipe all license KV entries."""
+        try:
+            from db.crud import kv
+            for key in (
+                _KV_LICENSE_KEY, _KV_ORDER_ID, _KV_EMAIL, _KV_EXPIRES_AT,
+                _KV_PLAN, _KV_CUSTOMER_NAME, _KV_LAST_VERIFY_AT,
+                _KV_LAST_VERIFY_OK, _KV_DAYS_REMAINING,
+            ):
+                kv.delete(key)
+        except Exception as e:
+            logger.error(f"[LicenseManager._clear_local] {e}", exc_info=True)
+
+    def _soft_clear(self):
+        """
+        Clear license key + status but preserve email.
+        Used after trial/paid expiry so the upgrade dialog can pre-fill the email field.
+        """
+        try:
+            from db.crud import kv
+            for key in (
+                _KV_LICENSE_KEY, _KV_EXPIRES_AT, _KV_PLAN,
+                _KV_LAST_VERIFY_AT, _KV_LAST_VERIFY_OK, _KV_DAYS_REMAINING,
+            ):
+                kv.delete(key)
+        except Exception as e:
+            logger.error(f"[LicenseManager._soft_clear] {e}", exc_info=True)
+
+    def _offline_fallback(self) -> LicenseResult:
+        """
+        Allow paid-plan startup for up to OFFLINE_GRACE_DAYS when
+        the activation server is unreachable.
+        """
+        try:
+            from db.crud import kv
+            last_ok_raw = kv.get(_KV_LAST_VERIFY_AT)
+            last_ok     = kv.get(_KV_LAST_VERIFY_OK, False)
+            expires_raw = kv.get(_KV_EXPIRES_AT, "")
+
+            if not last_ok or not last_ok_raw:
+                return LicenseResult(
+                    ok=False,
+                    reason=(
+                        "License could not be verified and no previous "
+                        "successful verification exists."
+                    ),
+                )
+
+            if expires_raw:
+                try:
+                    if datetime.now() > datetime.fromisoformat(expires_raw):
+                        return LicenseResult(ok=False, reason="expired")
+                except ValueError:
+                    pass
+
+            try:
+                last_dt   = datetime.fromisoformat(last_ok_raw)
+                grace_end = last_dt + timedelta(days=OFFLINE_GRACE_DAYS)
+                days_left = max(0, (grace_end - datetime.now()).days)
+
+                if datetime.now() > grace_end:
+                    return LicenseResult(
+                        ok=False,
+                        reason=(
+                            f"Offline grace period of {OFFLINE_GRACE_DAYS} days has expired.\n"
+                            "Please connect to the internet to verify your license."
+                        ),
+                    )
+
+                logger.warning(f"Offline grace active: {days_left} day(s) remaining")
+                return LicenseResult(
+                    ok             = True,
+                    license_key    = kv.get(_KV_LICENSE_KEY, ""),
+                    expires_at     = expires_raw,
+                    plan           = kv.get(_KV_PLAN, ""),
+                    customer_name  = kv.get(_KV_CUSTOMER_NAME, ""),
+                    days_remaining = kv.get(_KV_DAYS_REMAINING, 0),
+                    offline        = True,
+                    reason         = f"Offline mode — {days_left} day(s) of grace remaining.",
+                )
+            except ValueError:
+                return LicenseResult(ok=False, reason="Invalid cached verification timestamp.")
+
+        except Exception as e:
+            logger.error(f"[LicenseManager._offline_fallback] {e}", exc_info=True)
+            return LicenseResult(ok=False, reason=f"License check error: {e}")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _get_platform() -> str:
-    s = platform.system()
-    return {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}.get(s, "unknown")
-
-
-def _installer_suffix() -> str:
-    s = platform.system()
-    return {
-        "Windows": ".exe",
-        "Darwin":  ".pkg",
-        "Linux":   ".tar.gz",
-    }.get(s, ".bin")
-
-
-# ── Singleton ─────────────────────────────────────────────────────────────────
-auto_updater = AutoUpdater()
+# ── Module-level singleton ─────────────────────────────────────────────────────
+license_manager = LicenseManager()
