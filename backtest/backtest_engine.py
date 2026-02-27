@@ -31,12 +31,15 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 
 from backtest.backtest_option_pricer import OptionPricer, PriceSource, atm_strike
+from Utils.Utils import Utils
+from Utils.common import (MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,
+                          MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE)
 
 logger = logging.getLogger(__name__)
 
 # ── Market session ─────────────────────────────────────────────────────────────
-MARKET_OPEN = time(9, 15)
-MARKET_CLOSE = time(15, 30)
+MARKET_OPEN = time(MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE)  # from Utils.common
+MARKET_CLOSE = time(MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE)  # from Utils.common
 AUTO_EXIT_BEFORE_CLOSE_MINUTES = 5  # exit at 15:25
 
 
@@ -138,17 +141,17 @@ class BacktestResult:
             return
 
         pnls = [t.net_pnl for t in self.trades]
-        self.total_net_pnl = round(sum(pnls), 2)
+        self.total_net_pnl = Utils.round_off(sum(pnls))
         self.winners = sum(1 for p in pnls if p > 0)
         self.losers = sum(1 for p in pnls if p <= 0)
         self.win_rate = self.winners / self.total_trades * 100
-        self.avg_net_pnl = round(self.total_net_pnl / self.total_trades, 2)
-        self.best_trade = round(max(pnls), 2)
-        self.worst_trade = round(min(pnls), 2)
+        self.avg_net_pnl = Utils.round_off(self.total_net_pnl / self.total_trades)
+        self.best_trade = Utils.round_off(max(pnls))
+        self.worst_trade = Utils.round_off(min(pnls))
 
         gross_profit = sum(p for p in pnls if p > 0)
         gross_loss = abs(sum(p for p in pnls if p < 0))
-        self.profit_factor = round(gross_profit / gross_loss, 2) if gross_loss else float("inf")
+        self.profit_factor = Utils.round_off(gross_profit / gross_loss) if gross_loss else float("inf")
 
         # Max drawdown from equity curve
         if self.equity_curve:
@@ -159,13 +162,13 @@ class BacktestResult:
                 if eq > peak:
                     peak = eq
                 dd = min(dd, eq - peak)
-            self.max_drawdown = round(dd, 2)
+            self.max_drawdown = Utils.round_off(dd)
 
         # Simplified Sharpe (daily returns, risk-free = 0 for brevity)
         if len(pnls) > 1:
             mean_r = sum(pnls) / len(pnls)
             std_r = math.sqrt(sum((p - mean_r) ** 2 for p in pnls) / (len(pnls) - 1))
-            self.sharpe = round(mean_r / std_r * math.sqrt(252) if std_r else 0.0, 2)
+            self.sharpe = Utils.round_off(mean_r / std_r * math.sqrt(252) if std_r else 0.0)
 
         self.completed = True
 
@@ -235,54 +238,134 @@ class BacktestEngine:
     # ── Private ────────────────────────────────────────────────────────────────
 
     def _fetch_spot(self) -> Optional[pd.DataFrame]:
-        """Fetch spot candle data for the entire date range."""
+        """
+        Fetch 1-minute spot data from the broker, then resample to the
+        configured interval_minutes.
+
+        Always fetching at 1-min resolution means:
+        - One broker call regardless of the target timeframe
+        - Switching interval_minutes requires no extra API call
+        - Brokers that don't support the target interval (e.g. Dhan
+          has no 3-min candle) are handled transparently
+        - Option history can be resampled from the same 1-min store
+        """
         try:
-            days = (self.config.end_date - self.config.start_date).days + 1
-            symbol = self.config.derivative
-            df = self.broker.get_history_for_timeframe(
-                symbol=symbol,
-                interval=str(self.config.interval_minutes),
-                days=days,
+            from data.candle_store import CandleStore, resample_df
+
+            days = (self.config.end_date - self.config.start_date).days + 2
+
+            # Detect broker type for correct symbol/interval translation
+            broker_type = getattr(
+                getattr(self.broker, "broker_setting", None), "broker_type", None
             )
+
+            store = CandleStore(symbol=self.config.derivative, broker=self.broker)
+            ok = store.fetch(days=days, broker_type=broker_type)
+
+            if not ok or store.is_empty():
+                # Legacy fallback: fetch at the target interval directly
+                logger.warning(
+                    "[BacktestEngine._fetch_spot] CandleStore fetch failed — "
+                    "falling back to direct broker fetch at target interval."
+                )
+                return self._fetch_spot_legacy()
+
+            # Resample 1-min → target interval
+            if self.config.interval_minutes == 1:
+                df = store.get_1min()
+            else:
+                df = resample_df(store.get_1min(), self.config.interval_minutes)
+
             if df is None or df.empty:
                 return None
 
-            # Ensure 'time' column is datetime
+            # Ensure datetime type
             if not pd.api.types.is_datetime64_any_dtype(df["time"]):
                 df["time"] = pd.to_datetime(df["time"])
 
-            # Filter to date range
+            # Filter to requested date range
             df = df[
-                (df["time"] >= self.config.start_date) &
-                (df["time"] <= self.config.end_date)
+                (df["time"].dt.date >= self.config.start_date.date()) &
+                (df["time"].dt.date <= self.config.end_date.date())
                 ].copy()
 
-            # Only market hours
             df = df[df["time"].dt.time.between(MARKET_OPEN, MARKET_CLOSE)].copy()
             df = df.sort_values("time").reset_index(drop=True)
+
+            logger.info(
+                f"[BacktestEngine._fetch_spot] {len(df)} bars "
+                f"({self.config.interval_minutes}-min) for {self.config.derivative} "
+                f"resampled from 1-min store"
+            )
             return df
 
         except Exception as e:
             logger.error(f"[BacktestEngine._fetch_spot] {e}", exc_info=True)
             return None
 
-    def _try_fetch_option_history(self, option_symbol: str) -> Optional[pd.DataFrame]:
-        """
-        Attempt to fetch real option OHLCV from the broker.
-        Returns None if not available (many brokers don't keep expired options).
-        """
+    def _fetch_spot_legacy(self) -> Optional[pd.DataFrame]:
+        """Direct broker fetch at the target interval (fallback only)."""
         try:
-            days = (self.config.end_date - self.config.start_date).days + 5
+            days = (self.config.end_date - self.config.start_date).days + 2
             df = self.broker.get_history_for_timeframe(
-                symbol=option_symbol,
+                symbol=self.config.derivative,
                 interval=str(self.config.interval_minutes),
                 days=days,
             )
-            if df is not None and not df.empty:
-                if not pd.api.types.is_datetime64_any_dtype(df["time"]):
-                    df["time"] = pd.to_datetime(df["time"])
-                df = df.set_index("time")
-                return df
+            if df is None or df.empty:
+                return None
+            if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+                df["time"] = pd.to_datetime(df["time"])
+            df = df[
+                (df["time"].dt.date >= self.config.start_date.date()) &
+                (df["time"].dt.date <= self.config.end_date.date())
+                ].copy()
+            df = df[df["time"].dt.time.between(MARKET_OPEN, MARKET_CLOSE)].copy()
+            df = df.sort_values("time").reset_index(drop=True)
+            return df
+        except Exception as e:
+            logger.error(f"[BacktestEngine._fetch_spot_legacy] {e}", exc_info=True)
+            return None
+
+    def _try_fetch_option_history(self, option_symbol: str) -> Optional[pd.DataFrame]:
+        """
+        Fetch real option OHLCV at 1-min resolution, then resample to the
+        target interval_minutes.  Returns None when the broker has no data
+        for this (typically expired) contract.
+        """
+        try:
+            from data.candle_store import CandleStore, resample_df
+
+            days = (self.config.end_date - self.config.start_date).days + 5
+            broker_type = getattr(
+                getattr(self.broker, "broker_setting", None), "broker_type", None
+            )
+
+            store = CandleStore(symbol=option_symbol, broker=self.broker)
+            ok = store.fetch(days=days, broker_type=broker_type)
+
+            if not ok or store.is_empty():
+                return None
+
+            # Resample to target interval
+            if self.config.interval_minutes == 1:
+                df = store.get_1min()
+            else:
+                df = resample_df(store.get_1min(), self.config.interval_minutes)
+
+            if df is None or df.empty:
+                return None
+
+            # Filter to backtest date range
+            if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+                df["time"] = pd.to_datetime(df["time"])
+            df = df[
+                (df["time"].dt.date >= self.config.start_date.date()) &
+                (df["time"].dt.date <= self.config.end_date.date())
+                ]
+            df = df.set_index("time")
+            return df
+
         except Exception as e:
             logger.debug(f"[BacktestEngine] Option history unavailable for {option_symbol}: {e}")
         return None
@@ -493,7 +576,7 @@ class BacktestEngine:
                 bar = pricer.resolve_bar(bar_time, o, h, l, c, opt_type, real_row, cfg.interval_minutes)
 
                 entry_price = bar["close"] * (1 + cfg.slippage_pct)
-                entry_price = round(entry_price, 2)
+                entry_price = Utils.round_off(entry_price)
 
                 state.current_position = BaseEnums.CALL if opt_type == "CE" else BaseEnums.PUT
                 state.current_buy_price = entry_price
@@ -509,7 +592,7 @@ class BacktestEngine:
                 state._bt_strike = int(strike)
 
             # Equity curve point
-            result.equity_curve.append({"timestamp": bar_time, "equity": round(equity, 2)})
+            result.equity_curve.append({"timestamp": bar_time, "equity": Utils.round_off(equity)})
 
         # Final close if still open at end
         if state.current_position and spot_df is not None and not spot_df.empty:
@@ -580,7 +663,7 @@ class BacktestEngine:
                 exit_price = bar["close"] * (1 - self.config.slippage_pct)
                 exit_source = bar["source"]
 
-            exit_price = max(0.05, round(exit_price, 2))
+            exit_price = max(0.05, Utils.round_off(exit_price))
 
             entry_price = getattr(state, "_bt_entry_price", state.current_buy_price or exit_price)
             entry_source = getattr(state, "_bt_entry_source", PriceSource.SYNTHETIC)
@@ -590,7 +673,7 @@ class BacktestEngine:
             gross_pnl = (exit_price - entry_price) * lots * lot_size
             slippage_cost = (entry_price + exit_price) * self.config.slippage_pct * lots * lot_size
             brokerage = self.config.brokerage_per_lot * lots * 2  # entry + exit
-            net_pnl = round(gross_pnl - slippage_cost - brokerage, 2)
+            net_pnl = Utils.round_off(gross_pnl - slippage_cost - brokerage)
 
             trade_no += 1
             equity += net_pnl
@@ -607,9 +690,9 @@ class BacktestEngine:
                 option_exit=exit_price,
                 lots=lots,
                 lot_size=lot_size,
-                gross_pnl=round(gross_pnl, 2),
-                slippage_cost=round(slippage_cost, 2),
-                brokerage=round(brokerage, 2),
+                gross_pnl=Utils.round_off(gross_pnl),
+                slippage_cost=Utils.round_off(slippage_cost),
+                brokerage=Utils.round_off(brokerage),
                 net_pnl=net_pnl,
                 entry_source=entry_source,
                 exit_source=exit_source,

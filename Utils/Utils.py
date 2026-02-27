@@ -1,4 +1,4 @@
-# Utils.py - Cleaned up version with option methods removed
+# Utils.py - Cleaned up version with option methods moved to OptionUtils.py
 import asyncio
 import calendar
 import csv
@@ -15,16 +15,20 @@ from datetime import datetime, time as dt_time, timezone, timedelta
 from pathlib import Path
 from sys import platform
 from typing import Optional, Union, List, Dict, Tuple, Any
-import traceback
 
 import dateutil.parser
 import pytz
+import pandas as pd
 
 from BaseEnums import POSITIVE, NEGATIVE
+from Utils.OptionUtils import OptionUtils
+from Utils.common import (
+    BASE_DIR, ROOT_DIR, is_holiday, is_market_closed_for_the_day,
+    get_market_end_time, get_time_of_day, to_date_str, get_epoch,
+    MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE
+)
 
-# Directories
-BASE_DIR = Path(__file__).resolve().parent.parent
-ROOT_DIR = BASE_DIR.parent
+# Directories (re-export from common)
 STRATEGIES_DIR = BASE_DIR / 'Strategies'
 LOG_DIR = BASE_DIR / 'Logs'
 REC_DIR = BASE_DIR / 'Record'
@@ -48,10 +52,10 @@ class Utils:
     DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
     # Market hours constants (BUG #4 FIX)
-    MARKET_OPEN_HOUR = 9
-    MARKET_OPEN_MINUTE = 15
-    MARKET_CLOSE_HOUR = 15
-    MARKET_CLOSE_MINUTE = 30
+    MARKET_OPEN_HOUR = MARKET_OPEN_HOUR
+    MARKET_OPEN_MINUTE = MARKET_OPEN_MINUTE
+    MARKET_CLOSE_HOUR = MARKET_CLOSE_HOUR
+    MARKET_CLOSE_MINUTE = MARKET_CLOSE_MINUTE
 
     # --- Config loading ---
     @staticmethod
@@ -86,7 +90,7 @@ class Utils:
             logger.error(f"[get_holidays] Failed: {e}", exc_info=True)
             return None
 
-    # --- Date/Time Utilities ---
+    # --- Date/Time Utilities (delegating to common) ---
     @staticmethod
     def round_off(price: float) -> float:
         """Round a price to 2 decimal places."""
@@ -114,18 +118,7 @@ class Utils:
     @classmethod
     def is_holiday(cls, dt_obj: datetime) -> bool:
         """Check if a given date is a holiday."""
-        try:
-            if dt_obj is None:
-                logger.warning("is_holiday called with None dt_obj")
-                return False
-
-            if calendar.day_name[dt_obj.weekday()] in ('Saturday', 'Sunday'):
-                return True
-            holidays = cls.get_holidays() or []
-            return cls.to_date_str(dt_obj) in holidays
-        except Exception as e:
-            logger.error(f"Error checking holiday: {e}", exc_info=True)
-            return False
+        return is_holiday(dt_obj)
 
     @classmethod
     def is_today_holiday(cls) -> bool:
@@ -151,14 +144,7 @@ class Utils:
     @classmethod
     def is_market_closed_for_the_day(cls) -> bool:
         """Check if market has closed for the day."""
-        try:
-            if cls.is_today_holiday():
-                return True
-            now = datetime.now()
-            return now > cls.get_market_end_time()
-        except Exception as e:
-            logger.error(f"Error checking if market is closed: {e}", exc_info=True)
-            return True
+        return is_market_closed_for_the_day()
 
     @classmethod
     def wait_till_market_opens(cls, wait: Optional[int] = None):
@@ -182,12 +168,7 @@ class Utils:
     @staticmethod
     def get_epoch(dt_obj: Optional[datetime] = None) -> Optional[int]:
         """Convert datetime to epoch seconds."""
-        try:
-            dt_obj = dt_obj or datetime.now()
-            return int(dt_obj.timestamp())
-        except Exception as e:
-            logger.error(f"Error converting to epoch: {e}", exc_info=True)
-            return None
+        return get_epoch(dt_obj)
 
     @classmethod
     def get_market_start_time(cls, dt_obj: Optional[datetime] = None) -> datetime:
@@ -199,19 +180,17 @@ class Utils:
                 dt_obj = datetime.now()
 
             if not cls.is_market_closed_for_the_day():
-                # BUG #4 FIX: Changed from 9:30 to 9:15
-                return cls.get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, dt_obj)
+                return get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, dt_obj)
 
             next_day = dt_obj + timedelta(days=1)
-            max_days = 30  # Prevent infinite loop
+            max_days = 30
             days_checked = 0
 
             while cls.is_holiday(next_day) and days_checked < max_days:
                 next_day += timedelta(days=1)
                 days_checked += 1
 
-            # BUG #4 FIX: Changed from 9:30 to 9:15
-            return cls.get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, next_day)
+            return get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, next_day)
         except Exception as e:
             logger.error(f"[get_market_start_time] Failed: {e}", exc_info=True)
             return datetime.now()
@@ -219,12 +198,7 @@ class Utils:
     @staticmethod
     def get_market_end_time(dt_obj: Optional[datetime] = None) -> datetime:
         """Market closes at 3:30 PM."""
-        try:
-            dt_obj = dt_obj or datetime.now()
-            return Utils.get_time_of_day(15, 30, 0, dt_obj)
-        except Exception as e:
-            logger.error(f"[get_market_end_time] Failed: {e}", exc_info=True)
-            return datetime.now()
+        return get_market_end_time(dt_obj)
 
     @staticmethod
     def is_near_market_close(buffer_minutes=10) -> bool:
@@ -246,27 +220,12 @@ class Utils:
     @staticmethod
     def get_time_of_day(hours: int, minutes: int, seconds: int, dt_obj: Optional[datetime] = None) -> datetime:
         """Return datetime at given hours/minutes/seconds for the day of dt_obj."""
-        try:
-            dt_obj = dt_obj or datetime.now()
-            return dt_obj.replace(hour=hours, minute=minutes, second=seconds, microsecond=0)
-        except ValueError as e:
-            logger.error(f"Invalid time values: hours={hours}, minutes={minutes}, seconds={seconds}: {e}")
-            return dt_obj or datetime.now()
-        except Exception as e:
-            logger.error(f"[get_time_of_day] Failed: {e}", exc_info=True)
-            return dt_obj or datetime.now()
+        return get_time_of_day(hours, minutes, seconds, dt_obj)
 
     @staticmethod
     def to_date_str(dt_obj: datetime) -> str:
         """Convert datetime to date string."""
-        try:
-            if dt_obj is None:
-                logger.warning("to_date_str called with None dt_obj")
-                return ""
-            return dt_obj.strftime(Utils.DATE_FORMAT)
-        except Exception as e:
-            logger.error(f"[to_date_str] Failed: {e}", exc_info=True)
-            return ""
+        return to_date_str(dt_obj)
 
     @staticmethod
     def to_datetime(date_str: str, time_str: str = "00:00:00") -> datetime:
@@ -466,7 +425,6 @@ class Utils:
             file_path = Path(file_path)
             temp_file = file_path.with_suffix('.tmp')
 
-            # Ensure directory exists
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(temp_file, 'w', encoding='utf-8') as f:
@@ -517,7 +475,6 @@ class Utils:
 
             file_path = Path(file_path)
             if not file_path.exists():
-                # Ensure directory exists
                 file_path.parent.mkdir(parents=True, exist_ok=True)
 
                 with open(file_path, 'w', newline='', encoding='utf-8') as file:
@@ -552,7 +509,6 @@ class Utils:
             for column in set(header) - set(columns):
                 df[column] = ''
 
-            # Reorder columns to match header
             df = df[header] if header else df
 
             df.to_csv(file, index=False, header=False, mode='a', encoding='utf-8')
@@ -860,13 +816,14 @@ class Utils:
             return "0m"
 
     # ==================================================================
-    # FEATURE 6: MTF Filter Helpers
+    # FEATURE 6: MTF Filter Helpers (delegating to OptionUtils)
     # ==================================================================
 
     @staticmethod
     def get_mtf_history_days(timeframe: str) -> int:
         """
         Get recommended history days for a timeframe.
+        Delegates to OptionUtils.get_mtf_history_days.
 
         Args:
             timeframe: Timeframe string (e.g., "1", "5", "15")
@@ -875,18 +832,11 @@ class Utils:
             Number of days of history needed
         """
         try:
-            # Default recommendations
-            days_map = {
-                "1": 2,
-                "5": 5,
-                "15": 15,
-                "30": 30,
-                "60": 60,
-            }
-            return days_map.get(str(timeframe), 30)
+            return OptionUtils.get_mtf_history_days(timeframe)
         except Exception as e:
             logger.error(f"[get_mtf_history_days] Failed: {e}", exc_info=True)
-            return 30
+            days_map = {"1": 2, "5": 5, "15": 15, "30": 30, "60": 60}
+            return days_map.get(str(timeframe), 30)
 
     @staticmethod
     def validate_timeframe(timeframe: str) -> bool:
@@ -918,7 +868,6 @@ class Utils:
                 try:
                     loop = asyncio.get_running_loop()
                     if loop.is_running():
-                        # Can't run coroutine in running loop
                         logger.warning("Cannot run coroutine in running loop")
                         return None
                     return loop.run_until_complete(coro)
@@ -931,7 +880,10 @@ class Utils:
 
     @staticmethod
     def is_history_updated(last_updated, interval) -> bool:
-        """Check if history has been updated."""
+        """
+        Check if history has been updated.
+        FIXED: Properly handle pandas Timestamp objects.
+        """
         try:
             if last_updated is None or interval is None:
                 return False
@@ -940,16 +892,23 @@ class Utils:
             if not unit:
                 return False
 
-            if unit.lower() == 's':
-                updated_upto = last_updated + measurement
+            if hasattr(last_updated, 'timestamp'):
+                last_updated_ts = last_updated.timestamp()
+            else:
+                last_updated_ts = float(last_updated)
+
+            current_ts = Utils.get_epoch()
+            if current_ts is None:
+                return False
+
             elif unit.lower() == 'm':
                 interval_minutes = Utils.get_interval_minutes(unit, measurement)
-                updated_upto = last_updated + (interval_minutes * 60)
+                updated_upto = last_updated_ts + (interval_minutes * 60)
             else:
-                updated_upto = 0
+                logger.warning(f"Unsupported unit in is_history_updated: {unit}")
+                return False
 
-            epoch = Utils.get_epoch()
-            return epoch is not None and epoch < updated_upto if updated_upto else False
+            return current_ts < updated_upto
 
         except Exception as e:
             logger.error(f"Error in is_history_updated: {e}", exc_info=True)
@@ -1012,14 +971,12 @@ class Utils:
                 except json.JSONDecodeError:
                     f.seek(0)
                     token_raw = f.read().strip()
-                    # Try to parse as JSON again
                     try:
                         data = json.loads(token_raw)
                         token = data.get("access_token")
                         if token:
                             return token
                     except:
-                        # Return raw if it looks like a token (no spaces, reasonable length)
                         if token_raw and len(token_raw) > 50 and ' ' not in token_raw:
                             return token_raw
 

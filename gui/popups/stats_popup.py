@@ -145,9 +145,6 @@ class StatsPopup(QDialog):
                 if hasattr(self.state, 'get_risk_summary'):
                     self._add_risk_tab()
 
-                # FEATURE 5: Add daily P&L tab
-                self._add_daily_pnl_tab()
-
                 # FEATURE 6: Add MTF tab
                 self._add_mtf_tab()
 
@@ -293,111 +290,6 @@ class StatsPopup(QDialog):
 
         except Exception as e:
             logger.error(f"[StatsPopup._add_risk_tab] Failed: {e}", exc_info=True)
-
-    def _add_daily_pnl_tab(self):
-        """
-        FEATURE 5: Add daily P&L tracking tab.
-        """
-        try:
-            from PyQt5.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QGroupBox, QProgressBar
-
-            pnl_widget = QWidget()
-            layout = QVBoxLayout(pnl_widget)
-
-            # Current P&L group
-            current_group = QGroupBox("Current P&L")
-            current_layout = QGridLayout()
-
-            # Realized P&L
-            current_layout.addWidget(QLabel("Realized:"), 0, 0)
-            self.pnl_labels = {}
-            self.pnl_labels['realized'] = QLabel("₹0.00")
-            self.pnl_labels['realized'].setProperty("cssClass", "value")
-            current_layout.addWidget(self.pnl_labels['realized'], 0, 1)
-
-            # Unrealized P&L
-            current_layout.addWidget(QLabel("Unrealized:"), 1, 0)
-            self.pnl_labels['unrealized'] = QLabel("₹0.00")
-            self.pnl_labels['unrealized'].setProperty("cssClass", "value")
-            current_layout.addWidget(self.pnl_labels['unrealized'], 1, 1)
-
-            # Total P&L
-            current_layout.addWidget(QLabel("Total:"), 2, 0)
-            self.pnl_labels['total'] = QLabel("₹0.00")
-            self.pnl_labels['total'].setProperty("cssClass", "value")
-            current_layout.addWidget(self.pnl_labels['total'], 2, 1)
-
-            current_group.setLayout(current_layout)
-            layout.addWidget(current_group)
-
-            # Progress bar group
-            progress_group = QGroupBox("Daily Progress")
-            progress_layout = QVBoxLayout()
-
-            self.pnl_progress = QProgressBar()
-            self.pnl_progress.setRange(-5000, 5000)
-            self.pnl_progress.setValue(0)
-            self.pnl_progress.setFormat("%v / 5000")
-            self.pnl_progress.setStyleSheet("""
-                QProgressBar {
-                    border: 1px solid #30363d;
-                    border-radius: 4px;
-                    text-align: center;
-                    color: #e6edf3;
-                }
-                QProgressBar::chunk {
-                    background: #3fb950;
-                    border-radius: 4px;
-                }
-            """)
-            progress_layout.addWidget(self.pnl_progress)
-
-            progress_group.setLayout(progress_layout)
-            layout.addWidget(progress_group)
-
-            # Stats group
-            stats_group = QGroupBox("Trade Statistics")
-            stats_layout = QGridLayout()
-
-            # Trades
-            stats_layout.addWidget(QLabel("Total Trades:"), 0, 0)
-            self.pnl_labels['trades'] = QLabel("0")
-            self.pnl_labels['trades'].setProperty("cssClass", "value")
-            stats_layout.addWidget(self.pnl_labels['trades'], 0, 1)
-
-            # Winners
-            stats_layout.addWidget(QLabel("Winners:"), 1, 0)
-            self.pnl_labels['pnl_winners'] = QLabel("0")
-            self.pnl_labels['pnl_winners'].setProperty("cssClass", "positive")
-            stats_layout.addWidget(self.pnl_labels['pnl_winners'], 1, 1)
-
-            # Losers
-            stats_layout.addWidget(QLabel("Losers:"), 2, 0)
-            self.pnl_labels['pnl_losers'] = QLabel("0")
-            self.pnl_labels['pnl_losers'].setProperty("cssClass", "negative")
-            stats_layout.addWidget(self.pnl_labels['pnl_losers'], 2, 1)
-
-            # Win rate
-            stats_layout.addWidget(QLabel("Win Rate:"), 3, 0)
-            self.pnl_labels['pnl_win_rate'] = QLabel("0%")
-            self.pnl_labels['pnl_win_rate'].setProperty("cssClass", "value")
-            stats_layout.addWidget(self.pnl_labels['pnl_win_rate'], 3, 1)
-
-            # Max drawdown
-            stats_layout.addWidget(QLabel("Max Drawdown:"), 4, 0)
-            self.pnl_labels['max_dd'] = QLabel("₹0.00")
-            self.pnl_labels['max_dd'].setProperty("cssClass", "negative")
-            stats_layout.addWidget(self.pnl_labels['max_dd'], 4, 1)
-
-            stats_group.setLayout(stats_layout)
-            layout.addWidget(stats_group)
-
-            layout.addStretch()
-
-            self.tab_widget.addTab(pnl_widget, "💰 Daily P&L")
-
-        except Exception as e:
-            logger.error(f"[StatsPopup._add_daily_pnl_tab] Failed: {e}", exc_info=True)
 
     def _add_mtf_tab(self):
         """
@@ -581,8 +473,6 @@ class StatsPopup(QDialog):
         self.refresh_timer = None
         self.tab_widget = None
         self.risk_labels = {}
-        self.pnl_labels = {}
-        self.pnl_progress = None
         self.mtf_labels = {}
         self.conf_labels = {}
         self.conf_bars = {}
@@ -606,9 +496,6 @@ class StatsPopup(QDialog):
 
             # FEATURE 1: Refresh risk tab
             self._refresh_risk_tab()
-
-            # FEATURE 5: Refresh daily P&L tab
-            self._refresh_pnl_tab()
 
             # FEATURE 6: Refresh MTF tab
             self._refresh_mtf_tab()
@@ -668,49 +555,6 @@ class StatsPopup(QDialog):
 
         except Exception as e:
             logger.error(f"[StatsPopup._refresh_risk_tab] Failed: {e}", exc_info=True)
-
-    def _refresh_pnl_tab(self):
-        """Refresh daily P&L tab"""
-        try:
-            if not hasattr(self, 'pnl_labels') or not self.pnl_labels:
-                return
-
-            # Get state values
-            realized = 0.0
-            unrealized = 0.0
-            trades = 0
-            winners = 0
-            losers = 0
-
-            if self.state:
-                if hasattr(self.state, 'current_pnl') and self.state.current_pnl:
-                    unrealized = self.state.current_pnl
-                if hasattr(self.state, 'positions_hold'):
-                    trades = len(getattr(self.state, 'orders', []))
-
-            total = realized + unrealized
-
-            # Update labels
-            self._update_label(self.pnl_labels, 'realized', f"₹{realized:,.2f}")
-            self._update_label(self.pnl_labels, 'unrealized', f"₹{unrealized:,.2f}")
-            self._update_label(self.pnl_labels, 'total', f"₹{total:,.2f}")
-            self._update_label(self.pnl_labels, 'trades', str(trades))
-            self._update_label(self.pnl_labels, 'pnl_winners', str(winners))
-            self._update_label(self.pnl_labels, 'pnl_losers', str(losers))
-
-            # Win rate
-            win_rate = (winners / trades * 100) if trades > 0 else 0
-            self._update_label(self.pnl_labels, 'pnl_win_rate', f"{win_rate:.0f}%")
-
-            # Max drawdown (simplified)
-            self._update_label(self.pnl_labels, 'max_dd', f"₹{min(0, total):,.2f}")
-
-            # Update progress bar
-            if self.pnl_progress:
-                self.pnl_progress.setValue(int(total))
-
-        except Exception as e:
-            logger.error(f"[StatsPopup._refresh_pnl_tab] Failed: {e}", exc_info=True)
 
     def _refresh_mtf_tab(self):
         """Refresh MTF filter tab"""
@@ -842,13 +686,10 @@ class StatsPopup(QDialog):
             self.state = None
             self.tab_widget = None
             self.risk_labels.clear()
-            self.pnl_labels.clear()
             self.mtf_labels.clear()
             self.conf_labels.clear()
             self.conf_bars.clear()
             self.conf_explanation = None
-            self.pnl_progress = None
-
             logger.info("[StatsPopup] Cleanup completed")
 
         except Exception as e:

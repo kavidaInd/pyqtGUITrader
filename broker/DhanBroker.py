@@ -21,7 +21,8 @@ API docs: https://dhanhq.co/docs/v2/
 import logging
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
+from Utils.common import to_date_str, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
@@ -275,8 +276,8 @@ class DhanBroker(BaseBroker):
                 return None
             exchange_seg = self._exchange_segment(symbol)
             dhan_interval = self._to_dhan_interval(interval)
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
+            to_date = to_date_str(datetime.now())
+            from_date = to_date_str(datetime.now() - timedelta(days=4))
             self._check_rate_limit()
             result = self._call(
                 lambda: self.dhan.intraday_minute_data(
@@ -309,8 +310,8 @@ class DhanBroker(BaseBroker):
             fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
                 max(days, 120) if interval in ["120", "240"] else days
             )
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
+            to_date = to_date_str(datetime.now())
+            from_date = to_date_str(datetime.now() - timedelta(days=fetch_days))
             self._check_rate_limit()
             result = self._call(
                 lambda: self.dhan.historical_daily_data(

@@ -470,7 +470,6 @@ class StatusPanel(QWidget):
         self.conn_status = None
         self.market_status = None
         self.conflict_label = None
-        self.daily_pnl_progress = None
 
     def _create_header(self) -> QWidget:
         """Create header with timestamp and market status from Utils"""
@@ -543,17 +542,6 @@ class StatusPanel(QWidget):
                 logger.error(f"Failed to create card for {key}: {e}", exc_info=True)
 
         trade_layout.addWidget(grid_widget)
-
-        # FEATURE 1: Daily P&L Progress Bar
-        pnl_progress_group = QGroupBox("Daily Progress")
-        pnl_progress_layout = QVBoxLayout()
-        self.daily_pnl_progress = QProgressBar()
-        self.daily_pnl_progress.setRange(-5000, 5000)
-        self.daily_pnl_progress.setValue(0)
-        self.daily_pnl_progress.setFormat("%v / 5000")
-        pnl_progress_layout.addWidget(self.daily_pnl_progress)
-        pnl_progress_group.setLayout(pnl_progress_layout)
-        trade_layout.addWidget(pnl_progress_group)
 
         # Conflict indicator
         self.conflict_label = QLabel("")
@@ -1035,21 +1023,6 @@ class StatusPanel(QWidget):
 
             if "trades_today" in self.cards:
                 self.cards["trades_today"].set_value(str(trades_today), TEXT_MAIN)
-
-            # Update progress bar
-            if self.daily_pnl_progress:
-                self.daily_pnl_progress.setRange(int(max_loss), int(daily_target))
-                self.daily_pnl_progress.setValue(int(daily_pnl))
-
-                # Color based on P&L
-                if daily_pnl >= 0:
-                    self.daily_pnl_progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: {GREEN}; }}
-                    """)
-                else:
-                    self.daily_pnl_progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: {RED}; }}
-                    """)
 
         except Exception as e:
             logger.error(f"[StatusPanel._update_risk_cards] Failed: {e}", exc_info=True)

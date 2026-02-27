@@ -73,6 +73,7 @@ import copy
 import logging
 import logging.handlers
 import threading
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Union
 import traceback
@@ -236,7 +237,7 @@ class TradeState:
             # ── History / DataFrames ─────────────────────────────────────
             self._derivative_history_df: Optional[pd.DataFrame] = None
             self._option_history_df: Optional[pd.DataFrame] = None
-            self._last_index_updated: Optional[float] = None
+            self._last_index_updated: Optional[int] = None
             self._current_put_data: Optional[pd.DataFrame] = None
             self._current_call_data: Optional[pd.DataFrame] = None
 
@@ -709,14 +710,53 @@ class TradeState:
         self._set("_option_history_df", value)
 
     @property
-    def last_index_updated(self) -> Optional[float]:
+    def last_index_updated(self) -> Optional[int]:
         """Timestamp of last index update."""
         return self._get("_last_index_updated")
 
     @last_index_updated.setter
-    def last_index_updated(self, value: Optional[float]) -> None:
-        """Set last index update timestamp."""
-        self._set("_last_index_updated", value)
+    def last_index_updated(self, value: Optional[Union[datetime, float, pd.Timestamp]]) -> None:
+        """Set last index update timestamp. Converts datetime to timestamp float."""
+        """Set last index update timestamp. Converts to integer epoch seconds."""
+        if value is None:
+            self._set("_last_index_updated", None)
+            return
+
+        try:
+            if isinstance(value, (datetime, pd.Timestamp)):
+                # Convert datetime to integer epoch
+                if hasattr(value, 'timestamp'):
+                    epoch = int(value.timestamp())
+                else:
+                    # Fallback for older datetime objects
+                    epoch = int(value.timestamp()) if hasattr(value, 'timestamp') else int(
+                        time.mktime(value.timetuple()))
+            elif isinstance(value, (float, int)):
+                # Convert float/int to integer epoch
+                epoch = int(value)
+            else:
+                logger.error(f"Cannot convert {type(value)} to epoch timestamp")
+                self._set("_last_index_updated", None)
+                return
+
+            self._set("_last_index_updated", epoch)
+
+        except Exception as e:
+            logger.error(f"Error converting to epoch timestamp: {e}", exc_info=True)
+            self._set("_last_index_updated", None)
+
+    @property
+    def last_index_updated_dt(self) -> Optional[datetime]:
+        """Get last index update as datetime object."""
+        ts = self.last_index_updated
+        if ts is None:
+            return None
+        return datetime.fromtimestamp(ts)
+
+    @last_index_updated_dt.setter
+    def last_index_updated_dt(self, value: Optional[datetime]) -> None:
+        """Set last index update from datetime."""
+        self.last_index_updated = value
 
     # ------------------------------------------------------------------
     # Orders  (list — returns shallow copy; mutate via helpers)

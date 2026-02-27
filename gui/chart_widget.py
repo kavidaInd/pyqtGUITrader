@@ -5,7 +5,6 @@ Simplified chart widget with:
 - Trend line visualization
 - Support and resistance levels
 - Pivot points
-- Volume as simple bar chart
 - Detailed signal data tab with indicator values and rule results
 - Clean, minimal design with only Spot chart
 """
@@ -27,7 +26,7 @@ from PyQt5.QtCore import QSize, QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile, QWebEnginePage
 from PyQt5.QtWidgets import (
-    QVBoxLayout, QWidget, QLabel, QHBoxLayout,
+    QVBoxLayout, QWidget, QLabel, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
     QGroupBox, QFileDialog, QMessageBox, QProgressBar, QTabWidget
 )
@@ -301,8 +300,7 @@ class SpotChartWidget(QWebEngineView):
     """
     Simplified chart widget focusing on Spot market structure:
     - Candlestick/Line chart
-    - Volume as simple bar chart
-    - Pivot points (HH/HL/LH/LL)
+        - Pivot points (HH/HL/LH/LL)
     - Trend lines
     - Support/Resistance levels
     - Trade annotations
@@ -324,6 +322,8 @@ class SpotChartWidget(QWebEngineView):
         "candle_up_wick": "#2ea043",
         "candle_down_wick": "#da3633",
         "line": "#58a6ff",
+        "volume_up": "rgba(63, 185, 80, 0.45)",
+        "volume_down": "rgba(248, 81, 73, 0.45)",
         "pivot_high": "#f0883e",
         "pivot_low": "#58a6ff",
         "hh": "#7ee37d",
@@ -334,8 +334,6 @@ class SpotChartWidget(QWebEngineView):
         "trend_down": "#f85149",
         "support": "#58a6ff",
         "resistance": "#f0883e",
-        "volume_up": "rgba(63, 185, 80, 0.45)",
-        "volume_down": "rgba(248, 81, 73, 0.45)",
     }
 
     def __init__(self, parent=None):
@@ -372,11 +370,12 @@ class SpotChartWidget(QWebEngineView):
 
             # UI State
             self._drawing_mode = None
-            self._show_volume = True
             self._show_grid = True
             self._show_legend = True
             self._show_pivots = True
             self._show_trend_lines = True
+
+            self._show_volume = True
 
             # Performance
             self._last_data_fingerprint = ""
@@ -420,11 +419,11 @@ class SpotChartWidget(QWebEngineView):
         self._pivots = []
         self._market_phase = "neutral"
         self._drawing_mode = None
-        self._show_volume = True
         self._show_grid = True
         self._show_legend = True
         self._show_pivots = True
         self._show_trend_lines = True
+        self._show_volume = True
         self._last_data_fingerprint = ""
         self._pending_data = None
         self._update_timer = None
@@ -539,25 +538,58 @@ class SpotChartWidget(QWebEngineView):
             if self._error_count >= self._max_errors:
                 self._show_error_placeholder(str(e))
 
+    @staticmethod
+    def _to_epoch(ts):
+        """
+        Safely convert any timestamp type to a Unix epoch float.
+        Handles int/float, pandas Timestamp, datetime, numpy datetime64, str.
+        Returns None if conversion fails.
+        """
+        try:
+            if ts is None:
+                return None
+            if isinstance(ts, (int, float)):
+                return float(ts)
+            # pandas Timestamp and datetime both expose .timestamp()
+            if hasattr(ts, "timestamp"):
+                return ts.timestamp()
+            # numpy datetime64 — convert via pandas
+            try:
+                import pandas as pd
+                return pd.Timestamp(ts).timestamp()
+            except Exception:
+                pass
+            # Last resort: ISO string
+            return datetime.fromisoformat(str(ts)).timestamp()
+        except Exception:
+            return None
+
     def update_chart(self, trend_data: dict) -> None:
         """Backward compatibility: convert trend_data to OHLCV format"""
         try:
             if not trend_data:
                 return
 
-            # Extract OHLCV data from trend_data
+            # Normalise every timestamp to a plain float epoch so that
+            # downstream code never receives a pandas Timestamp or datetime.
+            raw_ts = trend_data.get("timestamps", [])
+            epoch_timestamps = [self._to_epoch(ts) for ts in raw_ts]
+
             data = {
-                "open": trend_data.get("open", []),
-                "high": trend_data.get("high", []),
-                "low": trend_data.get("low", []),
-                "close": trend_data.get("close", []),
-                "volume": trend_data.get("volume", []),
-                "timestamp": trend_data.get("timestamps", [])
+                "open":      trend_data.get("open", []),
+                "high":      trend_data.get("high", []),
+                "low":       trend_data.get("low", []),
+                "close":     trend_data.get("close", []),
+                "volume":    trend_data.get("volume", []),
+                "timestamp": epoch_timestamps,
             }
 
-            # Add datetime if timestamps available
-            if data["timestamp"]:
-                data["datetime"] = [datetime.fromtimestamp(ts) for ts in data["timestamp"]]
+            # Build human-readable datetime list from validated epoch values
+            if epoch_timestamps:
+                data["datetime"] = [
+                    datetime.fromtimestamp(ts) if ts is not None else None
+                    for ts in epoch_timestamps
+                ]
 
             self.update_data(data)
 
@@ -704,15 +736,16 @@ class SpotChartWidget(QWebEngineView):
             if not timestamps:
                 return data
 
-            # Get today's date (midnight)
+            # Get today's date (midnight) as epoch float
             import datetime
             now = datetime.datetime.now()
             today_start = datetime.datetime(now.year, now.month, now.day).timestamp()
 
-            # Find indices for today's data
+            # Find indices for today's data — normalise each ts to float first
             today_indices = []
             for i, ts in enumerate(timestamps):
-                if ts >= today_start:
+                epoch = self._to_epoch(ts)
+                if epoch is not None and epoch >= today_start:
                     today_indices.append(i)
 
             if not today_indices:
@@ -756,7 +789,7 @@ class SpotChartWidget(QWebEngineView):
             logger.error(f"[SpotChartWidget._analyze_data] Failed: {e}")
 
     def _generate_chart_html(self, data: Dict[str, List]) -> Optional[str]:
-        """Generate Plotly HTML with bar chart volume"""
+        """Generate Plotly HTML for price analysis"""
         if not data or not data.get("close"):
             return None
 
@@ -773,7 +806,7 @@ class SpotChartWidget(QWebEngineView):
             # Create x-axis labels
             timestamps = data.get("timestamp", [])
             if timestamps and len(timestamps) == n:
-                x = [datetime.fromtimestamp(ts).strftime("%H:%M") for ts in timestamps]
+                x = [datetime.fromtimestamp(self._to_epoch(ts)).strftime("%H:%M") if self._to_epoch(ts) is not None else str(i) for i, ts in enumerate(timestamps)]
             else:
                 x = list(range(n))
 
@@ -878,7 +911,7 @@ class SpotChartWidget(QWebEngineView):
         volume = self._clean_data(data.get("volume", []))
         close = self._clean_data(data.get("close", []))
 
-        # Color volume based on price movement (simple up/down coloring)
+        # Color volume based on price movement
         vol_colors = []
         for i, v in enumerate(volume):
             if i == 0 or close[i] is None or close[i - 1] is None:
@@ -1143,6 +1176,7 @@ class SpotChartWidget(QWebEngineView):
                 showgrid=self._show_grid,
                 tickfont=dict(size=9),
                 showticklabels=(i == rows),  # Only show labels on bottom subplot
+                rangeslider=dict(visible=False),  # Disable mini range-selector chart
                 row=i, col=1
             )
 
@@ -1161,6 +1195,7 @@ class SpotChartWidget(QWebEngineView):
         # Volume axis title
         if rows > 1:
             fig.update_yaxes(title_text="Volume", row=2, col=1)
+
 
     def _get_custom_css(self) -> str:
         """Get custom CSS for HTML"""
@@ -1482,19 +1517,44 @@ def _mk_group_style(accent: str = _BORDER) -> str:
 
 class SimpleChartWidget(QWidget):
     """
-    Simplified multi-chart widget with only:
-    - Spot chart (with volume as bar chart)
-    - Detailed Signal data tab
+    Chart widget with:
+    - Timeframe selector toolbar (1m, 3m, 5m, 15m, 30m, 1h)
+    - Spot price chart + volume
+    - Max 200 bars displayed
+    - Live reload from CandleStore on TF change
     """
+
+    # Emitted when user picks a new timeframe (minutes as int)
+    timeframe_changed = pyqtSignal(int)
+
+    # Available timeframes: label → minutes
+    TIMEFRAMES = [
+        ("1m",  1),
+        ("3m",  3),
+        ("5m",  5),
+        ("15m", 15),
+        ("30m", 30),
+        ("1h",  60),
+    ]
+
+    MAX_BARS = 400
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        self._candle_store = None   # injected via set_candle_store()
+        self._current_tf  = 5      # default 5-min
+        self._config      = None
 
-        # Tab widget with only Spot and Signal tabs
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Timeframe toolbar ──────────────────────────────────────────────
+        toolbar = self._build_tf_toolbar()
+        root.addWidget(toolbar)
+
+        # ── Tab widget (Spot chart) ────────────────────────────────────────
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget::pane {
@@ -1523,43 +1583,180 @@ class SimpleChartWidget(QWidget):
             }
         """)
 
-        # Create spot chart only (with volume as bar chart)
         self.spot_chart = SpotChartWidget()
         self.spot_chart.set_symbol("Spot Index")
-
-        # Add tabs - only Spot and Signal
         self.tabs.addTab(self.spot_chart, "📈 Spot")
 
-        layout.addWidget(self.tabs, 1)
+        root.addWidget(self.tabs, 1)
 
-        logger.info("SimpleChartWidget initialized (Spot + Detailed Signal)")
+        logger.info("SimpleChartWidget initialized with TF selector")
 
-    # Public API
+    # ── Toolbar builder ────────────────────────────────────────────────────
+
+    def _build_tf_toolbar(self) -> QWidget:
+        """Build the timeframe selector row above the chart."""
+        bar = QWidget()
+        bar.setFixedHeight(36)
+        bar.setStyleSheet("background: #161b22; border-bottom: 1px solid #30363d;")
+
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(4)
+
+        lbl = QLabel("Timeframe:")
+        lbl.setStyleSheet("color: #8b949e; font-size: 9pt;")
+        layout.addWidget(lbl)
+
+        self._tf_buttons: Dict[int, QPushButton] = {}
+
+        btn_ss_normal = """
+            QPushButton {
+                background: #21262d; color: #8b949e;
+                border: 1px solid #30363d; border-radius: 4px;
+                padding: 2px 10px; font-size: 9pt; font-weight: bold;
+            }
+            QPushButton:hover { background: #30363d; color: #e6edf3; }
+        """
+        btn_ss_active = """
+            QPushButton {
+                background: #1f6feb; color: #ffffff;
+                border: 1px solid #388bfd; border-radius: 4px;
+                padding: 2px 10px; font-size: 9pt; font-weight: bold;
+            }
+        """
+
+        for label, minutes in self.TIMEFRAMES:
+            btn = QPushButton(label)
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(btn_ss_active if minutes == self._current_tf else btn_ss_normal)
+            btn.clicked.connect(lambda checked, m=minutes,
+                                       ss_n=btn_ss_normal,
+                                       ss_a=btn_ss_active: self._on_tf_clicked(m, ss_n, ss_a))
+            layout.addWidget(btn)
+            self._tf_buttons[minutes] = btn
+
+        layout.addStretch()
+
+        # Store style strings for toggling
+        self._btn_ss_normal = btn_ss_normal
+        self._btn_ss_active  = btn_ss_active
+
+        return bar
+
+    # ── Timeframe change ───────────────────────────────────────────────────
+
+    def _on_tf_clicked(self, minutes: int, ss_normal: str, ss_active: str):
+        """User clicked a TF button — update highlight and reload data."""
+        if minutes == self._current_tf:
+            return
+
+        self._current_tf = minutes
+
+        # Update button highlights
+        for m, btn in self._tf_buttons.items():
+            btn.setStyleSheet(self._btn_ss_active if m == minutes else self._btn_ss_normal)
+
+        logger.info(f"[SimpleChartWidget] Timeframe changed to {minutes}m")
+        self.timeframe_changed.emit(minutes)
+
+        # Reload from candle store immediately if available
+        self._reload_from_store()
+
+    def _reload_from_store(self):
+        """Pull last MAX_BARS from the CandleStore at the current TF and refresh chart."""
+        if self._candle_store is None:
+            logger.debug("[SimpleChartWidget] No candle store attached — skipping reload")
+            return
+
+        try:
+            df = self._candle_store.resample(self._current_tf)
+            if df is None or df.empty:
+                logger.warning(f"[SimpleChartWidget] CandleStore returned empty data for {self._current_tf}m")
+                return
+
+            # Cap to last MAX_BARS
+            if len(df) > self.MAX_BARS:
+                df = df.iloc[-self.MAX_BARS:]
+
+            # Convert to the dict format update_chart() expects
+            time_col = df["time"] if "time" in df.columns else df.index.to_series()
+            spot_data = {
+                "open":       df["open"].tolist(),
+                "high":       df["high"].tolist(),
+                "low":        df["low"].tolist(),
+                "close":      df["close"].tolist(),
+                "volume":     df["volume"].tolist() if "volume" in df.columns else [],
+                "timestamps": [t.timestamp() for t in time_col],
+            }
+
+            self.spot_chart.update_chart(spot_data)
+            logger.debug(f"[SimpleChartWidget] Chart reloaded: {len(df)} bars @ {self._current_tf}m")
+
+        except Exception as e:
+            logger.error(f"[SimpleChartWidget._reload_from_store] Failed: {e}", exc_info=True)
+
+    # ── Public API ─────────────────────────────────────────────────────────
+
+    def set_candle_store(self, store) -> None:
+        """
+        Attach a CandleStore instance.  Call this once the trading app has
+        fetched history so the TF buttons can pull resampled data directly.
+        """
+        self._candle_store = store
+        # Immediately render the default TF
+        self._reload_from_store()
 
     def set_config(self, config, signal_engine=None):
-        """Set configuration for spot chart"""
+        """Set configuration for spot chart."""
+        self._config = config
         self.spot_chart.set_config(config, signal_engine)
 
     def update_charts(self, spot_data: dict):
-        """Update spot chart and signal tab with new data"""
+        """
+        Update chart from external data dict (e.g. derivative_trend).
+        Only used when no CandleStore is attached; otherwise prefer
+        _reload_from_store() for TF-aware updates.
+        """
         try:
+            if self._candle_store is not None:
+                # CandleStore is the authority — ignore stale derivative_trend dicts
+                # but do a quick reload in case a new bar arrived
+                self._reload_from_store()
+                return
 
             if spot_data:
+                # Trim to MAX_BARS before passing to the underlying chart
+                close = spot_data.get("close", [])
+                if len(close) > self.MAX_BARS:
+                    start = len(close) - self.MAX_BARS
+                    trimmed = {}
+                    for k, v in spot_data.items():
+                        if isinstance(v, list) and len(v) == len(close):
+                            trimmed[k] = v[start:]
+                        else:
+                            trimmed[k] = v
+                    spot_data = trimmed
+
                 self.spot_chart.update_chart(spot_data)
 
         except Exception as e:
             logger.error(f"[SimpleChartWidget.update_charts] Failed: {e}")
 
     def update_chart(self, trend_data: dict):
-        """Backward compatibility"""
+        """Backward compatibility."""
         self.update_charts(spot_data=trend_data)
 
+    def get_current_timeframe(self) -> int:
+        """Return the currently selected timeframe in minutes."""
+        return self._current_tf
+
     def clear_cache(self):
-        """Clear cache for spot chart"""
+        """Clear cache for spot chart."""
         self.spot_chart.clear_cache()
 
     def cleanup(self):
-        """Clean up resources"""
+        """Clean up resources."""
+        self._candle_store = None
         self.spot_chart.cleanup()
 
 

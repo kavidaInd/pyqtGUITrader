@@ -30,11 +30,12 @@ import math
 import threading
 from datetime import date, datetime, timedelta
 from enum import Enum
-from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
-import numpy as np
 import pandas as pd
+
+from Utils.OptionUtils import OptionUtils
+from Utils.Utils import Utils
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def black_scholes_price(
             price = (K * math.exp(-r * T) * _norm_cdf(-d2)
                      - S * math.exp(-q * T) * _norm_cdf(-d1))
 
-        return max(0.0, round(price, 2))
+        return max(0.0, Utils.round_off(price))
 
     except (ValueError, OverflowError, ZeroDivisionError) as e:
         logger.warning(f"[BS] Math error S={S} K={K} T={T} σ={sigma}: {e}")
@@ -240,11 +241,23 @@ class VixCache:
 def nearest_weekly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
     """
     Return the nearest weekly expiry date/time on or after dt.
-    NSE weekly options expire on Thursdays at 15:30 IST.
-    BANKNIFTY moves to Wednesday for monthly on last week.
-    For simplicity: Thursdays for all (closest approximation).
+
+    FIX: Delegates to OptionUtils.EXPIRY_WEEKDAY_MAP so this function stays
+    in sync with the live trading side.  As of NSE circular effective
+    September 2, 2025 all NSE indices (NIFTY, BANKNIFTY, FINNIFTY,
+    MIDCPNIFTY) expire on **Tuesday** (weekday=1).  SENSEX (BSE) moved to
+    Thursday (weekday=3).
+
+    Falls back to Tuesday for unknown derivatives.
     """
-    target_weekday = 3  # Thursday = 3 (Monday = 0)
+    # Try to get the correct weekday from OptionUtils (same source of truth as live)
+    try:
+        exchange_symbol = OptionUtils.get_exchange_symbol(derivative)
+        target_weekday = OptionUtils.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
+    except Exception:
+        # Post-Sep-2025 default: Tuesday
+        target_weekday = 1
+
     current = dt.date()
     days_ahead = (target_weekday - current.weekday()) % 7
     if days_ahead == 0 and dt.hour >= 15 and dt.minute >= 30:
@@ -253,23 +266,44 @@ def nearest_weekly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
     return datetime(expiry_date.year, expiry_date.month, expiry_date.day, 15, 30)
 
 
-def nearest_monthly_expiry(dt: datetime) -> datetime:
-    """Last Thursday of the current (or next) month at 15:30."""
+def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
+    """Last occurrence of the derivative's expiry weekday in the current (or next) month at 15:30.
+
+    FIX: Uses OptionUtils.EXPIRY_WEEKDAY_MAP for the correct weekday per
+    derivative instead of hardcoding Thursday.
+    """
+    try:
+        exchange_symbol = OptionUtils.get_exchange_symbol(derivative)
+        target_weekday = OptionUtils.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
+        expiry_dt = OptionUtils.get_monthly_expiry_date(dt.year, dt.month, derivative=exchange_symbol)
+        if expiry_dt <= dt:
+            # Roll to next month
+            nm = dt.month + 1
+            ny = dt.year + (1 if nm > 12 else 0)
+            nm = ((nm - 1) % 12) + 1
+            expiry_dt = OptionUtils.get_monthly_expiry_date(ny, nm, derivative=exchange_symbol)
+        return expiry_dt
+    except Exception:
+        pass
+
+    # Fallback: last Tuesday of the month (post-Sep-2025 default)
+    target_weekday = 1
     d = dt.date()
-    # Find last Thursday of this month
-    last_day = date(d.year + (d.month // 12), (d.month % 12) + 1, 1) - timedelta(days=1)
-    offset = (last_day.weekday() - 3) % 7
-    last_thu = last_day - timedelta(days=offset)
-    exp_dt = datetime(last_thu.year, last_thu.month, last_thu.day, 15, 30)
+    if d.month == 12:
+        last_day = date(d.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(d.year, d.month + 1, 1) - timedelta(days=1)
+    offset = (last_day.weekday() - target_weekday) % 7
+    last_exp = last_day - timedelta(days=offset)
+    exp_dt = datetime(last_exp.year, last_exp.month, last_exp.day, 15, 30)
     if exp_dt <= dt:
-        # Move to next month
-        if d.month == 12:
-            last_day2 = date(d.year + 1, 2, 1) - timedelta(days=1)
+        if d.month >= 11:
+            last_day2 = date(d.year + 1, (d.month % 12) + 2, 1) - timedelta(days=1)
         else:
             last_day2 = date(d.year, d.month + 2, 1) - timedelta(days=1)
-        offset2 = (last_day2.weekday() - 3) % 7
-        last_thu2 = last_day2 - timedelta(days=offset2)
-        exp_dt = datetime(last_thu2.year, last_thu2.month, last_thu2.day, 15, 30)
+        offset2 = (last_day2.weekday() - target_weekday) % 7
+        last_exp2 = last_day2 - timedelta(days=offset2)
+        exp_dt = datetime(last_exp2.year, last_exp2.month, last_exp2.day, 15, 30)
     return exp_dt
 
 
@@ -331,7 +365,7 @@ class OptionPricer:
         if self.expiry_type == "weekly":
             expiry_dt = nearest_weekly_expiry(timestamp, self.derivative)
         else:
-            expiry_dt = nearest_monthly_expiry(timestamp)
+            expiry_dt = nearest_monthly_expiry(timestamp, self.derivative)
 
         T = time_to_expiry_years(timestamp, expiry_dt)
 
@@ -353,9 +387,9 @@ class OptionPricer:
         bar_sigma = sigma * math.sqrt(bar_fraction)
         spread = close * bar_sigma * 0.5
 
-        open_ = max(0.05, round(close * (1 + (0.3 - 0.6) * bar_sigma), 2))
-        high = max(close, round(close + spread, 2))
-        low = max(0.05, round(close - spread, 2))
+        open_ = max(0.05, Utils.round_off(close * (1 + (0.3 - 0.6) * bar_sigma)))
+        high = max(close, Utils.round_off(close + spread))
+        low = max(0.05, Utils.round_off(close - spread))
 
         return open_, high, low, close, PriceSource.SYNTHETIC
 
@@ -381,7 +415,7 @@ class OptionPricer:
         if self.expiry_type == "weekly":
             expiry_dt = nearest_weekly_expiry(timestamp, self.derivative)
         else:
-            expiry_dt = nearest_monthly_expiry(timestamp)
+            expiry_dt = nearest_monthly_expiry(timestamp, self.derivative)
 
         # Check real data
         if real_ohlc is not None:

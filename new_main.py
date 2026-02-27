@@ -12,6 +12,8 @@ import time
 from typing import Optional, Any, Dict, List, Union
 from datetime import datetime
 
+import pandas as pd
+
 import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
@@ -63,6 +65,7 @@ class TradingApp:
             self.state = TradeState()
             self.config = config
             self.broker = BrokerFactory.create(state=self.state, broker_setting=broker_setting)
+
             self.trade_config = DailyTradeSetting()
             self.profit_loss_config = ProfitStoplossSetting()
             self.state.cancel_pending_trade = self.cancel_pending_trade
@@ -166,6 +169,8 @@ class TradingApp:
         self._stop_event = threading.Event()
         self._cleanup_done = False
         self._token_expired_error = None  # Set by thread-pool workers on TokenExpiredError
+        # CandleStore: always stores 1-min bars, resamples on demand
+        self._candle_stores: Dict[str, Any] = {}  # symbol → CandleStore
 
     def _create_signal_engine(self) -> DynamicSignalEngine:
         """Create signal engine with active strategy config"""
@@ -503,6 +508,14 @@ class TradingApp:
 
             if symbol == self.symbol_full(getattr(self.state, "derivative", None)):
                 self.state.derivative_current_price = ltp
+                # Push tick into the derivative's 1-min CandleStore so the
+                # running bar stays current between history-fetch cycles
+                try:
+                    derivative = getattr(self.state, "derivative", None)
+                    if derivative and derivative in self._candle_stores:
+                        self._candle_stores[derivative].push_tick(ltp)
+                except Exception:
+                    pass
                 return
 
             # --- Option chain tick ---
@@ -545,6 +558,7 @@ class TradingApp:
                     last_updated=getattr(self.state, "last_index_updated", None),
                     interval=getattr(self.state, "interval", None)
             ):
+                # print(getattr(self.state, "last_index_updated", None),getattr(self.state, "interval", None))
                 if self._history_fetch_in_progress and not self._history_fetch_in_progress.is_set():
                     self._history_fetch_in_progress.set()
                     if self._fetch_executor:
@@ -565,71 +579,129 @@ class TradingApp:
             logger.info(f"Trend detection or decision logic error: {trend_error!r}", exc_info=True)
 
     def _fetch_history_and_detect(self) -> None:
-        """Runs on thread pool — fetches history and updates trend state."""
+        """
+        Runs on thread pool — fetches history and updates trend state.
+
+        Always fetches at 1-minute resolution via CandleStore, then resamples
+        to the configured interval on the fly.  This means:
+
+        • One broker API call per symbol regardless of the target interval
+        • Broker incompatibility (Dhan has no 3-min, ICICI has no 15-min) is
+          invisible to callers — they always get the interval they asked for
+        • Switching the user's interval in settings takes effect immediately
+          on the next call with no extra network round-trip
+        • option history is resampled from the same 1-min store
+        """
         try:
-            # Check if we should stop
+            from data.candle_store import CandleStore, resample_df
+
             if self.should_stop:
                 logger.debug("Stop requested, skipping history fetch")
                 return
 
-            # Fetch derivative history
+            derivative = getattr(self.state, "derivative", None)
+            interval = getattr(self.state, "interval", "1")
+            try:
+                target_minutes = int(interval)
+            except (TypeError, ValueError):
+                target_minutes = 1
+
+            # Detect broker type for correct symbol/interval translation
+            broker_type = getattr(
+                getattr(self.broker, "broker_setting", None), "broker_type", None
+            )
+
+            def _get_store(symbol: str) -> Optional[CandleStore]:
+                if symbol not in self._candle_stores:
+                    self._candle_stores[symbol] = CandleStore(
+                        symbol=symbol,
+                        broker=self.broker,
+                        max_bars=3000,
+                    )
+                return self._candle_stores[symbol]
+
+            def _fetch_resampled(symbol: str) -> Optional[pd.DataFrame]:
+                if not symbol:
+                    return None
+                store = _get_store(symbol)
+                ok = store.fetch(days=10, broker_type=broker_type)
+                if not ok or store.is_empty():
+                    return None
+                if target_minutes == 1:
+                    return store.get_1min()
+                return resample_df(store.get_1min(), target_minutes)
+
+            # ── Fetch derivative (index) ───────────────────────────────────────
             if self.broker and hasattr(self.broker, 'get_history'):
                 try:
-                    self.state.derivative_history_df = self.broker.get_history(
-                        symbol=getattr(self.state, "derivative", None),
-                        interval=getattr(self.state, "interval", None)
-                    )
+                    df = _fetch_resampled(derivative)
+
+                    if df is not None and not df.empty:
+                        self.state.derivative_history_df = df
+                        logger.debug(
+                            f"[TradingApp] {derivative} history: "
+                            f"{len(df)} bars at {target_minutes}-min "
+                            f"(resampled from 1-min store)"
+                        )
                 except TokenExpiredError:
                     raise
                 except Exception as e:
                     logger.error(f"Failed to fetch derivative history: {e}", exc_info=True)
 
+                # ── Fetch call option ──────────────────────────────────────────
                 try:
-                    self.state.current_call_data = self.broker.get_history(
-                        symbol=getattr(self.state, "call_option", None),
-                        interval=getattr(self.state, "interval", None)
-                    )
+                    call_opt = getattr(self.state, "call_option", None)
+                    df_call = _fetch_resampled(call_opt)
+                    if df_call is not None:
+                        self.state.current_call_data = df_call
                 except TokenExpiredError:
                     raise
                 except Exception as e:
                     logger.error(f"Failed to fetch call data: {e}", exc_info=True)
 
+                # ── Fetch put option ───────────────────────────────────────────
                 try:
-                    self.state.current_put_data = self.broker.get_history(
-                        symbol=getattr(self.state, "put_option", None),
-                        interval=getattr(self.state, "interval", None)
-                    )
+                    put_opt = getattr(self.state, "put_option", None)
+                    df_put = _fetch_resampled(put_opt)
+                    if df_put is not None:
+                        self.state.current_put_data = df_put
                 except TokenExpiredError:
                     raise
                 except Exception as e:
                     logger.error(f"Failed to fetch put data: {e}", exc_info=True)
 
-                if self.state.derivative_history_df is not None and \
-                        not self.state.derivative_history_df.empty:
+                # ── Update last_index_updated from derivative history ──────────
+                deriv_df = self.state.derivative_history_df
 
+                if deriv_df is not None and not deriv_df.empty:
                     try:
-                        self.state.last_index_updated = \
-                            self.state.derivative_history_df["time"].iloc[-1]
+                        self.state.last_index_updated = deriv_df["time"].iloc[-1]
+
                     except (KeyError, IndexError, AttributeError) as e:
                         logger.error(f"Failed to get last index time: {e}", exc_info=True)
 
-                    # Run trend detection with signal engine
+                    # ── Run trend detection ────────────────────────────────────
                     if self.detector:
                         try:
                             self.state.derivative_trend = self.detector.detect(
-                                self.state.derivative_history_df, self.state, getattr(self.state, "derivative", None))
+                                deriv_df, self.state, derivative
+                            )
                         except Exception as e:
                             logger.error(f"Derivative trend detection failed: {e}", exc_info=True)
 
                         try:
                             self.state.call_trend = self.detector.detect(
-                                self.state.current_call_data, self.state, getattr(self.state, "call_option", None))
+                                self.state.current_call_data, self.state,
+                                getattr(self.state, "call_option", None)
+                            )
                         except Exception as e:
                             logger.error(f"Call trend detection failed: {e}", exc_info=True)
 
                         try:
                             self.state.put_trend = self.detector.detect(
-                                self.state.current_put_data, self.state, getattr(self.state, "put_option", None))
+                                self.state.current_put_data, self.state,
+                                getattr(self.state, "put_option", None)
+                            )
                         except Exception as e:
                             logger.error(f"Put trend detection failed: {e}", exc_info=True)
 
@@ -1073,6 +1145,10 @@ class TradingApp:
 
             self.reload_signal_engine()
             logger.info("Signal engine configuration reloaded")
+
+            # Invalidate all CandleStore caches — interval or symbol may have changed
+            self._candle_stores.clear()
+            logger.debug("CandleStore caches cleared on settings refresh")
 
             # FEATURE 6: Invalidate MTF cache on settings change
             if self.mtf_filter:

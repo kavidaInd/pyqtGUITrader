@@ -537,29 +537,6 @@ class StatsTab(QWidget):
         layout.addWidget(account_group, row, 0, 1, 2)
         row += 1
 
-        # Card 2: Daily P&L Progress (FEATURE 5)
-        pnl_group = QGroupBox("Daily P&L")
-        pnl_layout = QVBoxLayout(pnl_group)
-
-        progress = QProgressBar()
-        progress.setRange(-5000, 5000)
-        progress.setValue(0)
-        progress.setFormat("%v / 5000")
-        pnl_layout.addWidget(progress)
-        self._add_progress("daily_pnl_progress", progress)
-
-        pnl_row = QHBoxLayout()
-        pnl_row.addWidget(QLabel("Today's P&L:"))
-        pnl_value = QLabel("₹0.00")
-        pnl_value.setObjectName("value")
-        pnl_row.addWidget(pnl_value)
-        pnl_row.addStretch()
-        pnl_layout.addLayout(pnl_row)
-        self._add_label("today_pnl", pnl_value)
-
-        layout.addWidget(pnl_group, row, 0, 1, 2)
-        row += 1
-
         # Card 3: Trade Timing
         timing_group = QGroupBox("Trade Timing")
         timing_layout = QGridLayout(timing_group)
@@ -962,31 +939,6 @@ class StatsTab(QWidget):
 
             max_options = snap.get('max_num_of_option', 0)
             self._update_label("max_num_of_option", str(max_options))
-
-            # Daily P&L (FEATURE 5)
-            pnl = pos_snap.get('current_pnl', 0) or 0
-            pnl_str = f"₹{pnl:.2f}"
-            pnl_color = "positive" if pnl > 0 else "negative" if pnl < 0 else "value"
-            self._update_label("today_pnl", pnl_str, pnl_color)
-
-            # Update progress bar
-            if "daily_pnl_progress" in self._progress_bars:
-                progress = self._progress_bars["daily_pnl_progress"]
-                # Get config values (could be improved)
-                max_loss = -5000
-                daily_target = 5000
-                progress.setRange(int(max_loss), int(daily_target))
-                progress.setValue(int(pnl))
-
-                # Color based on P&L
-                if pnl >= 0:
-                    progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: {GREEN}; }}
-                    """)
-                else:
-                    progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: {RED}; }}
-                    """)
 
             # Trade Timing
             start_time = snap.get('current_trade_started_time')

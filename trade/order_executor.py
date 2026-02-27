@@ -9,14 +9,13 @@ import random
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional
 
 import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
-
 from db.connector import get_db
-from db.crud import orders as orders_crud, sessions as sessions_crud
+from db.crud import orders as orders_crud
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -322,10 +321,10 @@ class OrderExecutor:
             bid = chain_data.get('bid')
 
             if bid and bid > 0:
-                mid_price = round((ask + bid) / 2, 2)
+                mid_price = Utils.round_off((ask + bid) / 2)
             else:
                 # Estimate if no bid (use 0.1% below market price)
-                mid_price = round(market_price * 0.999, 2)
+                mid_price = Utils.round_off(market_price * 0.999)
 
             # Round to NSE price (nearest 0.05)
             mid_price = Utils.round_to_nse_price(mid_price)
@@ -502,7 +501,7 @@ class OrderExecutor:
                         symbol=symbol,
                         position_type=state.current_position or "UNKNOWN",
                         quantity=shares,
-                        broker_order_id=f"paper_{random.randint(10000, 99999)}_{int(datetime.now().timestamp())}",
+                        broker_order_id=f"paper_{random.randint(10000, 99999)}_{Utils.get_epoch()}",
                         entry_price=price,
                         stop_loss=state.stop_loss,
                         take_profit=state.tp_point,
@@ -934,7 +933,7 @@ class OrderExecutor:
             # Total transaction cost
             total_cost = buy_total + sell_total
 
-            return round(total_cost, 2)
+            return Utils.round_off(total_cost)
 
         except Exception as e:
             logger.exception(f"Error calculating transaction cost: {e}")

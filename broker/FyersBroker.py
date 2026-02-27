@@ -1,10 +1,8 @@
 """
 brokers/FyersBroker.py
 ======================
-Fyers (fyers_apiv3) implementation of BaseBroker.
-
-Drop-in replacement for the original Broker class — all public method
-signatures are preserved so existing code continues to work unchanged.
+Fyers (fyers_apiv3) implementation of BaseBroker with full broker-aware
+symbol translation and timezone handling.
 """
 
 import logging
@@ -16,7 +14,9 @@ from typing import Optional, Any, Callable, List, Dict
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 from requests.exceptions import Timeout, ConnectionError
+import pytz
 
+from Utils.OptionUtils import OptionUtils
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -24,9 +24,11 @@ from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
 
 try:
     from fyers_apiv3 import fyersModel
+    from fyers_apiv3.FyersWebsocket import data_ws
     FYERS_AVAILABLE = True
 except ImportError:
     FYERS_AVAILABLE = False
+    data_ws = None
 
 try:
     import BaseEnums
@@ -37,12 +39,26 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Timezone constants
+IST = pytz.timezone('Asia/Kolkata')
+
 
 class FyersBroker(BaseBroker):
     """
-    Fyers broker implementation.
+    Fyers broker implementation with broker-aware symbol translation.
     Preserves all original Broker behaviour while conforming to BaseBroker.
     """
+
+    # Constants
+    OK = "ok"
+    SIDE_BUY = 1
+    SIDE_SELL = -1
+    LIMIT_ORDER_TYPE = 1      # Limit order
+    MARKET_ORDER_TYPE = 2      # Market order
+    STOPLOSS_MARKET_ORDER_TYPE = 4  # Stop loss market order
+    PRODUCT_TYPE_MARGIN = "MARGIN"  # Intraday
+    PRODUCT_TYPE_CNC = "CNC"   # Delivery
+    MAX_REQUESTS_PER_SECOND = 3
 
     RETRYABLE_CODES = {-429, 500, 502, 503, 504}
     FATAL_CODES = {-8, -15, -16, -17, -100, -101, -102}
@@ -130,10 +146,13 @@ class FyersBroker(BaseBroker):
         except Exception as e:
             logger.error(f"[_check_rate_limit] {e}", exc_info=True)
 
-    # ── Symbol formatting ─────────────────────────────────────────────────────
+    # ── Symbol formatting using OptionUtils ───────────────────────────────────
 
-    @staticmethod
-    def _format_symbol(symbol: str) -> Optional[str]:
+    def _format_symbol(self, symbol: str) -> Optional[str]:
+        """
+        Format symbol for Fyers API using OptionUtils.
+        Fyers expects format: "NSE:NIFTY25021CE" or "NSE:NIFTY50-INDEX"
+        """
         if not symbol:
             return None
         return symbol if symbol.startswith("NSE:") else f"NSE:{symbol}"
@@ -142,7 +161,11 @@ class FyersBroker(BaseBroker):
     def _get_error_code(response: Any) -> int:
         if isinstance(response, dict):
             try:
-                return int(response.get("code", 0))
+                code = response.get("code", 0)
+                # Check for token expiry codes
+                if str(code) in ["-8", "-15", "-16", "-17", "-100", "-101", "-102"]:
+                    raise TokenExpiredError(f"Fyers auth error: {code}")
+                return int(code)
             except (ValueError, TypeError):
                 return 0
         return 0
@@ -186,27 +209,43 @@ class FyersBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
+        """
+        Get historical data with broker-aware symbol/interval translation.
+        Returns DataFrame with timezone-aware timestamps in IST.
+        """
         try:
             if not symbol or not self.fyers:
                 return None
+
+            # Translate symbol and interval using OptionUtils
+            broker_symbol = OptionUtils.get_index_symbol_for_broker(symbol, "fyers")
+            broker_interval = OptionUtils.translate_interval(interval, "fyers")
+
             today = datetime.today().strftime("%Y-%m-%d")
             from_date = (datetime.today() - relativedelta(
                 days=6 if date.today().weekday() == 6 else 4
             )).strftime("%Y-%m-%d")
-            formatted_symbol = self._format_symbol(symbol)
-            if Utils:
-                unit, measurement = Utils.get_interval_unit_and_measurement(interval)
-                if unit and unit.lower() == 'm':
-                    interval = measurement
+
             params = {
-                "symbol": formatted_symbol, "resolution": interval,
-                "date_format": "1", "range_from": from_date,
-                "range_to": today, "cont_flag": "1"
+                "symbol": broker_symbol,
+                "resolution": broker_interval,
+                "date_format": "1",
+                "range_from": from_date,
+                "range_to": today,
+                "cont_flag": "1"
             }
             self._check_rate_limit()
             response = self.retry_on_failure(lambda: self.fyers.history(params), context="get_history")
+
             if response and response.get("s") == self.OK and "candles" in response:
                 df = pd.DataFrame(response['candles'], columns=["time", "open", "high", "low", "close", "volume"])
+                # Convert timestamp (Fyers returns epoch seconds in UTC)
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                # Convert to IST
+                if df['time'].dt.tz is None:
+                    df['time'] = df['time'].dt.tz_localize('UTC').dt.tz_convert(IST)
+                else:
+                    df['time'] = df['time'].dt.tz_convert(IST)
                 return df.tail(length)
             return None
         except TokenExpiredError:
@@ -216,25 +255,41 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
+        """
+        Get historical data for a specific timeframe with broker-aware translation.
+        Returns DataFrame with timezone-aware timestamps in IST.
+        """
         try:
             if not symbol or not self.fyers:
                 return None
-            today = datetime.today()
+
+            broker_symbol = OptionUtils.get_index_symbol_for_broker(symbol, "fyers")
+            broker_interval = OptionUtils.translate_interval(interval, "fyers")
+
+            today = datetime.now(IST)
             fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
                 max(days, 120) if interval in ["120", "240"] else days
             )
             from_date = (today - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
-            formatted_symbol = self._format_symbol(symbol)
+
             params = {
-                "symbol": formatted_symbol, "resolution": interval,
-                "date_format": "1", "range_from": from_date,
-                "range_to": today.strftime("%Y-%m-%d"), "cont_flag": "1"
+                "symbol": broker_symbol,
+                "resolution": broker_interval,
+                "date_format": "1",
+                "range_from": from_date,
+                "range_to": today.strftime("%Y-%m-%d"),
+                "cont_flag": "1"
             }
             self._check_rate_limit()
             response = self.retry_on_failure(lambda: self.fyers.history(params), context="get_history_for_timeframe")
+
             if response and response.get("s") == self.OK and "candles" in response:
                 df = pd.DataFrame(response['candles'], columns=["time", "open", "high", "low", "close", "volume"])
                 df['time'] = pd.to_datetime(df['time'], unit='s')
+                if df['time'].dt.tz is None:
+                    df['time'] = df['time'].dt.tz_localize('UTC').dt.tz_convert(IST)
+                else:
+                    df['time'] = df['time'].dt.tz_convert(IST)
                 return df
             return None
         except TokenExpiredError:
@@ -275,10 +330,15 @@ class FyersBroker(BaseBroker):
             if response and response.get("s") == self.OK and response.get("d"):
                 v = response["d"][0]["v"]
                 return {
-                    "ltp": v.get("lp"), "bid": v.get("bid_price"), "ask": v.get("ask_price"),
-                    "high": v.get("high_price"), "low": v.get("low_price"),
-                    "open": v.get("open_price"), "close": v.get("prev_close_price"),
-                    "volume": v.get("volume"), "oi": v.get("oi"),
+                    "ltp": v.get("lp"),
+                    "bid": v.get("bid_price"),
+                    "ask": v.get("ask_price"),
+                    "high": v.get("high_price"),
+                    "low": v.get("low_price"),
+                    "open": v.get("open_price"),
+                    "close": v.get("prev_close_price"),
+                    "volume": v.get("volume"),
+                    "oi": v.get("oi"),
                 }
             return None
         except TokenExpiredError:
@@ -303,9 +363,13 @@ class FyersBroker(BaseBroker):
                     sym = (item.get("n") or item.get("symbol", "")).removeprefix("NSE:")
                     v = item.get("v", {})
                     result[sym] = {
-                        "ltp": v.get("lp"), "bid": v.get("bid_price"),
-                        "ask": v.get("ask_price"), "high": v.get("high_price"),
-                        "low": v.get("low_price"), "volume": v.get("volume"), "oi": v.get("oi"),
+                        "ltp": v.get("lp"),
+                        "bid": v.get("bid_price"),
+                        "ask": v.get("ask_price"),
+                        "high": v.get("high_price"),
+                        "low": v.get("low_price"),
+                        "volume": v.get("volume"),
+                        "oi": v.get("oi"),
                     }
             return result
         except TokenExpiredError:
@@ -395,7 +459,7 @@ class FyersBroker(BaseBroker):
         except Exception as e:
             logger.warning(f"[FyersBroker.cleanup] {e}")
 
-    # ── Internal order helpers (unchanged from original Broker) ───────────────
+    # ── Internal order helpers ───────────────────────────────────────────────
 
     def _place_order(self, **kwargs) -> Optional[str]:
         try:
@@ -413,11 +477,17 @@ class FyersBroker(BaseBroker):
             self._check_rate_limit()
             formatted_symbol = self._format_symbol(symbol)
             data = {
-                "symbol": formatted_symbol, "qty": qty, "type": order_type,
-                "side": side, "productType": product_type,
-                "limitPrice": limit_price, "stopPrice": stop_price,
-                "validity": "DAY", "disclosedQty": 0,
-                "filledQty": 0, "offlineOrder": False,
+                "symbol": formatted_symbol,
+                "qty": qty,
+                "type": order_type,
+                "side": side,
+                "productType": product_type,
+                "limitPrice": limit_price,
+                "stopPrice": stop_price,
+                "validity": "DAY",
+                "disclosedQty": 0,
+                "filledQty": 0,
+                "offlineOrder": False,
             }
             response = self.retry_on_failure(lambda: self.fyers.place_order(data), context="place_order")
             if response and response.get('s') == self.OK:
@@ -437,8 +507,10 @@ class FyersBroker(BaseBroker):
         if not symbol or not price or price <= 0:
             return False
         order_id = self.retry_on_failure(
-            lambda: self._place_order(symbol=symbol, qty=qty, side=side,
-                                      order_type=self.STOPLOSS_MARKET_ORDER_TYPE, stopPrice=price),
+            lambda: self._place_order(
+                symbol=symbol, qty=qty, side=side,
+                order_type=self.STOPLOSS_MARKET_ORDER_TYPE, stopPrice=price
+            ),
             context="place_stoploss"
         )
         return bool(order_id)
@@ -449,8 +521,10 @@ class FyersBroker(BaseBroker):
         if not symbol or qty <= 0:
             return False
         order_id = self.retry_on_failure(
-            lambda: self._place_order(symbol=symbol, qty=qty, side=side,
-                                      order_type=self.MARKET_ORDER_TYPE),
+            lambda: self._place_order(
+                symbol=symbol, qty=qty, side=side,
+                order_type=self.MARKET_ORDER_TYPE
+            ),
             context="place_order_with_side"
         )
         return bool(order_id)
@@ -490,7 +564,7 @@ class FyersBroker(BaseBroker):
         )
         return bool(response and response.get('s') == self.OK)
 
-    # ── Retry wrapper (identical to original) ─────────────────────────────────
+    # ── Retry wrapper ────────────────────────────────────────────────────────
 
     def retry_on_failure(self, func: Callable, context: str = "",
                          max_retries: int = 3, base_delay: int = 1):
@@ -537,7 +611,7 @@ class FyersBroker(BaseBroker):
         logger.critical(f"[{context}] Max retries reached.")
         return None
 
-    # ── WebSocket interface ────────────────────────────────────────────────────
+    # ── WebSocket interface ───────────────────────────────────────────────────
 
     def create_websocket(self, on_tick, on_connect, on_close, on_error) -> Any:
         """
@@ -547,7 +621,7 @@ class FyersBroker(BaseBroker):
         Symbols use Fyers format: "NSE:NIFTY50-INDEX", "NSE:NIFTY24DECFUT", etc.
         """
         try:
-            from fyers_apiv3.FyersWebsocket import data_ws  # type: ignore
+            from fyers_apiv3.FyersWebsocket import data_ws
 
             token = getattr(self.state, "token", None) if self.state else None
             if not self.client_id or not token:
@@ -591,13 +665,13 @@ class FyersBroker(BaseBroker):
         """
         Subscribe to Fyers SymbolUpdate and OnOrders channels.
 
-        Fyers symbols must have exchange prefix: "NSE:NIFTY50-INDEX".
-        Plain symbols without prefix are auto-prefixed.
+        Symbols are automatically formatted using OptionUtils.
         """
         try:
             if ws_obj is None or not symbols:
                 return
-            fyers_syms = [s if ":" in s else f"NSE:{s}" for s in symbols]
+            # Format all symbols using OptionUtils
+            fyers_syms = [self._format_symbol(s) for s in symbols if s]
             for data_type in ("SymbolUpdate", "OnOrders"):
                 try:
                     ws_obj.subscribe(symbols=fyers_syms, data_type=data_type)
@@ -612,7 +686,7 @@ class FyersBroker(BaseBroker):
         try:
             if ws_obj is None or not symbols:
                 return
-            fyers_syms = [s if ":" in s else f"NSE:{s}" for s in symbols]
+            fyers_syms = [self._format_symbol(s) for s in symbols if s]
             for data_type in ("SymbolUpdate", "OnOrders"):
                 try:
                     ws_obj.unsubscribe(symbols=fyers_syms, data_type=data_type)
@@ -647,18 +721,32 @@ class FyersBroker(BaseBroker):
             ltp = raw_tick.get("ltp")
             if symbol is None or ltp is None:
                 return None
+
+            # Extract timestamp and make timezone-aware
+            timestamp = raw_tick.get("timestamp", "")
+            if timestamp:
+                try:
+                    # Fyers timestamp is in milliseconds since epoch
+                    ts_seconds = int(timestamp) / 1000
+                    dt = datetime.fromtimestamp(ts_seconds, IST)
+                    timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    timestamp_str = str(timestamp)
+            else:
+                timestamp_str = ""
+
             return {
-                "symbol":    symbol,
-                "ltp":       float(ltp),
-                "timestamp": str(raw_tick.get("timestamp", "")),
-                "bid":       raw_tick.get("bid_price"),
-                "ask":       raw_tick.get("ask_price"),
-                "volume":    raw_tick.get("volume"),
-                "oi":        raw_tick.get("oi"),
-                "open":      raw_tick.get("open_price"),
-                "high":      raw_tick.get("high_price"),
-                "low":       raw_tick.get("low_price"),
-                "close":     raw_tick.get("prev_close_price"),
+                "symbol": symbol,
+                "ltp": float(ltp),
+                "timestamp": timestamp_str,
+                "bid": raw_tick.get("bid_price"),
+                "ask": raw_tick.get("ask_price"),
+                "volume": raw_tick.get("volume"),
+                "oi": raw_tick.get("oi"),
+                "open": raw_tick.get("open_price"),
+                "high": raw_tick.get("high_price"),
+                "low": raw_tick.get("low_price"),
+                "close": raw_tick.get("prev_close_price"),
             }
         except Exception as e:
             logger.error(f"[FyersBroker.normalize_tick] {e}", exc_info=True)

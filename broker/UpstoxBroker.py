@@ -27,7 +27,8 @@ SDK:      pip install upstox-python-sdk
 import logging
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
+from Utils.common import to_date_str, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
@@ -313,8 +314,8 @@ class UpstoxBroker(BaseBroker):
             instrument_key = self._get_instrument_key(symbol)
             if not instrument_key:
                 return None
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
+            to_date = to_date_str(datetime.now())
+            from_date = to_date_str(datetime.now() - timedelta(days=4))
             upstox_interval = self._to_upstox_interval(interval)
             self._check_rate_limit()
             result = self._call(
@@ -344,8 +345,8 @@ class UpstoxBroker(BaseBroker):
             fetch_days = max(days, 60) if interval in ["15","30","60"] else (
                 max(days, 120) if interval in ["120","240"] else days
             )
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
+            to_date = to_date_str(datetime.now())
+            from_date = to_date_str(datetime.now() - timedelta(days=fetch_days))
             upstox_interval = self._to_upstox_interval(interval)
             self._check_rate_limit()
             result = self._call(

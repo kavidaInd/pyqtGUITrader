@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from Utils.Utils import Utils
 from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
@@ -3038,7 +3039,7 @@ class StrategyEditorWindow(QDialog):
             # Update with new data
             strategy["name"] = name
             strategy["description"] = self._info_tab.collect()["description"]
-            strategy["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            strategy["updated_at"] = datetime.now().strftime(Utils.DATETIME_FORMAT)
 
             # Get rules and add confidence threshold
             engine = self._rules_tab.collect() if self._rules_tab else {}

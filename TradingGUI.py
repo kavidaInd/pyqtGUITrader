@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 from datetime import datetime
+from Utils.common import to_date_str
 from typing import Optional, Dict, Any, List
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal
@@ -15,26 +16,26 @@ from PyQt5.QtWidgets import (
 
 import BaseEnums
 from config import Config
-from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
-from gui.profit_loss.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
-from gui.trading_mode.TradingModeSetting import TradingModeSetting
-from gui.trading_mode.TradingModeSettingGUI import TradingModeSettingGUI
 from gui.app_status_bar import AppStatusBar
 from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
 from gui.brokerage_settings.BrokerageSettingGUI import BrokerageSettingDialog
 from gui.brokerage_settings.Brokerloginpopup import BrokerLoginPopup
 from gui.chart_widget import MultiChartWidget
-from gui.log_handler import QtLogHandler
 from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
 from gui.daily_trade.DailyTradeSettingGUI import DailyTradeSettingGUI
+from gui.log_handler import QtLogHandler
 from gui.popups.dynamic_signal_debug_popup import DynamicSignalDebugPopup
 from gui.popups.logs_popup import LogPopup
 from gui.popups.stats_popup import StatsPopup
 from gui.popups.trade_history_popup import TradeHistoryPopup
 from gui.popups.connection_monitor_popup import ConnectionMonitorPopup
 from gui.popups.system_monitor_popup import SystemMonitorPopup
-from gui.status_panel import StatusPanel
+from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
+from gui.profit_loss.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
 from gui.profit_loss.daily_pnl_widget import DailyPnLWidget
+from gui.status_panel import StatusPanel
+from gui.trading_mode.TradingModeSetting import TradingModeSetting
+from gui.trading_mode.TradingModeSettingGUI import TradingModeSettingGUI
 from new_main import TradingApp
 from strategy.strategy_editor_window import StrategyEditorWindow
 from strategy.strategy_manager import StrategyManager
@@ -299,6 +300,7 @@ class TradingGUI(QMainWindow):
         self.status_panel = None
         self.app_status_bar = None
         self.mode_label = None
+        self._backtest_window = None
         self.radio_algo = None
         self.radio_manual = None
         self.btn_strategy = None
@@ -972,6 +974,7 @@ class TradingGUI(QMainWindow):
         try:
             if self.trading_app:
                 state = self.trading_app.state
+                print(getattr(state, "derivative_trend", {}))
                 self.chart_widget.update_charts(
                     spot_data=getattr(state, "derivative_trend", {}) or {}
                 )
@@ -1015,7 +1018,6 @@ class TradingGUI(QMainWindow):
             logger.info(
                 f"  P&L: tp={self.profit_loss_setting.tp_percentage}%, sl={self.profit_loss_setting.stoploss_percentage}%")
             logger.info(f"  Mode: {self.trading_mode_setting.mode.value}")
-
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,
@@ -1454,6 +1456,13 @@ class TradingGUI(QMainWindow):
             clear_cache_act.triggered.connect(self._clear_cache)
             tools_menu.addAction(clear_cache_act)
 
+            # Backtest entry under Tools
+            tools_menu.addSeparator()
+            backtest_act = QAction("📊 Strategy Backtester", self)
+            backtest_act.setShortcut("Ctrl+B")
+            backtest_act.triggered.connect(self._open_backtest)
+            tools_menu.addAction(backtest_act)
+
             # Help menu
             help_menu = menubar.addMenu("Help")
 
@@ -1633,7 +1642,6 @@ class TradingGUI(QMainWindow):
     def _open_brokerage(self):
         """Open brokerage settings"""
         try:
-            print(self.brokerage_setting)
             dlg = BrokerageSettingDialog(self.brokerage_setting, self)
             dlg.exec_()
         except Exception as e:
@@ -1685,6 +1693,23 @@ class TradingGUI(QMainWindow):
         except Exception as e:
             logger.error(f"[TradingGUI._reload_broker] Failed: {e}", exc_info=True)
             QMessageBox.critical(self, "Reload Error", str(e))
+
+    def _open_backtest(self):
+        """Open the Strategy Backtester window."""
+        try:
+            from backtest.backtest_window import BacktestWindow
+            if not hasattr(self, "_backtest_window") or self._backtest_window is None:
+                self._backtest_window = BacktestWindow(
+                    trading_app=self.trading_app,
+                    parent=self,
+                )
+            self._backtest_window.show()
+            self._backtest_window.raise_()
+            self._backtest_window.activateWindow()
+        except Exception as e:
+            logger.error(f"[TradingGUI._open_backtest] {e}", exc_info=True)
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Backtester Error", str(e))
 
     def _show_about(self):
         """Show about dialog"""
@@ -1831,7 +1856,7 @@ class TradingGUI(QMainWindow):
     def _update_trade_history(self):
         """Refresh trade history table only if file changed"""
         try:
-            today_file = f"logs/trades_{datetime.now().strftime('%Y-%m-%d')}.csv"
+            today_file = f"logs/trades_{to_date_str(datetime.now())}.csv"
 
             if not os.path.exists(today_file):
                 self.history_popup = None

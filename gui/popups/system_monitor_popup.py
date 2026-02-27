@@ -327,15 +327,10 @@ class SystemMonitorPopup(QDialog):
         risk_group = QGroupBox("Risk Metrics")
         risk_layout = QGridLayout()
 
-        risk_layout.addWidget(QLabel("Daily P&L:"), 0, 0)
-        self.risk_daily_pnl = QLabel("₹0.00")
-        self.risk_daily_pnl.setObjectName("value")
-        risk_layout.addWidget(self.risk_daily_pnl, 0, 1)
-
-        risk_layout.addWidget(QLabel("Trades Today:"), 0, 2)
+        risk_layout.addWidget(QLabel("Trades Today:"), 0, 0)
         self.risk_trades_today = QLabel("0")
         self.risk_trades_today.setObjectName("value")
-        risk_layout.addWidget(self.risk_trades_today, 0, 3)
+        risk_layout.addWidget(self.risk_trades_today, 0, 1)
 
         risk_layout.addWidget(QLabel("Loss Remaining:"), 1, 0)
         self.risk_loss_remaining = QLabel("₹5000")
@@ -597,13 +592,6 @@ class SystemMonitorPopup(QDialog):
                     config = self.trading_app.config if hasattr(self.trading_app, 'config') else None
                     summary = risk.get_risk_summary(config)
 
-                    pnl = summary.get('pnl_today', 0)
-                    self.risk_daily_pnl.setText(f"₹{pnl:,.2f}")
-                    if pnl > 0:
-                        self.risk_daily_pnl.setProperty("cssClass", "positive")
-                    elif pnl < 0:
-                        self.risk_daily_pnl.setProperty("cssClass", "critical")
-
                     self.risk_trades_today.setText(str(summary.get('trades_today', 0)))
                     self.risk_loss_remaining.setText(f"₹{summary.get('max_loss_remaining', 5000):,.2f}")
                     self.risk_trades_left.setText(str(summary.get('max_trades_remaining', 10)))
@@ -668,9 +656,6 @@ class SystemMonitorPopup(QDialog):
             self.ws_status.style().polish(self.ws_status)
             self.trading_pnl.style().unpolish(self.trading_pnl)
             self.trading_pnl.style().polish(self.trading_pnl)
-            self.risk_daily_pnl.style().unpolish(self.risk_daily_pnl)
-            self.risk_daily_pnl.style().polish(self.risk_daily_pnl)
-
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._refresh_network_metrics] Failed: {e}")
 

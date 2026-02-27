@@ -11,7 +11,8 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
+from Utils.Utils import Utils, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Any, Set, Callable
 from functools import lru_cache
@@ -262,8 +263,8 @@ class MultiTimeframeFilter:
 
             return {
                 **self._stats,
-                "hit_rate_percent": round(hit_rate, 2),
-                "derivation_rate_percent": round(derivation_rate, 2),
+                "hit_rate_percent": Utils.round_off(hit_rate),
+                "derivation_rate_percent": Utils.round_off(derivation_rate),
                 "cache_size": len(self._cache),
                 "base_data_cache_size": len(self._base_data_cache)
             }
@@ -707,7 +708,7 @@ class MultiTimeframeFilter:
             matches=matches,
             total=valid_count,
             results=results,
-            agreement_percentage=round(agreement_pct, 2)
+            agreement_percentage=Utils.round_off(agreement_pct)
         )
 
     def should_allow_entry(self, symbol: str, trade_direction: str) -> Tuple[bool, str]:
@@ -812,7 +813,7 @@ class MultiTimeframeFilter:
                 "valid": len(self.ALL_TIMEFRAMES) - invalid_count
             },
             "overall_bias": overall_bias,
-            "bias_strength": round(bias_strength, 2),
+            "bias_strength": Utils.round_off(bias_strength),
             "alignment_score": round(max(bullish_count, bearish_count) / len(self.ALL_TIMEFRAMES) * 100, 2),
             "timestamp": datetime.now().isoformat()
         }

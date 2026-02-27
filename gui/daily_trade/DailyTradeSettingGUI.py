@@ -25,8 +25,7 @@ class DailyTradeSettingGUI(QDialog):
     operation_finished = pyqtSignal()
 
     INTERVAL_CHOICES = [
-        ("5 seconds", "5S"), ("10 seconds", "10S"), ("15 seconds", "15S"),
-        ("30 seconds", "30S"), ("45 seconds", "45S"), ("1 minute", "1m"),
+         ("1 minute", "1m"),
         ("2 minutes", "2m"), ("3 minutes", "3m"), ("5 minutes", "5m"),
         ("10 minutes", "10m"), ("15 minutes", "15m"), ("20 minutes", "20m"),
         ("30 minutes", "30m"), ("60 minutes", "60m"), ("120 minutes", "120m"),
