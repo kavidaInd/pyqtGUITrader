@@ -133,6 +133,12 @@ def time_to_expiry_years(current_dt: datetime, expiry_dt: datetime) -> float:
     Calculate T (time to expiry in calendar years).
     Uses trading-day fraction: 252 trading days / year.
     """
+    # Normalise: both must be tz-naive. Broker timestamps can be tz-aware;
+    # expiry datetimes are always constructed as tz-naive (NSE/IST local).
+    if hasattr(current_dt, "tzinfo") and current_dt.tzinfo is not None:
+        current_dt = current_dt.replace(tzinfo=None)
+    if hasattr(expiry_dt, "tzinfo") and expiry_dt.tzinfo is not None:
+        expiry_dt = expiry_dt.replace(tzinfo=None)
     delta = (expiry_dt - current_dt).total_seconds()
     if delta <= 0:
         return MIN_TIME_TO_EXPIRY
@@ -143,23 +149,62 @@ def time_to_expiry_years(current_dt: datetime, expiry_dt: datetime) -> float:
 
 # ── VIX Data ───────────────────────────────────────────────────────────────────
 
+# Broker-specific VIX symbol map.
+# Each broker exposes India VIX as a tradeable/historical symbol.
+# Add more entries as you integrate new brokers.
+VIX_SYMBOL_MAP: Dict[str, str] = {
+    "dhan":       "INDIA VIX",
+    "zerodha":    "INDIA VIX",
+    "angelone":   "INDIA VIX",
+    "upstox":     "INDIA VIX",
+    "fyers":      "NSE:INDIAVIX-INDEX",
+    "default":    "INDIA VIX",
+}
+
+
+def _broker_type(broker) -> str:
+    """Best-effort extraction of broker type string (lowercase)."""
+    try:
+        bt = getattr(getattr(broker, "broker_setting", None), "broker_type", None)
+        if bt:
+            return str(bt).lower()
+    except Exception:
+        pass
+    return "default"
+
+
+def _vix_symbol_for_broker(broker) -> str:
+    """Return the VIX symbol string appropriate for this broker."""
+    bt = _broker_type(broker)
+    return VIX_SYMBOL_MAP.get(bt, VIX_SYMBOL_MAP["default"])
+
+
 class VixCache:
     """
     Fetches and caches India VIX daily close values.
 
-    Primary source : NSE historical VIX API
-    Secondary source: yfinance ^INDIAVIX  (if nse fails)
-    Fallback        : DEFAULT_VIX constant
+    Priority chain
+    --------------
+    1. Broker  — via get_history_for_timeframe(symbol=VIX_SYMBOL, interval="1D", days=N)
+                 This is the same authenticated channel used for all other historical data.
+    2. NSE API — public REST endpoint (no auth required, but subject to rate-limits)
+    3. yfinance — ^INDIAVIX via Yahoo Finance
+    4. Constant — DEFAULT_VIX (15 %) when every other source fails
 
-    Thread-safe; fetched once per session.
+    Thread-safe; fetched once per OptionPricer lifetime.
     """
 
     def __init__(self):
         self._data: Optional[pd.Series] = None  # index = date, value = VIX %
         self._lock = threading.Lock()
         self._fetched = False
+        self._broker = None  # set via set_broker() before ensure_loaded()
 
-    def ensure_loaded(self, start: date, end: date):
+    def set_broker(self, broker) -> None:
+        """Attach the broker instance so VIX can be fetched from it."""
+        self._broker = broker
+
+    def ensure_loaded(self, start: date, end: date) -> None:
         with self._lock:
             if self._fetched:
                 return
@@ -174,17 +219,52 @@ class VixCache:
         if self._data is None or self._data.empty:
             return DEFAULT_VIX / 100.0, False
 
-        target = dt.date()
-        # Look for exact date, then walk backwards up to 5 trading days
+        target = dt.date() if isinstance(dt, datetime) else dt
+        # Exact match first, then walk back up to 5 trading days (weekends/holidays)
         for delta in range(6):
             candidate = target - timedelta(days=delta)
             if candidate in self._data.index:
                 return float(self._data[candidate]) / 100.0, True
         return DEFAULT_VIX / 100.0, False
 
-    @staticmethod
-    def _fetch(start: date, end: date) -> Optional[pd.Series]:
-        # ── Attempt 1: NSE historical VIX ────────────────────────────────────
+    def _fetch(self, start: date, end: date) -> Optional[pd.Series]:
+        days = (end - start).days + 5  # a little buffer
+
+        # ── Attempt 1: broker get_history_for_timeframe ───────────────────────
+        if self._broker is not None:
+            try:
+                vix_sym = _vix_symbol_for_broker(self._broker)
+                df = self._broker.get_history_for_timeframe(
+                    symbol=vix_sym,
+                    interval="1D",   # daily candles — brokers always support this
+                    days=days,
+                )
+                if df is not None and not df.empty and "close" in df.columns:
+                    if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+                        df["time"] = pd.to_datetime(df["time"])
+                    # Strip tz so .date() works uniformly
+                    if df["time"].dt.tz is not None:
+                        df["time"] = df["time"].dt.tz_localize(None)
+                    df = df[
+                        (df["time"].dt.date >= start) &
+                        (df["time"].dt.date <= end)
+                    ].copy()
+                    s = pd.Series(
+                        df["close"].values,
+                        index=df["time"].dt.date.values,
+                    )
+                    s = s[s > 0]
+                    if not s.empty:
+                        logger.info(
+                            f"[VIX] Loaded {len(s)} rows from broker "
+                            f"(symbol={vix_sym}, {start}→{end})"
+                        )
+                        return s
+                    logger.warning(f"[VIX] Broker returned empty/zero VIX data for {vix_sym}")
+            except Exception as e:
+                logger.warning(f"[VIX] Broker fetch failed: {e}")
+
+        # ── Attempt 2: NSE historical VIX REST API ────────────────────────────
         try:
             import requests
             headers = {
@@ -193,9 +273,7 @@ class VixCache:
                 "Referer": "https://www.nseindia.com/",
             }
             session = requests.Session()
-            # Prime cookies
             session.get("https://www.nseindia.com", headers=headers, timeout=5)
-
             url = (
                 f"https://www.nseindia.com/api/historical/vixhistory"
                 f"?from={start.strftime('%d-%b-%Y')}&to={end.strftime('%d-%b-%Y')}"
@@ -219,11 +297,14 @@ class VixCache:
         except Exception as e:
             logger.warning(f"[VIX] NSE fetch failed: {e}")
 
-        # ── Attempt 2: yfinance ───────────────────────────────────────────────
+        # ── Attempt 3: yfinance ───────────────────────────────────────────────
         try:
             import yfinance as yf
             ticker = yf.Ticker("^INDIAVIX")
-            df = ticker.history(start=start.isoformat(), end=(end + timedelta(days=1)).isoformat())
+            df = ticker.history(
+                start=start.isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+            )
             if not df.empty:
                 s = df["Close"]
                 s.index = s.index.date
@@ -332,15 +413,30 @@ class OptionPricer:
             expiry_type: str = "weekly",  # "weekly" | "monthly"
             risk_free: float = RISK_FREE_RATE,
             div_yield: float = DIVIDEND_YIELD,
+            broker=None,
     ):
         self.derivative = derivative.upper()
         self.expiry_type = expiry_type
         self.risk_free = risk_free
         self.div_yield = div_yield
         self._vix = VixCache()
+        if broker is not None:
+            self._vix.set_broker(broker)
 
-    def load_vix(self, start: date, end: date):
-        """Pre-fetch VIX data for the backtest date range."""
+    def load_vix(self, start: date, end: date, broker=None) -> None:
+        """
+        Pre-fetch VIX data for the backtest date range.
+
+        Parameters
+        ----------
+        start, end : date
+            Inclusive date range.
+        broker : optional
+            If provided (or already set at __init__ time), VIX is fetched via
+            the broker's get_history_for_timeframe() as the primary source.
+        """
+        if broker is not None:
+            self._vix.set_broker(broker)
         self._vix.ensure_loaded(start, end)
 
     def resolve(
@@ -408,6 +504,9 @@ class OptionPricer:
         Full OHLCV bar for one candle.
         Uses spot OHLC to produce option OHLC via BS when real data absent.
         """
+        # Strip tz so expiry arithmetic (always tz-naive) never raises
+        if hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
+            timestamp = timestamp.replace(tzinfo=None)
         strike = atm_strike(spot_close, self.derivative)
         sigma, vix_real = self._vix.get_vix(timestamp)
         sigma = max(sigma, 0.05)

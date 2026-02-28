@@ -21,38 +21,41 @@ Visual cues
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QColor, QFont, QBrush
+from PyQt5.QtCore import QDate
+from PyQt5.QtCore import Qt, pyqtSlot
+from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox,
+    QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox,
     QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
-    QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QSizePolicy, QSpinBox, QTableWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QDate
+
+from backtest.backtest_engine import BacktestConfig
+from backtest.backtest_thread import BacktestThread
 
 logger = logging.getLogger(__name__)
 
 # ── Palette (matches the dark TradingGUI theme) ────────────────────────────────
-BG        = "#0d1117"
-SURFACE   = "#161b22"
-SURFACE2  = "#1c2128"
-BORDER    = "#30363d"
-TEXT      = "#e6edf3"
-SUBTEXT   = "#8b949e"
-ACCENT    = "#2ea043"
-ACCENT_H  = "#3fb950"
-WARN      = "#d29922"
-ERROR_C   = "#f85149"
-INFO      = "#58a6ff"
-CALL_CLR  = "#3fb950"   # green for calls
-PUT_CLR   = "#f85149"   # red for puts
-SYNTH_BG  = "#2d2a1a"   # amber tint for synthetic rows
-REAL_BG   = "#0d1117"
+BG = "#0d1117"
+SURFACE = "#161b22"
+SURFACE2 = "#1c2128"
+BORDER = "#30363d"
+TEXT = "#e6edf3"
+SUBTEXT = "#8b949e"
+ACCENT = "#2ea043"
+ACCENT_H = "#3fb950"
+WARN = "#d29922"
+ERROR_C = "#f85149"
+INFO = "#58a6ff"
+CALL_CLR = "#3fb950"  # green for calls
+PUT_CLR = "#f85149"  # red for puts
+SYNTH_BG = "#2d2a1a"  # amber tint for synthetic rows
+REAL_BG = "#0d1117"
 
 _CSS = f"""
 QMainWindow, QWidget {{
@@ -215,9 +218,9 @@ class EquityChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._equity_data: List[dict] = []
-        self._synth_regions: List[tuple] = []   # (x_start, x_end) index pairs
+        self._synth_regions: List[tuple] = []  # (x_start, x_end) index pairs
         self._use_pg = False
-        self._plot   = None
+        self._plot = None
         self._setup()
 
     def _setup(self):
@@ -228,8 +231,8 @@ class EquityChart(QWidget):
             import pyqtgraph as pg
             pg.setConfigOptions(antialias=True, background=BG, foreground=TEXT)
             self._pg_widget = pg.PlotWidget()
-            self._pg_widget.setLabel("left",  "Equity (₹)", color=SUBTEXT)
-            self._pg_widget.setLabel("bottom", "Trade #",   color=SUBTEXT)
+            self._pg_widget.setLabel("left", "Equity (₹)", color=SUBTEXT)
+            self._pg_widget.setLabel("bottom", "Trade #", color=SUBTEXT)
             self._pg_widget.showGrid(x=True, y=True, alpha=0.15)
             self._pg_widget.getAxis("left").setPen(BORDER)
             self._pg_widget.getAxis("bottom").setPen(BORDER)
@@ -240,7 +243,7 @@ class EquityChart(QWidget):
             layout.addWidget(self._fallback)
 
     def set_data(self, equity_curve: List[dict], trades):
-        self._equity_data   = equity_curve
+        self._equity_data = equity_curve
         self._synth_regions = [
             i for i, t in enumerate(trades)
             if t.entry_source.value == "synthetic" or t.exit_source.value == "synthetic"
@@ -312,27 +315,27 @@ class _EquityPainter(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._equity  = []
-        self._trades  = []
-        self._synth   = set()
+        self._equity = []
+        self._trades = []
+        self._synth = set()
         self.setMinimumHeight(200)
 
     def set_data(self, equity_curve, trades):
         self._equity = [e["equity"] for e in equity_curve]
         self._trades = trades
-        self._synth  = {
+        self._synth = {
             i for i, t in enumerate(trades)
             if t.entry_source.value == "synthetic" or t.exit_source.value == "synthetic"
         }
         self.update()
 
     def paintEvent(self, event):
-        from PyQt5.QtGui import QPainter, QPen, QColor, QLinearGradient
+        from PyQt5.QtGui import QPainter, QPen, QColor
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
 
         w, h = self.width(), self.height()
-        pad  = 40
+        pad = 40
 
         p.fillRect(0, 0, w, h, QColor(BG))
 
@@ -342,7 +345,7 @@ class _EquityPainter(QWidget):
             return
 
         mn, mx = min(self._equity), max(self._equity)
-        rng    = mx - mn or 1
+        rng = mx - mn or 1
 
         def tx(i):
             return pad + int((i / (len(self._equity) - 1)) * (w - 2 * pad))
@@ -409,9 +412,10 @@ class BacktestWindow(QMainWindow):
     parent        : optional parent widget
     """
 
-    def __init__(self, trading_app=None, parent=None):
+    def __init__(self, trading_app=None, strategy_manager=None, parent=None):
         super().__init__(parent)
         self._trading_app = trading_app
+        self._strategy_manager = strategy_manager  # TradingGUI.strategy_manager passed explicitly
         self._thread: Optional["BacktestThread"] = None
         self._result = None
 
@@ -599,7 +603,7 @@ class BacktestWindow(QMainWindow):
 
     def _build_results_panel(self) -> QWidget:
         panel = QWidget()
-        lay   = QVBoxLayout(panel)
+        lay = QVBoxLayout(panel)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
@@ -652,30 +656,30 @@ class BacktestWindow(QMainWindow):
         return panel
 
     def _build_overview_tab(self) -> QWidget:
-        w   = QWidget()
+        w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(16)
 
         # ── Stat cards grid ───────────────────────────────────────────────────
         cards_widget = QWidget()
-        cards_lay    = QGridLayout(cards_widget)
+        cards_lay = QGridLayout(cards_widget)
         cards_lay.setSpacing(12)
 
         self._cards = {}
         card_defs = [
-            ("net_pnl",      "Net P&L",          "—",  TEXT),
-            ("total_trades", "Total Trades",      "—",  TEXT),
-            ("win_rate",     "Win Rate",          "—",  TEXT),
-            ("profit_factor","Profit Factor",     "—",  TEXT),
-            ("best_trade",   "Best Trade",        "—",  ACCENT),
-            ("worst_trade",  "Worst Trade",       "—",  ERROR_C),
-            ("avg_pnl",      "Avg Net P&L/Trade", "—",  TEXT),
-            ("max_dd",       "Max Drawdown",      "—",  WARN),
-            ("sharpe",       "Sharpe Ratio",      "—",  INFO),
-            ("winners",      "Winners",           "—",  ACCENT),
-            ("losers",       "Losers",            "—",  ERROR_C),
-            ("data_quality", "Data Source",       "—",  TEXT),
+            ("net_pnl", "Net P&L", "—", TEXT),
+            ("total_trades", "Total Trades", "—", TEXT),
+            ("win_rate", "Win Rate", "—", TEXT),
+            ("profit_factor", "Profit Factor", "—", TEXT),
+            ("best_trade", "Best Trade", "—", ACCENT),
+            ("worst_trade", "Worst Trade", "—", ERROR_C),
+            ("avg_pnl", "Avg Net P&L/Trade", "—", TEXT),
+            ("max_dd", "Max Drawdown", "—", WARN),
+            ("sharpe", "Sharpe Ratio", "—", INFO),
+            ("winners", "Winners", "—", ACCENT),
+            ("losers", "Losers", "—", ERROR_C),
+            ("data_quality", "Data Source", "—", TEXT),
         ]
         for n, (key, lbl, val, clr) in enumerate(card_defs):
             card = _StatCard(lbl, val, clr)
@@ -694,7 +698,7 @@ class BacktestWindow(QMainWindow):
         return w
 
     def _build_trade_log_tab(self) -> QWidget:
-        w   = QWidget()
+        w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
@@ -703,7 +707,7 @@ class BacktestWindow(QMainWindow):
         legend_row = QHBoxLayout()
         for sym, lbl, clr in [
             ("⚗", "Synthetic (BS) price — VIX-based approx.", WARN),
-            ("✓", "Real broker data",                          ACCENT),
+            ("✓", "Real broker data", ACCENT),
         ]:
             leg = QLabel(f"{sym}  {lbl}")
             leg.setStyleSheet(f"color: {clr}; font-size: 10px;")
@@ -732,7 +736,7 @@ class BacktestWindow(QMainWindow):
         return w
 
     def _build_chart_tab(self) -> QWidget:
-        w   = QWidget()
+        w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
 
@@ -786,49 +790,61 @@ class BacktestWindow(QMainWindow):
             )
             return
 
-        from backtest.backtest_engine import BacktestConfig
-        from backtest.backtest_thread import BacktestThread
-
         # ── Collect config ─────────────────────────────────────────────────────
         d_from = self._date_from.date()
-        d_to   = self._date_to.date()
+        d_to = self._date_to.date()
 
-        # Pull the active strategy slug from the live trading app so the
+        # Pull the active strategy from the live trading app so the
         # backtest runs the same strategy currently configured.
-        strategy_slug     = None
+        # Priority 1: serialise the live in-memory signal engine — guaranteed
+        #             to reflect exactly what the user has loaded right now.
+        # Priority 2: fall back to strategy slug -> DB lookup.
+        strategy_slug = None
         signal_engine_cfg = None
         try:
-            if self._trading_app and hasattr(self._trading_app, "strategy_manager"):
-                sm = self._trading_app.strategy_manager
-                if hasattr(sm, "get_active_slug"):
-                    strategy_slug = sm.get_active_slug()
-                elif hasattr(sm, "get_active_engine_config"):
-                    signal_engine_cfg = sm.get_active_engine_config()
-            elif self._trading_app and hasattr(self._trading_app, "signal_engine"):
-                # Serialise the live signal engine config directly
+            # Priority 1: live in-memory engine from detector
+            se = None
+            if self._trading_app and hasattr(self._trading_app, "detector"):
+                se = getattr(self._trading_app.detector, "signal_engine", None)
+            # Also check direct signal_engine attribute on trading_app
+            if se is None and self._trading_app and hasattr(self._trading_app, "signal_engine"):
                 se = self._trading_app.signal_engine
-                if hasattr(se, "to_dict"):
-                    signal_engine_cfg = se.to_dict()
+            if se is not None and hasattr(se, "to_dict"):
+                signal_engine_cfg = se.to_dict()
+                logger.debug("[BacktestWindow] Loaded signal config from live in-memory engine")
+
+            # Priority 2: strategy manager slug (fallback when live engine not available)
+            if not signal_engine_cfg:
+                sm = None
+                # NOTE: strategy_manager lives on TradingGUI, not on trading_app.
+                # It is passed in via the _strategy_manager attribute (see __init__).
+                if hasattr(self, "_strategy_manager") and self._strategy_manager:
+                    sm = self._strategy_manager
+                elif self._trading_app and hasattr(self._trading_app, "strategy_manager"):
+                    sm = self._trading_app.strategy_manager
+                if sm and hasattr(sm, "get_active_slug"):
+                    strategy_slug = sm.get_active_slug()
+                    logger.debug(f"[BacktestWindow] Falling back to strategy slug: {strategy_slug}")
         except Exception as e:
             logger.debug(f"[BacktestWindow._on_run] Could not load strategy: {e}")
-
         cfg = BacktestConfig(
-            start_date        = datetime(d_from.year(), d_from.month(), d_from.day()),
-            end_date          = datetime(d_to.year(), d_to.month(), d_to.day(), 23, 59, 59),
-            derivative        = self._derivative.currentText(),
-            expiry_type       = self._expiry_type.currentText(),
-            lot_size          = self._lot_size.value(),
-            num_lots          = self._num_lots.value(),
-            tp_pct            = (self._tp_pct.value() / 100) if self._use_tp.isChecked() else None,
-            sl_pct            = (self._sl_pct.value() / 100) if self._use_sl.isChecked() else None,
-            slippage_pct      = self._slippage.value() / 100,
-            brokerage_per_lot = self._brokerage.value(),
-            capital           = self._capital.value(),
-            interval_minutes  = int(self._interval.currentText()),
-            sideway_zone_skip = self._skip_sideway.isChecked(),
-            strategy_slug     = strategy_slug,
-            signal_engine_cfg = signal_engine_cfg,
+            start_date=datetime(d_from.year(), d_from.month(), d_from.day()),
+            end_date=datetime(d_to.year(), d_to.month(), d_to.day(), 23, 59, 59),
+            derivative=self._derivative.currentText(),
+            expiry_type=self._expiry_type.currentText(),
+            lot_size=self._lot_size.value(),
+            num_lots=self._num_lots.value(),
+            tp_pct=(self._tp_pct.value() / 100) if self._use_tp.isChecked() else None,
+            sl_pct=(self._sl_pct.value() / 100) if self._use_sl.isChecked() else None,
+            slippage_pct=self._slippage.value() / 100,
+            brokerage_per_lot=self._brokerage.value(),
+            capital=self._capital.value(),
+            interval_minutes=int(self._interval.currentText()),
+            sideway_zone_skip=self._skip_sideway.isChecked(),
+            strategy_slug=strategy_slug,
+            signal_engine_cfg=signal_engine_cfg,
         )
+        print(cfg)
 
         # ── Reset UI ───────────────────────────────────────────────────────────
         self._reset_results()
@@ -909,7 +925,7 @@ class BacktestWindow(QMainWindow):
         # ── Synthetic banner ──────────────────────────────────────────────────
         if result.synthetic_bars > 0:
             total = result.synthetic_bars + result.real_bars
-            pct   = result.synthetic_bars / total * 100 if total else 0
+            pct = result.synthetic_bars / total * 100 if total else 0
             self._synth_banner_lbl.setText(
                 f"⚗  {result.synthetic_bars} of {total} trades used Black-Scholes synthetic pricing "
                 f"({pct:.0f}%) because your broker does not provide historical option data for "
@@ -958,9 +974,9 @@ class BacktestWindow(QMainWindow):
             f"Lot Size: {cfg.lot_size}  |  Lots: {cfg.num_lots}  |  "
             f"Interval: {cfg.interval_minutes}m  |  "
             f"Capital: ₹{cfg.capital:,.0f}  |  "
-            f"Slippage: {cfg.slippage_pct*100:.2f}%  |  "
-            f"TP: {'off' if not cfg.tp_pct else f'{cfg.tp_pct*100:.0f}%'}  |  "
-            f"SL: {'off' if not cfg.sl_pct else f'{cfg.sl_pct*100:.0f}%'}"
+            f"Slippage: {cfg.slippage_pct * 100:.2f}%  |  "
+            f"TP: {'off' if not cfg.tp_pct else f'{cfg.tp_pct * 100:.0f}%'}  |  "
+            f"SL: {'off' if not cfg.sl_pct else f'{cfg.sl_pct * 100:.0f}%'}"
         )
 
         # ── Trade log ─────────────────────────────────────────────────────────
@@ -968,31 +984,31 @@ class BacktestWindow(QMainWindow):
         self._trade_table.setRowCount(len(result.trades))
         for row, t in enumerate(result.trades):
             is_synth = (
-                t.entry_source == PriceSource.SYNTHETIC or
-                t.exit_source  == PriceSource.SYNTHETIC
+                    t.entry_source == PriceSource.SYNTHETIC or
+                    t.exit_source == PriceSource.SYNTHETIC
             )
             src_badge = "⚗" if is_synth else "✓"
-            bg_color  = QColor(SYNTH_BG) if is_synth else QColor(REAL_BG)
+            bg_color = QColor(SYNTH_BG) if is_synth else QColor(REAL_BG)
 
             dir_clr = CALL_CLR if t.direction == "CE" else PUT_CLR
-            pnl_clr = ACCENT   if t.net_pnl >= 0     else ERROR_C
+            pnl_clr = ACCENT if t.net_pnl >= 0 else ERROR_C
 
             cells = [
-                (str(t.trade_no),                           TEXT),
-                (f"{'📈 CE' if t.direction=='CE' else '📉 PE'}", dir_clr),
-                (t.entry_time.strftime("%d-%b %H:%M"),     TEXT),
-                (t.exit_time.strftime("%d-%b %H:%M"),      TEXT),
-                (f"{t.spot_entry:,.0f}",                   TEXT),
-                (f"{t.spot_exit:,.0f}",                    TEXT),
-                (f"{t.strike:,}",                          TEXT),
-                (f"₹{t.option_entry:.2f}",                 TEXT),
-                (f"₹{t.option_exit:.2f}",                  TEXT),
-                (str(t.lots),                              TEXT),
-                (f"₹{t.gross_pnl:+,.0f}",                 pnl_clr),
-                (f"₹{t.net_pnl:+,.0f}",                   pnl_clr),
-                (t.exit_reason,                            WARN if t.exit_reason=="SL" else TEXT),
+                (str(t.trade_no), TEXT),
+                (f"{'📈 CE' if t.direction == 'CE' else '📉 PE'}", dir_clr),
+                (t.entry_time.strftime("%d-%b %H:%M"), TEXT),
+                (t.exit_time.strftime("%d-%b %H:%M"), TEXT),
+                (f"{t.spot_entry:,.0f}", TEXT),
+                (f"{t.spot_exit:,.0f}", TEXT),
+                (f"{t.strike:,}", TEXT),
+                (f"₹{t.option_entry:.2f}", TEXT),
+                (f"₹{t.option_exit:.2f}", TEXT),
+                (str(t.lots), TEXT),
+                (f"₹{t.gross_pnl:+,.0f}", pnl_clr),
+                (f"₹{t.net_pnl:+,.0f}", pnl_clr),
+                (t.exit_reason, WARN if t.exit_reason == "SL" else TEXT),
                 (t.signal_name[:20] if t.signal_name else "—", SUBTEXT),
-                (src_badge,                                WARN if is_synth else ACCENT),
+                (src_badge, WARN if is_synth else ACCENT),
             ]
 
             for col, (val, clr) in enumerate(cells):

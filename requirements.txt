@@ -40,3 +40,4 @@ pya3
 NorenRestApiPy
 neo_api_client
 upstox-python-sdk
+pytest

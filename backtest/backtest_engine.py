@@ -220,8 +220,13 @@ class BacktestEngine:
             pricer = OptionPricer(
                 derivative=self.config.derivative,
                 expiry_type=self.config.expiry_type,
+                broker=self.broker,
             )
-            pricer.load_vix(self.config.start_date.date(), self.config.end_date.date())
+            pricer.load_vix(
+                self.config.start_date.date(),
+                self.config.end_date.date(),
+                broker=self.broker,
+            )
 
             self._emit(10, "Loading strategy signals…")
             signal_engine, detector = self._load_signal_engine()
@@ -379,14 +384,16 @@ class BacktestEngine:
             from config import Config
 
             engine = DynamicSignalEngine()
-
             if self.config.signal_engine_cfg:
                 engine.from_dict(self.config.signal_engine_cfg)
             elif self.config.strategy_slug:
                 sm = StrategyManager()
-                cfg = sm.get_strategy_engine_config(self.config.strategy_slug)
-                if cfg:
+                strategy = sm.get(self.config.strategy_slug)
+                if strategy:
+                    # sm.get() returns the full strategy dict — unwrap the "engine" key
+                    cfg = strategy.get("engine", strategy)
                     engine.from_dict(cfg)
+                    logger.info(f"[BacktestEngine] Loaded strategy from slug: {self.config.strategy_slug}")
             else:
                 # Load active strategy from DB
                 sm = StrategyManager()
@@ -442,6 +449,9 @@ class BacktestEngine:
             ts = row["time"]
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
             bar_time = ts if isinstance(ts, datetime) else pd.Timestamp(ts).to_pydatetime()
+            # Strip timezone — expiry datetimes are always tz-naive (NSE/IST)
+            if hasattr(bar_time, "tzinfo") and bar_time.tzinfo is not None:
+                bar_time = bar_time.replace(tzinfo=None)
 
             # Progress update every 50 bars
             if i % 50 == 0:
@@ -493,7 +503,7 @@ class BacktestEngine:
             if signal_engine and hasattr(state, 'derivative_trend'):
                 try:
                     if hasattr(signal_engine, 'evaluate'):
-                        sig_result = signal_engine.evaluate(state)
+                        sig_result = signal_engine.evaluate(hist_df)
                         if sig_result:
                             state.option_signal_result = sig_result
                             state.option_signal = sig_result.get('signal')

@@ -616,7 +616,7 @@ class TradingApp:
                     self._candle_stores[symbol] = CandleStore(
                         symbol=symbol,
                         broker=self.broker,
-                        max_bars=3000,
+                        max_bars=1500,
                     )
                 return self._candle_stores[symbol]
 
@@ -624,7 +624,7 @@ class TradingApp:
                 if not symbol:
                     return None
                 store = _get_store(symbol)
-                ok = store.fetch(days=10, broker_type=broker_type)
+                ok = store.fetch(days=5, broker_type=broker_type)
                 if not ok or store.is_empty():
                     return None
                 if target_minutes == 1:

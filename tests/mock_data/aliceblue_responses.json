@@ -1,0 +1,8 @@
+{
+    "login": {"session_id": "mock_session_123"},
+    "get_balance": {"Net": 100000},
+    "get_profile": {"user_id": "testuser", "name": "Test User"},
+    "place_order": {"NOrdNo": "ORDER123"},
+    "get_positions": [],
+    "get_orderbook": []
+}

@@ -1701,6 +1701,7 @@ class TradingGUI(QMainWindow):
             if not hasattr(self, "_backtest_window") or self._backtest_window is None:
                 self._backtest_window = BacktestWindow(
                     trading_app=self.trading_app,
+                    strategy_manager=self.strategy_manager,  # ← pass SM explicitly
                     parent=self,
                 )
             self._backtest_window.show()
