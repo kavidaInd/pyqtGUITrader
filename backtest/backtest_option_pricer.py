@@ -16,11 +16,14 @@ Black-Scholes inputs:
   q  — dividend yield (0 for indices)
 
 VIX source:
-  The India VIX historical series is fetched from NSE's public CSV endpoint.
-  A fallback constant (15%) is used when the network is unavailable.
+  The India VIX historical series is fetched from broker's API or public endpoints.
+  A fallback constant (15%) is used when data is unavailable.
 
 Each resolved price carries a PriceSource enum so the GUI can render
 synthetic bars in a distinct colour and show a disclaimer.
+
+Uses state_manager to access broker type and other configuration that
+affects option pricing and symbol generation.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
+from models.trade_state_manager import state_manager
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
 
@@ -43,6 +47,10 @@ logger = logging.getLogger(__name__)
 RISK_FREE_RATE = 0.065  # 6.5% — India 91-day T-bill approximate
 DIVIDEND_YIELD = 0.0  # indices pay no dividend
 DEFAULT_VIX = 15.0  # fallback when VIX data unavailable (%)
+DEFAULT_HV = 15.0  # fallback historical volatility when insufficient bars (%)
+HV_LOOKBACK = 20  # bars of log-returns used for rolling HV estimate
+HV_MIN_BARS = 5  # minimum bars before HV is trusted over the default
+HV_ANNUALISE = 252 * 375  # trading minutes per year (1-min bars) — rescaled per interval
 MIN_TIME_TO_EXPIRY = 1 / (365 * 96)  # at least 15 minutes to avoid singularity
 NSE_VIX_URL = (
     "https://www.nseindia.com/api/historical/vixhistory"
@@ -71,6 +79,57 @@ class PriceSource(Enum):
 def _norm_cdf(x: float) -> float:
     """Standard normal CDF using math.erfc for numerical stability."""
     return 0.5 * math.erfc(-x / math.sqrt(2))
+
+
+def rolling_hv(
+        spot_series,
+        bars_per_year: int = 375 * 252,
+        lookback: int = HV_LOOKBACK,
+) -> float:
+    """
+    Compute realised (historical) volatility from a sequence of spot prices.
+
+    Parameters
+    ----------
+    spot_series  : list or array of close prices, most-recent last
+    bars_per_year: total number of bars in a trading year.
+                   For 1-min bars: 252 * 375 = 94,500
+                   For 5-min bars: 252 * 75  = 18,900
+                   For 15-min bars:252 * 25  = 6,300
+    lookback     : number of bars to use (default HV_LOOKBACK=20)
+
+    Returns
+    -------
+    float : annualised volatility as a decimal (e.g. 0.18 for 18%)
+    """
+    try:
+        prices = list(spot_series)
+        if len(prices) < HV_MIN_BARS + 1:
+            return DEFAULT_HV / 100.0
+
+        # Use the last `lookback+1` prices to compute `lookback` log-returns
+        window = prices[-(lookback + 1):]
+        log_returns = [
+            math.log(window[i] / window[i - 1])
+            for i in range(1, len(window))
+            if window[i - 1] > 0 and window[i] > 0
+        ]
+        if len(log_returns) < HV_MIN_BARS:
+            return DEFAULT_HV / 100.0
+
+        n = len(log_returns)
+        mean_r = sum(log_returns) / n
+        variance = sum((r - mean_r) ** 2 for r in log_returns) / max(n - 1, 1)
+        bar_vol = math.sqrt(variance)
+
+        # Annualise
+        ann_vol = bar_vol * math.sqrt(bars_per_year)
+        # Clamp to a sensible range: 5%–150%
+        return max(0.05, min(1.50, ann_vol))
+
+    except Exception as e:
+        logger.debug(f"[rolling_hv] error: {e}")
+        return DEFAULT_HV / 100.0
 
 
 def black_scholes_price(
@@ -133,8 +192,7 @@ def time_to_expiry_years(current_dt: datetime, expiry_dt: datetime) -> float:
     Calculate T (time to expiry in calendar years).
     Uses trading-day fraction: 252 trading days / year.
     """
-    # Normalise: both must be tz-naive. Broker timestamps can be tz-aware;
-    # expiry datetimes are always constructed as tz-naive (NSE/IST local).
+    # Normalise: both must be tz-naive
     if hasattr(current_dt, "tzinfo") and current_dt.tzinfo is not None:
         current_dt = current_dt.replace(tzinfo=None)
     if hasattr(expiry_dt, "tzinfo") and expiry_dt.tzinfo is not None:
@@ -142,34 +200,70 @@ def time_to_expiry_years(current_dt: datetime, expiry_dt: datetime) -> float:
     delta = (expiry_dt - current_dt).total_seconds()
     if delta <= 0:
         return MIN_TIME_TO_EXPIRY
-    # Convert seconds → trading-year fraction (≈252 days/year, 6.25 hours/day)
+    # Convert seconds → trading-year fraction
     trading_seconds_per_year = 252 * 6.25 * 3600
     return max(delta / trading_seconds_per_year, MIN_TIME_TO_EXPIRY)
 
 
 # ── VIX Data ───────────────────────────────────────────────────────────────────
 
-# Broker-specific VIX symbol map.
-# Each broker exposes India VIX as a tradeable/historical symbol.
-# Add more entries as you integrate new brokers.
+# Broker-specific VIX symbol map
 VIX_SYMBOL_MAP: Dict[str, str] = {
-    "dhan":       "INDIA VIX",
-    "zerodha":    "INDIA VIX",
-    "angelone":   "INDIA VIX",
-    "upstox":     "INDIA VIX",
-    "fyers":      "NSE:INDIAVIX-INDEX",
-    "default":    "INDIA VIX",
+    "dhan": "INDIA VIX",
+    "zerodha": "INDIA VIX",
+    "angelone": "INDIA VIX",
+    "upstox": "INDIA VIX",
+    "fyers": "NSE:INDIAVIX-INDEX",
+    "shoonya": "NSE|INDIAVIX",
+    "flattrade": "NSE|INDIAVIX",
+    "icici": "INDIA VIX",
+    "default": "INDIA VIX",
 }
 
 
 def _broker_type(broker) -> str:
-    """Best-effort extraction of broker type string (lowercase)."""
+    """
+    Best-effort extraction of broker type string (lowercase).
+    Uses state_manager if broker is not available.
+    """
     try:
+        # Try to get from broker object first
         bt = getattr(getattr(broker, "broker_setting", None), "broker_type", None)
         if bt:
             return str(bt).lower()
-    except Exception:
-        pass
+
+        # Try to get broker_type directly from broker
+        bt = getattr(broker, "broker_type", None)
+        if bt:
+            return str(bt).lower()
+
+        # Try to get broker name/type from broker class name
+        broker_class = broker.__class__.__name__ if broker else ""
+        if "Fyers" in broker_class:
+            return "fyers"
+        elif "Zerodha" in broker_class:
+            return "zerodha"
+        elif "Dhan" in broker_class:
+            return "dhan"
+        elif "Angel" in broker_class:
+            return "angelone"
+        elif "Upstox" in broker_class:
+            return "upstox"
+        elif "Shoonya" in broker_class:
+            return "shoonya"
+        elif "Flattrade" in broker_class:
+            return "flattrade"
+        elif "ICICI" in broker_class:
+            return "icici"
+
+        # Fallback to state manager for broker type
+        snapshot = state_manager.get_snapshot()
+        if snapshot and "broker_type" in snapshot:
+            return str(snapshot["broker_type"]).lower()
+
+    except Exception as e:
+        logger.debug(f"[_broker_type] Error: {e}")
+
     return "default"
 
 
@@ -185,26 +279,29 @@ class VixCache:
 
     Priority chain
     --------------
-    1. Broker  — via get_history_for_timeframe(symbol=VIX_SYMBOL, interval="1D", days=N)
-                 This is the same authenticated channel used for all other historical data.
-    2. NSE API — public REST endpoint (no auth required, but subject to rate-limits)
+    1. Broker  — via get_history_for_timeframe
+    2. NSE API — public REST endpoint
     3. yfinance — ^INDIAVIX via Yahoo Finance
     4. Constant — DEFAULT_VIX (15 %) when every other source fails
 
     Thread-safe; fetched once per OptionPricer lifetime.
+    Uses state_manager for broker type and other configuration.
     """
 
     def __init__(self):
         self._data: Optional[pd.Series] = None  # index = date, value = VIX %
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._fetched = False
         self._broker = None  # set via set_broker() before ensure_loaded()
+        self._broker_type = "default"
 
     def set_broker(self, broker) -> None:
         """Attach the broker instance so VIX can be fetched from it."""
         self._broker = broker
+        self._broker_type = _broker_type(broker)
 
     def ensure_loaded(self, start: date, end: date) -> None:
+        """Ensure VIX data is loaded for the date range."""
         with self._lock:
             if self._fetched:
                 return
@@ -217,28 +314,56 @@ class VixCache:
         Falls back to DEFAULT_VIX if date not in cache.
         """
         if self._data is None or self._data.empty:
+            logger.debug(f"[VIX] No VIX data available, using default {DEFAULT_VIX}%")
             return DEFAULT_VIX / 100.0, False
 
         target = dt.date() if isinstance(dt, datetime) else dt
-        # Exact match first, then walk back up to 5 trading days (weekends/holidays)
+        # Exact match first, then walk back up to 5 trading days
         for delta in range(6):
             candidate = target - timedelta(days=delta)
             if candidate in self._data.index:
+                if delta > 1:
+                    logger.debug(
+                        f"[VIX] Using stale VIX from {candidate} for requested date {target} "
+                        f"({delta} calendar days gap)"
+                    )
                 return float(self._data[candidate]) / 100.0, True
+
+        logger.debug(f"[VIX] No VIX data for {target}, using default {DEFAULT_VIX}%")
         return DEFAULT_VIX / 100.0, False
 
     def _fetch(self, start: date, end: date) -> Optional[pd.Series]:
-        days = (end - start).days + 5  # a little buffer
+        """Fetch VIX data from various sources."""
+        days = (end - start).days + 5
 
-        # ── Attempt 1: broker get_history_for_timeframe ───────────────────────
         if self._broker is not None:
             try:
                 vix_sym = _vix_symbol_for_broker(self._broker)
-                df = self._broker.get_history_for_timeframe(
-                    symbol=vix_sym,
-                    interval="1D",   # daily candles — brokers always support this
-                    days=days,
-                )
+                _tried_intervals = ["1", "5", "15", "1D"]
+                df = None
+                used_interval = None
+
+                logger.debug(f"[VIX] Fetching from broker {self._broker_type} with symbol {vix_sym}")
+
+                for interval in _tried_intervals:
+                    try:
+                        translated_interval = OptionUtils.translate_interval(
+                            interval, self._broker_type
+                        )
+                        _df = self._broker.get_history_for_timeframe(
+                            symbol=vix_sym,
+                            interval=translated_interval,
+                            days=days,
+                        )
+                        if _df is not None and not _df.empty and "close" in _df.columns:
+                            df = _df
+                            used_interval = interval
+                            logger.debug(f"[VIX] Got data with interval {interval}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"[VIX] Interval {interval} failed: {e}")
+                        continue
+
                 if df is not None and not df.empty and "close" in df.columns:
                     if not pd.api.types.is_datetime64_any_dtype(df["time"]):
                         df["time"] = pd.to_datetime(df["time"])
@@ -248,16 +373,23 @@ class VixCache:
                     df = df[
                         (df["time"].dt.date >= start) &
                         (df["time"].dt.date <= end)
-                    ].copy()
-                    s = pd.Series(
-                        df["close"].values,
-                        index=df["time"].dt.date.values,
-                    )
+                        ].copy()
+                    if used_interval == "1D":
+                        # Daily: one value per date
+                        s = pd.Series(
+                            df["close"].values,
+                            index=df["time"].dt.date.values,
+                        )
+                    else:
+                        # Intraday: keep the last close per day as representative
+                        df["_date"] = df["time"].dt.date
+                        daily = df.groupby("_date")["close"].last()
+                        s = daily
                     s = s[s > 0]
                     if not s.empty:
                         logger.info(
                             f"[VIX] Loaded {len(s)} rows from broker "
-                            f"(symbol={vix_sym}, {start}→{end})"
+                            f"(symbol={vix_sym}, interval={used_interval}, {start}→{end})"
                         )
                         return s
                     logger.warning(f"[VIX] Broker returned empty/zero VIX data for {vix_sym}")
@@ -322,21 +454,13 @@ class VixCache:
 def nearest_weekly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
     """
     Return the nearest weekly expiry date/time on or after dt.
-
-    FIX: Delegates to OptionUtils.EXPIRY_WEEKDAY_MAP so this function stays
-    in sync with the live trading side.  As of NSE circular effective
-    September 2, 2025 all NSE indices (NIFTY, BANKNIFTY, FINNIFTY,
-    MIDCPNIFTY) expire on **Tuesday** (weekday=1).  SENSEX (BSE) moved to
-    Thursday (weekday=3).
-
-    Falls back to Tuesday for unknown derivatives.
+    Uses OptionUtils for expiry weekday mapping.
     """
-    # Try to get the correct weekday from OptionUtils (same source of truth as live)
+    # Try to get the correct weekday from OptionUtils
     try:
         exchange_symbol = OptionUtils.get_exchange_symbol(derivative)
         target_weekday = OptionUtils.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
     except Exception:
-        # Post-Sep-2025 default: Tuesday
         target_weekday = 1
 
     current = dt.date()
@@ -348,11 +472,7 @@ def nearest_weekly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
 
 
 def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
-    """Last occurrence of the derivative's expiry weekday in the current (or next) month at 15:30.
-
-    FIX: Uses OptionUtils.EXPIRY_WEEKDAY_MAP for the correct weekday per
-    derivative instead of hardcoding Thursday.
-    """
+    """Return the nearest monthly expiry date/time on or after dt."""
     try:
         exchange_symbol = OptionUtils.get_exchange_symbol(derivative)
         target_weekday = OptionUtils.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
@@ -367,7 +487,7 @@ def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
     except Exception:
         pass
 
-    # Fallback: last Tuesday of the month (post-Sep-2025 default)
+    # Fallback: last Tuesday of the month
     target_weekday = 1
     d = dt.date()
     if d.month == 12:
@@ -394,17 +514,8 @@ class OptionPricer:
     """
     Resolves option OHLCV prices for a given timestamp + spot price.
 
-    Usage
-    -----
-    pricer = OptionPricer(derivative="NIFTY", expiry_type="weekly")
-    pricer.load_vix(start_date, end_date)
-
-    price, source = pricer.resolve(
-        timestamp=datetime(2024, 1, 15, 10, 0),
-        spot=21800.0,
-        option_type="CE",
-        real_price=None,   # None → use BS; float → use real
-    )
+    Uses state_manager to access broker type and other configuration
+    that affects option pricing.
     """
 
     def __init__(
@@ -414,14 +525,30 @@ class OptionPricer:
             risk_free: float = RISK_FREE_RATE,
             div_yield: float = DIVIDEND_YIELD,
             broker=None,
+            use_vix: bool = True,
     ):
         self.derivative = derivative.upper()
         self.expiry_type = expiry_type
         self.risk_free = risk_free
         self.div_yield = div_yield
+        self.use_vix = use_vix  # False → use rolling HV from spot prices
         self._vix = VixCache()
+        self._spot_history: list = []  # rolling buffer for HV computation
+        self._broker_type = "default"
+
         if broker is not None:
             self._vix.set_broker(broker)
+            self._broker_type = _broker_type(broker)
+
+        # Get additional config from state_manager if available
+        try:
+            snapshot = state_manager.get_snapshot()
+            if snapshot and "derivative" in snapshot:
+                # Use the derivative from state if not overridden
+                if derivative == "NIFTY" and snapshot["derivative"]:
+                    self.derivative = snapshot["derivative"].upper()
+        except Exception as e:
+            logger.debug(f"[OptionPricer] Failed to get state snapshot: {e}")
 
     def load_vix(self, start: date, end: date, broker=None) -> None:
         """
@@ -432,12 +559,41 @@ class OptionPricer:
         start, end : date
             Inclusive date range.
         broker : optional
-            If provided (or already set at __init__ time), VIX is fetched via
-            the broker's get_history_for_timeframe() as the primary source.
+            If provided, VIX is fetched via the broker's API.
         """
+        if not self.use_vix:
+            logger.info("[OptionPricer] use_vix=False — skipping VIX fetch; using rolling HV")
+            return
         if broker is not None:
             self._vix.set_broker(broker)
+            self._broker_type = _broker_type(broker)
         self._vix.ensure_loaded(start, end)
+
+    def push_spot(self, spot_close: float) -> None:
+        """
+        Feed the latest spot close into the rolling HV buffer.
+        Call this once per bar from the replay loop so HV stays current.
+        Only used when use_vix=False.
+        """
+        if not self.use_vix:
+            self._spot_history.append(float(spot_close))
+            if len(self._spot_history) > HV_LOOKBACK + 5:
+                self._spot_history = self._spot_history[-(HV_LOOKBACK + 5):]
+
+    def _get_sigma(self, timestamp: datetime, interval_minutes: int = 2) -> Tuple[float, bool]:
+        """
+        Return (sigma, is_real) for option pricing.
+
+        When use_vix=True  → uses VixCache
+        When use_vix=False → uses rolling_hv() from spot_history buffer
+        """
+        if self.use_vix:
+            s, real = self._vix.get_vix(timestamp)
+            return max(s, 0.05), real
+        else:
+            bars_per_year = int((252 * 375) / max(interval_minutes, 1))
+            s = rolling_hv(self._spot_history, bars_per_year=bars_per_year)
+            return max(s, 0.05), False
 
     def resolve(
             self,
@@ -471,19 +627,18 @@ class OptionPricer:
             return real_open, real_high, real_low, real_price, PriceSource.REAL
 
         # Fall back to Black-Scholes
-        sigma, _ = self._vix.get_vix(timestamp)
+        sigma, _ = self._get_sigma(timestamp)
         sigma = max(sigma, 0.05)  # floor at 5% to avoid degenerate pricing
 
         close = black_scholes_price(spot, strike, T, self.risk_free, sigma, option_type, self.div_yield)
 
         # Approximate OHLC from close using typical intraday range heuristic
-        # (VIX-derived expected move over one bar)
         minutes_per_bar = 5  # default; overridden by caller if needed
         bar_fraction = minutes_per_bar / (252 * 375)  # fraction of trading year
         bar_sigma = sigma * math.sqrt(bar_fraction)
         spread = close * bar_sigma * 0.5
 
-        open_ = max(0.05, Utils.round_off(close * (1 + (0.3 - 0.6) * bar_sigma)))
+        open_ = max(0.05, Utils.round_off(close))  # neutral: open ≈ close for synthetic bars
         high = max(close, Utils.round_off(close + spread))
         low = max(0.05, Utils.round_off(close - spread))
 
@@ -504,12 +659,14 @@ class OptionPricer:
         Full OHLCV bar for one candle.
         Uses spot OHLC to produce option OHLC via BS when real data absent.
         """
-        # Strip tz so expiry arithmetic (always tz-naive) never raises
+        # Strip tz so expiry arithmetic never raises
         if hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
             timestamp = timestamp.replace(tzinfo=None)
+
         strike = atm_strike(spot_close, self.derivative)
-        sigma, vix_real = self._vix.get_vix(timestamp)
-        sigma = max(sigma, 0.05)
+        sigma, vix_real = self._get_sigma(timestamp, minutes_per_bar)
+        # Feed spot into HV buffer (no-op when use_vix=True)
+        self.push_spot(spot_close)
 
         if self.expiry_type == "weekly":
             expiry_dt = nearest_weekly_expiry(timestamp, self.derivative)
@@ -533,20 +690,28 @@ class OptionPricer:
                     "source": PriceSource.REAL,
                 }
 
-        # Synthetic pricing for each OHLC component using the corresponding spot
+        bar_year_fraction = minutes_per_bar / (252 * 375)
         T_close = time_to_expiry_years(timestamp, expiry_dt)
-        T_open = min(T_close + minutes_per_bar / (252 * 375), T_close + 0.001)
+        T_open = T_close + bar_year_fraction  # open is one bar earlier = more TTE
 
         c_close = black_scholes_price(spot_close, strike, T_close, self.risk_free, sigma, option_type)
         c_open = black_scholes_price(spot_open, strike, T_open, self.risk_free, sigma, option_type)
-        c_high = black_scholes_price(
-            spot_high if option_type == "CE" else spot_low,
-            strike, (T_close + T_open) / 2, self.risk_free, sigma, option_type
-        )
-        c_low = black_scholes_price(
-            spot_low if option_type == "CE" else spot_high,
-            strike, (T_close + T_open) / 2, self.risk_free, sigma, option_type
-        )
+
+        # For high/low, use the appropriate spot price based on option type
+        if option_type == "CE":
+            c_high = black_scholes_price(
+                spot_high, strike, (T_close + T_open) / 2, self.risk_free, sigma, option_type
+            )
+            c_low = black_scholes_price(
+                spot_low, strike, (T_close + T_open) / 2, self.risk_free, sigma, option_type
+            )
+        else:  # PE - inverse relationship with spot
+            c_high = black_scholes_price(
+                spot_low, strike, (T_close + T_open) / 2, self.risk_free, sigma, option_type
+            )
+            c_low = black_scholes_price(
+                spot_high, strike, (T_close + T_open) / 2, self.risk_free, sigma, option_type
+            )
 
         return {
             "timestamp": timestamp,
@@ -560,3 +725,93 @@ class OptionPricer:
             "vix_real": vix_real,
             "source": PriceSource.SYNTHETIC,
         }
+
+    def get_option_symbol(
+            self,
+            strike: float,
+            option_type: str,
+            expiry_offset: int = 0
+    ) -> Optional[str]:
+        """
+        Generate a broker-ready option symbol.
+
+        Uses OptionUtils with the stored broker type to generate
+        the correct symbol format for the current broker.
+
+        Args:
+            strike: Strike price
+            option_type: "CE" or "PE"
+            expiry_offset: Number of expiries ahead (0 = current)
+
+        Returns:
+            Option symbol string or None if generation fails
+        """
+        try:
+            return OptionUtils.build_option_symbol(
+                derivative=self.derivative,
+                strike=strike,
+                option_type=option_type,
+                expiry_type=self.expiry_type,
+                broker_type=self._broker_type,
+                num_expiries_plus=expiry_offset
+            )
+        except Exception as e:
+            logger.error(f"[OptionPricer] Failed to generate option symbol: {e}")
+            return None
+
+    def cleanup(self):
+        """Clean up resources."""
+        try:
+            self._spot_history.clear()
+            logger.debug("[OptionPricer] Cleanup completed")
+        except Exception as e:
+            logger.error(f"[OptionPricer] Cleanup error: {e}", exc_info=True)
+
+
+# ── Convenience factory function ───────────────────────────────────────────────
+
+def create_pricer_from_state(
+        derivative: Optional[str] = None,
+        expiry_type: str = "weekly",
+        broker=None,
+        use_vix: bool = True
+) -> OptionPricer:
+    """
+    Create an OptionPricer instance using configuration from the trade state.
+
+    This is a convenience function that uses state_manager to get
+    default values from the current trade state.
+
+    Args:
+        derivative: Override derivative name (defaults to state.derivative)
+        expiry_type: "weekly" or "monthly"
+        broker: Broker instance for VIX fetching
+        use_vix: Whether to use VIX for volatility
+
+    Returns:
+        Configured OptionPricer instance
+    """
+    try:
+        snapshot = state_manager.get_snapshot()
+
+        if derivative is None and snapshot and "derivative" in snapshot:
+            derivative = snapshot["derivative"]
+
+        if derivative is None:
+            derivative = "NIFTY"
+
+        return OptionPricer(
+            derivative=derivative,
+            expiry_type=expiry_type,
+            broker=broker,
+            use_vix=use_vix
+        )
+
+    except Exception as e:
+        logger.error(f"[create_pricer_from_state] Failed: {e}", exc_info=True)
+        return OptionPricer(
+            derivative=derivative or "NIFTY",
+            expiry_type=expiry_type,
+            broker=broker,
+            use_vix=use_vix
+        )

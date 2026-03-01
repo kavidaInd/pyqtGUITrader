@@ -23,26 +23,9 @@ logger = logging.getLogger(__name__)
 
 def _debug_signal_result(result: dict):
     """
-    Pretty-prints a full signal evaluation result with actual indicator values.
-    Replaces the old raw print(option_signal_result).
-
-    FEATURE 3: Enhanced to show confidence scores.
-
-    Output example:
-    ┌─ SIGNAL: WAIT (Confidence: BUY_CALL 75%, BUY_PUT 0%) ─────────────────
-    │ Indicator snapshot:
-    │   rsi_{"length":14}        last=47.2300  prev=46.8100
-    │   macd_{"fast":12,...}     last=-0.3100  prev=-0.2900
-    │   ema_{"length":20}        last=244.8000 prev=244.5000
-    │
-    │ BUY_CALL  [AND] → MISS (confidence 75%)
-    │   ✗  CLOSE > OPEN          47.2300 > 48.1000  → False  (w=2.0)
-    │   ✓  CLOSE > EMA           247.300 > 244.800  → True   (w=1.5)
-    │   ✗  RSI > 50.0            47.2300 > 50.0000  → False  (w=1.0) ← BLOCKER
-    │
-    │ BUY_PUT   [AND] → MISS (confidence 0%)
-    │   ✗  MACD < MACD           -0.3100 < -0.3100  → False  (w=1.0) ← SELF-COMPARE BUG
-    └─────────────────────────────────────────────────────
+    Pretty-prints a full signal evaluation result.
+    Shows position context, WAIT reason, high-confidence suppressed signals,
+    indicator snapshot, and per-group rule breakdown with AND-chain blockers.
     """
     try:
         if not result or not result.get("available"):
@@ -50,22 +33,56 @@ def _debug_signal_result(result: dict):
             return
 
         lines = []
-        signal_val = result.get("signal_value", "WAIT")
-        confidence = result.get("confidence", {})
-        threshold = result.get("threshold", 0.6)
+        signal_val  = result.get("signal_value", "WAIT")
+        confidence  = result.get("confidence", {})
+        threshold   = result.get("threshold", 0.6)
+        position    = result.get("position_context")
+        fired       = result.get("fired", {})          # post-threshold
+        raw_fired   = result.get("raw_fired", {})       # pre-threshold
+        explanation = result.get("explanation", "")
 
-        # Build confidence summary
-        conf_summary = []
+        pos_str = f"Position: {position}" if position else "Position: FLAT"
+        header  = f"┌─ SIGNAL: {signal_val} ─ {pos_str}"
+        lines.append(header + " " + "─" * max(0, 72 - len(header)))
+
+        # ── High-confidence signals that were suppressed ──────────────────
+        suppressed = [
+            f"{sig} {confidence.get(sig, 0):.0%}"
+            for sig, is_fired in fired.items()
+            if not is_fired
+            and raw_fired.get(sig, False)
+            and confidence.get(sig, 0) >= threshold
+        ]
+        if suppressed:
+            lines.append(f"│ ⚠ HIGH CONFIDENCE SUPPRESSED:  {', '.join(suppressed)}")
+
+        # ── WAIT reason (from explanation field) ──────────────────────────
+        if signal_val == "WAIT" and explanation:
+            for part in explanation.split(" | "):
+                part = part.strip()
+                if (part.startswith("⏸️ WAIT reason:")
+                        or part.startswith("🔒")
+                        or part.startswith("⚖️")):
+                    lines.append(f"│ {part}")
+
+        lines.append("│")
+
+        # ── Confidence summary line ───────────────────────────────────────
+        conf_parts = []
         for sig, conf in confidence.items():
+            if conf >= threshold:
+                tag = "✅" if fired.get(sig) else "⚠️"
+            elif conf > 0:
+                tag = "📉"
+            else:
+                tag = "  "
             if conf > 0:
-                conf_summary.append(f"{sig} {conf:.0%}")
+                conf_parts.append(f"{tag}{sig} {conf:.0%}")
+        if conf_parts:
+            lines.append(f"│ Confidence: {' | '.join(conf_parts)}  (threshold {threshold:.0%})")
+            lines.append("│")
 
-        header = f"┌─ SIGNAL: {signal_val}"
-        if conf_summary:
-            header += f" (Confidence: {', '.join(conf_summary)})"
-        lines.append(header + " " + "─" * max(0, 45 - len(header)))
-
-        # ── Indicator snapshot ────────────────────────────────────────────────────
+        # ── Indicator snapshot ────────────────────────────────────────────
         ind_vals = result.get("indicator_values", {})
         if ind_vals and isinstance(ind_vals, dict):
             lines.append("│ Indicator snapshot:")
@@ -74,18 +91,23 @@ def _debug_signal_result(result: dict):
                     if isinstance(val, dict):
                         last = f"{val.get('last', 0):.4f}" if val.get('last') is not None else "N/A "
                         prev = f"{val.get('prev', 0):.4f}" if val.get('prev') is not None else "N/A "
+                        delta_str = ""
+                        if val.get('last') is not None and val.get('prev') is not None:
+                            delta = val['last'] - val['prev']
+                            arrow = "↑" if delta > 0 else "↓" if delta < 0 else "→"
+                            delta_str = f"  {arrow}{abs(delta):.4f}"
                     else:
                         last = "N/A "
                         prev = "N/A "
-                    lines.append(f"│   {str(key)[:40]:<40}  last={last}  prev={prev}")
+                        delta_str = ""
+                    lines.append(f"│   {str(key)[:40]:<40}  last={last}  prev={prev}{delta_str}")
                 except Exception as e:
                     logger.debug(f"Failed to format indicator {key}: {e}")
                     continue
             lines.append("│")
 
-        # ── Per-group rule breakdown ──────────────────────────────────────────────
+        # ── Per-group rule breakdown ──────────────────────────────────────
         rule_results = result.get("rule_results", {})
-        fired = result.get("fired", {})
 
         if not isinstance(rule_results, dict) or not isinstance(fired, dict):
             logger.debug("Invalid rule_results or fired format")
@@ -94,45 +116,52 @@ def _debug_signal_result(result: dict):
         for group, rules in rule_results.items():
             if not rules:
                 continue
-            logic = "AND"  # default; AND is the common path shown in logs
             group_fired = fired.get(group, False)
-            group_conf = confidence.get(group, 0)
-            status = "FIRED ✓" if group_fired else "MISS  ✗"
-            lines.append(f"│ {str(group)[:12]:<12} [{logic}] → {status} (confidence {group_conf:.0%})")
+            group_conf  = confidence.get(group, 0)
+            raw_group   = raw_fired.get(group, False)
 
-            # Find the AND-chain blocker (first False in AND mode)
+            if group_fired:
+                status_str = "FIRED ✅"
+            elif raw_group and group_conf >= threshold:
+                status_str = "SUPPRESSED ⚠️  ← rules passed, blocked by position/conflict"
+            elif raw_group:
+                status_str = f"LOW CONF ❌ ({group_conf:.0%} < {threshold:.0%})"
+            else:
+                status_str = "MISS ✗"
+
+            lines.append(f"│ {str(group)[:12]:<12} conf={group_conf:.0%}  {status_str}")
+
             first_false_found = False
             if isinstance(rules, list):
                 for r in rules:
                     try:
-                        res = r.get("result", False) if isinstance(r, dict) else False
-                        lv = r.get("lhs_value") if isinstance(r, dict) else None
-                        rv = r.get("rhs_value") if isinstance(r, dict) else None
+                        res    = r.get("result", False) if isinstance(r, dict) else False
+                        lv     = r.get("lhs_value") if isinstance(r, dict) else None
+                        rv     = r.get("rhs_value") if isinstance(r, dict) else None
                         detail = r.get("detail", "") if isinstance(r, dict) else ""
                         rule_s = r.get("rule", "?") if isinstance(r, dict) else "?"
                         weight = r.get("weight", 1.0) if isinstance(r, dict) else 1.0
-                        tick = "✓" if res else "✗"
+                        tick   = "✓" if res else "✗"
 
-                        # Flag the first blocker in an AND chain
-                        blocker_note = ""
+                        note = ""
                         if not res and not first_false_found and not group_fired:
-                            blocker_note = "  ← BLOCKER"
+                            note = "  ← BLOCKER"
                             first_false_found = True
 
-                        # Flag obvious self-compare bug: same lhs_value == rhs_value for < or > ops
-                        if lv is not None and rv is not None and lv == rv and "MACD < MACD" in str(rule_s):
-                            blocker_note = "  ← SELF-COMPARE BUG"
+                        if (lv is not None and rv is not None
+                                and lv == rv and "MACD < MACD" in str(rule_s)):
+                            note = "  ← SELF-COMPARE BUG"
 
-                        lines.append(f"│   {tick}  {str(rule_s)[:35]:<35}  {detail} (w={weight:.1f}){blocker_note}")
+                        lines.append(
+                            f"│   {tick}  {str(rule_s)[:35]:<35}  {detail} (w={weight:.1f}){note}"
+                        )
                     except Exception as e:
                         logger.debug(f"Failed to process rule in {group}: {e}")
                         continue
-
             lines.append("│")
 
-        # FEATURE 3: Add threshold info
         lines.append(f"│ Min Confidence Threshold: {threshold:.0%}")
-        lines.append("└" + "─" * 52)
+        lines.append("└" + "─" * 72)
         logger.debug("\n".join(lines))
 
     except Exception as e:

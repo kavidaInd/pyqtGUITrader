@@ -314,11 +314,9 @@ class CandleStore:
         with self._lock:
             if self._df is None or self._df.empty:
                 return None
-            print(self._df)
 
             if minutes <= 1:
                 df_copy = self._df.reset_index().copy()
-                # Ensure time column is timezone-aware
                 if df_copy['time'].dt.tz is None:
                     df_copy['time'] = df_copy['time'].dt.tz_localize(IST)
                 return df_copy

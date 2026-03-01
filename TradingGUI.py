@@ -974,7 +974,6 @@ class TradingGUI(QMainWindow):
         try:
             if self.trading_app:
                 state = self.trading_app.state
-                print(getattr(state, "derivative_trend", {}))
                 self.chart_widget.update_charts(
                     spot_data=getattr(state, "derivative_trend", {}) or {}
                 )
@@ -1701,7 +1700,7 @@ class TradingGUI(QMainWindow):
             if not hasattr(self, "_backtest_window") or self._backtest_window is None:
                 self._backtest_window = BacktestWindow(
                     trading_app=self.trading_app,
-                    strategy_manager=self.strategy_manager,  # ← pass SM explicitly
+                    strategy_manager=self.strategy_manager,
                     parent=self,
                 )
             self._backtest_window.show()

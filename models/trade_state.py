@@ -37,6 +37,12 @@ DESIGN PRINCIPLES
 5. **Defensive Copying** - Collections and complex objects are returned as
    shallow copies so callers cannot mutate shared state.
 
+SINGLETON PATTERN
+-----------------
+The TradeState is implemented as a thread-safe singleton to ensure a single
+source of truth across the entire application. This allows both live trading
+and backtesting components to work with the same state object.
+
 Thread Safety Rules:
 - Every __get__ and __set__ of a mutable field acquires _lock
 - Computed properties (should_buy_call, etc.) acquire the lock for the
@@ -50,6 +56,8 @@ Thread Safety Rules:
 - `update_prices()` batch-updates all price fields in one acquisition to
   minimise lock overhead on the hot WebSocket path
 - `reset_trade_attributes()` is fully atomic (single lock acquisition)
+- `update_from_dict()` safely restores state from a snapshot, handling
+  computed properties and type conversions
 
 Data Flow:
     WebSocket Thread (Stage 1)
@@ -66,7 +74,7 @@ Data Flow:
         ↓
     get_snapshot() ← full state for display
 
-Version: 2.0.0
+Version: 2.2.0 (Fixed state restoration)
 """
 
 import copy
@@ -144,17 +152,16 @@ def _default_signal_result() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# TradeState
+# TradeState (Singleton)
 # ---------------------------------------------------------------------------
 
 class TradeState:
     """
     Central container for all mutable trading state.
 
-    This class serves as the single source of truth for all trading-related
-    state that needs to be shared across threads. It provides thread-safe
-    access to over 60 fields including prices, positions, orders, risk
-    parameters, and signal results.
+    Implemented as a thread-safe singleton to ensure a single source of truth
+    across the entire application. This allows both live trading and backtesting
+    components to work with the same state object.
 
     The class is designed as a drop-in replacement for the original @dataclass
     version: identical attribute names, same default values, same convenience
@@ -168,10 +175,11 @@ class TradeState:
           lock acquisitions
         - Snapshot methods provide atomic, consistent views of related fields
         - I/O is performed outside locks to minimize contention
+        - update_from_dict() safely restores state from snapshots
 
     Quick-start
     -----------
-        state = TradeState()
+        state = TradeState.get_instance()  # Get singleton instance
 
         # Stage-1 (WS thread) — batch price write, one lock acquisition
         state.update_prices(
@@ -187,153 +195,207 @@ class TradeState:
 
         # GUI timer — full scalar snapshot, no lock held by caller
         display = state.get_snapshot()
+
+        # Restore state from backtest
+        state.update_from_dict(saved_snapshot)
     """
 
+    # Singleton instance variables
+    _instance = None
+    _singleton_lock = threading.RLock()
+    _initialized = False
+
     # ------------------------------------------------------------------
-    # Construction
+    # Singleton Pattern Implementation
     # ------------------------------------------------------------------
+
+    def __new__(cls):
+        """Thread-safe singleton instantiation."""
+        if cls._instance is None:
+            with cls._singleton_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self):
         """
         Initialize TradeState with default values for all fields.
-
-        The lock (_lock) is set via object.__setattr__ because our own
-        __setattr__ references _lock before the instance is ready.
-
-        All fields are initialized to safe defaults to ensure the object
-        is in a valid state even if initialization fails partially.
+        This runs only once due to the _initialized flag.
         """
-        try:
-            # _lock must be set via object.__setattr__ because our own
-            # __setattr__ references _lock before the instance is ready.
-            object.__setattr__(self, "_lock", threading.RLock())
+        # Prevent re-initialization
+        if self._initialized:
+            return
 
-            # ── Trend dicts ─────────────────────────────────────────────
-            self._option_trend: Dict[str, Any] = _default_trend_dict()
-            self._derivative_trend: Dict[str, Any] = _default_trend_dict()
-            self._call_trend: Dict[str, Any] = _default_trend_dict()
-            self._put_trend: Dict[str, Any] = _default_trend_dict()
-            self._option_chain = {}
+        with self._singleton_lock:
+            if self._initialized:
+                return
 
-            # ── Auth ────────────────────────────────────────────────────
-            self._token: Optional[str] = None
-
-            # ── Candle snapshots ─────────────────────────────────────────
-            self._current_index_data: Candle = Candle()
-
-            # ── Instrument identifiers ───────────────────────────────────
-            self._call_option: Optional[str] = None
-            self._put_option: Optional[str] = None
-            self._current_trading_symbol: Optional[str] = None
-            self._derivative: str = 'NIFTY50-INDEX'
-
-            # ── Price fields  (HOT PATH — written every WS tick) ─────────
-            self._derivative_current_price: float = 0.0
-            self._current_price: Optional[float] = None
-            self._highest_current_price: Optional[float] = None
-            self._put_current_close: Optional[float] = None
-            self._call_current_close: Optional[float] = None
-
-            # ── History / DataFrames ─────────────────────────────────────
-            self._derivative_history_df: Optional[pd.DataFrame] = None
-            self._option_history_df: Optional[pd.DataFrame] = None
-            self._last_index_updated: Optional[int] = None
-            self._current_put_data: Optional[pd.DataFrame] = None
-            self._current_call_data: Optional[pd.DataFrame] = None
-
-            # ── Orders ───────────────────────────────────────────────────
-            self._orders: List[Dict[str, Any]] = []
-            self._confirmed_orders: List[Dict[str, Any]] = []
-
-            # ── Position state ───────────────────────────────────────────
-            self._current_position: Optional[str] = None
-            self._previous_position: Optional[str] = None
-            self._current_order_id: Dict[str, int] = {}
-            self._current_buy_price: Optional[float] = None
-            self._positions_hold: int = 0
-            self._order_pending: bool = False
-            self._take_profit_type: Optional[str] = STOP
-
-            # ── Risk / P&L ───────────────────────────────────────────────
-            self._index_stop_loss: Optional[float] = None
-            self._stop_loss: Optional[float] = None
-            self._tp_point: Optional[float] = None
-            self._tp_percentage: float = 15.0
-            self._stoploss_percentage: float = -7.0
-            self._original_profit_per: float = 15.0
-            self._original_stoploss_per: float = -7.0
-            self._trailing_first_profit: float = 3.0
-            self._max_profit: float = 30.0
-            self._profit_step: float = 2.0
-            self._loss_step: float = 2.0
-
-            # ── Session config ───────────────────────────────────────────
-            self._interval: Optional[str] = "2m"
-            self._expiry: int = 0
-            self._lot_size: int = 75
-            self._account_balance: float = 0.0
-            self._max_num_of_option: int = 7500
-            self._lower_percentage: float = 0.01
-            self._cancel_after: int = 10
-            self._capital_reserve: float = 0.0
-            self._sideway_zone_trade: bool = False
-
-            # ── Lookback ─────────────────────────────────────────────────
-            self._call_lookback: int = 0
-            self._put_lookback: int = 0
-            self._original_call_lookback: int = 0
-            self._original_put_lookback: int = 0
-
-            # ── Trade metadata ───────────────────────────────────────────
-            self._current_trade_started_time: Optional[datetime] = None
-            self._last_status_check: Optional[datetime] = None
-            self._current_trade_confirmed: bool = False
-            self._percentage_change: Optional[float] = None
-            self._current_pnl: Optional[float] = None
-            self._reason_to_exit: Optional[str] = None
-
-            # ── FEATURE 2: Smart order execution fields ───────────────────
-            self._last_slippage: Optional[float] = None  # Slippage from last fill
-            self._order_attempts: int = 0  # Number of order attempts
-            self._last_order_attempt_time: Optional[datetime] = None
-
-            # ── FEATURE 6: Multi-timeframe filter fields ──────────────────
-            self._last_mtf_summary: Optional[str] = None  # MTF filter result summary
-            self._mtf_allowed: bool = True  # Last MTF filter decision
-            self._mtf_results: Dict[str, str] = {}  # {'1': 'BULLISH', '5': 'NEUTRAL', ...}
-
-            # ── Misc market state ────────────────────────────────────────
-            self._market_trend: Optional[int] = None
-            self._supertrend_reset: Optional[Dict[str, Any]] = None
-            self._b_band: Optional[Dict[str, Any]] = None
-            self._all_symbols: List[str] = []
-            self._option_price_update: Optional[bool] = None
-            self._calculated_pcr: Optional[float] = None
-            self._current_pcr: float = 0.0
-            self._trend: Any = None
-            self._current_pcr_vol: Optional[float] = None
-
-            # ── Dynamic signal result ────────────────────────────────────
-            self._option_signal_result: Optional[Dict[str, Any]] = None
-
-            # ── Callback (set once at startup, not lock-protected) ────────
-            self.cancel_pending_trade: Optional[Callable] = None
-
-            # ── Startup validation ────────────────────────────────────────
             try:
-                assert self._lot_size > 0, "lot_size must be positive"
-                assert self._max_num_of_option >= self._lot_size, (
-                    "max_num_of_option must not be less than lot_size"
-                )
-            except AssertionError as e:
-                logger.error(f"Startup validation failed: {e}", exc_info=True)
+                # _lock must be set via object.__setattr__ because our own
+                # __setattr__ references _lock before the instance is ready.
+                object.__setattr__(self, "_lock", threading.RLock())
 
-            logger.info("TradeState initialized")
+                # ── Trend dicts ─────────────────────────────────────────────
+                self._option_trend: Dict[str, Any] = _default_trend_dict()
+                self._derivative_trend: Dict[str, Any] = _default_trend_dict()
+                self._call_trend: Dict[str, Any] = _default_trend_dict()
+                self._put_trend: Dict[str, Any] = _default_trend_dict()
+                self._option_chain = {}
 
-        except Exception as e:
-            logger.critical(f"[TradeState.__init__] Failed: {e}", exc_info=True)
-            # Still set _lock to prevent crashes
-            object.__setattr__(self, "_lock", threading.RLock())
+                # ── Auth ────────────────────────────────────────────────────
+                self._token: Optional[str] = None
+
+                # ── Candle snapshots ─────────────────────────────────────────
+                self._current_index_data: Candle = Candle()
+
+                # ── Instrument identifiers ───────────────────────────────────
+                self._call_option: Optional[str] = None
+                self._put_option: Optional[str] = None
+                self._current_trading_symbol: Optional[str] = None
+                self._derivative: str = 'NIFTY50-INDEX'
+
+                # ── Price fields  (HOT PATH — written every WS tick) ─────────
+                self._derivative_current_price: float = 0.0
+                self._current_price: Optional[float] = None
+                self._highest_current_price: Optional[float] = None
+                self._put_current_close: Optional[float] = None
+                self._call_current_close: Optional[float] = None
+
+                # ── History / DataFrames ─────────────────────────────────────
+                self._derivative_history_df: Optional[pd.DataFrame] = None
+                self._option_history_df: Optional[pd.DataFrame] = None
+                self._last_index_updated: Optional[int] = None
+                self._current_put_data: Optional[pd.DataFrame] = None
+                self._current_call_data: Optional[pd.DataFrame] = None
+
+                # ── Orders ───────────────────────────────────────────────────
+                self._orders: List[Dict[str, Any]] = []
+                self._confirmed_orders: List[Dict[str, Any]] = []
+
+                # ── Position state ───────────────────────────────────────────
+                self._current_position: Optional[str] = None
+                self._previous_position: Optional[str] = None
+                self._current_order_id: Dict[str, int] = {}
+                self._current_buy_price: Optional[float] = None
+                self._positions_hold: int = 0
+                self._order_pending: bool = False
+                self._take_profit_type: Optional[str] = STOP
+
+                # ── Risk / P&L ───────────────────────────────────────────────
+                self._index_stop_loss: Optional[float] = None
+                self._stop_loss: Optional[float] = None
+                self._tp_point: Optional[float] = None
+                self._tp_percentage: float = 15.0
+                self._stoploss_percentage: float = -7.0
+                self._original_profit_per: float = 15.0
+                self._original_stoploss_per: float = -7.0
+                self._trailing_first_profit: float = 3.0
+                self._max_profit: float = 30.0
+                self._profit_step: float = 2.0
+                self._loss_step: float = 2.0
+
+                # ── Session config ───────────────────────────────────────────
+                self._interval: Optional[str] = "2m"
+                self._expiry: int = 0
+                self._lot_size: int = 75
+                self._account_balance: float = 0.0
+                self._max_num_of_option: int = 7500
+                self._lower_percentage: float = 0.01
+                self._cancel_after: int = 10
+                self._capital_reserve: float = 0.0
+                self._sideway_zone_trade: bool = False
+
+                # ── Lookback ─────────────────────────────────────────────────
+                self._call_lookback: int = 0
+                self._put_lookback: int = 0
+                self._original_call_lookback: int = 0
+                self._original_put_lookback: int = 0
+
+                # ── Trade metadata ───────────────────────────────────────────
+                self._current_trade_started_time: Optional[datetime] = None
+                self._last_status_check: Optional[datetime] = None
+                self._current_trade_confirmed: bool = False
+                self._percentage_change: Optional[float] = None
+                self._current_pnl: Optional[float] = None
+                self._reason_to_exit: Optional[str] = None
+
+                # ── FEATURE 2: Smart order execution fields ───────────────────
+                self._last_slippage: Optional[float] = None  # Slippage from last fill
+                self._order_attempts: int = 0  # Number of order attempts
+                self._last_order_attempt_time: Optional[datetime] = None
+
+                # ── FEATURE 6: Multi-timeframe filter fields ──────────────────
+                self._last_mtf_summary: Optional[str] = None  # MTF filter result summary
+                self._mtf_allowed: bool = True  # Last MTF filter decision
+                self._mtf_results: Dict[str, str] = {}  # {'1': 'BULLISH', '5': 'NEUTRAL', ...}
+
+                # ── Misc market state ────────────────────────────────────────
+                self._market_trend: Optional[int] = None
+                self._supertrend_reset: Optional[Dict[str, Any]] = None
+                self._b_band: Optional[Dict[str, Any]] = None
+                self._all_symbols: List[str] = []
+                self._option_price_update: Optional[bool] = None
+                self._calculated_pcr: Optional[float] = None
+                self._current_pcr: float = 0.0
+                self._trend: Any = None
+                self._current_pcr_vol: Optional[float] = None
+
+                # ── Dynamic signal result ────────────────────────────────────
+                self._option_signal_result: Optional[Dict[str, Any]] = None
+
+                # ── Callback (set once at startup, not lock-protected) ────────
+                self.cancel_pending_trade: Optional[Callable] = None
+
+                # ── Startup validation ────────────────────────────────────────
+                try:
+                    assert self._lot_size > 0, "lot_size must be positive"
+                    assert self._max_num_of_option >= self._lot_size, (
+                        "max_num_of_option must not be less than lot_size"
+                    )
+                except AssertionError as e:
+                    logger.error(f"Startup validation failed: {e}", exc_info=True)
+
+                self._initialized = True
+                logger.info("TradeState singleton initialized")
+
+            except Exception as e:
+                logger.critical(f"[TradeState.__init__] Failed: {e}", exc_info=True)
+                # Still set _lock to prevent crashes
+                object.__setattr__(self, "_lock", threading.RLock())
+                self._initialized = True  # Mark as initialized to prevent repeated failures
+
+    @classmethod
+    def get_instance(cls) -> 'TradeState':
+        """
+        Get the singleton instance of TradeState.
+
+        Returns:
+            TradeState: The singleton instance
+        """
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls):
+        """
+        Reset the singleton instance.
+
+        This is primarily useful for testing or when you need a completely
+        fresh state (e.g., between backtest runs).
+
+        Warning: This will discard all current state data.
+        """
+        with cls._singleton_lock:
+            if cls._instance is not None:
+                # Clean up the old instance
+                try:
+                    cls._instance.cleanup()
+                except Exception as e:
+                    logger.error(f"[reset_instance] Cleanup failed: {e}", exc_info=True)
+            cls._instance = None
+            cls._initialized = False
+            logger.info("TradeState singleton reset")
 
     # ------------------------------------------------------------------
     # Private helpers — avoid repeating acquire/release boilerplate
@@ -697,6 +759,12 @@ class TradeState:
     @derivative_history_df.setter
     def derivative_history_df(self, value: Optional[pd.DataFrame]) -> None:
         """Set derivative historical data."""
+        if value is not None and not isinstance(value, pd.DataFrame):
+            logger.error(
+                f"[TradeState] derivative_history_df setter received unexpected type "
+                f"{type(value).__name__!r} (value={str(value)!r:.80}); storing None instead"
+            )
+            value = None
         self._set("_derivative_history_df", value)
 
     @property
@@ -716,7 +784,6 @@ class TradeState:
 
     @last_index_updated.setter
     def last_index_updated(self, value: Optional[Union[datetime, float, pd.Timestamp]]) -> None:
-        """Set last index update timestamp. Converts datetime to timestamp float."""
         """Set last index update timestamp. Converts to integer epoch seconds."""
         if value is None:
             self._set("_last_index_updated", None)
@@ -774,12 +841,29 @@ class TradeState:
 
     @orders.setter
     def orders(self, value: List[Dict[str, Any]]) -> None:
-        """Set orders list."""
+        """Set orders list with safe type handling."""
         try:
             with self._lock:
-                self._orders = list(value) if value is not None else []
+                # Handle various input types safely
+                if value is None:
+                    self._orders = []
+                elif isinstance(value, (list, tuple)):
+                    self._orders = list(value)
+                elif isinstance(value, (int, float, str, bool)):
+                    # Don't try to convert non-list to list - log warning and set empty
+                    logger.warning(f"[orders setter] Attempted to set non-list value: {type(value)}={value}")
+                    self._orders = []
+                else:
+                    # Try to convert if it's iterable but not list/tuple
+                    try:
+                        self._orders = list(value)
+                    except TypeError:
+                        logger.error(f"[orders setter] Cannot convert {type(value)} to list")
+                        self._orders = []
         except Exception as e:
             logger.error(f"[orders setter] Failed: {e}", exc_info=True)
+            with self._lock:
+                self._orders = []
 
     def append_order(self, order: Dict[str, Any]) -> None:
         """
@@ -825,12 +909,29 @@ class TradeState:
 
     @confirmed_orders.setter
     def confirmed_orders(self, value: List[Dict[str, Any]]) -> None:
-        """Set confirmed orders list."""
+        """Set confirmed orders list with safe type handling."""
         try:
             with self._lock:
-                self._confirmed_orders = list(value) if value is not None else []
+                # Handle various input types safely
+                if value is None:
+                    self._confirmed_orders = []
+                elif isinstance(value, (list, tuple)):
+                    self._confirmed_orders = list(value)
+                elif isinstance(value, (int, float, str, bool)):
+                    # Don't try to convert non-list to list - log warning and set empty
+                    logger.warning(f"[confirmed_orders setter] Attempted to set non-list value: {type(value)}={value}")
+                    self._confirmed_orders = []
+                else:
+                    # Try to convert if it's iterable but not list/tuple
+                    try:
+                        self._confirmed_orders = list(value)
+                    except TypeError:
+                        logger.error(f"[confirmed_orders setter] Cannot convert {type(value)} to list")
+                        self._confirmed_orders = []
         except Exception as e:
             logger.error(f"[confirmed_orders setter] Failed: {e}", exc_info=True)
+            with self._lock:
+                self._confirmed_orders = []
 
     def extend_confirmed_orders(self, orders: List[Dict[str, Any]]) -> None:
         """
@@ -1511,7 +1612,11 @@ class TradeState:
 
     @property
     def option_signal(self) -> str:
-        """Resolved signal string: BUY_CALL | BUY_PUT | EXIT_CALL | EXIT_PUT | HOLD | WAIT."""
+        """
+        Resolved signal string: BUY_CALL | BUY_PUT | EXIT_CALL | EXIT_PUT | HOLD | WAIT.
+
+        Note: This is a computed property with no setter.
+        """
         try:
             with self._lock:
                 r = self._option_signal_result
@@ -1746,6 +1851,12 @@ class TradeState:
                 def _df_repr(df: Optional[pd.DataFrame]) -> str:
                     if df is None:
                         return "None"
+                    if not isinstance(df, pd.DataFrame):
+                        logger.warning(
+                            f"[get_snapshot] _df_repr received unexpected type {type(df).__name__!r} "
+                            f"(value={str(df)!r:.80}); treating as None"
+                        )
+                        return "None"
                     return "Empty DataFrame" if df.empty else f"DataFrame{df.shape}"
 
                 r = self._option_signal_result
@@ -1841,6 +1952,129 @@ class TradeState:
         except Exception as e:
             logger.error(f"[get_snapshot] Failed: {e}", exc_info=True)
             return {}
+
+    # ==================================================================
+    # STATE RESTORATION
+    # ==================================================================
+
+    def update_from_dict(self, data: Dict[str, Any]) -> None:
+        """
+        Update state from a dictionary, handling computed properties specially.
+
+        This method should be used instead of directly setting properties
+        when restoring state from a snapshot. It safely handles:
+        - Computed properties that don't have setters
+        - Collection type conversions
+        - Private vs public attributes
+
+        Args:
+            data: Dictionary of state values to restore
+        """
+        if not data:
+            logger.debug("[update_from_dict] No data to restore")
+            return
+
+        try:
+            with self._lock:
+                # List of computed properties that should NOT be directly set
+                computed_properties = {
+                    'option_signal', 'should_buy_call', 'should_buy_put',
+                    'should_sell_call', 'should_sell_put', 'should_hold',
+                    'should_wait', 'signal_conflict', 'dynamic_signals_active',
+                    'signal_confidence', 'signal_explanation'
+                }
+
+                restored_count = 0
+                skipped_count = 0
+
+                for key, value in data.items():
+                    # Skip computed properties
+                    if key in computed_properties:
+                        logger.debug(f"[update_from_dict] Skipping computed property: {key}")
+                        skipped_count += 1
+                        continue
+
+                    # Handle special cases for collections
+                    if key == 'orders' and not isinstance(value, (list, tuple)):
+                        logger.warning(f"[update_from_dict] orders is not a list: {type(value)} - skipping")
+                        skipped_count += 1
+                        continue
+
+                    if key == 'confirmed_orders' and not isinstance(value, (list, tuple)):
+                        logger.warning(f"[update_from_dict] confirmed_orders is not a list: {type(value)} - skipping")
+                        skipped_count += 1
+                        continue
+
+                    if key == 'all_symbols' and not isinstance(value, (list, tuple)):
+                        logger.warning(f"[update_from_dict] all_symbols is not a list: {type(value)} - skipping")
+                        skipped_count += 1
+                        continue
+
+                    if key == 'mtf_results' and not isinstance(value, dict):
+                        logger.warning(f"[update_from_dict] mtf_results is not a dict: {type(value)} - skipping")
+                        skipped_count += 1
+                        continue
+
+                    if key == 'current_order_id' and not isinstance(value, dict):
+                        logger.warning(f"[update_from_dict] current_order_id is not a dict: {type(value)} - skipping")
+                        skipped_count += 1
+                        continue
+
+                    # Check if the attribute exists and is settable via property
+                    if hasattr(self, key) and not key.startswith('_'):
+                        # Check if it's a property with a setter
+                        attr = getattr(type(self), key, None)
+                        if isinstance(attr, property):
+                            if attr.fset is None:
+                                logger.debug(f"[update_from_dict] Property {key} has no setter - skipping")
+                                skipped_count += 1
+                                continue
+                            else:
+                                # Property with setter - use it
+                                try:
+                                    setattr(self, key, value)
+                                    restored_count += 1
+                                except Exception as e:
+                                    logger.debug(f"[update_from_dict] Cannot set {key}: {e}")
+                                    skipped_count += 1
+                        else:
+                            # Regular attribute - set directly
+                            try:
+                                setattr(self, key, value)
+                                restored_count += 1
+                            except Exception as e:
+                                logger.debug(f"[update_from_dict] Cannot set {key}: {e}")
+                                skipped_count += 1
+                    else:
+                        # Handle private attributes (those starting with _)
+                        private_key = f"_{key}"
+                        if hasattr(self, private_key):
+                            # Skip DataFrame summary strings produced by get_snapshot()
+                            # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)").
+                            # These are human-readable representations, not real DataFrames,
+                            # and must not be written back into DataFrame-typed attributes.
+                            existing = getattr(self, private_key, _MISSING := object())
+                            if isinstance(existing, (pd.DataFrame, type(None))) and isinstance(value, str):
+                                logger.debug(
+                                    f"[update_from_dict] Skipping DataFrame summary string "
+                                    f"for private attr {private_key!r}: {value!r}"
+                                )
+                                skipped_count += 1
+                                continue
+                            try:
+                                object.__setattr__(self, private_key, value)
+                                restored_count += 1
+                            except Exception as e:
+                                logger.debug(f"[update_from_dict] Cannot set private {private_key}: {e}")
+                                skipped_count += 1
+                        else:
+                            logger.debug(f"[update_from_dict] Attribute {key} not found - skipping")
+                            skipped_count += 1
+
+                logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
+
+        except Exception as e:
+            logger.error(f"[update_from_dict] Failed: {e}", exc_info=True)
 
     # ==================================================================
     # ATOMIC RESET
@@ -1975,7 +2209,7 @@ class TradeState:
                 self._confirmed_orders.clear()
                 self._all_symbols.clear()
                 self._mtf_results.clear()
-                object.__setattr__(self, "option_chain", {})
+                object.__setattr__(self, "_option_chain", {})
 
                 # Clear DataFrames
                 self._derivative_history_df = None

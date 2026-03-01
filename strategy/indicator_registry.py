@@ -234,9 +234,14 @@ INDICATOR_DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
 PARAMETER_TYPES = {
     "int": ["length", "fast", "slow", "signal", "k", "d", "smooth_k", "lookback",
             "lower_length", "upper_length", "fast_period", "slow_period", "signal_period",
-            "bb_length", "kc_length", "mom_length", "mom_smooth", "rsi_length"],
+            "bb_length", "kc_length", "mom_length", "mom_smooth", "rsi_length",
+            # Previously missing — fell through to 'string', UI stored as str,
+            # causing pandas_ta TypeErrors (e.g. bbands: ddof >= 0 with str)
+            "ddof", "drift", "offset", "atr_length", "initial", "step",
+            "medium", "width", "weight"],
     "float": ["std", "scalar", "multiplier", "c", "af0", "af", "max_af", "divisor",
-              "fast_w", "medium_w", "slow_w", "alpha", "flex", "q", "bb_std", "kc_scalar"],
+              "fast_w", "medium_w", "slow_w", "alpha", "flex", "q", "bb_std", "kc_scalar",
+              "quantile", "na", "nb", "nc"],
     "bool": ["tr", "cumulative", "percent", "full_output"],
     "string": ["ma_method", "mamode", "sort", "ma"],
 }

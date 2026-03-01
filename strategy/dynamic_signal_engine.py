@@ -15,38 +15,7 @@ The engine implements a sophisticated voting system:
     - Minimum confidence threshold (configurable) suppresses weak signals
     - Human-readable explanations of evaluation results
 
-Architecture:
-    The engine operates as a rule evaluation system:
-
-    1. **Signal Groups**: Five independent signal groups (BUY_CALL, BUY_PUT, etc.)
-    2. **Rules**: Each group contains multiple rules with logical operators
-    3. **Indicators**: Rules compare indicator values, columns, or scalars
-    4. **Operators**: Support for comparison and crossover detection
-    5. **Resolution**: Final signal determined from fired groups with conflict resolution
-
-Key Features:
-    - **Strategy Integration**: Load/save configuration from StrategyManager
-    - **Rule Weights**: Each rule contributes to confidence scoring (FEATURE 3)
-    - **Confidence Threshold**: Minimum confidence to fire a signal (FEATURE 3)
-    - **Conflict Resolution**: Handle simultaneous BUY_CALL/BUY_PUT
-    - **Indicator Caching**: Computed indicators cached within evaluation
-    - **Comprehensive Output**: Detailed rule results with values and explanations
-    - **Graceful Degradation**: Handles missing data, indicators, or libraries
-
-Dependencies:
-    - pandas: Data manipulation
-    - pandas_ta: Technical indicator calculations (optional)
-    - numpy: Numerical operations
-
-Signals:
-    - BUY_CALL: Bullish signal for call option
-    - BUY_PUT: Bearish signal for put option
-    - EXIT_CALL: Exit existing call position
-    - EXIT_PUT: Exit existing put position
-    - HOLD: Hold current position (no action)
-    - WAIT: No clear signal (default)
-
-Version: 2.0.0 (with FEATURE 3 enhancements)
+Version: 2.5.0 (Fixed position-based signal resolution with conflict handling)
 """
 
 from __future__ import annotations
@@ -68,18 +37,13 @@ except ImportError:
     _TA_AVAILABLE = False
     logger.warning("pandas_ta not installed — pip install pandas_ta")
 
+# Import the centralized column generator
+from strategy.indicator_columns import get_indicator_column, get_all_indicator_columns
+
 
 class OptionSignal(str, Enum):
     """
     Enumeration of all possible trading signals.
-
-    Values:
-        BUY_CALL: Enter long call position
-        BUY_PUT: Enter long put position
-        EXIT_CALL: Exit existing call position
-        EXIT_PUT: Exit existing put position
-        HOLD: No action, continue holding
-        WAIT: No clear signal, wait for better conditions
     """
     BUY_CALL = "BUY_CALL"
     BUY_PUT = "BUY_PUT"
@@ -116,6 +80,16 @@ SIGNAL_COLORS: Dict[str, str] = {
     "EXIT_PUT": "#fab387", "HOLD": "#f9e2af", "WAIT": "#585b70",
 }
 
+# Signal priorities for resolution (lower number = higher priority)
+SIGNAL_PRIORITY = {
+    "EXIT_CALL": 1,   # Highest priority when in CALL position
+    "EXIT_PUT": 1,    # Highest priority when in PUT position
+    "HOLD": 2,        # Hold has medium priority
+    "BUY_CALL": 3,    # Entry signals have lowest priority when in position
+    "BUY_PUT": 3,     # Entry signals have lowest priority when in position
+    "WAIT": 4,        # Wait is lowest priority
+}
+
 # Supported operators for rule conditions
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
 
@@ -125,7 +99,14 @@ INDICATOR_MAP: Dict[str, str] = {
     "atr": "atr", "adx": "adx", "cci": "cci", "stoch": "stoch", "roc": "roc", "mom": "mom",
     "willr": "willr", "obv": "obv", "vwap": "vwap", "supertrend": "supertrend", "kc": "kc",
     "donchian": "donchian", "psar": "psar", "tema": "tema", "dema": "dema", "hma": "hma",
-    "zlma": "zlma", "slope": "slope", "linreg": "linreg",
+    "zlma": "zlma", "slope": "slope", "linreg": "linreg", "stochrsi": "stochrsi",
+    "aroon": "aroon", "adosc": "adosc", "kvo": "kvo", "mfi": "mfi", "tsi": "tsi",
+    "uo": "uo", "ao": "ao", "kama": "kama", "rvi": "rvi", "trix": "trix",
+    "dm": "dm", "psl": "psl", "natr": "natr", "true_range": "true_range",
+    "massi": "massi", "cmf": "cmf", "efi": "efi", "eom": "eom", "nvi": "nvi",
+    "pvi": "pvi", "pvt": "pvt", "entropy": "entropy", "kurtosis": "kurtosis",
+    "mad": "mad", "median": "median", "quantile": "quantile", "skew": "skew",
+    "stdev": "stdev", "variance": "variance", "zscore": "zscore", "ichimoku": "ichimoku"
 }
 
 # Standard OHLCV column names expected in DataFrames
@@ -133,28 +114,278 @@ OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 # Default parameters for each indicator type
 INDICATOR_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "rsi": {"length": 14}, "ema": {"length": 20}, "sma": {"length": 20}, "wma": {"length": 20},
-    "macd": {"fast": 12, "slow": 26, "signal": 9}, "bbands": {"length": 20, "std": 2.0},
-    "atr": {"length": 14}, "adx": {"length": 14}, "cci": {"length": 20},
-    "stoch": {"k": 14, "d": 3, "smooth_k": 3},
-    "roc": {"length": 10}, "mom": {"length": 10}, "willr": {"length": 14}, "obv": {}, "vwap": {},
-    "supertrend": {"length": 7, "multiplier": 3.0}, "kc": {"length": 20, "scalar": 1.5},
-    "donchian": {"lower_length": 20, "upper_length": 20},
-    "psar": {"af0": 0.02, "af": 0.02, "max_af": 0.2},
-    "tema": {"length": 20}, "dema": {"length": 20}, "hma": {"length": 20}, "zlma": {"length": 20},
-    "slope": {"length": 1}, "linreg": {"length": 14},
+    # Each entry must include ALL params the UI exposes so that the
+    # type-coercion pass in _compute_indicator has a reference type.
+    # Missing entries cause string params to slip through as-is → TypeError.
+    "rsi":       {"length": 14, "scalar": 100.0, "drift": 1},
+    "ema":       {"length": 20, "offset": 0},
+    "sma":       {"length": 20, "offset": 0},
+    "wma":       {"length": 20, "offset": 0},
+    "hma":       {"length": 20, "offset": 0},
+    "dema":      {"length": 20, "offset": 0},
+    "tema":      {"length": 20, "offset": 0},
+    "zlma":      {"length": 20, "offset": 0},
+    "macd":      {"fast": 12, "slow": 26, "signal": 9},
+    "bbands":    {"length": 20, "std": 2.0, "ddof": 0, "offset": 0},
+    "atr":       {"length": 14, "drift": 1, "offset": 0},
+    "natr":      {"length": 14, "drift": 1, "offset": 0},
+    "adx":       {"length": 14, "drift": 1},
+    "cci":       {"length": 20, "c": 0.015, "drift": 1},
+    "stoch":     {"k": 14, "d": 3, "smooth_k": 3, "drift": 1},
+    "stochrsi":  {"length": 14, "rsi_length": 14, "k": 3, "d": 3},
+    "roc":       {"length": 10},
+    "mom":       {"length": 10, "drift": 1},
+    "willr":     {"length": 14},
+    "obv":       {},
+    "vwap":      {},
+    "supertrend":{"length": 7, "multiplier": 3.0, "drift": 1},
+    "kc":        {"length": 20, "scalar": 1.5, "tr": True, "offset": 0},
+    "donchian":  {"lower_length": 20, "upper_length": 20, "offset": 0},
+    "psar":      {"af0": 0.02, "af": 0.02, "max_af": 0.2},
+    "slope":     {"length": 1, "offset": 0},
+    "linreg":    {"length": 14, "offset": 0},
+    "aroon":     {"length": 14, "offset": 0},
+    "adosc":     {"fast": 3, "slow": 10, "offset": 0},
+    "kvo":       {"fast": 34, "slow": 55, "signal": 13},
+    "mfi":       {"length": 14, "drift": 1},
+    "tsi":       {"fast": 13, "slow": 25, "drift": 1},
+    "uo":        {"fast": 7, "medium": 14, "slow": 28, "fast_w": 4.0, "medium_w": 2.0, "slow_w": 1.0, "drift": 1},
+    "ao":        {"fast": 5, "slow": 34},
+    "kama":      {"length": 10, "fast": 2, "slow": 30, "drift": 1},
+    "rvi":       {"length": 14, "scalar": 100.0, "drift": 1, "offset": 0},
+    "trix":      {"length": 15, "scalar": 100.0, "drift": 1},
+    "dm":        {"length": 14, "drift": 1},
+    "psl":       {"length": 12, "drift": 1},
+    "true_range":{},
+    "massi":     {"fast": 9, "slow": 25},
+    "cmf":       {"length": 20, "offset": 0},
+    "efi":       {"length": 13, "drift": 1, "offset": 0},
+    "eom":       {"length": 14, "divisor": 100000000, "drift": 1, "offset": 0},
+    "nvi":       {"length": 1, "initial": 1000, "offset": 0},
+    "pvi":       {"length": 1, "initial": 1000, "offset": 0},
+    "pvt":       {"drift": 1, "offset": 0},
+    "entropy":   {"length": 10, "offset": 0},
+    "kurtosis":  {"length": 30, "offset": 0},
+    "mad":       {"length": 30, "offset": 0},
+    "median":    {"length": 30, "offset": 0},
+    "quantile":  {"length": 30, "q": 0.5, "offset": 0},
+    "skew":      {"length": 30, "offset": 0},
+    "stdev":     {"length": 30, "ddof": 1, "offset": 0},
+    "variance":  {"length": 30, "ddof": 1, "offset": 0},
+    "zscore":    {"length": 30, "ddof": 1, "offset": 0},
+    "ichimoku":  {"tenkan": 9, "kijun": 26, "senkou": 52},
 }
 
-# Hints for selecting the correct column from multi-column indicator results
-INDICATOR_COLUMN_HINTS: Dict[str, str] = {
-    "macd": "MACD_12_26_9", "bbands": "BBM_20_2.0", "stoch": "STOCHk_14_3_3",
-    "supertrend": "SUPERT_7_3.0", "kc": "KCBe_20_1.5", "donchian": "DCM_20_20", "adx": "ADX_14",
+# Minimum required data points for each indicator type
+INDICATOR_MIN_PERIODS: Dict[str, int] = {
+    "rsi": 14, "ema": 1, "sma": 1, "wma": 1, "macd": 33,
+    "bbands": 20, "atr": 14, "adx": 14, "cci": 20,
+    "stoch": 14, "roc": 10, "mom": 10, "willr": 14,
+    "supertrend": 10, "kc": 20, "donchian": 20,
+    "psar": 2, "tema": 20, "dema": 20, "hma": 20,
+    "zlma": 20, "linreg": 14, "stochrsi": 14,
+    "aroon": 14, "adosc": 10, "kvo": 55,
+    "mfi": 14, "tsi": 25, "uo": 28, "ao": 34,
+    "kama": 30, "rvi": 14, "trix": 15, "dm": 14,
+    "psl": 12, "natr": 14, "massi": 25,
+    "cmf": 20, "efi": 13, "eom": 14,
+    "entropy": 10, "kurtosis": 30, "mad": 30,
+    "median": 30, "quantile": 30, "skew": 30,
+    "stdev": 30, "variance": 30, "zscore": 30,
+    "ichimoku": 52,
 }
+
+# Multi-column indicators that need special handling
+MULTI_COLUMN_INDICATORS = [
+    'macd', 'bbands', 'stoch', 'stochrsi', 'supertrend', 'kc', 'donchian',
+    'adx', 'aroon', 'dm', 'adosc', 'kvo', 'ichimoku'
+]
+
+# Indicator categories for column requirements
+NEEDS_CLOSE_ONLY = ['rsi', 'ema', 'sma', 'wma', 'tema', 'dema', 'hma', 'zlma',
+                    'roc', 'mom', 'willr', 'linreg', 'slope', 'kama', 'rvi', 'trix']
+NEEDS_HIGH_LOW = ['atr', 'natr', 'true_range', 'massi']
+NEEDS_HIGH_LOW_CLOSE = ['adx', 'supertrend', 'kc', 'donchian', 'stoch', 'stochrsi',
+                        'aroon', 'dm', 'uo', 'ao', 'psar', 'vwap']
+NEEDS_VOLUME = ['obv', 'ad', 'adosc', 'cmf', 'efi', 'eom', 'kvo', 'mfi', 'nvi', 'pvi', 'pvt']
+
+
+def _get_required_columns(indicator: str) -> List[str]:
+    """
+    Get the required OHLCV columns for an indicator.
+
+    Args:
+        indicator: Indicator name
+
+    Returns:
+        List of required column names
+    """
+    indicator_lower = indicator.lower()
+
+    if indicator_lower in NEEDS_CLOSE_ONLY:
+        return ['close']
+    elif indicator_lower in NEEDS_HIGH_LOW:
+        return ['high', 'low']
+    elif indicator_lower in NEEDS_HIGH_LOW_CLOSE:
+        return ['high', 'low', 'close']
+    elif indicator_lower in NEEDS_VOLUME:
+        if indicator_lower == 'obv':
+            return ['close', 'volume']
+        elif indicator_lower in ['ad', 'adosc']:
+            return ['high', 'low', 'close', 'volume']
+        else:
+            return ['close', 'volume']
+    elif indicator_lower == 'macd':
+        return ['close']
+    elif indicator_lower == 'bbands':
+        return ['close']
+    elif indicator_lower == 'ichimoku':
+        return ['high', 'low', 'close']
+    elif indicator_lower == 'psar':
+        return ['high', 'low']
+    elif indicator_lower == 'cci':
+        return ['high', 'low', 'close']
+    else:
+        # Default to close for unknown indicators
+        return ['close']
+
+
+def _get_min_periods(indicator: str, params: Dict[str, Any]) -> int:
+    """
+    Get the minimum number of data points required for an indicator.
+
+    Args:
+        indicator: Indicator name
+        params: Indicator parameters
+
+    Returns:
+        Minimum required periods
+    """
+    indicator_lower = indicator.lower()
+
+    # Check if we have a specific min periods defined
+    if indicator_lower in INDICATOR_MIN_PERIODS:
+        base_periods = INDICATOR_MIN_PERIODS[indicator_lower]
+    else:
+        base_periods = 1
+
+    # Adjust based on parameters
+    if 'length' in params:
+        return max(base_periods, params['length'] + 5)  # Add buffer for stability
+    elif 'slow' in params:
+        return max(base_periods, params['slow'] + 5)  # Add buffer for stability
+    elif 'kijun' in params:  # Ichimoku
+        return max(base_periods, params.get('senkou', 52) + 5)
+    else:
+        return base_periods + 5  # Add buffer for all indicators
+
+
+def _extract_indicator_column(result_df: pd.DataFrame, indicator: str, params: Dict[str, Any]) -> Optional[pd.Series]:
+    """
+    Extract the appropriate column from a multi-column indicator result with dynamic column names.
+
+    Args:
+        result_df: DataFrame returned by pandas_ta
+        indicator: Original indicator name
+        params: Indicator parameters used for calculation
+
+    Returns:
+        Optional[pd.Series]: Extracted series or None
+    """
+    try:
+        indicator_lower = indicator.lower()
+
+        # For multi-column indicators, get all possible column names
+        if indicator_lower in MULTI_COLUMN_INDICATORS:
+            columns = get_all_indicator_columns(indicator, params)
+
+            # Try each column type in order of preference
+            preferred_order = {
+                'macd': ['MACD', 'SIGNAL', 'HIST'],
+                'bbands': ['MIDDLE', 'UPPER', 'LOWER', 'BANDWIDTH', 'PERCENT'],
+                'stoch': ['K', 'D'],
+                'stochrsi': ['K', 'D'],
+                'supertrend': ['TREND', 'DIRECTION', 'LONG', 'SHORT'],
+                'kc': ['MIDDLE', 'UPPER', 'LOWER'],
+                'donchian': ['MIDDLE', 'UPPER', 'LOWER'],
+                'adx': ['ADX', 'PLUS_DI', 'MINUS_DI'],
+                'aroon': ['AROON_UP', 'AROON_DOWN'],
+                'dm': ['PLUS_DM', 'MINUS_DM'],
+                'adosc': ['ADOSC', 'AD'],
+                'kvo': ['KVO', 'SIGNAL'],
+                'ichimoku': ['ISA', 'ISB', 'ITS', 'IKS', 'ICS'],
+            }
+
+            order = preferred_order.get(indicator_lower, [])
+            for col_type in order:
+                col_name = columns.get(col_type)
+                if col_name and col_name in result_df.columns:
+                    series = result_df[col_name]
+                    # Check if the series has any non-NaN values
+                    if series is not None and not series.isna().all():
+                        return series
+
+            # If preferred not found, try any column that exists
+            for col_name in columns.values():
+                if col_name in result_df.columns:
+                    series = result_df[col_name]
+                    if series is not None and not series.isna().all():
+                        return series
+
+        # For single column indicators, try the generated name
+        col_name = get_indicator_column(indicator, params)
+        if col_name in result_df.columns:
+            series = result_df[col_name]
+            if series is not None and not series.isna().all():
+                return series
+
+        # Fallback to pattern matching
+        for col in result_df.columns:
+            col_upper = col.upper()
+            series = result_df[col]
+            if series is None or series.isna().all():
+                continue
+
+            if indicator_lower == 'macd' and ('MACD' in col_upper) and ('SIGNAL' not in col_upper) and ('HIST' not in col_upper):
+                return series
+            elif indicator_lower == 'bbands' and ('BBM' in col_upper or 'MID' in col_upper):
+                return series
+            elif indicator_lower == 'stoch' and ('STOCHK' in col_upper or '%K' in col_upper):
+                return series
+            elif indicator_lower == 'supertrend' and ('SUPERT' in col_upper) and ('d' not in col_upper):
+                return series
+            elif indicator_lower == 'kc' and ('KCB' in col_upper or 'MID' in col_upper):
+                return series
+            elif indicator_lower == 'donchian' and ('DCM' in col_upper or 'MID' in col_upper):
+                return series
+            elif indicator_lower == 'adx' and ('ADX' in col_upper) and ('DMP' not in col_upper) and ('DMN' not in col_upper):
+                return series
+            elif indicator_lower == 'aroon' and ('AROONU' in col_upper):
+                return series
+            elif indicator_lower == 'adosc' and ('ADOSC' in col_upper):
+                return series
+            elif indicator_lower == 'kvo' and ('KVO' in col_upper) and ('S' not in col_upper):
+                return series
+            elif indicator_lower == 'ichimoku' and ('ISA' in col_upper):
+                return series
+
+        # Last resort: return first numeric column with non-NaN values
+        for col in result_df.columns:
+            if pd.api.types.is_numeric_dtype(result_df[col]):
+                series = result_df[col]
+                if not series.isna().all():
+                    return series
+
+        return None
+
+    except Exception as e:
+        logger.error(f"[_extract_indicator_column] Failed for {indicator}: {e}", exc_info=True)
+        return None
 
 
 def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any]) -> Optional[pd.Series]:
     """
-    Compute technical indicator with error handling.
+    Compute technical indicator with comprehensive error handling.
 
     Args:
         df: OHLCV DataFrame
@@ -173,6 +404,46 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
             logger.warning(f"Cannot compute {indicator}: DataFrame is None or empty")
             return None
 
+        # ── FIX 1: merge caller params with INDICATOR_DEFAULTS ──────────
+        # Ensures pandas_ta always gets a complete parameter set even when
+        # the strategy JSON was saved with params={} (empty dict).
+        _defaults = INDICATOR_DEFAULTS.get(indicator.lower(), {})
+        params = {**_defaults, **params} if params is not None else dict(_defaults)
+
+        # ── FIX 2: coerce string param values to their correct types ─────
+        # The UI stores params as strings when get_param_type() falls back
+        # to 'string' (e.g. ddof='0', drift='1', offset='0'). pandas_ta
+        # expects native int/float — str causes TypeError on >= comparisons.
+        _coerced = {}
+        for _k, _v in params.items():
+            _dv = _defaults.get(_k)
+            if _v is None or _dv is None or not isinstance(_v, str) or isinstance(_dv, str):
+                _coerced[_k] = _v
+            else:
+                try:
+                    if isinstance(_dv, bool):   _coerced[_k] = _v.lower() in ('true','1','yes')
+                    elif isinstance(_dv, int):  _coerced[_k] = int(float(_v))
+                    elif isinstance(_dv, float):_coerced[_k] = float(_v)
+                    else:                        _coerced[_k] = _v
+                except (ValueError, TypeError):
+                    logger.warning(f"[_compute_indicator] Cannot coerce '{_k}'={_v!r} "
+                                   f"to {type(_dv).__name__} for '{indicator}' — using default {_dv!r}")
+                    _coerced[_k] = _dv
+        params = _coerced
+
+        # Check if we have required columns
+        required_cols = _get_required_columns(indicator)
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Cannot compute {indicator}: Missing required columns {missing_cols}")
+            return None
+
+        # Check if we have enough data for this indicator
+        min_periods = _get_min_periods(indicator, params)
+        if len(df) < min_periods:
+            logger.debug(f"Insufficient data for {indicator}: need {min_periods}, have {len(df)} - returning None during warmup")
+            return None
+
         ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
 
         try:
@@ -181,13 +452,23 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
                 logger.warning(f"Indicator method '{ind_name}' not found in pandas_ta")
                 return None
 
-            # Prepare kwargs safely
+            # Prepare kwargs based on indicator requirements
             kwargs = {}
-            for col in OHLCV_COLUMNS:
+
+            # ── FIX 3: pass full series (index intact) to pandas_ta ───────
+            # dropna() breaks index continuity, causing pandas_ta internal
+            # arithmetic (e.g. macd - signalma) to produce scalar None
+            # instead of NaN → TypeError. Validate count without stripping.
+            required_cols = _get_required_columns(indicator)
+            for col in required_cols:
                 if col in df.columns:
-                    kwargs[col] = df[col]
-                else:
-                    kwargs[col] = None
+                    series = df[col]
+                    non_nan_count = series.notna().sum()
+                    if non_nan_count < min_periods:
+                        logger.debug(f"Insufficient clean data for {indicator} column {col}: "
+                                     f"need {min_periods}, have {non_nan_count}")
+                        return None
+                    kwargs[col] = series
 
             # Add parameters
             kwargs.update(params)
@@ -195,30 +476,49 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
             # Remove None values
             kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
+            # Validate we have required data
+            if 'close' in required_cols and 'close' not in kwargs:
+                logger.warning(f"Cannot compute {indicator}: close price required but not available")
+                return None
+
+            # Compute indicator
             result = method(**kwargs)
 
             if result is None:
+                logger.debug(f"Indicator {indicator} returned None - insufficient data during warmup")
                 return None
 
             # Extract appropriate column from multi-column result
             if isinstance(result, pd.DataFrame):
-                hint = INDICATOR_COLUMN_HINTS.get(indicator.lower())
-                if hint and hint in result.columns:
-                    return result[hint]
-                for col in result.columns:
-                    if ind_name.upper() in col.upper() or indicator.upper() in col.upper():
-                        return result[col]
-                if len(result.columns) > 0:
-                    return result.iloc[:, 0]
+                series = _extract_indicator_column(result, indicator, params)
+                if series is not None and not series.isna().all():
+                    series = series.reindex(df.index)
+                    return series
+                else:
+                    logger.debug(f"Indicator {indicator} returned all NaN values - still in warmup period")
+                    return None
+
+            elif isinstance(result, pd.Series):
+                if not result.isna().all():
+                    # Reindex to match original DataFrame index
+                    result = result.reindex(df.index)
+                    return result
+                else:
+                    logger.debug(f"Indicator {indicator} returned all NaN values - still in warmup period")
+                    return None
+
+            else:
+                logger.warning(f"Unexpected result type from {indicator}: {type(result)}")
                 return None
-
-            if isinstance(result, pd.Series):
-                return result
-
-            return None
 
         except AttributeError as e:
             logger.error(f"Attribute error computing '{indicator}': {e}", exc_info=True)
+            return None
+        except TypeError as e:
+            logger.error(f"Type error computing '{indicator}': {e}. This often indicates missing required price data or NaN values.", exc_info=True)
+            return None
+        except ValueError as e:
+            logger.error(f"Value error computing '{indicator}': {e}", exc_info=True)
             return None
         except Exception as e:
             logger.error(f"Error computing '{indicator}': {e}", exc_info=True)
@@ -231,7 +531,7 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
 
 def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, Any]) -> Optional[pd.Series]:
     """
-    Resolve a side (LHS/RHS) of a rule to a pandas Series.
+    Resolve a side (LHS/RHS) of a rule to a pandas Series with shift support.
 
     Side definitions can be:
         - Scalar: Constant value
@@ -267,26 +567,49 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
 
         if t == "column":
             col = side_def.get("column", "close")
-            if col in df.columns:
-                return df[col].astype(float)
-            logger.warning(f"Column '{col}' not found in DataFrame")
-            return None
+            shift = side_def.get("shift", 0)
+
+            if col not in df.columns:
+                logger.warning(f"Column '{col}' not found in DataFrame")
+                return None
+
+            try:
+                series = df[col].astype(float)
+                if shift > 0:
+                    series = series.shift(shift)
+                return series
+            except Exception as e:
+                logger.warning(f"Error processing column {col}: {e}")
+                return None
 
         # Indicator type
         indicator = side_def.get("indicator", "").lower()
-        params = side_def.get("params", INDICATOR_DEFAULTS.get(indicator, {}))
+        if not indicator:
+            logger.warning("Indicator side definition missing 'indicator' field")
+            return None
+
+        # Merge saved params with defaults — dict.get() returns {} when the
+        # key exists but is empty, so the fallback never fires without this.
+        _saved = side_def.get("params", {})
+        _defs  = INDICATOR_DEFAULTS.get(indicator, {})
+        params = {**_defs, **_saved} if _saved else dict(_defs)
+        shift = side_def.get("shift", 0)
 
         # Create cache key for performance
         try:
-            cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}"
+            cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}_{shift}"
         except Exception as e:
             logger.warning(f"Failed to create cache key: {e}")
-            cache_key = f"{indicator}_{str(params)}"
+            cache_key = f"{indicator}_{str(params)}_{shift}"
 
         if cache_key not in cache:
             cache[cache_key] = _compute_indicator(df, indicator, params)
 
-        return cache.get(cache_key)
+        series = cache.get(cache_key)
+        if series is not None and shift > 0:
+            series = series.shift(shift)
+
+        return series
 
     except Exception as e:
         logger.error(f"[_resolve_side] Failed: {e}", exc_info=True)
@@ -295,7 +618,7 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
 
 def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Optional[float], Optional[float]]:
     """
-    Apply comparison operator to two series.
+    Apply comparison operator to two series with NaN handling.
 
     Args:
         lhs: Left-hand side series
@@ -304,7 +627,7 @@ def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Opti
 
     Returns:
         Tuple[bool, Optional[float], Optional[float]]:
-            - Result of comparison
+            - Result of comparison (False if any value is NaN)
             - Last value of LHS (if available)
             - Last value of RHS (if available)
     """
@@ -313,13 +636,33 @@ def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Opti
             logger.warning(f"Operator '{op}' called with None series")
             return False, None, None
 
+        # Ensure we have enough data
+        if len(lhs) < 1 or len(rhs) < 1:
+            return False, None, None
+
+        # Handle crossover operators which need 2 bars
         if op == "crosses_above":
             if len(lhs) < 2 or len(rhs) < 2:
                 return False, None, None
             try:
-                pl, cl = float(lhs.iloc[-2]), float(lhs.iloc[-1])
-                pr, cr = float(rhs.iloc[-2]), float(rhs.iloc[-1])
-                return (pl <= pr) and (cl > cr), round(cl, 6), round(cr, 6)
+                # Get last two values, checking for NaN
+                lhs_prev = lhs.iloc[-2] if not pd.isna(lhs.iloc[-2]) else None
+                lhs_curr = lhs.iloc[-1] if not pd.isna(lhs.iloc[-1]) else None
+                rhs_prev = rhs.iloc[-2] if not pd.isna(rhs.iloc[-2]) else None
+                rhs_curr = rhs.iloc[-1] if not pd.isna(rhs.iloc[-1]) else None
+
+                # If any value is NaN, cannot determine crossover
+                if None in [lhs_prev, lhs_curr, rhs_prev, rhs_curr]:
+                    return False, lhs_curr, rhs_curr
+
+                # Convert to float
+                lhs_prev_f = float(lhs_prev)
+                lhs_curr_f = float(lhs_curr)
+                rhs_prev_f = float(rhs_prev)
+                rhs_curr_f = float(rhs_curr)
+
+                result = (lhs_prev_f <= rhs_prev_f) and (lhs_curr_f > rhs_curr_f)
+                return result, round(lhs_curr_f, 6), round(rhs_curr_f, 6)
             except (ValueError, TypeError, IndexError) as e:
                 logger.warning(f"Error in crosses_above: {e}")
                 return False, None, None
@@ -328,34 +671,58 @@ def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Opti
             if len(lhs) < 2 or len(rhs) < 2:
                 return False, None, None
             try:
-                pl, cl = float(lhs.iloc[-2]), float(lhs.iloc[-1])
-                pr, cr = float(rhs.iloc[-2]), float(rhs.iloc[-1])
-                return (pl >= pr) and (cl < cr), round(cl, 6), round(cr, 6)
+                lhs_prev = lhs.iloc[-2] if not pd.isna(lhs.iloc[-2]) else None
+                lhs_curr = lhs.iloc[-1] if not pd.isna(lhs.iloc[-1]) else None
+                rhs_prev = rhs.iloc[-2] if not pd.isna(rhs.iloc[-2]) else None
+                rhs_curr = rhs.iloc[-1] if not pd.isna(rhs.iloc[-1]) else None
+
+                if None in [lhs_prev, lhs_curr, rhs_prev, rhs_curr]:
+                    return False, lhs_curr, rhs_curr
+
+                lhs_prev_f = float(lhs_prev)
+                lhs_curr_f = float(lhs_curr)
+                rhs_prev_f = float(rhs_prev)
+                rhs_curr_f = float(rhs_curr)
+
+                result = (lhs_prev_f >= rhs_prev_f) and (lhs_curr_f < rhs_curr_f)
+                return result, round(lhs_curr_f, 6), round(rhs_curr_f, 6)
             except (ValueError, TypeError, IndexError) as e:
                 logger.warning(f"Error in crosses_below: {e}")
                 return False, None, None
 
+        # Handle regular comparison operators
         try:
-            lv = float(lhs.iloc[-1])
-            rv = float(rhs.iloc[-1])
+            lhs_val = lhs.iloc[-1] if not pd.isna(lhs.iloc[-1]) else None
+            rhs_val = rhs.iloc[-1] if not pd.isna(rhs.iloc[-1]) else None
         except (ValueError, TypeError, IndexError) as e:
             logger.warning(f"Failed to get last values: {e}")
             return False, None, None
 
-        if np.isnan(lv) or np.isnan(rv):
-            return False, None, None
+        # If either value is NaN, comparison is False
+        if lhs_val is None or rhs_val is None:
+            return False, lhs_val, rhs_val
+
+        # Convert to float for comparison
+        try:
+            lhs_float = float(lhs_val)
+            rhs_float = float(rhs_val)
+        except (ValueError, TypeError):
+            return False, lhs_val, rhs_val
+
+        if np.isnan(lhs_float) or np.isnan(rhs_float):
+            return False, lhs_val, rhs_val
 
         operators = {
-            ">": lv > rv,
-            "<": lv < rv,
-            ">=": lv >= rv,
-            "<=": lv <= rv,
-            "==": abs(lv - rv) < 1e-9,
-            "!=": abs(lv - rv) >= 1e-9
+            ">": lhs_float > rhs_float,
+            "<": lhs_float < rhs_float,
+            ">=": lhs_float >= rhs_float,
+            "<=": lhs_float <= rhs_float,
+            "==": abs(lhs_float - rhs_float) < 1e-9,
+            "!=": abs(lhs_float - rhs_float) >= 1e-9
         }
 
         result = operators.get(op, False)
-        return result, round(lv, 6), round(rv, 6)
+        return result, round(lhs_float, 6), round(rhs_float, 6)
 
     except Exception as e:
         logger.error(f"Operator error '{op}': {e}", exc_info=True)
@@ -383,12 +750,17 @@ def _rule_to_string(rule: Dict[str, Any]) -> str:
                 return "?"
             t = d.get("type", "indicator")
             if t == "scalar":
-                return str(d.get("value", "?"))
+                val = d.get("value", "?")
+                return f"{val}"
             if t == "column":
-                return d.get("column", "?").upper()
+                col = d.get("column", "?")
+                shift = d.get("shift", 0)
+                return f"{col.upper()}" + (f"[{shift}]" if shift > 0 else "")
             ind = d.get("indicator", "?")
             p = ", ".join(f"{k}={v}" for k, v in d.get("params", {}).items())
-            return f"{ind.upper()}({p})" if p else ind.upper()
+            shift = d.get("shift", 0)
+            base = f"{ind.upper()}({p})" if p else ind.upper()
+            return base + (f"[{shift}]" if shift > 0 else "")
 
         lhs = s(rule.get('lhs', {}))
         op = rule.get('op', '?')
@@ -417,22 +789,6 @@ class DynamicSignalEngine:
         - FEATURE 3: Rule weights and confidence scoring
         - FEATURE 3: Minimum confidence threshold
         - FEATURE 3: Human-readable explanations
-
-    FEATURE 3: Signal Confidence Voting System
-        - Each rule has a weight (default 1.0)
-        - Confidence = sum(passed_weights) / sum(total_weights) per group
-        - Signals below min_confidence are suppressed
-        - Weights allow prioritizing certain rules over others
-
-    Example:
-        engine = DynamicSignalEngine("my_strategy")
-        result = engine.evaluate(df)
-        if result["signal"] == OptionSignal.BUY_CALL:
-            place_buy_call()
-
-        # FEATURE 3: Check confidence
-        if result["confidence"]["BUY_CALL"] >= 0.7:
-            print("High confidence signal!")
     """
 
     DEFAULT_CONFIG: Dict[str, Any] = {
@@ -762,7 +1118,7 @@ class DynamicSignalEngine:
             List[Dict[str, Any]]: List of rule dictionaries
         """
         try:
-            k = self._key(signal)  # FIXED: Get key first
+            k = self._key(signal)
             return list(self.config.get(k, {}).get("rules", []))
         except Exception as e:
             logger.error(f"[get_rules] Failed for {signal}: {e}", exc_info=True)
@@ -891,14 +1247,14 @@ class DynamicSignalEngine:
             List[str]: List of rule descriptions
         """
         try:
-            k = self._key(signal)  # FIXED: Get key first
+            k = self._key(signal)
             return [_rule_to_string(r) for r in self.config.get(k, {}).get("rules", [])]
         except Exception as e:
             logger.error(f"[rule_descriptions] Failed for {signal}: {e}", exc_info=True)
             return []
 
     def _evaluate_group(self, signal: Union[str, OptionSignal], df: pd.DataFrame,
-                       cache: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]], float, float]:
+                        cache: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]], float, float]:
         """
         Evaluate a single signal group.
 
@@ -929,11 +1285,13 @@ class DynamicSignalEngine:
             if not rules:
                 return False, [], 0.0, 0.0
 
+            # For AND logic, start with True; for OR logic, start with False
             group_result = (logic == "AND")
             rule_results = []
 
             total_weight = 0.0
             passed_weight = 0.0
+            rules_evaluated = 0
 
             for rule in rules:
                 try:
@@ -948,8 +1306,10 @@ class DynamicSignalEngine:
 
                     if lhs_series is None or rhs_series is None:
                         result, lhs_val, rhs_val = False, None, None
+                        logger.debug(f"Rule {rule_str}: failed to resolve sides")
                     else:
                         result, lhs_val, rhs_val = _apply_operator(lhs_series, rule.get("op", ">"), rhs_series)
+                        rules_evaluated += 1
 
                     if result:
                         passed_weight += weight
@@ -964,15 +1324,13 @@ class DynamicSignalEngine:
                         "lhs_value": lhs_val,
                         "rhs_value": rhs_val,
                         "weight": weight,
-                        "detail": f"{_fmt(lhs_val)} {rule.get('op','?')} {_fmt(rhs_val)} → {'✓' if result else '✗'}",
+                        "detail": f"{_fmt(lhs_val)} {rule.get('op', '?')} {_fmt(rhs_val)} → {'✓' if result else '✗'}",
                     }
                     rule_results.append(entry)
 
+                    # Update group result based on logic
                     if logic == "AND":
                         group_result = group_result and result
-                        # For AND logic, any false means group doesn't fire regardless of confidence
-                        if not result:
-                            group_result = False
                     else:  # OR logic
                         group_result = group_result or result
 
@@ -987,11 +1345,16 @@ class DynamicSignalEngine:
                         "detail": f"ERROR: {e}",
                         "error": str(e)
                     })
+                    # For AND logic, any error means group doesn't fire
                     if logic == "AND":
                         group_result = False
 
-            # Calculate confidence
-            confidence = passed_weight / total_weight if total_weight > 0 else 0.0
+            # Calculate confidence based on successfully evaluated rules
+            if rules_evaluated > 0:
+                confidence = passed_weight / total_weight if total_weight > 0 else 0.0
+            else:
+                confidence = 0.0
+                group_result = False  # No rules could be evaluated
 
             return group_result, rule_results, confidence, total_weight
 
@@ -999,15 +1362,17 @@ class DynamicSignalEngine:
             logger.error(f"[_evaluate_group] Failed for {signal}: {e}", exc_info=True)
             return False, [], 0.0, 0.0
 
-    def evaluate(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def evaluate(self, df: pd.DataFrame, current_position: Optional[str] = None) -> Dict[str, Any]:
         """
-        FEATURE 3: Enhanced evaluation with confidence scoring.
+        FEATURE 3: Enhanced evaluation with confidence scoring and position-based resolution.
 
         Evaluates all signal groups against the provided data and returns
         a comprehensive result dictionary.
 
         Args:
             df: OHLCV DataFrame with at least 2 rows for crossover detection
+            current_position: Optional — pass "CALL", "PUT", or None so the
+                engine can prioritise EXIT signals when in a trade.
 
         Returns:
             Dict[str, Any]: Result dictionary containing:
@@ -1021,6 +1386,7 @@ class DynamicSignalEngine:
                 - confidence: Confidence scores per group (FEATURE 3)
                 - threshold: Minimum confidence threshold (FEATURE 3)
                 - explanation: Human-readable explanation (FEATURE 3)
+                - position_context: The current_position passed in (for debug)
         """
         neutral = self._neutral_result()
 
@@ -1035,6 +1401,14 @@ class DynamicSignalEngine:
             confidences = {}
             has_any_rules = False
 
+            # Normalise position context
+            pos = None
+            if current_position is not None:
+                pos = str(current_position).upper().strip()
+                if pos not in ["CALL", "PUT"]:
+                    pos = None
+
+            # First, evaluate all signal groups
             for sig in SIGNAL_GROUPS:
                 gf, rd, conf, _ = self._evaluate_group(sig, df, cache)
                 fired[sig.value] = gf
@@ -1045,27 +1419,32 @@ class DynamicSignalEngine:
 
             self._last_cache = cache
 
-            # Build a flat {label: value} dict from the cache for easy reading
+            # Build indicator snapshot
             indicator_values = {}
             for cache_key, series in cache.items():
                 if series is not None and hasattr(series, "iloc") and len(series) > 0:
                     try:
-                        last_val = series.iloc[-1]
-                        prev_val = series.iloc[-2] if len(series) > 1 else None
+                        # Get last non-NaN value
+                        last_valid_idx = series.last_valid_index()
+                        if last_valid_idx is not None:
+                            last_val = series.loc[last_valid_idx]
+                            # Find previous valid index
+                            valid_indices = series.dropna().index
+                            if len(valid_indices) >= 2:
+                                prev_val = series.loc[valid_indices[-2]]
+                            else:
+                                prev_val = None
+                        else:
+                            last_val = None
+                            prev_val = None
 
-                        # Handle NaN values
                         last_clean = None
                         if last_val is not None and not pd.isna(last_val) and not np.isnan(float(last_val)):
                             last_clean = round(float(last_val), 6)
-
                         prev_clean = None
                         if prev_val is not None and not pd.isna(prev_val) and not np.isnan(float(prev_val)):
                             prev_clean = round(float(prev_val), 6)
-
-                        indicator_values[cache_key] = {
-                            "last": last_clean,
-                            "prev": prev_clean,
-                        }
+                        indicator_values[cache_key] = {"last": last_clean, "prev": prev_clean}
                     except Exception as e:
                         logger.warning(f"Failed to process indicator {cache_key}: {e}")
                         indicator_values[cache_key] = {"last": None, "prev": None}
@@ -1073,22 +1452,29 @@ class DynamicSignalEngine:
             if not has_any_rules:
                 return neutral
 
-            # FEATURE 3: Apply confidence threshold to fired groups
+            # Apply confidence threshold to determine which groups actually fired
+            fired_after_threshold = {}
             for sig in SIGNAL_GROUPS:
                 sig_val = sig.value
-                if fired.get(sig_val, False) and confidences.get(sig_val, 0) < self.min_confidence:
-                    logger.debug(f"Signal {sig_val} suppressed - confidence {confidences[sig_val]:.2f} < {self.min_confidence}")
-                    fired[sig_val] = False
+                if fired.get(sig_val, False) and confidences.get(sig_val, 0) >= self.min_confidence:
+                    fired_after_threshold[sig_val] = True
+                    logger.debug(f"Signal {sig_val} passed threshold: {confidences[sig_val]:.2f} >= {self.min_confidence}")
+                else:
+                    fired_after_threshold[sig_val] = False
+                    if fired.get(sig_val, False):
+                        logger.debug(f"Signal {sig_val} suppressed - confidence {confidences[sig_val]:.2f} < {self.min_confidence}")
 
-            resolved = self._resolve(fired)
+            # Now resolve the final signal based on position context
+            resolved = self._resolve_with_position(fired_after_threshold, pos)
 
-            # FEATURE 3: Generate human-readable explanation
-            explanation = self._generate_explanation(fired, confidences)
+            # Generate explanation
+            explanation = self._generate_explanation(fired_after_threshold, confidences, pos)
 
             return {
                 "signal": resolved,
                 "signal_value": resolved.value if resolved else "WAIT",
-                "fired": fired,
+                "fired": fired_after_threshold,  # Return post-threshold firing status
+                "raw_fired": fired,  # Include raw firing status for debugging
                 "rule_results": rule_results,
                 "indicator_values": indicator_values,
                 "conflict": fired.get("BUY_CALL", False) and fired.get("BUY_PUT", False),
@@ -1096,89 +1482,126 @@ class DynamicSignalEngine:
                 "confidence": confidences,
                 "threshold": self.min_confidence,
                 "explanation": explanation,
+                "position_context": pos,
             }
 
         except Exception as e:
             logger.error(f"[evaluate] Failed: {e}", exc_info=True)
             return neutral
 
-    def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float]) -> str:
+    def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float], position: Optional[str] = None) -> str:
         """
         FEATURE 3: Generate human-readable explanation of last evaluation.
 
         Args:
-            fired: Dict of which groups fired
+            fired: Dict of which groups fired after threshold
             confidences: Dict of confidence scores per group
+            position: Current position context
 
         Returns:
             str: Human-readable explanation string
         """
         try:
             parts = []
+            if position:
+                parts.append(f"📊 Position: {position}")
+
             for sig, is_fired in fired.items():
                 conf = confidences.get(sig, 0)
-                status = "FIRED" if is_fired else "suppressed" if conf >= self.min_confidence else "blocked"
-                color = "✓" if is_fired else "✗"
-                parts.append(f"{color} {sig}: {conf:.0%} ({status})")
+                if conf >= self.min_confidence:
+                    status = "✅ FIRED" if is_fired else "⚠️ SUPPRESSED"
+                else:
+                    status = "❌ BLOCKED"
+                parts.append(f"{sig}: {conf:.0%} {status}")
+
+            # Add conflict info if both BUY signals are high
+            if confidences.get("BUY_CALL", 0) >= self.min_confidence and confidences.get("BUY_PUT", 0) >= self.min_confidence:
+                parts.append("⚖️ Conflict: Both BUY signals high - waiting for resolution")
+
             return " | ".join(parts)
         except Exception as e:
             logger.error(f"[_generate_explanation] Failed: {e}", exc_info=True)
             return "No explanation available"
 
-    def evaluate_with_confidence(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def _resolve_with_position(self, fired: Dict[str, bool], position: Optional[str] = None) -> OptionSignal:
         """
-        FEATURE 3: Alias for evaluate() - maintains backward compatibility.
+        Resolve final signal from fired groups with position context.
+
+        Priority rules:
+        1. If in a position, EXIT signals for that position have highest priority
+        2. HOLD signals prevent new entries but don't force exit
+        3. Entry signals (BUY_CALL/BUY_PUT) are only considered when flat
+        4. When both entry signals fire in flat position, use conflict_resolution
+        5. Default to WAIT if nothing appropriate fires
 
         Args:
-            df: OHLCV DataFrame
-
-        Returns:
-            Dict[str, Any]: Same as evaluate()
-        """
-        return self.evaluate(df)
-
-    def _resolve(self, fired: Dict[str, bool]) -> OptionSignal:
-        """
-        Resolve final signal from fired groups.
-
-        Priority order:
-            1. Exit signals take precedence over entry signals
-            2. Hold signals prevent entry but not exit
-            3. Conflict between BUY_CALL and BUY_PUT resolved by conflict_resolution
-            4. Default to WAIT if nothing fired
-
-        Args:
-            fired: Dict of which groups fired
+            fired: Dict of which groups fired (after threshold)
+            position: Current position ("CALL", "PUT", or None)
 
         Returns:
             OptionSignal: Resolved final signal
         """
         try:
-            bc = fired.get("BUY_CALL", False)
-            bp = fired.get("BUY_PUT", False)
-            sc = fired.get("EXIT_CALL", False)
-            sp = fired.get("EXIT_PUT", False)
-            h = fired.get("HOLD", False)
+            # If we have a position, prioritize exits for that position
+            if position == "CALL":
+                if fired.get("EXIT_CALL", False) or fired.get("BUY_PUT", False):
+                    logger.debug(f"Position CALL: EXIT_CALL or BUY_PUT fired - exiting")
+                    return OptionSignal.EXIT_CALL
+                # If no exit signal, consider HOLD
+                if fired.get("HOLD", False):
+                    logger.debug(f"Position CALL: HOLD fired - holding")
+                    return OptionSignal.HOLD
+                # Otherwise WAIT
+                logger.debug(f"Position CALL: No exit or hold - waiting")
+                return OptionSignal.WAIT
 
-            if sc and sp:
-                return OptionSignal.EXIT_CALL
-            if sc:
-                return OptionSignal.EXIT_CALL
-            if sp:
-                return OptionSignal.EXIT_PUT
-            if h:
-                return OptionSignal.HOLD
-            if bc and bp:
-                return OptionSignal.BUY_CALL if self.conflict_resolution == "PRIORITY" else OptionSignal.WAIT
-            if bc:
-                return OptionSignal.BUY_CALL
-            if bp:
-                return OptionSignal.BUY_PUT
-            return OptionSignal.WAIT
+            elif position == "PUT":
+                if fired.get("EXIT_PUT", False) or fired.get("BUY_CALL", False):
+                    logger.debug(f"Position PUT: EXIT_PUT fired - exiting")
+                    return OptionSignal.EXIT_PUT
+                if fired.get("HOLD", False):
+                    logger.debug(f"Position PUT: HOLD fired - holding")
+                    return OptionSignal.HOLD
+                logger.debug(f"Position PUT: No exit or hold - waiting")
+                return OptionSignal.WAIT
+
+            # No position - consider entries
+            else:
+                bc = fired.get("BUY_CALL", False)
+                bp = fired.get("BUY_PUT", False)
+
+                # If both entry signals fire
+                if bc and bp:
+                    logger.debug(f"Flat position: Both BUY signals fired - using conflict_resolution={self.conflict_resolution}")
+                    if self.conflict_resolution == "PRIORITY":
+                        # In PRIORITY mode, default to BUY_CALL
+                        return OptionSignal.BUY_CALL
+                    else:
+                        # WAIT mode - wait for clearer signal
+                        return OptionSignal.WAIT
+
+                # Single entry signal
+                if bc:
+                    logger.debug(f"Flat position: BUY_CALL fired")
+                    return OptionSignal.BUY_CALL
+                if bp:
+                    logger.debug(f"Flat position: BUY_PUT fired")
+                    return OptionSignal.BUY_PUT
+
+                # No entry signals
+                logger.debug(f"Flat position: No entry signals - waiting")
+                return OptionSignal.WAIT
 
         except Exception as e:
-            logger.error(f"[_resolve] Failed: {e}", exc_info=True)
+            logger.error(f"[_resolve_with_position] Failed: {e}", exc_info=True)
             return OptionSignal.WAIT
+
+    def _resolve(self, fired: Dict[str, bool]) -> OptionSignal:
+        """
+        Legacy resolve method - maintained for backward compatibility.
+        Use _resolve_with_position instead for position-aware resolution.
+        """
+        return self._resolve_with_position(fired, None)
 
     @staticmethod
     def _neutral_result() -> Dict[str, Any]:
@@ -1193,6 +1616,7 @@ class DynamicSignalEngine:
                 "signal": OptionSignal.WAIT,
                 "signal_value": "WAIT",
                 "fired": {s.value: False for s in SIGNAL_GROUPS},
+                "raw_fired": {s.value: False for s in SIGNAL_GROUPS},
                 "rule_results": {s.value: [] for s in SIGNAL_GROUPS},
                 "indicator_values": {},
                 "conflict": False,
@@ -1200,6 +1624,7 @@ class DynamicSignalEngine:
                 "confidence": {s.value: 0.0 for s in SIGNAL_GROUPS},
                 "threshold": 0.6,
                 "explanation": "No data available for evaluation",
+                "position_context": None,
             }
         except Exception as e:
             logger.error(f"[_neutral_result] Failed: {e}", exc_info=True)

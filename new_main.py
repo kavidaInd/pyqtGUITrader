@@ -24,6 +24,7 @@ from data.websocket_manager import WebSocketManager
 from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
 from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
 from models.trade_state import TradeState
+from models.trade_state_manager import state_manager
 from strategy.dynamic_signal_engine import DynamicSignalEngine
 from strategy.multi_tf_filter import MultiTimeframeFilter
 from strategy.strategy_manager import StrategyManager
@@ -48,10 +49,6 @@ def safe_last(val):
 
 
 class TradingApp:
-    # Rule 3: Define signals if this were a QObject (for future compatibility)
-    # error_occurred = pyqtSignal(str)
-    # status_updated = pyqtSignal(str)
-    # trade_executed = pyqtSignal(dict)
 
     def __init__(self, config: Any, trading_mode_var: Optional[Any] = None, broker_setting: Optional[Any] = None):
         # Rule 2: Safe defaults first
@@ -62,7 +59,7 @@ class TradingApp:
             if config is None:
                 logger.warning("config is None in TradingApp.__init__")
 
-            self.state = TradeState()
+            self.state = state_manager.get_state()
             self.config = config
             self.broker = BrokerFactory.create(state=self.state, broker_setting=broker_setting)
 

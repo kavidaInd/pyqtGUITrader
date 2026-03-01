@@ -6,6 +6,8 @@ Enhanced with expanded cards, clear labels, import/export functionality, and rul
 Uses database-backed strategy manager.
 
 FEATURE 3: Added rule weight support for confidence scoring
+FEATURE: Shift controls for all indicators and columns
+FEATURE: Help & Documentation tab with interactive examples
 """
 
 from __future__ import annotations
@@ -16,21 +18,22 @@ from datetime import datetime
 from Utils.Utils import Utils
 from typing import Dict, List, Optional, Any
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QUrl
+from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator, QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QFormLayout, QFrame, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
     QCompleter,
-    QStackedWidget, QFileDialog, QDoubleSpinBox, QSpinBox, QGroupBox)
+    QStackedWidget, QFileDialog, QDoubleSpinBox, QSpinBox, QGroupBox, QSplitter, QTreeWidget, QTreeWidgetItem)
 
 from strategy.indicator_registry import (
     ALL_INDICATORS, get_indicator_params,
     get_param_type, get_param_description, get_indicator_category,
     get_indicators_by_category, get_suggested_weight, get_rule_weight_range
 )
+from strategy.strategy_help_tab import StrategyHelpTab
 from strategy.strategy_manager import strategy_manager
 
 # Import SIGNAL_GROUPS as strings - these are the string values used in the engine config
@@ -63,7 +66,7 @@ SIGNAL_META = {
     "HOLD": ("⏸", YELLOW, "HOLD"),
 }
 
-OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
+OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below", "between"]
 SIDE_TYPES = ["indicator", "scalar", "column"]
 COLUMNS = ["close", "open", "high", "low", "volume", "hl2", "hlc3", "ohlc4"]
 
@@ -181,6 +184,24 @@ def _ss() -> str:
         QScrollArea {{ border: none; background: transparent; }}
         QSplitter::handle {{ background: {BORDER}; }}
         QStackedWidget {{ background: transparent; }}
+        QTreeWidget {{
+            background: {BG_PANEL};
+            color: {TEXT};
+            border: 1px solid {BORDER};
+            border-radius: 4px;
+            outline: none;
+        }}
+        QTreeWidget::item {{
+            padding: 6px;
+            border-bottom: 1px solid {BORDER}40;
+        }}
+        QTreeWidget::item:selected {{
+            background: {BG_SEL};
+            color: {BLUE};
+        }}
+        QTreeWidget::item:hover {{
+            background: #2d333b;
+        }}
     """
 
 
@@ -840,7 +861,7 @@ class ParameterEditor(QWidget):
 
                     # Label
                     label = QLabel(f"{param_name}:")
-                    label.setFixedWidth(80)
+                    label.setFixedWidth(60)
                     label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     param_container_layout.addWidget(label)
 
@@ -949,10 +970,10 @@ class ParameterEditor(QWidget):
         return self._params.copy() if self._params else {}
 
 
-# ── Rule Editor Row (with weight) ────────────────────────────────────────────
+# ── Rule Editor Row (with weight and shift controls) ────────────────────────────
 
 class _RuleRow(QWidget):
-    """One editable rule row with clear labels, expanded layout, and weight control"""
+    """One editable rule row with clear labels, expanded layout, weight control, and shift controls"""
 
     deleted = pyqtSignal(object)
 
@@ -965,8 +986,8 @@ class _RuleRow(QWidget):
             self._param_editors = {}
 
             self.setStyleSheet(f"background:{BG_ITEM}; border-radius:6px; border:1px solid {BORDER};")
-            self.setMinimumHeight(280)  # Increased for weight control
-            self.setMaximumHeight(420)
+            self.setMinimumHeight(320)  # Increased for shift controls
+            self.setMaximumHeight(480)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Main vertical layout
@@ -989,15 +1010,26 @@ class _RuleRow(QWidget):
             lhs_header.setStyleSheet(f"color:{BLUE}; font-size:8pt; font-weight:bold;")
             lhs_layout.addWidget(lhs_header)
 
-            # LHS type and input row
+            # LHS type and shift row
             lhs_type_row = QHBoxLayout()
             lhs_type_row.setSpacing(6)
 
             self.lhs_type = QComboBox()
             self.lhs_type.addItems(SIDE_TYPES)
-            self.lhs_type.setFixedWidth(140)
+            self.lhs_type.setFixedWidth(100)
             self.lhs_type.setStyleSheet("font-size: 9pt; font-weight:bold;")
             lhs_type_row.addWidget(self.lhs_type)
+
+            # LHS shift control
+            self.lhs_shift = QSpinBox()
+            self.lhs_shift.setRange(0, 100)
+            self.lhs_shift.setValue(0)
+            self.lhs_shift.setPrefix("shift: ")
+            self.lhs_shift.setFixedWidth(80)
+            self.lhs_shift.setToolTip("Number of bars to shift back (0 = current bar)")
+            self.lhs_shift.setStyleSheet("font-size: 8pt;")
+            self.lhs_shift.valueChanged.connect(self._update_description)
+            lhs_type_row.addWidget(self.lhs_shift)
 
             # LHS input stack
             self.lhs_input_container = QStackedWidget()
@@ -1009,7 +1041,7 @@ class _RuleRow(QWidget):
             lhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
             lhs_indicator_layout.setSpacing(4)
             ind_label = QLabel("📊")
-            ind_label.setFixedWidth(40)
+            ind_label.setFixedWidth(30)
             lhs_indicator_layout.addWidget(ind_label)
             self.lhs_indicator = IndicatorComboBox()
             lhs_indicator_layout.addWidget(self.lhs_indicator)
@@ -1021,7 +1053,7 @@ class _RuleRow(QWidget):
             lhs_column_layout.setContentsMargins(0, 0, 0, 0)
             lhs_column_layout.setSpacing(4)
             col_label = QLabel("📈")
-            col_label.setFixedWidth(40)
+            col_label.setFixedWidth(30)
             lhs_column_layout.addWidget(col_label)
             self.lhs_column = ColumnComboBox()
             lhs_column_layout.addWidget(self.lhs_column)
@@ -1032,7 +1064,7 @@ class _RuleRow(QWidget):
             lhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
             lhs_scalar_layout.setSpacing(4)
             scalar_label = QLabel("#️⃣")
-            scalar_label.setFixedWidth(40)
+            scalar_label.setFixedWidth(30)
             lhs_scalar_layout.addWidget(scalar_label)
             self.lhs_scalar = QLineEdit()
             self.lhs_scalar.setPlaceholderText("value")
@@ -1086,15 +1118,26 @@ class _RuleRow(QWidget):
             rhs_header.setStyleSheet(f"color:{ORANGE}; font-size:8pt; font-weight:bold;")
             rhs_layout.addWidget(rhs_header)
 
-            # RHS type and input row
+            # RHS type and shift row
             rhs_type_row = QHBoxLayout()
             rhs_type_row.setSpacing(6)
 
             self.rhs_type = QComboBox()
             self.rhs_type.addItems(SIDE_TYPES)
-            self.rhs_type.setFixedWidth(130)
+            self.rhs_type.setFixedWidth(100)
             self.rhs_type.setStyleSheet("font-size: 9pt; font-weight:bold;")
             rhs_type_row.addWidget(self.rhs_type)
+
+            # RHS shift control
+            self.rhs_shift = QSpinBox()
+            self.rhs_shift.setRange(0, 100)
+            self.rhs_shift.setValue(0)
+            self.rhs_shift.setPrefix("shift: ")
+            self.rhs_shift.setFixedWidth(80)
+            self.rhs_shift.setToolTip("Number of bars to shift back (0 = current bar)")
+            self.rhs_shift.setStyleSheet("font-size: 8pt;")
+            self.rhs_shift.valueChanged.connect(self._update_description)
+            rhs_type_row.addWidget(self.rhs_shift)
 
             # RHS input stack
             self.rhs_input_container = QStackedWidget()
@@ -1106,7 +1149,7 @@ class _RuleRow(QWidget):
             rhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
             rhs_indicator_layout.setSpacing(4)
             rhs_ind_label = QLabel("📊")
-            rhs_ind_label.setFixedWidth(40)
+            rhs_ind_label.setFixedWidth(30)
             rhs_indicator_layout.addWidget(rhs_ind_label)
             self.rhs_indicator = IndicatorComboBox()
             rhs_indicator_layout.addWidget(self.rhs_indicator)
@@ -1118,7 +1161,7 @@ class _RuleRow(QWidget):
             rhs_column_layout.setContentsMargins(0, 0, 0, 0)
             rhs_column_layout.setSpacing(4)
             rhs_col_label = QLabel("📈")
-            rhs_col_label.setFixedWidth(40)
+            rhs_col_label.setFixedWidth(30)
             rhs_column_layout.addWidget(rhs_col_label)
             self.rhs_column = ColumnComboBox()
             rhs_column_layout.addWidget(self.rhs_column)
@@ -1129,7 +1172,7 @@ class _RuleRow(QWidget):
             rhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
             rhs_scalar_layout.setSpacing(4)
             rhs_scalar_label = QLabel("#️⃣")
-            rhs_scalar_label.setFixedWidth(40)
+            rhs_scalar_label.setFixedWidth(30)
             rhs_scalar_layout.addWidget(rhs_scalar_label)
             self.rhs_scalar = QLineEdit()
             self.rhs_scalar.setPlaceholderText("value")
@@ -1236,6 +1279,7 @@ class _RuleRow(QWidget):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._param_editors = {}
         self.lhs_type = None
+        self.lhs_shift = None
         self.lhs_input_container = None
         self.lhs_indicator = None
         self.lhs_column = None
@@ -1243,6 +1287,7 @@ class _RuleRow(QWidget):
         self.lhs_params = None
         self.op = None
         self.rhs_type = None
+        self.rhs_shift = None
         self.rhs_input_container = None
         self.rhs_indicator = None
         self.rhs_column = None
@@ -1259,24 +1304,32 @@ class _RuleRow(QWidget):
             rhs_desc = self.rhs_type.currentText() if self.rhs_type else "?"
             op_desc = self.op.currentText() if self.op else "?"
             weight = self.weight_spin.value() if self.weight_spin else 1.0
+            lhs_shift = self.lhs_shift.value() if self.lhs_shift else 0
+            rhs_shift = self.rhs_shift.value() if self.rhs_shift else 0
 
             if lhs_desc == "indicator":
                 lhs_val = self.lhs_indicator.currentText() if self.lhs_indicator else "indicator"
+                lhs_shift_text = f" (shift {lhs_shift})" if lhs_shift > 0 else ""
             elif lhs_desc == "column":
                 lhs_val = self.lhs_column.currentText() if self.lhs_column else "column"
+                lhs_shift_text = f" (shift {lhs_shift})" if lhs_shift > 0 else ""
             else:
                 lhs_val = self.lhs_scalar.text() if self.lhs_scalar else "value"
+                lhs_shift_text = ""
 
             if rhs_desc == "indicator":
                 rhs_val = self.rhs_indicator.currentText() if self.rhs_indicator else "indicator"
+                rhs_shift_text = f" (shift {rhs_shift})" if rhs_shift > 0 else ""
             elif rhs_desc == "column":
                 rhs_val = self.rhs_column.currentText() if self.rhs_column else "column"
+                rhs_shift_text = f" (shift {rhs_shift})" if rhs_shift > 0 else ""
             else:
                 rhs_val = self.rhs_scalar.text() if self.rhs_scalar else "value"
+                rhs_shift_text = ""
 
             if self.desc_label:
                 self.desc_label.setText(
-                    f"ⓘ Rule: {lhs_desc} [{lhs_val}] {op_desc} {rhs_desc} [{rhs_val}]  |  Weight: {weight:.1f}"
+                    f"ⓘ Rule: {lhs_desc} [{lhs_val}]{lhs_shift_text} {op_desc} {rhs_desc} [{rhs_val}]{rhs_shift_text}  |  Weight: {weight:.1f}"
                 )
         except Exception as e:
             logger.error(f"[_RuleRow._update_description] Failed: {e}", exc_info=True)
@@ -1287,9 +1340,11 @@ class _RuleRow(QWidget):
             if side == "lhs":
                 stack = self.lhs_input_container
                 params = self.lhs_params
+                shift_widget = self.lhs_shift
             else:
                 stack = self.rhs_input_container
                 params = self.rhs_params
+                shift_widget = self.rhs_shift
 
             if not stack or not params:
                 return
@@ -1297,12 +1352,18 @@ class _RuleRow(QWidget):
             if type_text == "indicator":
                 stack.setCurrentIndex(0)
                 params.setVisible(True)
+                if shift_widget:
+                    shift_widget.setVisible(True)  # Show shift for indicators
             elif type_text == "column":
                 stack.setCurrentIndex(1)
                 params.setVisible(False)
-            else:
+                if shift_widget:
+                    shift_widget.setVisible(True)  # Show shift for columns too
+            else:  # scalar
                 stack.setCurrentIndex(2)
                 params.setVisible(False)
+                if shift_widget:
+                    shift_widget.setVisible(False)  # Hide shift for scalars
 
             self._update_description()
         except Exception as e:
@@ -1359,14 +1420,27 @@ class _RuleRow(QWidget):
             if self.lhs_type:
                 self.lhs_type.setCurrentText(lhs_type)
 
+            # Load LHS shift
+            lhs_shift = lhs_data.get("shift", 0)
+            if self.lhs_shift:
+                self.lhs_shift.setValue(lhs_shift)
+
             if lhs_type == "indicator":
                 ind = lhs_data.get("indicator", "rsi")
                 if self.lhs_indicator:
                     self.lhs_indicator.setEditText(ind.upper())
                 params = lhs_data.get("params", {})
                 if ind in ALL_INDICATORS and self.lhs_params:
+                    # Seed _params from saved data BEFORE set_indicator so that
+                    # _rebuild() picks up saved values via self._params.get()
+                    # instead of always falling back to indicator defaults.
+                    if params:
+                        self.lhs_params._params = dict(params)
                     self.lhs_params.set_indicator(ind)
-                    if hasattr(self.lhs_params, '_param_widgets'):
+                    # Force _on_params_changed so get_params() returns
+                    # the populated values even if the user never edits a field.
+                    self.lhs_params._on_params_changed()
+                    if hasattr(self.lhs_params, '_param_widgets') and not params:
                         for pname, (widget, ptype) in self.lhs_params._param_widgets.items():
                             if pname in params:
                                 try:
@@ -1390,14 +1464,27 @@ class _RuleRow(QWidget):
             if self.rhs_type:
                 self.rhs_type.setCurrentText(rhs_type)
 
+            # Load RHS shift
+            rhs_shift = rhs_data.get("shift", 0)
+            if self.rhs_shift:
+                self.rhs_shift.setValue(rhs_shift)
+
             if rhs_type == "indicator":
                 ind = rhs_data.get("indicator", "rsi")
                 if self.rhs_indicator:
                     self.rhs_indicator.setEditText(ind.upper())
                 params = rhs_data.get("params", {})
                 if ind in ALL_INDICATORS and self.rhs_params:
+                    # Seed _params from saved data BEFORE set_indicator so that
+                    # _rebuild() picks up saved values via self._params.get()
+                    # instead of always falling back to indicator defaults.
+                    if params:
+                        self.rhs_params._params = dict(params)
                     self.rhs_params.set_indicator(ind)
-                    if hasattr(self.rhs_params, '_param_widgets'):
+                    # Force _on_params_changed so get_params() returns
+                    # the populated values even if the user never edits a field.
+                    self.rhs_params._on_params_changed()
+                    if hasattr(self.rhs_params, '_param_widgets') and not params:
                         for pname, (widget, ptype) in self.rhs_params._param_widgets.items():
                             if pname in params:
                                 try:
@@ -1436,6 +1523,8 @@ class _RuleRow(QWidget):
         try:
             # Collect LHS
             lhs_type = self.lhs_type.currentText() if self.lhs_type else "indicator"
+            lhs_shift = self.lhs_shift.value() if self.lhs_shift else 0
+
             if lhs_type == "scalar":
                 try:
                     lhs_value = float(self.lhs_scalar.text() or "0") if self.lhs_scalar else 0
@@ -1445,6 +1534,8 @@ class _RuleRow(QWidget):
             elif lhs_type == "column":
                 col = self.lhs_column.get_column() if self.lhs_column else "close"
                 lhs = {"type": "column", "column": col}
+                if lhs_shift > 0:
+                    lhs["shift"] = lhs_shift
             else:
                 indicator = self.lhs_indicator.get_indicator_name() if self.lhs_indicator else ""
                 params = self.lhs_params.get_params() if self.lhs_params else {}
@@ -1453,9 +1544,13 @@ class _RuleRow(QWidget):
                     "indicator": indicator,
                     "params": params
                 }
+                if lhs_shift > 0:
+                    lhs["shift"] = lhs_shift
 
             # Collect RHS
             rhs_type = self.rhs_type.currentText() if self.rhs_type else "scalar"
+            rhs_shift = self.rhs_shift.value() if self.rhs_shift else 0
+
             if rhs_type == "scalar":
                 try:
                     rhs_value = float(self.rhs_scalar.text() or "0") if self.rhs_scalar else 0
@@ -1465,6 +1560,8 @@ class _RuleRow(QWidget):
             elif rhs_type == "column":
                 col = self.rhs_column.get_column() if self.rhs_column else "close"
                 rhs = {"type": "column", "column": col}
+                if rhs_shift > 0:
+                    rhs["shift"] = rhs_shift
             else:
                 indicator = self.rhs_indicator.get_indicator_name() if self.rhs_indicator else ""
                 params = self.rhs_params.get_params() if self.rhs_params else {}
@@ -1473,6 +1570,8 @@ class _RuleRow(QWidget):
                     "indicator": indicator,
                     "params": params
                 }
+                if rhs_shift > 0:
+                    rhs["shift"] = rhs_shift
 
             op = self.op.currentText() if self.op else ">"
 
@@ -1751,7 +1850,7 @@ class _SignalGroupPanel(QWidget):
                 self._empty_lbl.setVisible(count == 0)
 
             if count > 0 and self._rules_scroll:
-                height = min(600, 80 + 160 * count)  # 160px per row (increased for weight control)
+                height = min(600, 80 + 180 * count)  # 180px per row (increased for shift+weight)
                 self._rules_scroll.setMinimumHeight(height)
             elif self._rules_scroll:
                 self._rules_scroll.setMinimumHeight(120)
@@ -2649,6 +2748,8 @@ class StrategyEditorWindow(QDialog):
     Uses database-backed strategy manager.
 
     FEATURE 3: Supports rule weights and confidence threshold configuration.
+    FEATURE: Shift controls for all indicators and columns
+    FEATURE: Help & Documentation tab with interactive examples
     """
     strategy_activated = pyqtSignal(str)
 
@@ -2662,7 +2763,7 @@ class StrategyEditorWindow(QDialog):
             self._dirty = False
 
             self.setWindowTitle("📋 Strategy Editor")
-            self.resize(1500, 900)  # Slightly wider for weight controls
+            self.resize(1500, 900)
             self.setMinimumSize(1300, 700)
             self.setStyleSheet(_ss())
 
@@ -2671,7 +2772,7 @@ class StrategyEditorWindow(QDialog):
             if active:
                 self._load_strategy(active)
 
-            logger.info("StrategyEditorWindow (database) initialized with Feature 3")
+            logger.info("StrategyEditorWindow initialized with all features")
 
         except Exception as e:
             logger.critical(f"[StrategyEditorWindow.__init__] Failed: {e}", exc_info=True)
@@ -2699,6 +2800,7 @@ class StrategyEditorWindow(QDialog):
         self._info_tab = None
         self._ind_tab = None
         self._rules_tab = None
+        self._help_tab = None
         self._title_lbl = None
         self._active_badge = None
         self._import_btn = None
@@ -2733,14 +2835,18 @@ class StrategyEditorWindow(QDialog):
             self._title_bar = self._build_title_bar()
             right_layout.addWidget(self._title_bar)
 
-            # Tabs
+            # Tabs - Now with Help tab!
             self._tabs = QTabWidget()
             self._info_tab = _InfoTab()
             self._ind_tab = _IndicatorsTab()
             self._rules_tab = _SignalRulesTab()
+            self._help_tab = StrategyHelpTab(self)  # Imported from separate file
+
             self._tabs.addTab(self._info_tab, "⚙  Info")
             self._tabs.addTab(self._ind_tab, "📊  Indicators")
             self._tabs.addTab(self._rules_tab, "🔬  Signal Rules")
+            self._tabs.addTab(self._help_tab, "❓  Help")
+
             right_layout.addWidget(self._tabs, 1)
 
             # Footer
@@ -2905,6 +3011,8 @@ class StrategyEditorWindow(QDialog):
                 self._ind_tab.load(strategy)
             if self._rules_tab is not None:
                 self._rules_tab.load(strategy)
+            if self._help_tab is not None:
+                self._help_tab.load(strategy)
 
             # FEATURE 3: Load confidence threshold
             engine = strategy.get("engine", {}) if strategy else {}
@@ -3129,6 +3237,7 @@ class StrategyEditorWindow(QDialog):
             self._info_tab = None
             self._ind_tab = None
             self._rules_tab = None
+            self._help_tab = None
             self._tabs = None
 
             logger.info("[StrategyEditorWindow] Cleanup completed")

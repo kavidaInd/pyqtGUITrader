@@ -16,9 +16,8 @@ from PyQt5.QtWidgets import (
     QMessageBox, QCheckBox, QWidget, QFileDialog
 )
 
-from backtest.backtest_engine import BacktestEngine
+from backtest.backtest_engine import BacktestEngine, BacktestResult
 from config import Config
-from models.backtest_models import BacktestResult
 from strategy.strategy_manager import StrategyManager
 
 logger = logging.getLogger(__name__)
@@ -34,7 +33,7 @@ class BacktestWorker(QThread):
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self, config, strategy_manager, params):
+    def __init__(self, config, broker, strategy_manager, params):
         super().__init__()
         self.config = config
         self.strategy_manager = strategy_manager

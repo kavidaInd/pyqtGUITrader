@@ -1,46 +1,51 @@
 """
 backtest/backtest_window.py
 ============================
-Full backtesting window: strategy config, run control, live progress,
-equity-curve chart, trade log table, and summary statistics panel.
+Full backtesting window with state_manager integration.
 
-Opened from TradingGUI via:
-    from backtest.backtest_window import BacktestWindow
-    win = BacktestWindow(parent=self, trading_app=self.trading_app)
-    win.show()
+Layout (mirrors main TradingGUI):
+  ┌──────────────────────────────────┬─────────────────┐
+  │  Results Panel (tabs)            │  Settings       │
+  │  ├─ 📈 Overview                   │  Sidebar        │
+  │  ├─ 📋 Trade Log                  │  (right side,   │
+  │  ├─ 🔬 Strategy Analysis           │   tabbed like   │
+  │  └─ 📉 Equity Curve                │   StatusPanel)  │
+  └──────────────────────────────────┴─────────────────┘
+  │  Progress bar + Run / Stop buttons                  │
+  └─────────────────────────────────────────────────────┘
 
-Visual cues
------------
-• SYNTHETIC price rows   → amber background in trade table + ⚗ badge
-• REAL price rows        → no special tinting
-• A banner is shown at the top of results when ANY synthetic bars exist,
-  explaining that Black-Scholes approximations were used because the broker
-  did not provide historical option data for those strikes/expiries.
+Uses state_manager to access and restore trade state, ensuring consistency
+between live trading and backtesting.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from PyQt5.QtCore import QDate
-from PyQt5.QtCore import Qt, pyqtSlot
-from PyQt5.QtGui import QColor, QBrush
+import pandas as pd
+from PyQt5.QtCore import QDate, Qt, pyqtSlot, QTimer
+from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox,
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QFrame, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QSizePolicy, QSpinBox, QTableWidget,
-    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter,
+    QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QFileDialog,
 )
 
-from backtest.backtest_engine import BacktestConfig
+from backtest.backtest_candle_debug_tab import CandleDebugTab
+from backtest.backtest_engine import BacktestConfig, BacktestResult
 from backtest.backtest_thread import BacktestThread
+from models.trade_state_manager import state_manager
+from strategy.strategy_manager import StrategyManager
 
 logger = logging.getLogger(__name__)
 
-# ── Palette (matches the dark TradingGUI theme) ────────────────────────────────
+# ── Palette (matches TradingGUI / StatusPanel) ─────────────────────────────────
 BG = "#0d1117"
 SURFACE = "#161b22"
 SURFACE2 = "#1c2128"
@@ -52,23 +57,37 @@ ACCENT_H = "#3fb950"
 WARN = "#d29922"
 ERROR_C = "#f85149"
 INFO = "#58a6ff"
-CALL_CLR = "#3fb950"  # green for calls
-PUT_CLR = "#f85149"  # red for puts
-SYNTH_BG = "#2d2a1a"  # amber tint for synthetic rows
-REAL_BG = "#0d1117"
+CALL_CLR = "#3fb950"
+PUT_CLR = "#f85149"
+SYNTH_BG = "#2d2a1a"
+REAL_BG = BG
+ORANGE = "#ffa657"
+PURPLE = "#bc8cff"
 
+SIGNAL_COLORS = {
+    "BUY_CALL": CALL_CLR,
+    "BUY_PUT": PUT_CLR,
+    "EXIT_CALL": ERROR_C,
+    "EXIT_PUT": ORANGE,
+    "HOLD": WARN,
+    "WAIT": SUBTEXT,
+}
+
+ANALYSIS_TIMEFRAMES = ["1m", "2m", "3m", "5m", "10m", "15m", "30m", "60m", "120m", "240m"]
+
+# ── Global stylesheet ──────────────────────────────────────────────────────────
 _CSS = f"""
 QMainWindow, QWidget {{
     background: {BG};
     color: {TEXT};
     font-family: 'Segoe UI', 'SF Pro Display', 'Ubuntu', sans-serif;
-    font-size: 11px;
+    font-size: 14px;
 }}
 QGroupBox {{
     border: 1px solid {BORDER};
     border-radius: 6px;
-    margin-top: 8px;
-    padding-top: 12px;
+    margin-top: 10px;
+    padding-top: 14px;
     font-weight: bold;
     color: {SUBTEXT};
 }}
@@ -76,15 +95,16 @@ QGroupBox::title {{
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
+    color: {INFO};
 }}
 QLabel {{ color: {TEXT}; }}
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {{
     background: {SURFACE};
     border: 1px solid {BORDER};
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 5px 10px;
     color: {TEXT};
-    min-height: 22px;
+    min-height: 28px;
 }}
 QComboBox::drop-down {{ border: none; }}
 QComboBox QAbstractItemView {{
@@ -107,14 +127,16 @@ QPushButton#runBtn {{
     background: {ACCENT};
     border-color: {ACCENT};
     color: #fff;
-    font-size: 12px;
-    padding: 8px 24px;
+    font-size: 15px;
+    padding: 8px 28px;
+    border-radius: 5px;
 }}
 QPushButton#runBtn:hover {{ background: {ACCENT_H}; }}
 QPushButton#stopBtn {{
     background: {ERROR_C};
     border-color: {ERROR_C};
     color: #fff;
+    border-radius: 5px;
 }}
 QTableWidget {{
     background: {BG};
@@ -129,47 +151,49 @@ QHeaderView::section {{
     border: none;
     border-right: 1px solid {BORDER};
     border-bottom: 1px solid {BORDER};
-    padding: 5px 8px;
+    padding: 6px 10px;
     font-weight: bold;
-    font-size: 10px;
+    font-size: 13px;
 }}
 QTabWidget::pane {{
     border: 1px solid {BORDER};
     background: {BG};
+    border-radius: 0 4px 4px 4px;
 }}
 QTabBar::tab {{
     background: {SURFACE};
     color: {SUBTEXT};
-    padding: 6px 16px;
+    padding: 7px 18px;
     border: 1px solid {BORDER};
     border-bottom: none;
     border-radius: 4px 4px 0 0;
+    font-size: 13px;
+    font-weight: bold;
 }}
 QTabBar::tab:selected {{
     background: {BG};
     color: {TEXT};
-    border-bottom: 2px solid {ACCENT};
+    border-bottom: 2px solid {INFO};
 }}
+QTabBar::tab:hover:!selected {{ background: {SURFACE2}; }}
 QProgressBar {{
     background: {SURFACE};
     border: 1px solid {BORDER};
     border-radius: 4px;
     text-align: center;
     color: {TEXT};
+    height: 8px;
 }}
 QProgressBar::chunk {{
-    background: {ACCENT};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {ACCENT}, stop:1 {ACCENT_H});
     border-radius: 3px;
 }}
 QScrollBar:vertical {{
-    background: {SURFACE};
-    width: 8px;
-    border-radius: 4px;
+    background: {SURFACE}; width: 8px; border-radius: 4px;
 }}
 QScrollBar::handle:vertical {{
-    background: {BORDER};
-    border-radius: 4px;
-    min-height: 20px;
+    background: {BORDER}; border-radius: 4px; min-height: 20px;
 }}
 QCheckBox {{ color: {TEXT}; spacing: 6px; }}
 QCheckBox::indicator {{
@@ -180,10 +204,34 @@ QCheckBox::indicator {{
 }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QSplitter::handle {{ background: {BORDER}; width: 2px; height: 2px; }}
+QTreeWidget {{
+    background: {BG};
+    alternate-background-color: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+}}
+QTreeWidget::item {{
+    padding: 4px 8px;
+    border-bottom: 1px solid {BORDER};
+}}
+QTreeWidget::item:selected {{
+    background: {SURFACE2};
+    color: {ACCENT};
+}}
+QTextEdit {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    color: {TEXT};
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+}}
 """
 
 
-def _label(text, bold=False, color=TEXT, size=11):
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _label(text, bold=False, color=TEXT, size=14):
     lbl = QLabel(text)
     lbl.setStyleSheet(
         f"color: {color}; font-size: {size}px;"
@@ -199,34 +247,617 @@ def _sep():
     return f
 
 
-def _card(title: str) -> QGroupBox:
+def _card(title: str, title_color: str = INFO) -> QGroupBox:
     g = QGroupBox(title)
+    g.setStyleSheet(f"QGroupBox::title {{ color: {title_color}; }}")
     return g
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Lightweight canvas-less equity chart using QLabel art (fallback)
-#  or pyqtgraph if available
-# ══════════════════════════════════════════════════════════════════════════════
+def _qdate_to_datetime(qd: QDate, end_of_day: bool = False) -> datetime:
+    """Convert QDate → datetime."""
+    if end_of_day:
+        return datetime(qd.year(), qd.month(), qd.day(), 23, 59, 59)
+    return datetime(qd.year(), qd.month(), qd.day(), 0, 0, 0)
 
-class EquityChart(QWidget):
-    """
-    Equity curve chart.
-    Uses pyqtgraph if available, falls back to a pure-Qt painter implementation.
-    """
+
+# ── BarAnalysis ────────────────────────────────────────────────────────────────
+
+class BarAnalysis:
+    """Analysis results for a single bar/candle."""
+
+    def __init__(self, timestamp: datetime, spot_price: float, signal: str,
+                 confidence: Dict[str, float], rule_results: Dict[str, List[Dict]],
+                 indicator_values: Dict[str, Dict[str, float]],
+                 timeframe: str = "5m"):
+        self.timestamp = timestamp
+        self.spot_price = spot_price
+        self.signal = signal
+        self.confidence = confidence
+        self.rule_results = rule_results
+        self.indicator_values = indicator_values
+        self.timeframe = timeframe
+
+    def to_dict(self) -> Dict:
+        result = {
+            "timeframe": self.timeframe,
+            "timestamp": self.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "spot_price": self.spot_price,
+            "signal": self.signal,
+        }
+        if self.confidence:
+            result["overall_confidence"] = sum(self.confidence.values()) / len(self.confidence)
+        else:
+            result["overall_confidence"] = 0.0
+        for sig, conf in self.confidence.items():
+            result[f"confidence_{sig}"] = conf
+        for indicator, values in self.indicator_values.items():
+            result[f"indicator_{indicator}_last"] = values.get("last", "")
+            result[f"indicator_{indicator}_prev"] = values.get("prev", "")
+        for sig, rules in self.rule_results.items():
+            passed = sum(1 for r in rules if r.get("result", False))
+            total = len(rules)
+            result[f"rules_{sig}_passed"] = passed
+            result[f"rules_{sig}_total"] = total
+            result[f"rules_{sig}_pass_rate"] = (passed / total) if total else 0
+        return result
+
+
+# ── Multi-Timeframe Analysis Tab ───────────────────────────────────────────────
+
+class MultiTimeframeAnalysisTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._equity_data: List[dict] = []
-        self._synth_regions: List[tuple] = []  # (x_start, x_end) index pairs
+        self.analysis_data: Dict[str, List[BarAnalysis]] = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        self.timeframe_combo = QComboBox()
+        self.timeframe_combo.addItems(ANALYSIS_TIMEFRAMES)
+        self.timeframe_combo.setCurrentText("5m")
+        self.timeframe_combo.currentTextChanged.connect(self._show_timeframe)
+        toolbar.addWidget(_label("Timeframe:"))
+        toolbar.addWidget(self.timeframe_combo)
+        toolbar.addSpacing(12)
+
+        self.export_btn = QPushButton("📥 Export Timeframe")
+        self.export_btn.clicked.connect(self._export_current)
+        self.export_btn.setEnabled(False)
+        toolbar.addWidget(self.export_btn)
+
+        self.export_all_btn = QPushButton("📥 Export All")
+        self.export_all_btn.clicked.connect(self._export_all)
+        self.export_all_btn.setEnabled(False)
+        toolbar.addWidget(self.export_all_btn)
+
+        toolbar.addStretch()
+        self.stats_lbl = _label("No analysis data", color=SUBTEXT, size=13)
+        toolbar.addWidget(self.stats_lbl)
+        layout.addLayout(toolbar)
+
+        # Splitter: tree on top, details below
+        splitter = QSplitter(Qt.Vertical)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(
+            ["Time", "Spot", "Signal", "Confidence",
+             "BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
+        )
+        self.tree.setAlternatingRowColors(True)
+        self.tree.itemClicked.connect(self._on_bar_selected)
+        self.tree.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        splitter.addWidget(self.tree)
+
+        self.details_text = QTextEdit()
+        self.details_text.setReadOnly(True)
+        self.details_text.setMaximumHeight(220)
+        splitter.addWidget(self.details_text)
+        splitter.setSizes([500, 220])
+
+        layout.addWidget(splitter, 1)
+
+    def set_analysis_data(self, data: Dict[str, List[BarAnalysis]]):
+        self.analysis_data = data
+        has = any(data.values())
+        self.export_btn.setEnabled(has)
+        self.export_all_btn.setEnabled(has)
+        total = sum(len(v) for v in data.values())
+        self.stats_lbl.setText(f"{total} bars across {len(data)} timeframe(s)")
+        self._show_timeframe(self.timeframe_combo.currentText())
+
+    def _show_timeframe(self, tf: str):
+        self.tree.clear()
+        for bar in self.analysis_data.get(tf, []):
+            item = QTreeWidgetItem()
+            item.setText(0, bar.timestamp.strftime("%H:%M:%S"))
+            item.setData(0, Qt.UserRole, bar.timestamp)
+            item.setText(1, f"{bar.spot_price:.2f}")
+            item.setText(2, bar.signal)
+            item.setForeground(2, QColor(SIGNAL_COLORS.get(bar.signal, TEXT)))
+            overall = (sum(bar.confidence.values()) / len(bar.confidence)
+                       if bar.confidence else 0.0)
+            item.setText(3, f"{overall:.1%}")
+            for i, sig in enumerate(["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"], 4):
+                conf = bar.confidence.get(sig, 0)
+                item.setText(i, f"{conf:.1%}")
+                clr = ACCENT if conf >= 0.6 else (WARN if conf >= 0.3 else SUBTEXT)
+                item.setForeground(i, QColor(clr))
+            self.tree.addTopLevelItem(item)
+
+    def _on_bar_selected(self, item: QTreeWidgetItem, _col: int):
+        ts = item.data(0, Qt.UserRole)
+        tf = self.timeframe_combo.currentText()
+        for bar in self.analysis_data.get(tf, []):
+            if bar.timestamp == ts:
+                self._show_details(bar)
+                break
+
+    def _show_details(self, bar: BarAnalysis):
+        lines = [
+            f"📊  {bar.timeframe}  —  {bar.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Spot: ₹{bar.spot_price:.2f}   Signal: {bar.signal}",
+            "",
+            "📈 Confidence Scores:",
+        ]
+        for sig, conf in bar.confidence.items():
+            tag = "✓ HIGH" if conf >= 0.6 else ("⚠ MED" if conf >= 0.3 else "✗ LOW")
+            lines.append(f"  {sig}: {conf:.1%}  ({tag})")
+        lines.append("")
+        lines.append("📋 Rule Evaluations:")
+        for sig, rules in bar.rule_results.items():
+            passed = [r for r in rules if r.get("result", False)]
+            if passed:
+                lines.append(f"  {sig} ({len(passed)}/{len(rules)} passed):")
+                for r in passed[:3]:
+                    lines.append(f"    ✓ {r.get('rule', '')[:60]}  w={r.get('weight', 1):.1f}")
+        if bar.indicator_values:
+            lines.append("")
+            lines.append("📊 Indicator Values:")
+            for name, vals in bar.indicator_values.items():
+                last = vals.get("last", "N/A")
+                prev = vals.get("prev", "N/A")
+                try:
+                    diff = f" ({last - prev:+.2f})" if isinstance(last, (int, float)) else ""
+                except Exception:
+                    diff = ""
+                lines.append(f"  {name}: {last} / {prev}{diff}")
+        self.details_text.setText("\n".join(lines))
+
+    def _export_current(self):
+        tf = self.timeframe_combo.currentText()
+        data = self.analysis_data.get(tf, [])
+        if not data:
+            QMessageBox.warning(self, "No Data", f"No data for {tf}.")
+            return
+        fname, _ = QFileDialog.getSaveFileName(
+            self, f"Save {tf} Analysis",
+            f"analysis_{tf}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "CSV Files (*.csv)"
+        )
+        if fname:
+            pd.DataFrame([b.to_dict() for b in data]).to_csv(fname, index=False)
+            QMessageBox.information(self, "Saved", fname)
+
+    def _export_all(self):
+        if not self.analysis_data:
+            QMessageBox.warning(self, "No Data", "Nothing to export.")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Select Export Directory")
+        if not directory:
+            return
+        n = 0
+        for tf, data in self.analysis_data.items():
+            if data:
+                fp = os.path.join(directory, f"analysis_{tf}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+                pd.DataFrame([b.to_dict() for b in data]).to_csv(fp, index=False)
+                n += 1
+        QMessageBox.information(self, "Done", f"Exported {n} file(s) to:\n{directory}")
+
+
+# ── Settings Sidebar (RIGHT side, tabbed like StatusPanel) ─────────────────────
+
+class SettingsSidebar(QTabWidget):
+    """
+    Right-side settings sidebar with horizontal tabs at the top,
+    styled identically to the StatusPanel QTabWidget.
+    """
+
+    # Tab definitions: (label, builder_method)
+    _TABS = [
+        ("📋  Strategy", "_build_strategy_tab"),
+        ("⏱  Timeframes", "_build_timeframe_tab"),
+        ("📊  Instrument", "_build_instrument_tab"),
+        ("🛡  Risk", "_build_risk_tab"),
+        ("💰  Costs", "_build_cost_tab"),
+        ("⚙  Execution", "_build_execution_tab"),
+    ]
+
+    def __init__(self, window_ref, parent=None):
+        super().__init__(parent)
+        self._win = window_ref  # BacktestWindow reference
+        self.setTabPosition(QTabWidget.North)
+        self.setDocumentMode(True)
+        self.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: 1px solid {BORDER};
+                background: {SURFACE};
+                border-radius: 0 4px 4px 4px;
+            }}
+            QTabBar::tab {{
+                background: #21262d;
+                color: {SUBTEXT};
+                border: 1px solid {BORDER};
+                border-bottom: none;
+                border-radius: 4px 4px 0 0;
+                padding: 7px 10px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            QTabBar::tab:selected {{
+                background: {SURFACE};
+                color: {TEXT};
+                border-bottom: 2px solid {INFO};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {SURFACE2};
+            }}
+        """)
+        for label, method in self._TABS:
+            self.addTab(getattr(self, method)(), label)
+
+    # ── Tab builders ───────────────────────────────────────────────────────
+
+    def _build_strategy_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        g = _card("Active Strategy")
+        gl = QVBoxLayout(g)
+
+        self.strategy_combo = QComboBox()
+        self.strategy_combo.setMinimumHeight(28)
+        gl.addWidget(self.strategy_combo)
+
+        refresh_btn = QPushButton("🔄  Refresh List")
+        refresh_btn.clicked.connect(lambda: self._win._load_strategies())
+        gl.addWidget(refresh_btn)
+
+        self.strategy_info = QLabel("")
+        self.strategy_info.setStyleSheet(f"color:{SUBTEXT}; font-size:13px; padding:4px;")
+        self.strategy_info.setWordWrap(True)
+        gl.addWidget(self.strategy_info)
+        lay.addWidget(g)
+
+        g2 = _card("Strategy Stats", SUBTEXT)
+        g2l = QFormLayout(g2)
+        g2l.setSpacing(6)
+        self.rule_count_lbl = _label("Rules: 0", color=SUBTEXT, size=13)
+        self.min_conf_lbl = _label("Min Confidence: —", color=SUBTEXT, size=13)
+        self.enabled_grp_lbl = _label("Enabled Groups: —", color=SUBTEXT, size=13)
+        g2l.addRow(self.rule_count_lbl)
+        g2l.addRow(self.min_conf_lbl)
+        g2l.addRow(self.enabled_grp_lbl)
+        lay.addWidget(g2)
+
+        lay.addStretch()
+        return tab
+
+    def _build_timeframe_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        g_base = _card("Base Execution Interval", PURPLE)
+        gl_base = QVBoxLayout(g_base)
+        gl_base.addWidget(_label("Candle interval (minutes):", size=13))
+        self.base_interval = QComboBox()
+        self.base_interval.addItems(["1", "2", "3", "5", "10", "15", "30"])
+        self.base_interval.setCurrentText("5")
+        gl_base.addWidget(self.base_interval)
+        lay.addWidget(g_base)
+
+        g_tf = _card("Analysis Timeframes", PURPLE)
+        gl_tf = QVBoxLayout(g_tf)
+        gl_tf.addWidget(_label("Select timeframes to analyse:", size=13))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        tf_w = QWidget()
+        tf_lay = QVBoxLayout(tf_w)
+        tf_lay.setContentsMargins(0, 0, 0, 0)
+        tf_lay.setSpacing(5)
+
+        self.timeframe_checkboxes: Dict[str, QCheckBox] = {}
+        categories = [
+            ("Short Term (1–5m)", ["1m", "2m", "3m", "5m"]),
+            ("Medium Term (10–30m)", ["10m", "15m", "30m"]),
+            ("Long Term (60–240m)", ["60m", "120m", "240m"]),
+        ]
+        for cat, tfs in categories:
+            lbl = _label(cat, color=INFO, size=13)
+            tf_lay.addWidget(lbl)
+            for tf in tfs:
+                cb = QCheckBox(tf)
+                cb.setChecked(tf == "5m")
+                self.timeframe_checkboxes[tf] = cb
+                tf_lay.addWidget(cb)
+            tf_lay.addSpacing(4)
+
+        scroll.setWidget(tf_w)
+        gl_tf.addWidget(scroll, 1)
+
+        btn_row = QHBoxLayout()
+        sel_all = QPushButton("Select All")
+        sel_all.clicked.connect(lambda: self._set_all_tfs(True))
+        des_all = QPushButton("Deselect All")
+        des_all.clicked.connect(lambda: self._set_all_tfs(False))
+        btn_row.addWidget(sel_all)
+        btn_row.addWidget(des_all)
+        gl_tf.addLayout(btn_row)
+        lay.addWidget(g_tf, 1)
+        return tab
+
+    def _build_instrument_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        g = _card("Instrument", ORANGE)
+        gl = QFormLayout(g)
+        gl.setSpacing(8)
+        gl.setLabelAlignment(Qt.AlignRight)
+
+        self.derivative = QComboBox()
+        self.derivative.addItems(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"])
+        gl.addRow("Derivative:", self.derivative)
+
+        self.expiry_type = QComboBox()
+        self.expiry_type.addItems(["weekly", "monthly"])
+        gl.addRow("Expiry:", self.expiry_type)
+
+        self.lot_size = QSpinBox()
+        self.lot_size.setRange(1, 1800)
+        self.lot_size.setValue(50)
+        gl.addRow("Lot Size:", self.lot_size)
+
+        self.num_lots = QSpinBox()
+        self.num_lots.setRange(1, 50)
+        self.num_lots.setValue(1)
+        gl.addRow("# Lots:", self.num_lots)
+        lay.addWidget(g)
+
+        g2 = _card("Date Range")
+        g2l = QFormLayout(g2)
+        g2l.setSpacing(8)
+        g2l.setLabelAlignment(Qt.AlignRight)
+
+        self.date_from = QDateEdit()
+        self.date_from.setCalendarPopup(True)
+        self.date_from.setDate(QDate.currentDate().addDays(-30))
+        self.date_from.setDisplayFormat("dd MMM yyyy")
+        g2l.addRow("From:", self.date_from)
+
+        self.date_to = QDateEdit()
+        self.date_to.setCalendarPopup(True)
+        self.date_to.setDate(QDate.currentDate().addDays(-1))
+        self.date_to.setDisplayFormat("dd MMM yyyy")
+        g2l.addRow("To:", self.date_to)
+        lay.addWidget(g2)
+
+        lay.addStretch()
+        return tab
+
+    def _build_risk_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        g = _card("Take Profit / Stop Loss", WARN)
+        gl = QFormLayout(g)
+        gl.setSpacing(8)
+        gl.setLabelAlignment(Qt.AlignRight)
+
+        self.use_tp = QCheckBox("Enable Take Profit")
+        self.use_tp.setChecked(True)
+        gl.addRow("", self.use_tp)
+
+        self.tp_pct = QDoubleSpinBox()
+        self.tp_pct.setRange(0, 500)
+        self.tp_pct.setValue(30)
+        self.tp_pct.setSuffix(" %")
+        self.tp_pct.setDecimals(1)
+        gl.addRow("TP %:", self.tp_pct)
+
+        self.use_sl = QCheckBox("Enable Stop Loss")
+        self.use_sl.setChecked(True)
+        gl.addRow("", self.use_sl)
+
+        self.sl_pct = QDoubleSpinBox()
+        self.sl_pct.setRange(0, 100)
+        self.sl_pct.setValue(25)
+        self.sl_pct.setSuffix(" %")
+        self.sl_pct.setDecimals(1)
+        gl.addRow("SL %:", self.sl_pct)
+        lay.addWidget(g)
+
+        g2 = _card("Risk Options")
+        g2l = QVBoxLayout(g2)
+        self.skip_sideway = QCheckBox("Skip 12:00–14:00 (sideway zone)")
+        self.skip_sideway.setChecked(True)
+        g2l.addWidget(self.skip_sideway)
+        lay.addWidget(g2)
+
+        lay.addStretch()
+        return tab
+
+    def _build_cost_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        g = _card("Execution Costs", "#f97583")
+        gl = QFormLayout(g)
+        gl.setSpacing(8)
+        gl.setLabelAlignment(Qt.AlignRight)
+
+        self.slippage = QDoubleSpinBox()
+        self.slippage.setRange(0, 5)
+        self.slippage.setValue(0.25)
+        self.slippage.setSuffix(" %")
+        self.slippage.setDecimals(2)
+        gl.addRow("Slippage:", self.slippage)
+
+        self.brokerage = QDoubleSpinBox()
+        self.brokerage.setRange(0, 500)
+        self.brokerage.setValue(40)
+        self.brokerage.setPrefix("₹ ")
+        self.brokerage.setDecimals(0)
+        gl.addRow("Brokerage/Lot:", self.brokerage)
+        lay.addWidget(g)
+
+        g2 = _card("Capital")
+        g2l = QFormLayout(g2)
+        g2l.setSpacing(8)
+        g2l.setLabelAlignment(Qt.AlignRight)
+        self.capital = QDoubleSpinBox()
+        self.capital.setRange(10_000, 100_000_000)
+        self.capital.setValue(100_000)
+        self.capital.setPrefix("₹ ")
+        self.capital.setDecimals(0)
+        self.capital.setSingleStep(10_000)
+        g2l.addRow("Initial Capital:", self.capital)
+        lay.addWidget(g2)
+
+        lay.addStretch()
+        return tab
+
+    def _build_execution_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        g = _card("Execution Options", ACCENT)
+        gl = QVBoxLayout(g)
+        self.auto_export = QCheckBox("Auto-export analysis after run")
+        self.auto_export.setChecked(False)
+        gl.addWidget(self.auto_export)
+        lay.addWidget(g)
+
+        g3 = _card("Volatility Source", INFO)
+        g3l = QVBoxLayout(g3)
+        self.use_vix = QCheckBox("Use India VIX for option pricing")
+        self.use_vix.setChecked(True)
+        self.use_vix.setToolTip(
+            "When checked: fetches India VIX from NSE/yfinance for Black-Scholes sigma.\n"
+            "When unchecked: computes rolling historical volatility from spot candles — \n"
+            "no internet fetch needed, faster startup, works fully offline."
+        )
+        g3l.addWidget(self.use_vix)
+        hv_note = QLabel(
+            "Uncheck to use rolling historical volatility (HV) computed\n"
+            "from the spot candles — no VIX download required.\n"
+            "HV updates every bar using the last 20 closes."
+        )
+        hv_note.setStyleSheet(f"color:{SUBTEXT}; font-size:12px;")
+        hv_note.setWordWrap(True)
+        g3l.addWidget(hv_note)
+        lay.addWidget(g3)
+
+        g2 = _card("Notes", SUBTEXT)
+        g2l = QVBoxLayout(g2)
+        info = QLabel(
+            "• Base interval drives trade execution timing\n"
+            "• Analysis timeframes are independent of execution\n"
+            "• Results are resampled from 1-minute data\n"
+            "• Synthetic (BS) pricing used when real option\n"
+            "  data is unavailable — marked ⚗ in Trade Log\n"
+            "• HV mode: no network calls, fully offline capable"
+        )
+        info.setStyleSheet(f"color:{SUBTEXT}; font-size:13px;")
+        info.setWordWrap(True)
+        g2l.addWidget(info)
+        lay.addWidget(g2)
+
+        lay.addStretch()
+        return tab
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    def _set_all_tfs(self, checked: bool):
+        for cb in self.timeframe_checkboxes.values():
+            cb.setChecked(checked)
+
+    def get_selected_timeframes(self) -> List[str]:
+        return [tf for tf, cb in self.timeframe_checkboxes.items() if cb.isChecked()]
+
+    def update_strategy_stats(self, strategy: Dict):
+        if not strategy:
+            return
+        engine = strategy.get("engine", {})
+        total_rules = 0
+        enabled = 0
+        for sig in ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]:
+            grp = engine.get(sig, {})
+            total_rules += len(grp.get("rules", []))
+            if grp.get("enabled", True):
+                enabled += 1
+        min_conf = engine.get("min_confidence", 0.6) * 100
+        self.rule_count_lbl.setText(f"Rules: {total_rules}")
+        self.min_conf_lbl.setText(f"Min Confidence: {min_conf:.0f}%")
+        self.enabled_grp_lbl.setText(f"Enabled Groups: {enabled}/5")
+
+
+# ── Stat Card ──────────────────────────────────────────────────────────────────
+
+class _StatCard(QFrame):
+    def __init__(self, label: str, value: str = "—", value_color: str = TEXT):
+        super().__init__()
+        self.setStyleSheet(
+            f"QFrame {{ background:{SURFACE}; border:1px solid {BORDER};"
+            f" border-radius:6px; padding:4px; }}"
+        )
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(2)
+        self._lbl = QLabel(label)
+        self._lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:12px; border:none;")
+        self._val = QLabel(value)
+        self._val.setStyleSheet(f"color:{value_color}; font-size:18px; font-weight:bold; border:none;")
+        lay.addWidget(self._lbl)
+        lay.addWidget(self._val)
+
+    def update_value(self, value: str, color: str = TEXT):
+        self._val.setText(value)
+        self._val.setStyleSheet(f"color:{color}; font-size:18px; font-weight:bold; border:none;")
+
+
+# ── Equity Chart ───────────────────────────────────────────────────────────────
+
+class EquityChart(QWidget):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._equity_data = []
         self._use_pg = False
-        self._plot = None
         self._setup()
 
     def _setup(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-
         try:
             import pyqtgraph as pg
             pg.setConfigOptions(antialias=True, background=BG, foreground=TEXT)
@@ -234,372 +865,206 @@ class EquityChart(QWidget):
             self._pg_widget.setLabel("left", "Equity (₹)", color=SUBTEXT)
             self._pg_widget.setLabel("bottom", "Trade #", color=SUBTEXT)
             self._pg_widget.showGrid(x=True, y=True, alpha=0.15)
-            self._pg_widget.getAxis("left").setPen(BORDER)
-            self._pg_widget.getAxis("bottom").setPen(BORDER)
             layout.addWidget(self._pg_widget)
             self._use_pg = True
         except ImportError:
             self._fallback = _EquityPainter()
             layout.addWidget(self._fallback)
 
-    def set_data(self, equity_curve: List[dict], trades):
-        self._equity_data = equity_curve
-        self._synth_regions = [
-            i for i, t in enumerate(trades)
-            if t.entry_source.value == "synthetic" or t.exit_source.value == "synthetic"
-        ]
+    def _is_synthetic(self, trade) -> bool:
+        """Safely check if trade used synthetic pricing."""
+        try:
+            from backtest.backtest_option_pricer import PriceSource
+            return (trade.entry_source == PriceSource.SYNTHETIC or
+                    trade.exit_source == PriceSource.SYNTHETIC)
+        except Exception:
+            try:
+                return (getattr(trade.entry_source, "value", "") == "synthetic" or
+                        getattr(trade.exit_source, "value", "") == "synthetic")
+            except Exception:
+                return False
 
+    def set_data(self, equity_curve, trades):
+        self._equity_data = equity_curve
+        synth_indices = [i for i, t in enumerate(trades) if self._is_synthetic(t)]
         if self._use_pg:
-            self._draw_pg(equity_curve, trades)
+            self._draw_pg(equity_curve, trades, synth_indices)
         else:
             self._fallback.set_data(equity_curve, trades)
 
-    def _draw_pg(self, equity_curve, trades):
+    def _draw_pg(self, equity_curve, trades, synth_indices):
         import pyqtgraph as pg
         pw = self._pg_widget
         pw.clear()
-
         if not equity_curve:
             return
-
         equities = [e["equity"] for e in equity_curve]
         xs = list(range(len(equities)))
-
-        # Equity line — colour based on positive/negative vs start
-        start = equities[0]
-        pen_clr = ACCENT if equities[-1] >= start else ERROR_C
+        pen_clr = ACCENT if equities[-1] >= equities[0] else ERROR_C
         pen = pg.mkPen(color=pen_clr, width=2)
-        pw.plot(xs, equities, pen=pen, name="Equity")
+        curve = pw.plot(xs, equities, pen=pen, name="Equity")
+        base = pw.plot(xs, [equities[0]] * len(xs), pen=pg.mkPen(None))
+        fc = QColor(pen_clr)
+        fc.setAlpha(30)
+        pw.addItem(pg.FillBetweenItem(curve, base, brush=fc))
 
-        # Fill under curve
-        fill_clr = QColor(ACCENT if equities[-1] >= start else ERROR_C)
-        fill_clr.setAlpha(30)
-        fill = pg.FillBetweenItem(
-            pw.plot(xs, equities, pen=pen),
-            pw.plot(xs, [start] * len(xs), pen=pg.mkPen(None)),
-            brush=fill_clr,
-        )
-        pw.addItem(fill)
+        if synth_indices:
+            regions = []
+            start_idx = synth_indices[0]
+            end_idx = synth_indices[0]
+            for idx in synth_indices[1:]:
+                if idx <= end_idx + 2:
+                    end_idx = idx
+                else:
+                    regions.append((start_idx, end_idx))
+                    start_idx = end_idx = idx
+            regions.append((start_idx, end_idx))
 
-        # Shade synthetic-priced trade regions in amber
-        for idx in self._synth_regions:
-            if 0 <= idx < len(xs):
-                region = pg.LinearRegionItem(
-                    values=[max(0, idx - 0.5), min(len(xs) - 1, idx + 0.5)],
-                    brush=QColor(WARN)
-                )
-                region.brush.setAlpha(40)
-                region.setMovable(False)
-                pw.addItem(region)
+            synth_color = QColor(WARN)
+            synth_color.setAlpha(35)
+            synth_brush = QBrush(synth_color)
 
-        # Draw trade markers
+            for rs, re in regions:
+                if 0 <= rs < len(xs) and 0 <= re < len(xs):
+                    r = pg.LinearRegionItem(
+                        values=[max(0, rs - 0.5), min(len(xs) - 1, re + 0.5)],
+                        brush=synth_brush,
+                    )
+                    r.setMovable(False)
+                    pw.addItem(r)
+
         for i, trade in enumerate(trades):
-            y_entry = equities[min(i, len(equities) - 1)]
-            dot_clr = CALL_CLR if trade.direction == "CE" else PUT_CLR
-            marker = pg.ScatterPlotItem(
-                [i], [y_entry],
-                symbol="t1" if trade.net_pnl > 0 else "t",
-                size=10, brush=dot_clr, pen=pg.mkPen(None),
-            )
-            pw.addItem(marker)
+            y = equities[min(i, len(equities) - 1)]
+            clr = CALL_CLR if getattr(trade, "direction", "") in ("CE", "CALL") else PUT_CLR
+            pw.addItem(pg.ScatterPlotItem(
+                [i], [y],
+                symbol="t1" if getattr(trade, "net_pnl", 0) > 0 else "t",
+                size=13, brush=clr, pen=pg.mkPen(None),
+            ))
 
     def clear(self):
         if self._use_pg:
             self._pg_widget.clear()
-        else:
+        elif hasattr(self, "_fallback"):
             self._fallback.set_data([], [])
 
 
 class _EquityPainter(QWidget):
-    """Pure-Qt fallback equity painter (no pyqtgraph dependency)."""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self._equity = []
-        self._trades = []
-        self._synth = set()
         self.setMinimumHeight(200)
 
-    def set_data(self, equity_curve, trades):
+    def set_data(self, equity_curve, _trades):
         self._equity = [e["equity"] for e in equity_curve]
-        self._trades = trades
-        self._synth = {
-            i for i, t in enumerate(trades)
-            if t.entry_source.value == "synthetic" or t.exit_source.value == "synthetic"
-        }
         self.update()
 
     def paintEvent(self, event):
-        from PyQt5.QtGui import QPainter, QPen, QColor
+        from PyQt5.QtGui import QPainter, QPen
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-
-        w, h = self.width(), self.height()
-        pad = 40
-
+        w, h, pad = self.width(), self.height(), 40
         p.fillRect(0, 0, w, h, QColor(BG))
-
         if not self._equity or len(self._equity) < 2:
             p.setPen(QColor(SUBTEXT))
             p.drawText(0, 0, w, h, Qt.AlignCenter, "No equity data")
             return
-
         mn, mx = min(self._equity), max(self._equity)
         rng = mx - mn or 1
-
-        def tx(i):
-            return pad + int((i / (len(self._equity) - 1)) * (w - 2 * pad))
-
-        def ty(v):
-            return h - pad - int(((v - mn) / rng) * (h - 2 * pad))
-
-        # Zero line
-        z = ty(self._equity[0])
+        tx = lambda i: pad + int((i / (len(self._equity) - 1)) * (w - 2 * pad))
+        ty = lambda v: h - pad - int(((v - mn) / rng) * (h - 2 * pad))
         p.setPen(QPen(QColor(BORDER), 1, Qt.DashLine))
-        p.drawLine(pad, z, w - pad, z)
-
-        # Equity path
+        p.drawLine(pad, ty(self._equity[0]), w - pad, ty(self._equity[0]))
         clr = QColor(ACCENT if self._equity[-1] >= self._equity[0] else ERROR_C)
         p.setPen(QPen(clr, 2))
         for i in range(1, len(self._equity)):
             p.drawLine(tx(i - 1), ty(self._equity[i - 1]), tx(i), ty(self._equity[i]))
-
-        # Axis labels
         p.setPen(QColor(SUBTEXT))
-        p.drawText(pad, h - 5, f"₹{self._equity[0]:,.0f}")
-        p.drawText(w - pad - 60, h - 5, f"₹{self._equity[-1]:,.0f}")
         p.drawText(2, ty(mx) + 4, f"₹{mx:,.0f}")
         p.drawText(2, ty(mn) + 4, f"₹{mn:,.0f}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Stat card  (shows one metric with label + coloured value)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class _StatCard(QFrame):
-    def __init__(self, label: str, value: str = "—", value_color: str = TEXT):
-        super().__init__()
-        self.setStyleSheet(
-            f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER};"
-            f" border-radius: 6px; padding: 4px; }}"
-        )
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(2)
-        self._lbl = QLabel(label)
-        self._lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 10px; border: none;")
-        self._val = QLabel(value)
-        self._val.setStyleSheet(f"color: {value_color}; font-size: 14px; font-weight: bold; border: none;")
-        lay.addWidget(self._lbl)
-        lay.addWidget(self._val)
-
-    def update_value(self, value: str, color: str = TEXT):
-        self._val.setText(value)
-        self._val.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold; border: none;")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Main Backtest Window
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Main Backtest Window ───────────────────────────────────────────────────────
 
 class BacktestWindow(QMainWindow):
     """
     Standalone QMainWindow for running and reviewing backtests.
+    Uses state_manager to access and restore trade state.
 
-    Parameters
-    ----------
-    trading_app   : TradingApp instance (provides broker + strategy)
-    parent        : optional parent widget
+    Layout mirrors TradingGUI:
+      • Left/centre: tabbed results panel
+      • Right: settings sidebar (tabbed, like StatusPanel)
+      • Bottom: progress bar + Run/Stop buttons
     """
 
     def __init__(self, trading_app=None, strategy_manager=None, parent=None):
         super().__init__(parent)
         self._trading_app = trading_app
-        self._strategy_manager = strategy_manager  # TradingGUI.strategy_manager passed explicitly
-        self._thread: Optional["BacktestThread"] = None
+        self._strategy_manager = strategy_manager or StrategyManager()
+        self._thread: Optional[BacktestThread] = None
         self._result = None
+        self._analysis_data: Dict[str, List[BarAnalysis]] = {}
+
+        # Get current state snapshot for reference and restoration
+        self._pre_backtest_state = state_manager.save_state()
+        logger.info(f"[BacktestWindow] Saved pre-backtest state: {len(self._pre_backtest_state)} fields")
 
         self.setWindowTitle("📊  Strategy Backtester")
-        self.setMinimumSize(1280, 820)
+        self.setMinimumSize(1500, 900)
         self.setStyleSheet(_CSS)
 
         self._build()
         self._load_defaults()
+        self._load_strategies()
 
-    # ── Build ──────────────────────────────────────────────────────────────────
+    # ── Build UI ───────────────────────────────────────────────────────────────
 
     def _build(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
+        root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Left panel: config ────────────────────────────────────────────────
-        left = self._build_config_panel()
-        left.setFixedWidth(310)
-        root.addWidget(left)
+        # ── Synthetic-price disclaimer banner ──────────────────────────
+        self._synth_banner = QFrame()
+        self._synth_banner.setStyleSheet(
+            f"background:#2d2500; border-bottom:1px solid {WARN}; padding:6px 16px;"
+        )
+        sb_lay = QHBoxLayout(self._synth_banner)
+        sb_lay.setContentsMargins(0, 0, 0, 0)
+        self._synth_banner_lbl = QLabel()
+        self._synth_banner_lbl.setStyleSheet(f"color:{WARN}; font-size:13px;")
+        self._synth_banner_lbl.setWordWrap(True)
+        sb_lay.addWidget(self._synth_banner_lbl)
+        self._synth_banner.hide()
+        root.addWidget(self._synth_banner)
 
-        # ── Right panel: results ──────────────────────────────────────────────
-        right = self._build_results_panel()
-        root.addWidget(right, 1)
+        # ── Main horizontal split: Results | Sidebar ───────────────────
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(2)
+        splitter.setStyleSheet(f"QSplitter::handle {{ background: {BORDER}; }}")
 
-    def _build_config_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setStyleSheet(f"background: {SURFACE}; border-right: 1px solid {BORDER};")
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(14)
+        # Left: Results panel
+        results_panel = self._build_results_panel()
+        splitter.addWidget(results_panel)
 
-        # Title
-        title = QLabel("⚙️  Backtest Config")
-        title.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: bold;")
-        lay.addWidget(title)
-        lay.addWidget(_sep())
+        # Right: Settings sidebar (mirrors StatusPanel position)
+        self.settings_sidebar = SettingsSidebar(self)
+        self.settings_sidebar.setFixedWidth(420)
+        splitter.addWidget(self.settings_sidebar)
 
-        # ── Date range ────────────────────────────────────────────────────────
-        date_grp = _card("Date Range")
-        dg = QGridLayout(date_grp)
-        dg.setSpacing(6)
+        splitter.setSizes([1100, 380])
+        root.addWidget(splitter, 1)
 
-        dg.addWidget(_label("From"), 0, 0)
-        self._date_from = QDateEdit()
-        self._date_from.setCalendarPopup(True)
-        self._date_from.setDate(QDate.currentDate().addDays(-30))
-        self._date_from.setDisplayFormat("dd MMM yyyy")
-        dg.addWidget(self._date_from, 0, 1)
+        # ── Bottom bar: progress + buttons ─────────────────────────────
+        bottom = self._build_bottom_bar()
+        root.addWidget(bottom)
 
-        dg.addWidget(_label("To"), 1, 0)
-        self._date_to = QDateEdit()
-        self._date_to.setCalendarPopup(True)
-        self._date_to.setDate(QDate.currentDate().addDays(-1))
-        self._date_to.setDisplayFormat("dd MMM yyyy")
-        dg.addWidget(self._date_to, 1, 1)
-
-        lay.addWidget(date_grp)
-
-        # ── Instrument ────────────────────────────────────────────────────────
-        inst_grp = _card("Instrument")
-        ig = QGridLayout(inst_grp)
-        ig.setSpacing(6)
-
-        ig.addWidget(_label("Derivative"), 0, 0)
-        self._derivative = QComboBox()
-        self._derivative.addItems(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"])
-        ig.addWidget(self._derivative, 0, 1)
-
-        ig.addWidget(_label("Expiry"), 1, 0)
-        self._expiry_type = QComboBox()
-        self._expiry_type.addItems(["weekly", "monthly"])
-        ig.addWidget(self._expiry_type, 1, 1)
-
-        ig.addWidget(_label("Lot Size"), 2, 0)
-        self._lot_size = QSpinBox()
-        self._lot_size.setRange(1, 1800)
-        self._lot_size.setValue(50)
-        ig.addWidget(self._lot_size, 2, 1)
-
-        ig.addWidget(_label("# Lots"), 3, 0)
-        self._num_lots = QSpinBox()
-        self._num_lots.setRange(1, 50)
-        self._num_lots.setValue(1)
-        ig.addWidget(self._num_lots, 3, 1)
-
-        ig.addWidget(_label("Interval"), 4, 0)
-        self._interval = QComboBox()
-        self._interval.addItems(["1", "2", "3", "5", "10", "15", "30"])
-        self._interval.setCurrentText("5")
-        ig.addWidget(self._interval, 4, 1)
-
-        lay.addWidget(inst_grp)
-
-        # ── TP / SL ───────────────────────────────────────────────────────────
-        risk_grp = _card("Take-Profit / Stop-Loss")
-        rg = QGridLayout(risk_grp)
-        rg.setSpacing(6)
-
-        rg.addWidget(_label("TP %"), 0, 0)
-        self._tp_pct = QDoubleSpinBox()
-        self._tp_pct.setRange(0, 500)
-        self._tp_pct.setValue(30)
-        self._tp_pct.setSuffix(" %")
-        self._tp_pct.setDecimals(1)
-        rg.addWidget(self._tp_pct, 0, 1)
-
-        rg.addWidget(_label("SL %"), 1, 0)
-        self._sl_pct = QDoubleSpinBox()
-        self._sl_pct.setRange(0, 100)
-        self._sl_pct.setValue(25)
-        self._sl_pct.setSuffix(" %")
-        self._sl_pct.setDecimals(1)
-        rg.addWidget(self._sl_pct, 1, 1)
-
-        self._use_tp = QCheckBox("Enable TP")
-        self._use_tp.setChecked(True)
-        self._use_sl = QCheckBox("Enable SL")
-        self._use_sl.setChecked(True)
-        rg.addWidget(self._use_tp, 2, 0)
-        rg.addWidget(self._use_sl, 2, 1)
-
-        lay.addWidget(risk_grp)
-
-        # ── Costs ─────────────────────────────────────────────────────────────
-        cost_grp = _card("Execution Costs")
-        cg = QGridLayout(cost_grp)
-        cg.setSpacing(6)
-
-        cg.addWidget(_label("Slippage"), 0, 0)
-        self._slippage = QDoubleSpinBox()
-        self._slippage.setRange(0, 5)
-        self._slippage.setValue(0.25)
-        self._slippage.setSuffix(" %")
-        self._slippage.setDecimals(2)
-        cg.addWidget(self._slippage, 0, 1)
-
-        cg.addWidget(_label("Brokerage / Lot"), 1, 0)
-        self._brokerage = QDoubleSpinBox()
-        self._brokerage.setRange(0, 500)
-        self._brokerage.setValue(40)
-        self._brokerage.setPrefix("₹ ")
-        self._brokerage.setDecimals(0)
-        cg.addWidget(self._brokerage, 1, 1)
-
-        cg.addWidget(_label("Capital"), 2, 0)
-        self._capital = QDoubleSpinBox()
-        self._capital.setRange(10000, 100_000_000)
-        self._capital.setValue(100_000)
-        self._capital.setPrefix("₹ ")
-        self._capital.setDecimals(0)
-        self._capital.setSingleStep(10_000)
-        cg.addWidget(self._capital, 2, 1)
-
-        lay.addWidget(cost_grp)
-
-        # ── Misc ──────────────────────────────────────────────────────────────
-        misc_grp = _card("Options")
-        mg = QVBoxLayout(misc_grp)
-        self._skip_sideway = QCheckBox("Skip 12:00–14:00 (sideway zone)")
-        self._skip_sideway.setChecked(True)
-        mg.addWidget(self._skip_sideway)
-        lay.addWidget(misc_grp)
-
-        lay.addStretch()
-
-        # ── Action buttons ────────────────────────────────────────────────────
-        self._run_btn = QPushButton("▶  Run Backtest")
-        self._run_btn.setObjectName("runBtn")
-        self._run_btn.setFixedHeight(42)
-        self._run_btn.clicked.connect(self._on_run)
-        lay.addWidget(self._run_btn)
-
-        self._stop_btn = QPushButton("■  Stop")
-        self._stop_btn.setObjectName("stopBtn")
-        self._stop_btn.setFixedHeight(34)
-        self._stop_btn.setEnabled(False)
-        self._stop_btn.clicked.connect(self._on_stop)
-        lay.addWidget(self._stop_btn)
-
-        return panel
+        # Wire strategy combo change
+        self.settings_sidebar.strategy_combo.currentIndexChanged.connect(
+            self._update_strategy_info
+        )
 
     def _build_results_panel(self) -> QWidget:
         panel = QWidget()
@@ -607,64 +1072,30 @@ class BacktestWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # ── Progress bar + status ─────────────────────────────────────────────
-        prog_bar_widget = QWidget()
-        prog_bar_widget.setStyleSheet(f"background: {SURFACE}; border-bottom: 1px solid {BORDER};")
-        prog_lay = QHBoxLayout(prog_bar_widget)
-        prog_lay.setContentsMargins(16, 8, 16, 8)
-        prog_lay.setSpacing(12)
-
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setValue(0)
-        self._progress.setFixedHeight(8)
-        self._progress.setTextVisible(False)
-        prog_lay.addWidget(self._progress)
-
-        self._status_lbl = QLabel("Ready")
-        self._status_lbl.setStyleSheet(f"color: {SUBTEXT}; min-width: 340px;")
-        prog_lay.addWidget(self._status_lbl)
-
-        lay.addWidget(prog_bar_widget)
-
-        # ── Synthetic-price disclaimer banner (hidden until results arrive) ───
-        self._synth_banner = QFrame()
-        self._synth_banner.setStyleSheet(
-            f"background: #2d2500; border-bottom: 1px solid {WARN}; padding: 6px 16px;"
-        )
-        sb_lay = QHBoxLayout(self._synth_banner)
-        sb_lay.setContentsMargins(0, 0, 0, 0)
-        self._synth_banner_lbl = QLabel()
-        self._synth_banner_lbl.setStyleSheet(f"color: {WARN}; font-size: 11px;")
-        self._synth_banner_lbl.setWordWrap(True)
-        sb_lay.addWidget(self._synth_banner_lbl)
-        self._synth_banner.hide()
-        lay.addWidget(self._synth_banner)
-
-        # ── Tab widget ────────────────────────────────────────────────────────
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
         lay.addWidget(self._tabs, 1)
 
-        # Tab 1: Overview / Stats
         self._tabs.addTab(self._build_overview_tab(), "📈  Overview")
-        # Tab 2: Trade Log
         self._tabs.addTab(self._build_trade_log_tab(), "📋  Trade Log")
-        # Tab 3: Equity Chart
+        self._analysis_tab = MultiTimeframeAnalysisTab()
+        self._tabs.addTab(self._analysis_tab, "🔬  Strategy Analysis")
         self._tabs.addTab(self._build_chart_tab(), "📉  Equity Curve")
+        self._debug_tab = CandleDebugTab(parent=self)
+        self._tabs.addTab(self._debug_tab, "🔍 Candle Debug")
 
         return panel
 
     def _build_overview_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(16)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(14)
 
-        # ── Stat cards grid ───────────────────────────────────────────────────
-        cards_widget = QWidget()
-        cards_lay = QGridLayout(cards_widget)
-        cards_lay.setSpacing(12)
+        # Stat cards grid (4 columns)
+        cards_w = QWidget()
+        cards_lay = QGridLayout(cards_w)
+        cards_lay.setSpacing(10)
 
         self._cards = {}
         card_defs = [
@@ -686,11 +1117,15 @@ class BacktestWindow(QMainWindow):
             self._cards[key] = card
             cards_lay.addWidget(card, n // 4, n % 4)
 
-        lay.addWidget(cards_widget)
+        lay.addWidget(cards_w)
 
-        # ── Config summary label ──────────────────────────────────────────────
-        self._cfg_summary = QLabel("No results yet — configure and run a backtest.")
-        self._cfg_summary.setStyleSheet(f"color: {SUBTEXT}; font-size: 10px;")
+        self._timeframe_info = _label("", color=INFO, size=14)
+        lay.addWidget(self._timeframe_info)
+
+        self._cfg_summary = _label(
+            "No results yet — configure settings on the right and press ▶ Run.",
+            color=SUBTEXT, size=13
+        )
         self._cfg_summary.setWordWrap(True)
         lay.addWidget(self._cfg_summary)
 
@@ -703,19 +1138,15 @@ class BacktestWindow(QMainWindow):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
 
-        # Legend
-        legend_row = QHBoxLayout()
+        legend = QHBoxLayout()
         for sym, lbl, clr in [
-            ("⚗", "Synthetic (BS) price — VIX-based approx.", WARN),
+            ("⚗", "Synthetic (Black-Scholes) price", WARN),
             ("✓", "Real broker data", ACCENT),
         ]:
-            leg = QLabel(f"{sym}  {lbl}")
-            leg.setStyleSheet(f"color: {clr}; font-size: 10px;")
-            legend_row.addWidget(leg)
-        legend_row.addStretch()
-        lay.addLayout(legend_row)
+            legend.addWidget(_label(f"{sym}  {lbl}", color=clr, size=13))
+        legend.addStretch()
+        lay.addLayout(legend)
 
-        # Table
         cols = [
             "#", "Dir", "Entry Time", "Exit Time",
             "Spot In", "Spot Out", "Strike",
@@ -732,45 +1163,127 @@ class BacktestWindow(QMainWindow):
         hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(True)
         lay.addWidget(self._trade_table, 1)
-
         return w
 
     def _build_chart_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
-
         self._equity_chart = EquityChart()
         self._equity_chart.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         lay.addWidget(self._equity_chart, 1)
-
-        synth_note = QLabel(
-            "⚗ Amber-shaded bars indicate trades priced via Black-Scholes (real option data unavailable)."
+        note = _label(
+            "⚗ Amber-shaded bars = Black-Scholes synthetic pricing (real option data unavailable).",
+            color=WARN, size=13
         )
-        synth_note.setStyleSheet(f"color: {WARN}; font-size: 10px;")
-        lay.addWidget(synth_note)
-
+        lay.addWidget(note)
         return w
 
-    # ── Defaults ───────────────────────────────────────────────────────────────
+    def _build_bottom_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(64)
+        bar.setStyleSheet(f"background:{SURFACE}; border-top:1px solid {BORDER};")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(16, 10, 16, 10)
+        lay.setSpacing(12)
+
+        # Progress section
+        prog_col = QVBoxLayout()
+        prog_col.setSpacing(2)
+
+        self._status_lbl = _label("Ready", color=SUBTEXT, size=13)
+        prog_col.addWidget(self._status_lbl)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.setValue(0)
+        self._progress.setFixedHeight(6)
+        self._progress.setTextVisible(False)
+        prog_col.addWidget(self._progress)
+
+        lay.addLayout(prog_col, 1)
+
+        # Buttons
+        self.run_btn = QPushButton("▶  Run Backtest")
+        self.run_btn.setObjectName("runBtn")
+        self.run_btn.setFixedHeight(42)
+        self.run_btn.setMinimumWidth(160)
+        self.run_btn.clicked.connect(self._on_run)
+        lay.addWidget(self.run_btn)
+
+        self.stop_btn = QPushButton("■  Stop")
+        self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setFixedHeight(42)
+        self.stop_btn.setMinimumWidth(100)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self._on_stop)
+        lay.addWidget(self.stop_btn)
+
+        return bar
+
+    # ── Strategy management ────────────────────────────────────────────────────
+
+    def _load_strategies(self):
+        combo = self.settings_sidebar.strategy_combo
+        combo.blockSignals(True)
+        combo.clear()
+        try:
+            strategies = self._strategy_manager.list_strategies()
+            active_slug = self._strategy_manager.get_active_slug()
+            for s in strategies:
+                slug = s.get("slug", "")
+                name = s.get("name", "Unknown")
+                prefix = "⚡ " if slug == active_slug else "   "
+                combo.addItem(f"{prefix}{name}", slug)
+            if combo.count():
+                combo.setCurrentIndex(0)
+        except Exception as e:
+            logger.warning(f"[BacktestWindow._load_strategies] {e}")
+        combo.blockSignals(False)
+        self._update_strategy_info()
+
+    def _update_strategy_info(self):
+        combo = self.settings_sidebar.strategy_combo
+        slug = combo.currentData()
+        if not slug:
+            return
+        try:
+            strategy = self._strategy_manager.get(slug)
+            if strategy:
+                engine = strategy.get("engine", {})
+                min_conf = engine.get("min_confidence", 0.6)
+                desc = strategy.get("description", "")
+                info = f"📊 {strategy.get('name', '')}\nMin Confidence: {min_conf:.0%}"
+                if desc:
+                    info += f"\n{desc[:120]}" + ("…" if len(desc) > 120 else "")
+                self.settings_sidebar.strategy_info.setText(info)
+                self.settings_sidebar.update_strategy_stats(strategy)
+        except Exception as e:
+            logger.debug(f"[BacktestWindow._update_strategy_info] {e}")
+
+    # ── Load defaults from live config ────────────────────────────────────────
 
     def _load_defaults(self):
-        """Pre-fill from live trading settings if trading_app is available."""
         try:
+            sb = self.settings_sidebar
             if self._trading_app and hasattr(self._trading_app, "trade_config"):
                 tc = self._trading_app.trade_config
-                if hasattr(tc, "derivative") and tc.derivative:
-                    idx = self._derivative.findText(tc.derivative.upper())
+                if getattr(tc, "derivative", None):
+                    idx = sb.derivative.findText(tc.derivative.upper())
                     if idx >= 0:
-                        self._derivative.setCurrentIndex(idx)
-                if hasattr(tc, "lot_size") and tc.lot_size:
-                    self._lot_size.setValue(int(tc.lot_size))
+                        sb.derivative.setCurrentIndex(idx)
+                if getattr(tc, "lot_size", None):
+                    sb.lot_size.setValue(int(tc.lot_size))
+                if getattr(tc, "history_interval", None):
+                    idx = sb.base_interval.findText(str(tc.history_interval).replace("m", ""))
+                    if idx >= 0:
+                        sb.base_interval.setCurrentIndex(idx)
             if self._trading_app and hasattr(self._trading_app, "profit_loss_config"):
                 pl = self._trading_app.profit_loss_config
-                if hasattr(pl, "tp_percentage") and pl.tp_percentage:
-                    self._tp_pct.setValue(float(pl.tp_percentage))
-                if hasattr(pl, "stoploss_percentage") and pl.stoploss_percentage:
-                    self._sl_pct.setValue(float(pl.stoploss_percentage))
+                if getattr(pl, "tp_percentage", None):
+                    sb.tp_pct.setValue(float(pl.tp_percentage))
+                if getattr(pl, "stoploss_percentage", None):
+                    sb.sl_pct.setValue(float(pl.stoploss_percentage))
         except Exception as e:
             logger.debug(f"[BacktestWindow._load_defaults] {e}")
 
@@ -778,6 +1291,7 @@ class BacktestWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_run(self):
+        """Start the backtest thread."""
         if self._thread and self._thread.isRunning():
             return
 
@@ -790,71 +1304,78 @@ class BacktestWindow(QMainWindow):
             )
             return
 
-        # ── Collect config ─────────────────────────────────────────────────────
-        d_from = self._date_from.date()
-        d_to = self._date_to.date()
+        combo = self.settings_sidebar.strategy_combo
+        strategy_slug = combo.currentData()
+        if not strategy_slug:
+            QMessageBox.warning(self, "No Strategy", "Please select a strategy.")
+            return
 
-        # Pull the active strategy from the live trading app so the
-        # backtest runs the same strategy currently configured.
-        # Priority 1: serialise the live in-memory signal engine — guaranteed
-        #             to reflect exactly what the user has loaded right now.
-        # Priority 2: fall back to strategy slug -> DB lookup.
-        strategy_slug = None
-        signal_engine_cfg = None
-        try:
-            # Priority 1: live in-memory engine from detector
-            se = None
-            if self._trading_app and hasattr(self._trading_app, "detector"):
-                se = getattr(self._trading_app.detector, "signal_engine", None)
-            # Also check direct signal_engine attribute on trading_app
-            if se is None and self._trading_app and hasattr(self._trading_app, "signal_engine"):
-                se = self._trading_app.signal_engine
-            if se is not None and hasattr(se, "to_dict"):
-                signal_engine_cfg = se.to_dict()
-                logger.debug("[BacktestWindow] Loaded signal config from live in-memory engine")
+        strategy = self._strategy_manager.get(strategy_slug)
+        if not strategy:
+            QMessageBox.warning(self, "Invalid Strategy", "Selected strategy not found.")
+            return
 
-            # Priority 2: strategy manager slug (fallback when live engine not available)
-            if not signal_engine_cfg:
-                sm = None
-                # NOTE: strategy_manager lives on TradingGUI, not on trading_app.
-                # It is passed in via the _strategy_manager attribute (see __init__).
-                if hasattr(self, "_strategy_manager") and self._strategy_manager:
-                    sm = self._strategy_manager
-                elif self._trading_app and hasattr(self._trading_app, "strategy_manager"):
-                    sm = self._trading_app.strategy_manager
-                if sm and hasattr(sm, "get_active_slug"):
-                    strategy_slug = sm.get_active_slug()
-                    logger.debug(f"[BacktestWindow] Falling back to strategy slug: {strategy_slug}")
-        except Exception as e:
-            logger.debug(f"[BacktestWindow._on_run] Could not load strategy: {e}")
+        selected_tfs = self.settings_sidebar.get_selected_timeframes()
+        if not selected_tfs:
+            reply = QMessageBox.question(
+                self, "No Timeframes Selected",
+                "No analysis timeframes selected. Run backtest anyway?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
+        sb = self.settings_sidebar
+        d_from = sb.date_from.date()
+        d_to = sb.date_to.date()
+
+        start = _qdate_to_datetime(d_from, end_of_day=False)
+        end = _qdate_to_datetime(d_to, end_of_day=True)
+
         cfg = BacktestConfig(
-            start_date=datetime(d_from.year(), d_from.month(), d_from.day()),
-            end_date=datetime(d_to.year(), d_to.month(), d_to.day(), 23, 59, 59),
-            derivative=self._derivative.currentText(),
-            expiry_type=self._expiry_type.currentText(),
-            lot_size=self._lot_size.value(),
-            num_lots=self._num_lots.value(),
-            tp_pct=(self._tp_pct.value() / 100) if self._use_tp.isChecked() else None,
-            sl_pct=(self._sl_pct.value() / 100) if self._use_sl.isChecked() else None,
-            slippage_pct=self._slippage.value() / 100,
-            brokerage_per_lot=self._brokerage.value(),
-            capital=self._capital.value(),
-            interval_minutes=int(self._interval.currentText()),
-            sideway_zone_skip=self._skip_sideway.isChecked(),
+            start_date=start,
+            end_date=end,
+            derivative=sb.derivative.currentText(),
+            expiry_type=sb.expiry_type.currentText(),
+            lot_size=sb.lot_size.value(),
+            num_lots=sb.num_lots.value(),
+            tp_pct=(sb.tp_pct.value() / 100) if sb.use_tp.isChecked() else None,
+            sl_pct=(sb.sl_pct.value() / 100) if sb.use_sl.isChecked() else None,
+            slippage_pct=sb.slippage.value() / 100,
+            brokerage_per_lot=sb.brokerage.value(),
+            capital=sb.capital.value(),
+            interval_minutes=int(sb.base_interval.currentText()),
+            sideway_zone_skip=sb.skip_sideway.isChecked(),
+            use_vix=sb.use_vix.isChecked(),
             strategy_slug=strategy_slug,
-            signal_engine_cfg=signal_engine_cfg,
+            signal_engine_cfg=strategy.get("engine", {}),
+            debug_candles=True,  # collect per-candle data for Strategy Analysis tab
         )
-        print(cfg)
 
-        # ── Reset UI ───────────────────────────────────────────────────────────
+        # Always include the execution interval in analysis
+        exec_tf = f"{int(sb.base_interval.currentText())}m"
+        if exec_tf not in selected_tfs:
+            selected_tfs = [exec_tf] + selected_tfs
+
+        # Store for later
+        self._selected_analysis_tfs = selected_tfs
+
         self._reset_results()
-        self._run_btn.setEnabled(False)
-        self._stop_btn.setEnabled(True)
+        self.run_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
         self._progress.setValue(0)
-        self._status_lbl.setText("Starting…")
+        self._status_lbl.setText("Starting backtest…")
         self._tabs.setCurrentIndex(0)
 
-        # ── Launch thread ──────────────────────────────────────────────────────
+        if selected_tfs:
+            self._timeframe_info.setText(f"Analysing timeframes: {', '.join(selected_tfs)}")
+        else:
+            self._timeframe_info.setText("No analysis timeframes selected")
+
+        # Save current state before backtest (refresh snapshot)
+        self._pre_backtest_state = state_manager.save_state()
+        logger.debug(f"[BacktestWindow] Saved pre-backtest state with {len(self._pre_backtest_state)} fields")
+
         self._thread = BacktestThread(broker, cfg)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished.connect(self._on_finished)
@@ -865,7 +1386,7 @@ class BacktestWindow(QMainWindow):
     def _on_stop(self):
         if self._thread:
             self._thread.stop()
-        self._stop_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
         self._status_lbl.setText("Stopping…")
 
     def _get_broker(self):
@@ -876,7 +1397,7 @@ class BacktestWindow(QMainWindow):
             pass
         return None
 
-    # ── Signals from thread ────────────────────────────────────────────────────
+    # ── Thread signals ─────────────────────────────────────────────────────────
 
     @pyqtSlot(float, str)
     def _on_progress(self, pct: float, msg: str):
@@ -885,29 +1406,45 @@ class BacktestWindow(QMainWindow):
 
     @pyqtSlot(object)
     def _on_finished(self, result):
+        """Handle backtest completion."""
         self._result = result
-        self._run_btn.setEnabled(True)
-        self._stop_btn.setEnabled(False)
+        self.run_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
         self._progress.setValue(100)
 
         if result.error_msg:
             self._status_lbl.setText(f"⚠  {result.error_msg}")
             QMessageBox.warning(self, "Backtest Error", result.error_msg)
+
+            # Restore original state on error
+            state_manager.restore_state(self._pre_backtest_state)
             return
 
         self._status_lbl.setText(
-            f"✓  Done — {result.total_trades} trades | "
-            f"Net P&L ₹{result.total_net_pnl:+,.0f} | "
+            f"✓  Done — {result.total_trades} trades  |  "
+            f"Net P&L ₹{result.total_net_pnl:+,.0f}  |  "
             f"Win Rate {result.win_rate:.1f}%"
         )
         self._populate_results(result)
 
+        # Auto-export analysis
+        if (self.settings_sidebar.auto_export.isChecked()
+                and hasattr(result, "analysis_data")
+                and result.analysis_data):
+            self._export_analysis()
+        self._debug_tab.load(self.debugger.get_entries())
+
+        # State is automatically restored by BacktestThread.finished signal
+
     @pyqtSlot(str)
     def _on_error(self, msg: str):
-        self._run_btn.setEnabled(True)
-        self._stop_btn.setEnabled(False)
+        self.run_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
         self._status_lbl.setText(f"Error: {msg}")
         QMessageBox.critical(self, "Backtest Failed", msg)
+
+        # Restore original state on error
+        state_manager.restore_state(self._pre_backtest_state)
 
     # ── Populate results ───────────────────────────────────────────────────────
 
@@ -917,35 +1454,33 @@ class BacktestWindow(QMainWindow):
         self._trade_table.setRowCount(0)
         for card in self._cards.values():
             card.update_value("—")
+        self._analysis_data = {}
+        self._analysis_tab.set_analysis_data({})
 
-    def _populate_results(self, result):
-        """Fill all three tabs with backtest result data."""
-        from backtest.backtest_option_pricer import PriceSource
-
-        # ── Synthetic banner ──────────────────────────────────────────────────
-        if result.synthetic_bars > 0:
-            total = result.synthetic_bars + result.real_bars
-            pct = result.synthetic_bars / total * 100 if total else 0
+    def _populate_results(self, result: BacktestResult):
+        # Synthetic banner
+        total_src = result.synthetic_bars + result.real_bars
+        if result.synthetic_bars > 0 and total_src:
+            pct = result.synthetic_bars / total_src * 100
             self._synth_banner_lbl.setText(
-                f"⚗  {result.synthetic_bars} of {total} trades used Black-Scholes synthetic pricing "
-                f"({pct:.0f}%) because your broker does not provide historical option data for "
-                f"expired strikes.  Prices are approximated using India VIX — actual volatility "
-                f"may differ, especially around events (earnings, RBI, budget).  "
-                f"Trades using real data are marked ✓; synthetic trades are marked ⚗ and "
-                f"highlighted in amber."
+                f"⚗  {result.synthetic_bars} of {total_src} trades used Black-Scholes "
+                f"synthetic pricing ({pct:.0f}%) — real option history unavailable for "
+                f"expired strikes. Prices approximated via India VIX. "
+                f"Trades with real data are marked ✓; synthetic trades are marked ⚗ and "
+                f"highlighted amber."
             )
             self._synth_banner.show()
 
-        # ── Overview stats ────────────────────────────────────────────────────
+        # Overview cards
         pnl_clr = ACCENT if result.total_net_pnl >= 0 else ERROR_C
         self._cards["net_pnl"].update_value(f"₹{result.total_net_pnl:+,.0f}", pnl_clr)
         self._cards["total_trades"].update_value(str(result.total_trades))
         wr_clr = ACCENT if result.win_rate >= 50 else WARN
         self._cards["win_rate"].update_value(f"{result.win_rate:.1f}%", wr_clr)
         pf_clr = ACCENT if result.profit_factor >= 1 else ERROR_C
-        self._cards["profit_factor"].update_value(
-            f"{result.profit_factor:.2f}" if result.profit_factor != float("inf") else "∞", pf_clr
-        )
+        pf_txt = (f"{result.profit_factor:.2f}"
+                  if result.profit_factor != float("inf") else "∞")
+        self._cards["profit_factor"].update_value(pf_txt, pf_clr)
         self._cards["best_trade"].update_value(f"₹{result.best_trade:+,.0f}", ACCENT)
         self._cards["worst_trade"].update_value(f"₹{result.worst_trade:+,.0f}", ERROR_C)
         avg_clr = ACCENT if result.avg_net_pnl >= 0 else ERROR_C
@@ -955,47 +1490,39 @@ class BacktestWindow(QMainWindow):
         self._cards["sharpe"].update_value(f"{result.sharpe:.2f}", sh_clr)
         self._cards["winners"].update_value(str(result.winners), ACCENT)
         self._cards["losers"].update_value(str(result.losers), ERROR_C)
-        total_data = result.synthetic_bars + result.real_bars
-        if total_data:
-            real_pct = result.real_bars / total_data * 100
+        if total_src:
+            real_pct = result.real_bars / total_src * 100
             dq_clr = ACCENT if real_pct >= 80 else (WARN if real_pct >= 40 else ERROR_C)
-            dq_label = (
-                f"{result.real_bars} real / {result.synthetic_bars} synthetic"
-                if total_data < 30
-                else f"{real_pct:.0f}% real data"
-            )
+            dq_lbl = (f"{result.real_bars}R / {result.synthetic_bars}S"
+                      if total_src < 30
+                      else f"{real_pct:.0f}% real data")
         else:
-            dq_label, dq_clr = "N/A", SUBTEXT
-        self._cards["data_quality"].update_value(dq_label, dq_clr)
+            dq_lbl, dq_clr = "N/A", SUBTEXT
+        self._cards["data_quality"].update_value(dq_lbl, dq_clr)
 
         cfg = result.config
         self._cfg_summary.setText(
             f"Derivative: {cfg.derivative}  |  Expiry: {cfg.expiry_type}  |  "
             f"Lot Size: {cfg.lot_size}  |  Lots: {cfg.num_lots}  |  "
-            f"Interval: {cfg.interval_minutes}m  |  "
+            f"Base Interval: {cfg.interval_minutes}m  |  "
             f"Capital: ₹{cfg.capital:,.0f}  |  "
             f"Slippage: {cfg.slippage_pct * 100:.2f}%  |  "
             f"TP: {'off' if not cfg.tp_pct else f'{cfg.tp_pct * 100:.0f}%'}  |  "
             f"SL: {'off' if not cfg.sl_pct else f'{cfg.sl_pct * 100:.0f}%'}"
         )
 
-        # ── Trade log ─────────────────────────────────────────────────────────
+        # Trade log
         self._trade_table.setSortingEnabled(False)
         self._trade_table.setRowCount(len(result.trades))
         for row, t in enumerate(result.trades):
-            is_synth = (
-                    t.entry_source == PriceSource.SYNTHETIC or
-                    t.exit_source == PriceSource.SYNTHETIC
-            )
+            is_synth = self._equity_chart._is_synthetic(t)
             src_badge = "⚗" if is_synth else "✓"
             bg_color = QColor(SYNTH_BG) if is_synth else QColor(REAL_BG)
-
-            dir_clr = CALL_CLR if t.direction == "CE" else PUT_CLR
+            dir_clr = CALL_CLR if getattr(t, "direction", "") in ("CE", "CALL") else PUT_CLR
             pnl_clr = ACCENT if t.net_pnl >= 0 else ERROR_C
-
             cells = [
                 (str(t.trade_no), TEXT),
-                (f"{'📈 CE' if t.direction == 'CE' else '📉 PE'}", dir_clr),
+                (f"{'📈 CE' if t.direction in ('CE', 'CALL') else '📉 PE'}", dir_clr),
                 (t.entry_time.strftime("%d-%b %H:%M"), TEXT),
                 (t.exit_time.strftime("%d-%b %H:%M"), TEXT),
                 (f"{t.spot_entry:,.0f}", TEXT),
@@ -1007,18 +1534,234 @@ class BacktestWindow(QMainWindow):
                 (f"₹{t.gross_pnl:+,.0f}", pnl_clr),
                 (f"₹{t.net_pnl:+,.0f}", pnl_clr),
                 (t.exit_reason, WARN if t.exit_reason == "SL" else TEXT),
-                (t.signal_name[:20] if t.signal_name else "—", SUBTEXT),
+                ((t.signal_name or "—")[:20], SUBTEXT),
                 (src_badge, WARN if is_synth else ACCENT),
             ]
-
             for col, (val, clr) in enumerate(cells):
                 item = QTableWidgetItem(val)
                 item.setForeground(QBrush(QColor(clr)))
                 item.setBackground(QBrush(bg_color))
                 item.setTextAlignment(Qt.AlignCenter)
                 self._trade_table.setItem(row, col, item)
-
         self._trade_table.setSortingEnabled(True)
 
-        # ── Equity chart ──────────────────────────────────────────────────────
+        # Equity chart
         self._equity_chart.set_data(result.equity_curve, result.trades)
+
+        # Analysis tab — build from candle debug log
+        analysis_data = self._build_analysis_data(result)
+        if analysis_data:
+            self._analysis_data = analysis_data
+            self._analysis_tab.set_analysis_data(analysis_data)
+
+    # ── Analysis data builder ──────────────────────────────────────────────────
+
+    def _build_analysis_data(self, result: BacktestResult) -> Dict[str, List[BarAnalysis]]:
+        """
+        Build analysis data for the Strategy Analysis tab.
+
+        Priority order:
+          1. Candle debug log (result.debug_log_path) — richest: every bar with
+             full indicator values, per-group confidence, and per-rule pass/fail.
+          2. Trade list fallback — one BarAnalysis per trade entry.
+        """
+        # ── 1. Try candle debug JSON ───────────────────────────────────────────
+        debug_path = getattr(result, "debug_log_path", None)
+        if debug_path:
+            try:
+                data = self._build_analysis_from_debug_log(debug_path, result)
+                if data:
+                    logger.info(
+                        f"[BacktestWindow] Strategy Analysis: loaded {sum(len(v) for v in data.values())} "
+                        f"bars from debug log across {len(data)} timeframe(s)"
+                    )
+                    return data
+            except Exception as e:
+                logger.warning(f"[BacktestWindow._build_analysis_data] debug log load failed: {e}")
+
+        # ── 2. Fallback: build from trade list ─────────────────────────────────
+        return self._build_analysis_from_trades(result)
+
+    def _build_analysis_from_debug_log(
+            self, path: str, result: BacktestResult
+    ) -> Dict[str, List[BarAnalysis]]:
+        """Parse the per-candle JSON debug log into BarAnalysis objects."""
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        candles = payload.get("candles", [])
+        if not candles:
+            return {}
+
+        tf = f"{result.config.interval_minutes}m"
+        bars: List[BarAnalysis] = []
+
+        for c in candles:
+            # Skip skipped bars (sideway/warmup/market-closed)
+            if c.get("skip_reason"):
+                continue
+
+            try:
+                ts = datetime.strptime(c["time"], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+
+            spot = c.get("spot", {})
+            close = spot.get("close", 0.0) or 0.0
+
+            # Flatten indicator values
+            raw_ind = c.get("indicators", {})
+            ind_values: Dict[str, Dict[str, float]] = {}
+            for k, v in raw_ind.items():
+                if isinstance(v, dict):
+                    ind_values[k] = {"last": v.get("last", 0.0), "prev": v.get("prev", 0.0)}
+                elif isinstance(v, (int, float)):
+                    ind_values[k] = {"last": float(v), "prev": float(v)}
+
+            # Confidence map
+            confidence: Dict[str, float] = {}
+            rule_results: Dict[str, List[Dict]] = {}
+            for grp, grp_data in c.get("signal_groups", {}).items():
+                confidence[grp] = grp_data.get("confidence", 0.0)
+                rule_results[grp] = [
+                    {
+                        "rule": r.get("rule", ""),
+                        "result": r.get("passed", False),
+                        "weight": r.get("weight", 1.0),
+                        "lhs_value": r.get("lhs"),
+                        "rhs_value": r.get("rhs"),
+                        "detail": r.get("detail", ""),
+                        "error": r.get("error"),
+                    }
+                    for r in grp_data.get("rules", [])
+                ]
+
+            signal = c.get("resolved_signal", "WAIT") or "WAIT"
+
+            bars.append(BarAnalysis(
+                timestamp=ts,
+                spot_price=close,
+                signal=signal,
+                confidence=confidence,
+                rule_results=rule_results,
+                indicator_values=ind_values,
+                timeframe=tf,
+            ))
+
+        if not bars:
+            return {}
+
+        # Put all bars under the execution timeframe.
+        selected = getattr(self, "_selected_analysis_tfs", [tf])
+        data: Dict[str, List[BarAnalysis]] = {}
+        for selected_tf in selected:
+            relabelled = []
+            for b in bars:
+                relabelled.append(BarAnalysis(
+                    timestamp=b.timestamp,
+                    spot_price=b.spot_price,
+                    signal=b.signal,
+                    confidence=b.confidence,
+                    rule_results=b.rule_results,
+                    indicator_values=b.indicator_values,
+                    timeframe=selected_tf,
+                ))
+            data[selected_tf] = relabelled
+        return data
+
+    def _build_analysis_from_trades(self, result: BacktestResult) -> Dict[str, List[BarAnalysis]]:
+        """
+        Fallback: build one BarAnalysis per trade entry from the trade list.
+        """
+        if not result.trades:
+            return {}
+
+        tf = f"{result.config.interval_minutes}m"
+        bars: List[BarAnalysis] = []
+
+        for trade in result.trades:
+            signal = trade.signal_name or "BUY_CALL"
+            pseudo_conf = 0.7 if trade.net_pnl > 0 else 0.45
+            confidence = {signal: pseudo_conf}
+
+            bars.append(BarAnalysis(
+                timestamp=trade.entry_time,
+                spot_price=trade.spot_entry,
+                signal=signal,
+                confidence=confidence,
+                rule_results={},
+                indicator_values={},
+                timeframe=tf,
+            ))
+
+        selected = getattr(self, "_selected_analysis_tfs", [tf])
+        if not selected:
+            selected = [tf]
+
+        data: Dict[str, List[BarAnalysis]] = {}
+        for selected_tf in selected:
+            data[selected_tf] = [
+                BarAnalysis(
+                    timestamp=b.timestamp,
+                    spot_price=b.spot_price,
+                    signal=b.signal,
+                    confidence=b.confidence,
+                    rule_results=b.rule_results,
+                    indicator_values=b.indicator_values,
+                    timeframe=selected_tf,
+                )
+                for b in bars
+            ]
+
+        logger.info(
+            f"[BacktestWindow] Strategy Analysis: trade-list fallback — "
+            f"{len(bars)} entries. Enable debug_candles=True for full per-bar data."
+        )
+        return data
+
+    # ── Export helpers ─────────────────────────────────────────────────────────
+
+    def _export_analysis(self):
+        if not self._analysis_data:
+            QMessageBox.warning(self, "No Data", "No analysis data to export.")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Select Export Directory")
+        if not directory:
+            return
+        strategy_name = (self.settings_sidebar.strategy_combo.currentText()
+                         .replace("⚡", "").replace("   ", "").strip())
+        n = 0
+        for tf, data in self._analysis_data.items():
+            if data:
+                fp = os.path.join(
+                    directory,
+                    f"{strategy_name}_{tf}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                )
+                try:
+                    pd.DataFrame([b.to_dict() for b in data]).to_csv(fp, index=False)
+                    n += 1
+                except Exception as e:
+                    logger.error(f"Export {tf}: {e}")
+        QMessageBox.information(self, "Export Complete", f"Exported {n} file(s) to:\n{directory}")
+
+    def closeEvent(self, event):
+        """Handle window close - ensure state is restored."""
+        try:
+            logger.info("[BacktestWindow] Closing, restoring original state")
+
+            # Restore original state if needed
+            if hasattr(self, '_pre_backtest_state') and self._pre_backtest_state:
+                state_manager.restore_state(self._pre_backtest_state)
+
+            # Stop thread if running
+            if self._thread and self._thread.isRunning():
+                self._thread.stop()
+                if not self._thread.wait(2000):
+                    logger.warning("[BacktestWindow] Thread did not stop gracefully")
+
+            event.accept()
+        except Exception as e:
+            logger.error(f"[BacktestWindow.closeEvent] {e}", exc_info=True)
+            event.accept()
