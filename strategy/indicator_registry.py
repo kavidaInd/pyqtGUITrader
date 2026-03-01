@@ -834,6 +834,124 @@ def get_confidence_display_info(confidence: float, threshold: float) -> Dict[str
         return {"color": "#8b949e", "label": "UNKNOWN", "status": "unknown", "percent": "0%"}
 
 
+
+# ── Sub-column definitions for multi-output indicators ────────────────────────
+# Maps indicator name → list of (sub_col_key, human_label, description)
+# Keys MUST match exactly what indicator_columns.get_all_indicator_columns returns.
+_INDICATOR_SUB_COLUMNS: Dict[str, List[tuple]] = {
+    # ── Momentum ───────────────────────────────────────────────────────────────
+    "macd": [
+        ("MACD",   "MACD Line",        "Fast EMA minus Slow EMA — the main momentum line"),
+        ("SIGNAL", "Signal Line",      "EMA of the MACD line — triggers crossovers"),
+        ("HIST",   "Histogram",        "MACD Line minus Signal Line — shows divergence speed"),
+    ],
+    "stoch": [
+        ("K", "%K (Fast)",   "Raw stochastic oscillator — how close price is to its range high"),
+        ("D", "%D (Slow)",   "Smoothed moving average of %K — the signal line"),
+    ],
+    "stochrsi": [
+        ("K", "StochRSI %K", "Stochastic applied to RSI — fast line"),
+        ("D", "StochRSI %D", "Smoothed signal of StochRSI %K — slow line"),
+    ],
+    "kvo": [
+        ("KVO",    "KVO Line",    "Klinger Volume Oscillator — volume-price momentum"),
+        ("SIGNAL", "KVO Signal",  "EMA signal line of KVO"),
+    ],
+
+    # ── Trend ──────────────────────────────────────────────────────────────────
+    "adx": [
+        ("ADX",      "ADX",        "Trend strength (0–100) — higher = stronger trend"),
+        ("PLUS_DI",  "+DI",        "Positive directional indicator — upward pressure"),
+        ("MINUS_DI", "−DI",        "Negative directional indicator — downward pressure"),
+    ],
+    "aroon": [
+        ("AROON_UP",   "Aroon Up",   "How recently the highest high occurred (0–100)"),
+        ("AROON_DOWN", "Aroon Down", "How recently the lowest low occurred (0–100)"),
+    ],
+    "dm": [
+        ("PLUS_DM",  "+DM",  "Positive directional movement — raw upward move"),
+        ("MINUS_DM", "−DM",  "Negative directional movement — raw downward move"),
+    ],
+    "supertrend": [
+        ("TREND",     "Trend Line",  "Price-based stop-and-reverse level"),
+        ("DIRECTION", "Direction",   "+1 = uptrend, −1 = downtrend"),
+        ("LONG",      "Long Level",  "Long entry / trailing stop level"),
+        ("SHORT",     "Short Level", "Short entry / trailing stop level"),
+    ],
+    "ichimoku": [
+        ("ISA", "Tenkan-sen",  "Conversion line — (9-period high + low) / 2"),
+        ("ISB", "Kijun-sen",   "Base line — (26-period high + low) / 2"),
+        ("ITS", "Senkou A",    "Leading span A — midpoint of Tenkan + Kijun (shifted forward)"),
+        ("IKS", "Senkou B",    "Leading span B — (52-period high + low) / 2 (shifted forward)"),
+        ("ICS", "Chikou",      "Lagging span — current close displaced 26 periods back"),
+    ],
+
+    # ── Volatility ─────────────────────────────────────────────────────────────
+    "bbands": [
+        ("UPPER",     "Upper Band",    "Mean + k×std — overbought / resistance zone"),
+        ("MIDDLE",    "Middle Band",   "Simple moving average — the basis"),
+        ("LOWER",     "Lower Band",    "Mean − k×std — oversold / support zone"),
+        ("BANDWIDTH", "Bandwidth",     "Band width normalised by middle band — volatility measure"),
+        ("PERCENT",   "% B",           "Where price sits within the bands (0 = lower, 1 = upper)"),
+    ],
+    "kc": [
+        ("UPPER",  "Upper KC",  "Upper Keltner Channel (EMA + k×ATR)"),
+        ("MIDDLE", "Middle KC", "Middle Keltner Channel (EMA)"),
+        ("LOWER",  "Lower KC",  "Lower Keltner Channel (EMA − k×ATR)"),
+    ],
+    "donchian": [
+        ("UPPER",  "Upper DC",  "Highest high over the lookback period"),
+        ("MIDDLE", "Middle DC", "Midpoint of the Donchian channel"),
+        ("LOWER",  "Lower DC",  "Lowest low over the lookback period"),
+    ],
+
+    # ── Volume ─────────────────────────────────────────────────────────────────
+    "adosc": [
+        ("ADOSC", "AD Oscillator", "Fast−slow EMA of the Accumulation/Distribution Line"),
+        ("AD",    "AD Line",       "Raw Accumulation/Distribution cumulative line"),
+    ],
+}
+
+
+def get_indicator_sub_columns(indicator: str) -> List[tuple]:
+    """
+    Return sub-column options for multi-output indicators.
+
+    Returns a list of (sub_col_key, human_label, description) tuples.
+    Returns an empty list for single-output indicators — callers should
+    hide the sub_col selector in that case.
+
+    Args:
+        indicator: Indicator name (case-insensitive)
+
+    Returns:
+        List[tuple]: [(key, label, description), ...]  — empty for single-output
+    """
+    try:
+        return _INDICATOR_SUB_COLUMNS.get(indicator.lower(), [])
+    except Exception as e:
+        logger.error(f"[get_indicator_sub_columns] Failed for {indicator}: {e}", exc_info=True)
+        return []
+
+
+def is_multi_column_indicator(indicator: str) -> bool:
+    """
+    Return True if the indicator produces multiple output columns
+    and therefore supports sub_col selection.
+
+    Args:
+        indicator: Indicator name (case-insensitive)
+
+    Returns:
+        bool
+    """
+    try:
+        return bool(_INDICATOR_SUB_COLUMNS.get(indicator.lower()))
+    except Exception as e:
+        logger.error(f"[is_multi_column_indicator] Failed for {indicator}: {e}", exc_info=True)
+        return False
+
+
 # Rule 8: Cleanup function
 def cleanup():
     """Clean up resources (minimal for this module)."""

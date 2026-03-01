@@ -43,11 +43,11 @@ class BacktestThread(QThread):
         error: Emitted with error message string when backtest fails
     """
 
-    progress = pyqtSignal(float, str)   # pct, message
-    finished = pyqtSignal(object)       # BacktestResult
-    error    = pyqtSignal(str)
+    progress = pyqtSignal(float, str)  # pct, message
+    finished = pyqtSignal(object)  # BacktestResult
+    error = pyqtSignal(str)
 
-    def __init__(self, broker: "BaseBroker", config: "BacktestConfig", parent=None):
+    def __init__(self, brok: "BaseBroker", conf: "BacktestConfig", parent=None):
         """
         Initialize the backtest thread.
 
@@ -57,11 +57,10 @@ class BacktestThread(QThread):
             parent: Parent QObject (usually the BacktestWindow)
         """
         super().__init__(parent)
-        self._broker = broker
-        self._config = config
+        self._broker = brok
+        self._config = conf
         self._engine = None
         self._is_running = False
-
         # Save the current state before backtest
         # This ensures we can restore the live trading state after backtest
         try:
@@ -86,7 +85,7 @@ class BacktestThread(QThread):
             from backtest.backtest_engine import BacktestEngine
 
             logger.info(f"[BacktestThread] Starting backtest: {self._config.derivative} "
-                       f"{self._config.start_date.date()} → {self._config.end_date.date()}")
+                        f"{self._config.start_date.date()} → {self._config.end_date.date()}")
 
             # Create and configure the engine
             self._engine = BacktestEngine(self._broker, self._config)
@@ -98,7 +97,7 @@ class BacktestThread(QThread):
             # Emit success signal
             self.finished.emit(result)
             logger.info(f"[BacktestThread] Backtest completed: {result.total_trades} trades, "
-                       f"PnL: ₹{result.total_net_pnl:,.2f}")
+                        f"PnL: ₹{result.total_net_pnl:,.2f}")
 
         except Exception as e:
             logger.error(f"[BacktestThread] Backtest failed: {e}", exc_info=True)
@@ -264,6 +263,7 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
+
     # Create a mock broker for testing
     class MockBroker:
         class MockBrokerSetting:
@@ -292,6 +292,7 @@ if __name__ == "__main__":
             })
             return df
 
+
     # Create a mock config
     class MockConfig:
         derivative = "NIFTY"
@@ -314,6 +315,7 @@ if __name__ == "__main__":
         end_date = datetime.now() - timedelta(days=1)
         analysis_timeframes = ["5m", "15m", "30m"]
 
+
     # Create Qt application
     app = QApplication(sys.argv)
 
@@ -322,9 +324,11 @@ if __name__ == "__main__":
     config = MockConfig()
     thread = BacktestThread(broker, config)
 
+
     # Connect signals
     def on_progress(pct, msg):
         print(f"Progress: {pct:.1f}% - {msg}")
+
 
     def on_finished(result):
         print(f"Backtest finished: {result.total_trades} trades")
@@ -332,9 +336,11 @@ if __name__ == "__main__":
         print(f"Win Rate: {result.win_rate:.1f}%")
         QApplication.quit()
 
+
     def on_error(msg):
         print(f"Backtest error: {msg}")
         QApplication.quit()
+
 
     thread.progress.connect(on_progress)
     thread.finished.connect(on_finished)

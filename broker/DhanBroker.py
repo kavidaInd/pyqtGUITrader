@@ -122,6 +122,10 @@ class DhanBroker(BaseBroker):
             logger.critical(f"[DhanBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "dhan"
+
     def _safe_defaults_init(self):
         self.state = None
         self.client_id = None

@@ -31,7 +31,8 @@ from PyQt5.QtWidgets import (
 from strategy.indicator_registry import (
     ALL_INDICATORS, get_indicator_params,
     get_param_type, get_param_description, get_indicator_category,
-    get_indicators_by_category, get_suggested_weight, get_rule_weight_range
+    get_indicators_by_category, get_suggested_weight, get_rule_weight_range,
+    get_indicator_sub_columns, is_multi_column_indicator
 )
 from strategy.strategy_help_tab import StrategyHelpTab
 from strategy.strategy_manager import strategy_manager
@@ -66,7 +67,7 @@ SIGNAL_META = {
     "HOLD": ("⏸", YELLOW, "HOLD"),
 }
 
-OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below", "between"]
+OPERATORS = [">", "<", ">=", "<=", "==", "!=", "between"]
 SIDE_TYPES = ["indicator", "scalar", "column"]
 COLUMNS = ["close", "open", "high", "low", "volume", "hl2", "hlc3", "ohlc4"]
 
@@ -760,6 +761,129 @@ class ColumnComboBox(QComboBox):
             logger.error(f"[ColumnComboBox.set_column] Failed for {col}: {e}", exc_info=True)
 
 
+# ── Sub-Column ComboBox ───────────────────────────────────────────────────────
+
+class SubColumnComboBox(QComboBox):
+    """
+    Dropdown that shows the available output columns for a multi-output
+    indicator (e.g. MACD Line / Signal Line / Histogram for 'macd').
+
+    Call `set_indicator(name)` whenever the indicator selection changes.
+    The widget hides itself automatically for single-output indicators.
+    """
+
+    def __init__(self, parent=None):
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+            self.setMinimumWidth(155)
+            self.setMaximumWidth(220)
+            self.setStyleSheet(f"""
+                QComboBox {{
+                    background: #21262d;
+                    color: {TEXT};
+                    border: 1px solid {PURPLE};
+                    border-radius: 4px;
+                    padding: 5px 8px;
+                    padding-right: 20px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                }}
+                QComboBox:hover {{ border: 1px solid {BLUE}; }}
+                QComboBox::drop-down {{
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    width: 16px;
+                    border-left: 1px solid {BORDER};
+                    background: transparent;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    width: 0px; height: 0px;
+                    border-left: 4px solid transparent;
+                    border-right: 4px solid transparent;
+                    border-top: 5px solid {DIM};
+                    margin-right: 4px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: #21262d;
+                    color: {TEXT};
+                    selection-background-color: {BG_SEL};
+                    selection-color: {TEXT};
+                    border: 1px solid {PURPLE};
+                    border-radius: 4px;
+                    outline: none;
+                    min-width: 260px;
+                }}
+                QComboBox QAbstractItemView::item {{
+                    padding: 8px 12px;
+                    min-height: 22px;
+                    border-bottom: 1px solid {BORDER}40;
+                }}
+                QComboBox QAbstractItemView::item:selected {{
+                    background: {BG_SEL};
+                    color: {BLUE};
+                }}
+            """)
+            self.setVisible(False)  # Hidden until an indicator is chosen
+        except Exception as e:
+            logger.error(f"[SubColumnComboBox.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self._current_indicator = ""
+
+    def set_indicator(self, indicator: str):
+        """
+        Repopulate options for the given indicator.
+        Hides the widget if the indicator has only one output column.
+        """
+        try:
+            self._current_indicator = indicator.lower() if indicator else ""
+            self.blockSignals(True)
+            self.clear()
+
+            sub_cols = get_indicator_sub_columns(self._current_indicator)
+            if not sub_cols:
+                self.setVisible(False)
+                self.blockSignals(False)
+                return
+
+            for key, label, desc in sub_cols:
+                display = f"↳ {label}"
+                self.addItem(display)
+                idx = self.count() - 1
+                self.setItemData(idx, key, Qt.UserRole)        # raw key stored here
+                self.setItemData(idx, desc, Qt.ToolTipRole)
+
+            self.setVisible(True)
+            self.blockSignals(False)
+        except Exception as e:
+            logger.error(f"[SubColumnComboBox.set_indicator] Failed: {e}", exc_info=True)
+            self.setVisible(False)
+
+    def get_sub_col(self) -> str:
+        """Return the currently selected sub_col key (e.g. 'SIGNAL'), or ''."""
+        try:
+            data = self.currentData(Qt.UserRole)
+            return data if data else ""
+        except Exception as e:
+            logger.error(f"[SubColumnComboBox.get_sub_col] Failed: {e}", exc_info=True)
+            return ""
+
+    def set_sub_col(self, key: str):
+        """Select a sub-column by its key (e.g. 'MACD', 'SIGNAL', 'HIST')."""
+        try:
+            if not key:
+                return
+            for i in range(self.count()):
+                if self.itemData(i, Qt.UserRole) == key.upper():
+                    self.setCurrentIndex(i)
+                    return
+        except Exception as e:
+            logger.error(f"[SubColumnComboBox.set_sub_col] Failed for {key}: {e}", exc_info=True)
+
+
 # ── Parameter Editor ─────────────────────────────────────────────────────────
 
 class ParameterEditor(QWidget):
@@ -986,8 +1110,8 @@ class _RuleRow(QWidget):
             self._param_editors = {}
 
             self.setStyleSheet(f"background:{BG_ITEM}; border-radius:6px; border:1px solid {BORDER};")
-            self.setMinimumHeight(320)  # Increased for shift controls
-            self.setMaximumHeight(480)
+            self.setMinimumHeight(320)
+            self.setMaximumHeight(560)  # extra room for sub_col row
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Main vertical layout
@@ -1083,6 +1207,23 @@ class _RuleRow(QWidget):
             self.lhs_params = ParameterEditor()
             self.lhs_params.setVisible(False)
             lhs_layout.addWidget(self.lhs_params)
+
+            # Sub-column selector row — lives OUTSIDE the QStackedWidget so it
+            # is never clipped or hidden by the stack's own page management.
+            # Only visible when the indicator produces multiple output columns.
+            lhs_sub_row = QHBoxLayout()
+            lhs_sub_row.setSpacing(6)
+            lhs_sub_arrow = QLabel("↳ Output column:")
+            lhs_sub_arrow.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold; padding-left:34px;")
+            lhs_sub_row.addWidget(lhs_sub_arrow)
+            self.lhs_sub_col = SubColumnComboBox()
+            lhs_sub_row.addWidget(self.lhs_sub_col)
+            lhs_sub_row.addStretch()
+            # Wrap in a container so we can show/hide the whole row together
+            self._lhs_sub_row_widget = QWidget()
+            self._lhs_sub_row_widget.setLayout(lhs_sub_row)
+            self._lhs_sub_row_widget.setVisible(False)
+            lhs_layout.addWidget(self._lhs_sub_row_widget)
 
             content_layout.addWidget(lhs_container, 4)
 
@@ -1192,6 +1333,20 @@ class _RuleRow(QWidget):
             self.rhs_params.setVisible(False)
             rhs_layout.addWidget(self.rhs_params)
 
+            # Sub-column selector row — outside QStackedWidget, same pattern as LHS.
+            rhs_sub_row = QHBoxLayout()
+            rhs_sub_row.setSpacing(6)
+            rhs_sub_arrow = QLabel("↳ Output column:")
+            rhs_sub_arrow.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold; padding-left:34px;")
+            rhs_sub_row.addWidget(rhs_sub_arrow)
+            self.rhs_sub_col = SubColumnComboBox()
+            rhs_sub_row.addWidget(self.rhs_sub_col)
+            rhs_sub_row.addStretch()
+            self._rhs_sub_row_widget = QWidget()
+            self._rhs_sub_row_widget.setLayout(rhs_sub_row)
+            self._rhs_sub_row_widget.setVisible(False)
+            rhs_layout.addWidget(self._rhs_sub_row_widget)
+
             content_layout.addWidget(rhs_container, 4)
 
             # ── WEIGHT CONTROL (FEATURE 3) ────────────────────────────────────
@@ -1282,6 +1437,8 @@ class _RuleRow(QWidget):
         self.lhs_shift = None
         self.lhs_input_container = None
         self.lhs_indicator = None
+        self.lhs_sub_col = None       # NEW: sub-column selector for LHS
+        self._lhs_sub_row_widget = None
         self.lhs_column = None
         self.lhs_scalar = None
         self.lhs_params = None
@@ -1290,6 +1447,8 @@ class _RuleRow(QWidget):
         self.rhs_shift = None
         self.rhs_input_container = None
         self.rhs_indicator = None
+        self.rhs_sub_col = None       # NEW: sub-column selector for RHS
+        self._rhs_sub_row_widget = None
         self.rhs_column = None
         self.rhs_scalar = None
         self.rhs_params = None
@@ -1309,6 +1468,11 @@ class _RuleRow(QWidget):
 
             if lhs_desc == "indicator":
                 lhs_val = self.lhs_indicator.currentText() if self.lhs_indicator else "indicator"
+                # Show sub_col if the row is visible
+                if self.lhs_sub_col and self._lhs_sub_row_widget and self._lhs_sub_row_widget.isVisible():
+                    sub = self.lhs_sub_col.get_sub_col()
+                    if sub:
+                        lhs_val = f"{lhs_val} [{sub}]"
                 lhs_shift_text = f" (shift {lhs_shift})" if lhs_shift > 0 else ""
             elif lhs_desc == "column":
                 lhs_val = self.lhs_column.currentText() if self.lhs_column else "column"
@@ -1319,6 +1483,11 @@ class _RuleRow(QWidget):
 
             if rhs_desc == "indicator":
                 rhs_val = self.rhs_indicator.currentText() if self.rhs_indicator else "indicator"
+                # Show sub_col if the row is visible
+                if self.rhs_sub_col and self._rhs_sub_row_widget and self._rhs_sub_row_widget.isVisible():
+                    sub = self.rhs_sub_col.get_sub_col()
+                    if sub:
+                        rhs_val = f"{rhs_val} [{sub}]"
                 rhs_shift_text = f" (shift {rhs_shift})" if rhs_shift > 0 else ""
             elif rhs_desc == "column":
                 rhs_val = self.rhs_column.currentText() if self.rhs_column else "column"
@@ -1341,10 +1510,12 @@ class _RuleRow(QWidget):
                 stack = self.lhs_input_container
                 params = self.lhs_params
                 shift_widget = self.lhs_shift
+                sub_row = self._lhs_sub_row_widget
             else:
                 stack = self.rhs_input_container
                 params = self.rhs_params
                 shift_widget = self.rhs_shift
+                sub_row = self._rhs_sub_row_widget
 
             if not stack or not params:
                 return
@@ -1353,17 +1524,24 @@ class _RuleRow(QWidget):
                 stack.setCurrentIndex(0)
                 params.setVisible(True)
                 if shift_widget:
-                    shift_widget.setVisible(True)  # Show shift for indicators
+                    shift_widget.setVisible(True)
+                # sub_col row visibility is controlled by _on_indicator_changed
+                # when the indicator selection changes — don't force-show here
+                # because the current indicator may be single-output.
             elif type_text == "column":
                 stack.setCurrentIndex(1)
                 params.setVisible(False)
                 if shift_widget:
-                    shift_widget.setVisible(True)  # Show shift for columns too
+                    shift_widget.setVisible(True)
+                if sub_row:
+                    sub_row.setVisible(False)   # columns don't have sub_col
             else:  # scalar
                 stack.setCurrentIndex(2)
                 params.setVisible(False)
                 if shift_widget:
-                    shift_widget.setVisible(False)  # Hide shift for scalars
+                    shift_widget.setVisible(False)
+                if sub_row:
+                    sub_row.setVisible(False)   # scalars don't have sub_col
 
             self._update_description()
         except Exception as e:
@@ -1375,27 +1553,42 @@ class _RuleRow(QWidget):
             if side == "lhs":
                 params_w = self.lhs_params
                 type_w = self.lhs_type
+                sub_col_w = self.lhs_sub_col
+                sub_row_w = self._lhs_sub_row_widget
             else:
                 params_w = self.rhs_params
                 type_w = self.rhs_type
+                sub_col_w = self.rhs_sub_col
+                sub_row_w = self._rhs_sub_row_widget
 
             if not params_w or not type_w:
                 return
 
-            if type_w.currentText() == "indicator":
-                indicator = indicator_text.lower()
-                if indicator in ALL_INDICATORS:
-                    params_w.set_indicator(indicator)
-                    params_w.setVisible(True)
+            indicator = indicator_text.lower()
+            if type_w.currentText() == "indicator" and indicator in ALL_INDICATORS:
+                params_w.set_indicator(indicator)
+                params_w.setVisible(True)
 
-                    # FEATURE 3: Update suggested weight
-                    suggested = get_suggested_weight(indicator)
-                    if self.suggested_weight_lbl:
-                        self.suggested_weight_lbl.setText(f"suggested: {suggested:.1f}")
+                # Update sub-column selector — show row only for multi-output indicators
+                if sub_col_w and sub_row_w:
+                    sub_col_w.set_indicator(indicator)
+                    # SubColumnComboBox.set_indicator() sets its own visibility;
+                    # mirror that to the wrapper row so the label shows/hides too
+                    sub_row_w.setVisible(sub_col_w.isVisible())
 
-                    # Auto-set weight if not manually changed?
-                    if self.weight_spin and self.weight_spin.value() == 1.0:
-                        self.weight_spin.setValue(suggested)
+                # FEATURE 3: Update suggested weight
+                suggested = get_suggested_weight(indicator)
+                if self.suggested_weight_lbl:
+                    self.suggested_weight_lbl.setText(f"suggested: {suggested:.1f}")
+
+                # Auto-set weight if still at default
+                if self.weight_spin and self.weight_spin.value() == 1.0:
+                    self.weight_spin.setValue(suggested)
+
+            else:
+                # Not an indicator type or indicator not found — hide sub_col row
+                if sub_row_w:
+                    sub_row_w.setVisible(False)
 
             self._update_description()
         except Exception as e:
@@ -1450,6 +1643,16 @@ class _RuleRow(QWidget):
                                         widget.setText(str(params[pname]))
                                 except Exception as e:
                                     logger.warning(f"Failed to set param {pname}: {e}")
+
+                # Restore sub_col selection for multi-output indicators
+                if self.lhs_sub_col:
+                    self.lhs_sub_col.set_indicator(ind)
+                    saved_sub_col = lhs_data.get("sub_col", "")
+                    if saved_sub_col:
+                        self.lhs_sub_col.set_sub_col(saved_sub_col)
+                    # Show/hide the row wrapper to match the combo's visibility
+                    if self._lhs_sub_row_widget:
+                        self._lhs_sub_row_widget.setVisible(self.lhs_sub_col.isVisible())
             elif lhs_type == "column":
                 col = lhs_data.get("column", "close")
                 if self.lhs_column:
@@ -1494,6 +1697,16 @@ class _RuleRow(QWidget):
                                         widget.setText(str(params[pname]))
                                 except Exception as e:
                                     logger.warning(f"Failed to set param {pname}: {e}")
+
+                # Restore sub_col selection for multi-output indicators
+                if self.rhs_sub_col:
+                    self.rhs_sub_col.set_indicator(ind)
+                    saved_sub_col = rhs_data.get("sub_col", "")
+                    if saved_sub_col:
+                        self.rhs_sub_col.set_sub_col(saved_sub_col)
+                    # Show/hide the row wrapper to match the combo's visibility
+                    if self._rhs_sub_row_widget:
+                        self._rhs_sub_row_widget.setVisible(self.rhs_sub_col.isVisible())
             elif rhs_type == "column":
                 col = rhs_data.get("column", "close")
                 if self.rhs_column:
@@ -1536,14 +1749,19 @@ class _RuleRow(QWidget):
                 lhs = {"type": "column", "column": col}
                 if lhs_shift > 0:
                     lhs["shift"] = lhs_shift
-            else:
+            else:  # indicator
                 indicator = self.lhs_indicator.get_indicator_name() if self.lhs_indicator else ""
                 params = self.lhs_params.get_params() if self.lhs_params else {}
                 lhs = {
                     "type": "indicator",
                     "indicator": indicator,
-                    "params": params
+                    "params": params,
                 }
+                # Include sub_col only when the row is visible and has a selection
+                if self.lhs_sub_col and self._lhs_sub_row_widget and self._lhs_sub_row_widget.isVisible():
+                    sub_col = self.lhs_sub_col.get_sub_col()
+                    if sub_col:
+                        lhs["sub_col"] = sub_col
                 if lhs_shift > 0:
                     lhs["shift"] = lhs_shift
 
@@ -1562,14 +1780,19 @@ class _RuleRow(QWidget):
                 rhs = {"type": "column", "column": col}
                 if rhs_shift > 0:
                     rhs["shift"] = rhs_shift
-            else:
+            else:  # indicator
                 indicator = self.rhs_indicator.get_indicator_name() if self.rhs_indicator else ""
                 params = self.rhs_params.get_params() if self.rhs_params else {}
                 rhs = {
                     "type": "indicator",
                     "indicator": indicator,
-                    "params": params
+                    "params": params,
                 }
+                # Include sub_col only when the row is visible and has a selection
+                if self.rhs_sub_col and self._rhs_sub_row_widget and self._rhs_sub_row_widget.isVisible():
+                    sub_col = self.rhs_sub_col.get_sub_col()
+                    if sub_col:
+                        rhs["sub_col"] = sub_col
                 if rhs_shift > 0:
                     rhs["shift"] = rhs_shift
 
@@ -1850,7 +2073,7 @@ class _SignalGroupPanel(QWidget):
                 self._empty_lbl.setVisible(count == 0)
 
             if count > 0 and self._rules_scroll:
-                height = min(600, 80 + 180 * count)  # 180px per row (increased for shift+weight)
+                height = min(700, 100 + 220 * count)  # 220px per row (params + sub_col)
                 self._rules_scroll.setMinimumHeight(height)
             elif self._rules_scroll:
                 self._rules_scroll.setMinimumHeight(120)
@@ -2444,11 +2667,15 @@ class _IndicatorsTab(QScrollArea):
                     background: {BG_ITEM};
                 }}
             """)
-            card.setFixedSize(260, 200)  # Increased height for weight info
+
+            # Taller card when sub-columns exist
+            sub_cols = get_indicator_sub_columns(indicator_name)
+            card_height = 240 if sub_cols else 200
+            card.setFixedSize(260, card_height)
 
             layout = QVBoxLayout(card)
             layout.setContentsMargins(12, 10, 12, 10)
-            layout.setSpacing(6)
+            layout.setSpacing(5)
 
             # Indicator name
             name_lbl = QLabel(indicator_name.upper())
@@ -2469,6 +2696,17 @@ class _IndicatorsTab(QScrollArea):
             param_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
             param_lbl.setWordWrap(True)
             layout.addWidget(param_lbl)
+
+            # Sub-columns (for multi-output indicators like MACD, BBands etc.)
+            if sub_cols:
+                sub_header = QLabel("📤 Output columns:")
+                sub_header.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold;")
+                layout.addWidget(sub_header)
+                sub_text = "  ".join(f"[{key}]" for key, _, _ in sub_cols)
+                sub_lbl = QLabel(sub_text)
+                sub_lbl.setStyleSheet(f"color:{PURPLE}CC; font-size:8pt;")
+                sub_lbl.setWordWrap(True)
+                layout.addWidget(sub_lbl)
 
             # FEATURE 3: Suggested weight
             weight = get_suggested_weight(indicator_name)

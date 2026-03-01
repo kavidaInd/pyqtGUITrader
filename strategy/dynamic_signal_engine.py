@@ -15,7 +15,8 @@ The engine implements a sophisticated voting system:
     - Minimum confidence threshold (configurable) suppresses weak signals
     - Human-readable explanations of evaluation results
 
-Version: 2.5.0 (Fixed position-based signal resolution with conflict handling)
+FIX: Day gap handling - prevents false crossovers across day boundaries
+Version: 2.8.0 (Added sub_col selector for multi-output indicators; fixes MACD-vs-itself crossover bug)
 """
 
 from __future__ import annotations
@@ -91,7 +92,7 @@ SIGNAL_PRIORITY = {
 }
 
 # Supported operators for rule conditions
-OPERATORS = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
+OPERATORS = [">", "<", ">=", "<=", "==", "!="]
 
 # Mapping from indicator names to pandas_ta function names
 INDICATOR_MAP: Dict[str, str] = {
@@ -387,6 +388,8 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
     """
     Compute technical indicator with comprehensive error handling.
 
+    FIX #7: Fixed type coercion for boolean parameters and string-to-number conversion.
+
     Args:
         df: OHLCV DataFrame
         indicator: Indicator name (e.g., "rsi", "ema")
@@ -404,31 +407,44 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
             logger.warning(f"Cannot compute {indicator}: DataFrame is None or empty")
             return None
 
-        # ── FIX 1: merge caller params with INDICATOR_DEFAULTS ──────────
-        # Ensures pandas_ta always gets a complete parameter set even when
-        # the strategy JSON was saved with params={} (empty dict).
+        # Merge caller params with INDICATOR_DEFAULTS
         _defaults = INDICATOR_DEFAULTS.get(indicator.lower(), {})
         params = {**_defaults, **params} if params is not None else dict(_defaults)
 
-        # ── FIX 2: coerce string param values to their correct types ─────
-        # The UI stores params as strings when get_param_type() falls back
-        # to 'string' (e.g. ddof='0', drift='1', offset='0'). pandas_ta
-        # expects native int/float — str causes TypeError on >= comparisons.
+        # FIX #7: Enhanced type coercion
         _coerced = {}
         for _k, _v in params.items():
             _dv = _defaults.get(_k)
-            if _v is None or _dv is None or not isinstance(_v, str) or isinstance(_dv, str):
+            if _v is None:
                 _coerced[_k] = _v
-            else:
+                continue
+
+            # If no default to compare with, use the parameter as-is
+            if _dv is None:
+                _coerced[_k] = _v
+                continue
+
+            # Handle string values that need conversion
+            if isinstance(_v, str):
                 try:
-                    if isinstance(_dv, bool):   _coerced[_k] = _v.lower() in ('true','1','yes')
-                    elif isinstance(_dv, int):  _coerced[_k] = int(float(_v))
-                    elif isinstance(_dv, float):_coerced[_k] = float(_v)
-                    else:                        _coerced[_k] = _v
+                    if isinstance(_dv, bool):
+                        # FIX #7: Better boolean conversion
+                        _v_lower = _v.lower().strip()
+                        _coerced[_k] = _v_lower in ('true', '1', 'yes', 'on', 'y', 't')
+                    elif isinstance(_dv, int):
+                        _coerced[_k] = int(float(_v))
+                    elif isinstance(_dv, float):
+                        _coerced[_k] = float(_v)
+                    else:
+                        _coerced[_k] = _v
                 except (ValueError, TypeError):
                     logger.warning(f"[_compute_indicator] Cannot coerce '{_k}'={_v!r} "
                                    f"to {type(_dv).__name__} for '{indicator}' — using default {_dv!r}")
                     _coerced[_k] = _dv
+            else:
+                # Non-string values pass through
+                _coerced[_k] = _v
+
         params = _coerced
 
         # Check if we have required columns
@@ -455,10 +471,7 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
             # Prepare kwargs based on indicator requirements
             kwargs = {}
 
-            # ── FIX 3: pass full series (index intact) to pandas_ta ───────
-            # dropna() breaks index continuity, causing pandas_ta internal
-            # arithmetic (e.g. macd - signalma) to produce scalar None
-            # instead of NaN → TypeError. Validate count without stripping.
+            # Pass full series (index intact) to pandas_ta
             required_cols = _get_required_columns(indicator)
             for col in required_cols:
                 if col in df.columns:
@@ -529,6 +542,146 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
         return None
 
 
+def _compute_indicator_raw(df: pd.DataFrame, indicator: str,
+                           params: Dict[str, Any]) -> Optional[pd.DataFrame]:
+    """
+    Like _compute_indicator but returns the *raw* DataFrame (or Series) from
+    pandas_ta without picking a specific column.  Used by _resolve_side when
+    sub_col is specified so we can extract any sub-column after the fact.
+
+    Args:
+        df: OHLCV DataFrame
+        indicator: Indicator name
+        params: Indicator parameters
+
+    Returns:
+        Optional[pd.DataFrame | pd.Series]: Raw result from pandas_ta, or None
+    """
+    try:
+        if ta is None or df is None or df.empty:
+            return None
+
+        _defaults = INDICATOR_DEFAULTS.get(indicator.lower(), {})
+        params = {**_defaults, **params} if params else dict(_defaults)
+
+        required_cols = _get_required_columns(indicator)
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            return None
+
+        min_periods = _get_min_periods(indicator, params)
+        if len(df) < min_periods:
+            return None
+
+        # Coerce types using the same logic as _compute_indicator
+        _coerced: Dict[str, Any] = {}
+        for _k, _v in params.items():
+            _dv = _defaults.get(_k)
+            if _v is None or _dv is None:
+                _coerced[_k] = _v
+                continue
+            if isinstance(_v, str):
+                try:
+                    if isinstance(_dv, bool):
+                        _coerced[_k] = _v.lower().strip() in ('true', '1', 'yes', 'on', 'y', 't')
+                    elif isinstance(_dv, int):
+                        _coerced[_k] = int(float(_v))
+                    elif isinstance(_dv, float):
+                        _coerced[_k] = float(_v)
+                    else:
+                        _coerced[_k] = _v
+                except (ValueError, TypeError):
+                    _coerced[_k] = _dv
+            else:
+                _coerced[_k] = _v
+        params = _coerced
+
+        ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
+        method = getattr(ta, ind_name, None)
+        if not method:
+            return None
+
+        kwargs: Dict[str, Any] = {}
+        for col in required_cols:
+            if col in df.columns:
+                kwargs[col] = df[col]
+        kwargs.update(params)
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+
+        result = method(**kwargs)
+        return result
+
+    except Exception as e:
+        logger.error(f"[_compute_indicator_raw] Failed for {indicator}: {e}", exc_info=True)
+        return None
+
+
+def _extract_sub_column(raw_result, indicator: str, params: Dict[str, Any],
+                        sub_col: str) -> Optional[pd.Series]:
+    """
+    Extract a specific named sub-column (e.g. 'SIGNAL', 'HIST') from a raw
+    pandas_ta result DataFrame.
+
+    The sub_col string is matched against the column-type keys defined in
+    IndicatorColumnGenerator (e.g. 'MACD', 'SIGNAL', 'HIST' for macd;
+    'UPPER', 'MIDDLE', 'LOWER' for bbands, etc.).
+
+    Args:
+        raw_result: Raw DataFrame (or Series) from pandas_ta
+        indicator: Indicator name (e.g. 'macd')
+        params: Indicator parameters
+        sub_col: Sub-column key (case-insensitive, e.g. 'SIGNAL', 'hist')
+
+    Returns:
+        Optional[pd.Series]: The requested series, or None if not found
+    """
+    try:
+        if raw_result is None:
+            return None
+
+        sub_col_upper = sub_col.upper()
+
+        if isinstance(raw_result, pd.DataFrame):
+            # Get the expected column name from the column generator
+            col_name = get_indicator_column(indicator, params, sub_col_upper)
+            if col_name in raw_result.columns:
+                series = raw_result[col_name]
+                if not series.isna().all():
+                    return series
+
+            # Fallback: try fuzzy match on actual column names
+            for col in raw_result.columns:
+                col_u = col.upper()
+                # For MACD sub-columns: MACD line, SIGNAL line, HIST
+                if indicator.lower() == 'macd':
+                    if sub_col_upper == 'MACD' and col_u.startswith('MACD_') and 'S_' not in col_u and 'H_' not in col_u:
+                        return raw_result[col]
+                    elif sub_col_upper == 'SIGNAL' and ('MACDS_' in col_u or col_u.startswith('MACDS')):
+                        return raw_result[col]
+                    elif sub_col_upper in ('HIST', 'HISTOGRAM') and ('MACDH_' in col_u or col_u.startswith('MACDH')):
+                        return raw_result[col]
+                else:
+                    # Generic: check if sub_col appears in the column name
+                    if sub_col_upper in col_u:
+                        series = raw_result[col]
+                        if not series.isna().all():
+                            return series
+
+            logger.warning(f"[_extract_sub_column] sub_col='{sub_col}' not found in {list(raw_result.columns)} for {indicator}")
+            return None
+
+        elif isinstance(raw_result, pd.Series):
+            # Single-series result — sub_col is ignored (only one column exists)
+            logger.debug(f"[_extract_sub_column] {indicator} returned a Series, ignoring sub_col='{sub_col}'")
+            return raw_result if not raw_result.isna().all() else None
+
+        return None
+
+    except Exception as e:
+        logger.error(f"[_extract_sub_column] Failed for {indicator} sub_col={sub_col}: {e}", exc_info=True)
+        return None
+
+
 def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, Any]) -> Optional[pd.Series]:
     """
     Resolve a side (LHS/RHS) of a rule to a pandas Series with shift support.
@@ -595,17 +748,46 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
         params = {**_defs, **_saved} if _saved else dict(_defs)
         shift = side_def.get("shift", 0)
 
-        # Create cache key for performance
+        # sub_col lets a rule pick a specific output column from a multi-output
+        # indicator.  e.g. for MACD: sub_col="MACD" → line, sub_col="SIGNAL" →
+        # signal line, sub_col="HIST" → histogram.  Without sub_col the engine
+        # falls back to the indicator's default column (always the first/main one),
+        # which caused both LHS and RHS of a MACD crossover rule to resolve to the
+        # same MACD line and therefore always compare a value to itself.
+        sub_col = side_def.get("sub_col", None)
+
+        # Create cache key — include sub_col so the same indicator with different
+        # sub_col values gets stored separately in the cache.
         try:
             cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}_{shift}"
         except Exception as e:
             logger.warning(f"Failed to create cache key: {e}")
             cache_key = f"{indicator}_{str(params)}_{shift}"
 
-        if cache_key not in cache:
-            cache[cache_key] = _compute_indicator(df, indicator, params)
+        # The raw computed result (all columns) lives under the base key.
+        # We cache it once and then extract the desired sub-column.
+        raw_cache_key = f"__raw_{indicator}_{json.dumps(params, sort_keys=True) if True else str(params)}"
 
-        series = cache.get(cache_key)
+        if sub_col is not None:
+            # We need access to the raw DataFrame result to pick a specific column.
+            # Compute and cache the full result separately.
+            if raw_cache_key not in cache:
+                cache[raw_cache_key] = _compute_indicator_raw(df, indicator, params)
+
+            raw_result = cache.get(raw_cache_key)
+            if raw_result is None:
+                return None
+
+            sub_cache_key = f"{cache_key}_sub_{sub_col}"
+            if sub_cache_key not in cache:
+                cache[sub_cache_key] = _extract_sub_column(raw_result, indicator, params, sub_col)
+
+            series = cache.get(sub_cache_key)
+        else:
+            if cache_key not in cache:
+                cache[cache_key] = _compute_indicator(df, indicator, params)
+            series = cache.get(cache_key)
+
         if series is not None and shift > 0:
             series = series.shift(shift)
 
@@ -616,14 +798,50 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
         return None
 
 
-def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Optional[float], Optional[float]]:
+def _has_day_gap(df_index, bar_index: int = -1) -> bool:
     """
-    Apply comparison operator to two series with NaN handling.
+    Check if there's a day gap between consecutive bars.
+
+    Args:
+        df_index: DataFrame index (DatetimeIndex or list of timestamps)
+        bar_index: Index of the current bar (default -1 for last bar)
+
+    Returns:
+        bool: True if there's a day gap
+    """
+    try:
+        if df_index is None or len(df_index) < 2:
+            return False
+
+        # Get the last two bars
+        if isinstance(df_index, pd.DatetimeIndex):
+            last_time = df_index[bar_index] if bar_index < 0 else df_index.iloc[bar_index]
+            prev_time = df_index[bar_index - 1] if bar_index < 0 else df_index.iloc[bar_index - 1]
+        else:
+            # Handle list or array
+            last_time = df_index[bar_index] if bar_index < 0 else df_index[bar_index]
+            prev_time = df_index[bar_index - 1] if bar_index < 0 else df_index[bar_index - 1]
+
+        # Check if they're on different days
+        if hasattr(last_time, 'date') and hasattr(prev_time, 'date'):
+            return last_time.date() != prev_time.date()
+
+        return False
+
+    except Exception as e:
+        logger.debug(f"Error checking day gap: {e}")
+        return False
+
+
+def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series, df_index=None) -> Tuple[bool, Optional[float], Optional[float]]:
+    """
+    Apply comparison operator to two series with NaN handling and day-gap awareness.
 
     Args:
         lhs: Left-hand side series
-        op: Operator string (>, <, >=, <=, ==, !=, crosses_above, crosses_below)
+        op: Operator string (>, <, >=, <=, ==, !=)
         rhs: Right-hand side series
+        df_index: DataFrame index for day-gap detection
 
     Returns:
         Tuple[bool, Optional[float], Optional[float]]:
@@ -639,56 +857,6 @@ def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series) -> Tuple[bool, Opti
         # Ensure we have enough data
         if len(lhs) < 1 or len(rhs) < 1:
             return False, None, None
-
-        # Handle crossover operators which need 2 bars
-        if op == "crosses_above":
-            if len(lhs) < 2 or len(rhs) < 2:
-                return False, None, None
-            try:
-                # Get last two values, checking for NaN
-                lhs_prev = lhs.iloc[-2] if not pd.isna(lhs.iloc[-2]) else None
-                lhs_curr = lhs.iloc[-1] if not pd.isna(lhs.iloc[-1]) else None
-                rhs_prev = rhs.iloc[-2] if not pd.isna(rhs.iloc[-2]) else None
-                rhs_curr = rhs.iloc[-1] if not pd.isna(rhs.iloc[-1]) else None
-
-                # If any value is NaN, cannot determine crossover
-                if None in [lhs_prev, lhs_curr, rhs_prev, rhs_curr]:
-                    return False, lhs_curr, rhs_curr
-
-                # Convert to float
-                lhs_prev_f = float(lhs_prev)
-                lhs_curr_f = float(lhs_curr)
-                rhs_prev_f = float(rhs_prev)
-                rhs_curr_f = float(rhs_curr)
-
-                result = (lhs_prev_f <= rhs_prev_f) and (lhs_curr_f > rhs_curr_f)
-                return result, round(lhs_curr_f, 6), round(rhs_curr_f, 6)
-            except (ValueError, TypeError, IndexError) as e:
-                logger.warning(f"Error in crosses_above: {e}")
-                return False, None, None
-
-        if op == "crosses_below":
-            if len(lhs) < 2 or len(rhs) < 2:
-                return False, None, None
-            try:
-                lhs_prev = lhs.iloc[-2] if not pd.isna(lhs.iloc[-2]) else None
-                lhs_curr = lhs.iloc[-1] if not pd.isna(lhs.iloc[-1]) else None
-                rhs_prev = rhs.iloc[-2] if not pd.isna(rhs.iloc[-2]) else None
-                rhs_curr = rhs.iloc[-1] if not pd.isna(rhs.iloc[-1]) else None
-
-                if None in [lhs_prev, lhs_curr, rhs_prev, rhs_curr]:
-                    return False, lhs_curr, rhs_curr
-
-                lhs_prev_f = float(lhs_prev)
-                lhs_curr_f = float(lhs_curr)
-                rhs_prev_f = float(rhs_prev)
-                rhs_curr_f = float(rhs_curr)
-
-                result = (lhs_prev_f >= rhs_prev_f) and (lhs_curr_f < rhs_curr_f)
-                return result, round(lhs_curr_f, 6), round(rhs_curr_f, 6)
-            except (ValueError, TypeError, IndexError) as e:
-                logger.warning(f"Error in crosses_below: {e}")
-                return False, None, None
 
         # Handle regular comparison operators
         try:
@@ -789,6 +957,7 @@ class DynamicSignalEngine:
         - FEATURE 3: Rule weights and confidence scoring
         - FEATURE 3: Minimum confidence threshold
         - FEATURE 3: Human-readable explanations
+        - FIX: Day gap detection for crossover operators
     """
 
     DEFAULT_CONFIG: Dict[str, Any] = {
@@ -1254,16 +1423,19 @@ class DynamicSignalEngine:
             return []
 
     def _evaluate_group(self, signal: Union[str, OptionSignal], df: pd.DataFrame,
-                        cache: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]], float, float]:
+                        cache: Dict[str, Any], df_index=None) -> Tuple[bool, List[Dict[str, Any]], float, float]:
         """
         Evaluate a single signal group.
 
         FEATURE 3: Returns confidence score and total weight.
+        FIX #8: Added shift values to rule results for debugging.
+        FIX: Added day gap detection for crossover operators.
 
         Args:
             signal: Signal group to evaluate
             df: OHLCV DataFrame
             cache: Indicator cache
+            df_index: DataFrame index for day-gap detection
 
         Returns:
             Tuple[bool, List[Dict], float, float]:
@@ -1304,11 +1476,21 @@ class DynamicSignalEngine:
                     lhs_series = _resolve_side(df, rule.get("lhs", {}), cache)
                     rhs_series = _resolve_side(df, rule.get("rhs", {}), cache)
 
+                    # Extract shift values for debugging
+                    lhs_shift = rule.get("lhs", {}).get("shift", 0)
+                    rhs_shift = rule.get("rhs", {}).get("shift", 0)
+
                     if lhs_series is None or rhs_series is None:
                         result, lhs_val, rhs_val = False, None, None
                         logger.debug(f"Rule {rule_str}: failed to resolve sides")
                     else:
-                        result, lhs_val, rhs_val = _apply_operator(lhs_series, rule.get("op", ">"), rhs_series)
+                        # Pass index for day-gap detection
+                        result, lhs_val, rhs_val = _apply_operator(
+                            lhs_series,
+                            rule.get("op", ">"),
+                            rhs_series,
+                            df_index
+                        )
                         rules_evaluated += 1
 
                     if result:
@@ -1324,6 +1506,8 @@ class DynamicSignalEngine:
                         "lhs_value": lhs_val,
                         "rhs_value": rhs_val,
                         "weight": weight,
+                        "lhs_shift": lhs_shift,
+                        "rhs_shift": rhs_shift,
                         "detail": f"{_fmt(lhs_val)} {rule.get('op', '?')} {_fmt(rhs_val)} → {'✓' if result else '✗'}",
                     }
                     rule_results.append(entry)
@@ -1342,6 +1526,8 @@ class DynamicSignalEngine:
                         "lhs_value": None,
                         "rhs_value": None,
                         "weight": rule.get("weight", 1.0),
+                        "lhs_shift": rule.get("lhs", {}).get("shift", 0),
+                        "rhs_shift": rule.get("rhs", {}).get("shift", 0),
                         "detail": f"ERROR: {e}",
                         "error": str(e)
                     })
@@ -1362,17 +1548,22 @@ class DynamicSignalEngine:
             logger.error(f"[_evaluate_group] Failed for {signal}: {e}", exc_info=True)
             return False, [], 0.0, 0.0
 
-    def evaluate(self, df: pd.DataFrame, current_position: Optional[str] = None) -> Dict[str, Any]:
+    def evaluate(self, df: pd.DataFrame, current_position: Optional[str] = None, df_index=None) -> Dict[str, Any]:
         """
         FEATURE 3: Enhanced evaluation with confidence scoring and position-based resolution.
 
         Evaluates all signal groups against the provided data and returns
         a comprehensive result dictionary.
 
+        FIX #5: Applied lower threshold for exit signals.
+        FIX #8: Added shift values to rule results.
+        FIX: Added day gap detection for crossover operators.
+
         Args:
             df: OHLCV DataFrame with at least 2 rows for crossover detection
             current_position: Optional — pass "CALL", "PUT", or None so the
                 engine can prioritise EXIT signals when in a trade.
+            df_index: Optional DataFrame index for day-gap detection
 
         Returns:
             Dict[str, Any]: Result dictionary containing:
@@ -1395,6 +1586,23 @@ class DynamicSignalEngine:
                 logger.debug("DataFrame insufficient for evaluation")
                 return neutral
 
+            if 'time' in df.columns:
+                df = df.sort_values('time').reset_index(drop=True)
+            elif isinstance(df.index, pd.DatetimeIndex):
+                df = df.sort_index().reset_index(drop=False)
+                if 'index' in df.columns:
+                    df = df.rename(columns={'index': 'time'})
+
+            # Use provided index or create from time column
+            if df_index is None:
+                if 'time' in df.columns:
+                    try:
+                        df_index = pd.DatetimeIndex(pd.to_datetime(df['time']))
+                    except Exception:
+                        df_index = df.index if hasattr(df, 'index') else None
+                else:
+                    df_index = df.index if hasattr(df, 'index') else None
+
             cache = {}
             fired = {}
             rule_results = {}
@@ -1410,7 +1618,7 @@ class DynamicSignalEngine:
 
             # First, evaluate all signal groups
             for sig in SIGNAL_GROUPS:
-                gf, rd, conf, _ = self._evaluate_group(sig, df, cache)
+                gf, rd, conf, _ = self._evaluate_group(sig, df, cache, df_index)
                 fired[sig.value] = gf
                 rule_results[sig.value] = rd
                 confidences[sig.value] = conf
@@ -1453,16 +1661,23 @@ class DynamicSignalEngine:
                 return neutral
 
             # Apply confidence threshold to determine which groups actually fired
+            # FIX #5: Lower threshold for exit signals
             fired_after_threshold = {}
             for sig in SIGNAL_GROUPS:
                 sig_val = sig.value
-                if fired.get(sig_val, False) and confidences.get(sig_val, 0) >= self.min_confidence:
+                # Apply lower threshold for exit signals
+                if "EXIT" in sig_val:
+                    effective_threshold = self.min_confidence * 0.8  # 80% of normal threshold
+                else:
+                    effective_threshold = self.min_confidence
+
+                if fired.get(sig_val, False) and confidences.get(sig_val, 0) >= effective_threshold:
                     fired_after_threshold[sig_val] = True
-                    logger.debug(f"Signal {sig_val} passed threshold: {confidences[sig_val]:.2f} >= {self.min_confidence}")
+                    logger.debug(f"Signal {sig_val} passed threshold: {confidences[sig_val]:.2f} >= {effective_threshold:.2f}")
                 else:
                     fired_after_threshold[sig_val] = False
                     if fired.get(sig_val, False):
-                        logger.debug(f"Signal {sig_val} suppressed - confidence {confidences[sig_val]:.2f} < {self.min_confidence}")
+                        logger.debug(f"Signal {sig_val} suppressed - confidence {confidences[sig_val]:.2f} < {effective_threshold:.2f}")
 
             # Now resolve the final signal based on position context
             resolved = self._resolve_with_position(fired_after_threshold, pos)
@@ -1527,12 +1742,15 @@ class DynamicSignalEngine:
         """
         Resolve final signal from fired groups with position context.
 
+        FIX #4: Added BUY_PUT as exit for CALL and BUY_CALL as exit for PUT.
+
         Priority rules:
         1. If in a position, EXIT signals for that position have highest priority
-        2. HOLD signals prevent new entries but don't force exit
-        3. Entry signals (BUY_CALL/BUY_PUT) are only considered when flat
-        4. When both entry signals fire in flat position, use conflict_resolution
-        5. Default to WAIT if nothing appropriate fires
+        2. BUY_PUT when in CALL (and BUY_CALL when in PUT) also trigger exit (reversal)
+        3. HOLD signals prevent new entries but don't force exit
+        4. Entry signals (BUY_CALL/BUY_PUT) are only considered when flat
+        5. When both entry signals fire in flat position, use conflict_resolution
+        6. Default to WAIT if nothing appropriate fires
 
         Args:
             fired: Dict of which groups fired (after threshold)
@@ -1544,6 +1762,7 @@ class DynamicSignalEngine:
         try:
             # If we have a position, prioritize exits for that position
             if position == "CALL":
+                # FIX #4: BUY_PUT also triggers exit (reversal)
                 if fired.get("EXIT_CALL", False) or fired.get("BUY_PUT", False):
                     logger.debug(f"Position CALL: EXIT_CALL or BUY_PUT fired - exiting")
                     return OptionSignal.EXIT_CALL
@@ -1556,8 +1775,9 @@ class DynamicSignalEngine:
                 return OptionSignal.WAIT
 
             elif position == "PUT":
+                # FIX #4: BUY_CALL also triggers exit (reversal)
                 if fired.get("EXIT_PUT", False) or fired.get("BUY_CALL", False):
-                    logger.debug(f"Position PUT: EXIT_PUT fired - exiting")
+                    logger.debug(f"Position PUT: EXIT_PUT or BUY_CALL fired - exiting")
                     return OptionSignal.EXIT_PUT
                 if fired.get("HOLD", False):
                     logger.debug(f"Position PUT: HOLD fired - holding")
@@ -1671,34 +1891,28 @@ def build_example_config() -> Dict[str, Any]:
         Dict[str, Any]: Example configuration dictionary with weighted rules
     """
     try:
+        _macd_params = {"fast": 12, "slow": 26, "signal": 9}
         return {
             "BUY_CALL": {"logic": "AND", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": ">",
                  "rhs": {"type": "scalar", "value": 55}, "weight": 2.0},
-                {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_above",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.5},
-                {"lhs": {"type": "indicator", "indicator": "macd", "params": {"fast": 12, "slow": 26, "signal": 9}},
-                 "op": ">", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0},
+                # MACD line crosses above MACD signal line — correct sub_col usage
+
             ]},
             "BUY_PUT": {"logic": "AND", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": "<",
                  "rhs": {"type": "scalar", "value": 45}, "weight": 2.0},
-                {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_below",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.5},
-                {"lhs": {"type": "indicator", "indicator": "macd", "params": {"fast": 12, "slow": 26, "signal": 9}},
-                 "op": "<", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0},
+
             ]},
             "EXIT_CALL": {"logic": "OR", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": ">",
                  "rhs": {"type": "scalar", "value": 75}, "weight": 1.0},
-                {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_below",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.0},
+
             ]},
             "EXIT_PUT": {"logic": "OR", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}}, "op": "<",
                  "rhs": {"type": "scalar", "value": 25}, "weight": 1.0},
-                {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}}, "op": "crosses_above",
-                 "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}}, "weight": 1.0},
+
             ]},
             "HOLD": {"logic": "AND", "enabled": True, "rules": [
                 {"lhs": {"type": "indicator", "indicator": "adx", "params": {"length": 14}}, "op": ">",

@@ -654,16 +654,27 @@ class OptionPricer:
             option_type: str,
             real_ohlc: Optional[pd.Series] = None,  # row with open/high/low/close
             minutes_per_bar: int = 5,
+            strike: Optional[float] = None,  # explicit strike; if None, ATM from spot_close
     ) -> Dict:
         """
         Full OHLCV bar for one candle.
         Uses spot OHLC to produce option OHLC via BS when real data absent.
+
+        Parameters
+        ----------
+        strike : explicit strike to price against (use the ENTRY strike for open
+                 positions so the bar tracks the actual contract, not today's ATM).
+                 If None, rounds spot_close to nearest ATM.
         """
         # Strip tz so expiry arithmetic never raises
         if hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
             timestamp = timestamp.replace(tzinfo=None)
 
-        strike = atm_strike(spot_close, self.derivative)
+        # Use the caller-supplied strike (entry strike) when available;
+        # fall back to ATM from spot_close for new entry pricing.
+        if strike is None:
+            strike = atm_strike(spot_close, self.derivative)
+
         sigma, vix_real = self._get_sigma(timestamp, minutes_per_bar)
         # Feed spot into HV buffer (no-op when use_vix=True)
         self.push_spot(spot_close)

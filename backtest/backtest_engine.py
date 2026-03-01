@@ -18,8 +18,10 @@ from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 
+from Utils.OptionUtils import OptionUtils
 from backtest.backtest_option_pricer import OptionPricer, PriceSource, atm_strike
 from backtest.backtest_candle_debugger import CandleDebugger
+from data.candle_store import CandleStore, resample_df
 from models.trade_state_manager import state_manager
 from Utils.Utils import Utils
 from Utils.common import (MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,
@@ -31,6 +33,10 @@ logger = logging.getLogger(__name__)
 MARKET_OPEN = time(MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE)
 MARKET_CLOSE = time(MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE)
 AUTO_EXIT_BEFORE_CLOSE_MINUTES = 5  # exit at 15:25
+
+# Cooldown period after market open (in minutes)
+COOLDOWN_MINUTES = 15
+MARKET_OPEN_TIME = time(9, 15)  # Adjust based on your market
 
 
 # ── Data classes ───────────────────────────────────────────────────────────────
@@ -64,7 +70,7 @@ class BacktestConfig:
     brokerage_per_lot: float = 40.0  # ₹40/lot round-trip
 
     # Interval (must match what broker returns)
-    interval_minutes: int = 5  # candle interval in minutes
+    execution_interval_minutes: int = 5  # always resampled from 1-min CandleStore
 
     # Capital
     capital: float = 100_000.0
@@ -112,6 +118,7 @@ class BacktestResult:
     """Summary of a completed backtest run."""
     config: BacktestConfig
     trades: List[BacktestTrade] = field(default_factory=list)
+    debugger_entries: List[Dict] = field(default_factory=list)
 
     # Aggregate metrics
     total_trades: int = 0
@@ -190,6 +197,7 @@ def _bt_log_candle_assessment(
         sig_result: dict,
         current_position,
         history_len: int,
+        is_new_day: bool = False,
 ) -> None:
     """
     Emit a comprehensive per-candle DEBUG log showing:
@@ -198,9 +206,11 @@ def _bt_log_candle_assessment(
       - Every rule inside each group
       - Resolved final signal and action taken
       - Current position context
+      - Day gap indicator
     """
     try:
         ts = f"{bar_time:%d-%b %H:%M}"
+        day_marker = " [NEW DAY]" if is_new_day else ""
 
         fired = sig_result.get("fired", {})
         rule_results = sig_result.get("rule_results", {})
@@ -216,7 +226,7 @@ def _bt_log_candle_assessment(
         lines = [
             "",
             SEP,
-            f"  CANDLE  {ts}  |  O={o:.1f}  H={h:.1f}  L={l:.1f}  C={c:.1f}  "
+            f"  CANDLE  {ts}{day_marker}  |  O={o:.1f}  H={h:.1f}  L={l:.1f}  C={c:.1f}  "
             f"|  bars={history_len}  |  pos={current_position or 'FLAT'}",
             SEP2,
         ]
@@ -404,15 +414,10 @@ class BacktestEngine:
         configured interval_minutes.
         """
         try:
-            from data.candle_store import CandleStore, resample_df
-
             days = (self.config.end_date - self.config.start_date).days + 2
 
             # Detect broker type for correct symbol/interval translation
-            broker_type = getattr(
-                getattr(self.broker, "broker_setting", None), "broker_type", None
-            )
-
+            broker_type = self.broker.broker_type if self.broker else None
             store = CandleStore(symbol=self.config.derivative, broker=self.broker)
             ok = store.fetch(days=days, broker_type=broker_type)
 
@@ -422,13 +427,13 @@ class BacktestEngine:
                     "[BacktestEngine._fetch_spot] CandleStore fetch failed — "
                     "falling back to direct broker fetch at target interval."
                 )
-                return self._fetch_spot_legacy()
+                return None  # 1-min fetch is the only path; no fallback to direct broker fetch
 
             # Resample 1-min → target interval
-            if self.config.interval_minutes == 1:
+            if self.config.execution_interval_minutes == 1:
                 df = store.get_1min()
             else:
-                df = resample_df(store.get_1min(), self.config.interval_minutes)
+                df = resample_df(store.get_1min(), self.config.execution_interval_minutes)
 
             if df is None or df.empty:
                 return None
@@ -450,7 +455,7 @@ class BacktestEngine:
 
             logger.info(
                 f"[BacktestEngine._fetch_spot] {len(df)} bars "
-                f"({self.config.interval_minutes}-min) for {self.config.derivative} "
+                f"({self.config.execution_interval_minutes}-min) for {self.config.derivative} "
                 f"resampled from 1-min store"
             )
             return df
@@ -465,7 +470,7 @@ class BacktestEngine:
             days = (self.config.end_date - self.config.start_date).days + 2
             df = self.broker.get_history_for_timeframe(
                 symbol=self.config.derivative,
-                interval=str(self.config.interval_minutes),
+                interval=str(self.config.execution_interval_minutes),
                 days=days,
             )
             if df is None or df.empty:
@@ -483,48 +488,6 @@ class BacktestEngine:
         except Exception as e:
             logger.error(f"[BacktestEngine._fetch_spot_legacy] {e}", exc_info=True)
             return None
-
-    def _try_fetch_option_history(self, option_symbol: str) -> Optional[pd.DataFrame]:
-        """
-        Fetch real option OHLCV at 1-min resolution, then resample to the
-        target interval_minutes.
-        """
-        try:
-            from data.candle_store import CandleStore, resample_df
-
-            days = (self.config.end_date - self.config.start_date).days + 5
-            broker_type = getattr(
-                getattr(self.broker, "broker_setting", None), "broker_type", None
-            )
-
-            store = CandleStore(symbol=option_symbol, broker=self.broker)
-            ok = store.fetch(days=days, broker_type=broker_type)
-
-            if not ok or store.is_empty():
-                return None
-
-            # Resample to target interval
-            if self.config.interval_minutes == 1:
-                df = store.get_1min()
-            else:
-                df = resample_df(store.get_1min(), self.config.interval_minutes)
-
-            if df is None or df.empty:
-                return None
-
-            # Filter to backtest date range
-            if not pd.api.types.is_datetime64_any_dtype(df["time"]):
-                df["time"] = pd.to_datetime(df["time"])
-            df = df[
-                (df["time"].dt.date >= self.config.start_date.date()) &
-                (df["time"].dt.date <= self.config.end_date.date())
-                ]
-            df = df.set_index("time")
-            return df
-
-        except Exception as e:
-            logger.debug(f"[BacktestEngine] Option history unavailable for {option_symbol}: {e}")
-        return None
 
     def _load_signal_engine(self):
         """Load the DynamicSignalEngine and TrendDetector from the active strategy."""
@@ -583,7 +546,6 @@ class BacktestEngine:
 
         equity = cfg.capital
         trade_no = 0
-        _option_cache: Dict[str, Optional[pd.DataFrame]] = {}
         total_bars = len(spot_df)
         history_rows = []
 
@@ -594,18 +556,26 @@ class BacktestEngine:
         _trailing_sl_high: Optional[float] = None
         _bars_in_trade: int = 0
 
+        # ── Day tracking for gap detection ────────────────────────────────────
+        _current_date = None
+        _last_bar_date = None
+        _is_cooldown_period = False
+        _cooldown_end_time = None
+        _first_bar_of_day_index = -1
+
         # ── Debug counters ────────────────────────────────────────────────────
         _skip_sideway = 0
         _skip_market = 0
         _skip_no_signal = 0
         _skip_in_trade = 0
         _skip_min_bars = 0
+        _skip_cooldown = 0
         _entry_attempts = 0
         _signals_seen: Dict[str, int] = {}
 
         logger.info(
             f"[Backtest] Starting replay: {total_bars} bars | "
-            f"interval={cfg.interval_minutes}m | "
+            f"interval={cfg.execution_interval_minutes}m | "
             f"sideway_skip={cfg.sideway_zone_skip} | "
             f"tp={cfg.tp_pct} | sl={cfg.sl_pct}"
         )
@@ -620,6 +590,25 @@ class BacktestEngine:
             bar_time = ts if isinstance(ts, datetime) else pd.Timestamp(ts).to_pydatetime()
             if hasattr(bar_time, "tzinfo") and bar_time.tzinfo is not None:
                 bar_time = bar_time.replace(tzinfo=None)
+
+            bar_date = bar_time.date()
+            is_new_day = (_current_date is not None and bar_date != _current_date)
+            _current_date = bar_date
+
+            # Detect day change for gap handling
+            if is_new_day:
+                logger.debug(f"[BT] Day changed from {_last_bar_date} to {bar_date} - handling potential gap")
+                _first_bar_of_day_index = i
+
+                # Set cooldown period for this new day
+                market_open_dt = datetime.combine(bar_date, MARKET_OPEN_TIME)
+                _cooldown_end_time = market_open_dt + timedelta(minutes=COOLDOWN_MINUTES)
+                _is_cooldown_period = bar_time < _cooldown_end_time
+
+                if _is_cooldown_period:
+                    logger.debug(f"[BT] Cooldown period until {_cooldown_end_time.time()}")
+
+            _last_bar_date = bar_date
 
             # Progress update every 50 bars
             if i % 50 == 0:
@@ -670,9 +659,12 @@ class BacktestEngine:
                 state.reset_trade_attributes(current_position=None)
                 continue
 
-            # ── Accumulate history buffer ─────────────────────────────────────
+            # ── Accumulate history buffer with day gap marker ─────────────────
             history_rows.append({
-                "time": bar_time, "open": o, "high": h, "low": l, "close": c, "volume": 0
+                "time": bar_time,
+                "open": o, "high": h, "low": l, "close": c, "volume": 0,
+                "is_new_day": is_new_day,
+                "is_cooldown": _is_cooldown_period
             })
             if len(history_rows) > 500:
                 history_rows = history_rows[-500:]
@@ -690,6 +682,12 @@ class BacktestEngine:
                 )
                 continue
 
+            # Optionally skip cooldown period for signal generation
+            if _is_cooldown_period:
+                _skip_cooldown += 1
+                # Still process but with simplified logic? For now, we'll continue
+                # but the signal engine will handle day gaps internally
+
             hist_df = pd.DataFrame(history_rows)
 
             # ── Run signal engine ─────────────────────────────────────────────
@@ -701,7 +699,13 @@ class BacktestEngine:
                     # Pass the current position context from state
                     _pos_context = state.current_position
 
-                    sig_result = signal_engine.evaluate(hist_df, current_position=_pos_context)
+                    # Also pass the history DataFrame with day gap markers
+                    # The signal engine will handle day gaps internally
+                    sig_result = signal_engine.evaluate(
+                        hist_df,
+                        current_position=_pos_context,
+                        df_index=hist_df.index if hasattr(hist_df, 'index') else None
+                    )
 
                     if sig_result and sig_result.get("available", False):
                         fired = sig_result.get("fired", {})
@@ -738,21 +742,24 @@ class BacktestEngine:
                                     raw_signal = "WAIT"
                                     _override_reason = f"flat:exit_suppressed(bc={bc_conf:.0%},bp={bp_conf:.0%})"
 
-                        # Patch the signal into the result dict
                         if _override_reason:
-                            sig_result = sig_result.copy()
-                            sig_result["signal_value"] = raw_signal
-                            sig_result["signal"] = raw_signal
-                            sig_result["_bt_override"] = _override_reason
+                            # Create a fresh copy to avoid mutation issues
+                            modified_result = sig_result.copy()
+                            modified_result["signal_value"] = raw_signal
+                            modified_result["signal"] = raw_signal
+                            modified_result["_bt_override"] = _override_reason
+                            sig_result = modified_result
+                            state.option_signal_result = modified_result
+                        else:
+                            state.option_signal_result = sig_result
 
                         # Update state with signal result
-                        state.option_signal_result = sig_result
                         _signals_seen[raw_signal] = _signals_seen.get(raw_signal, 0) + 1
 
                         if _override_reason:
                             logger.debug(
                                 f"[BT {bar_time:%d-%b %H:%M}] SIGNAL OVERRIDE: "
-                                f"engine={sig_result.get('_bt_override', '?')} "
+                                f"engine={_override_reason} "
                                 f"original={sig_result.get('signal_value', '?')} "
                                 f"→ effective={raw_signal}"
                             )
@@ -764,7 +771,8 @@ class BacktestEngine:
                     if logger.isEnabledFor(logging.DEBUG) and sig_result:
                         _bt_log_candle_assessment(
                             bar_time, o, h, l, c,
-                            sig_result, state.current_position, len(history_rows)
+                            sig_result, state.current_position, len(history_rows),
+                            is_new_day=is_new_day
                         )
 
                 except Exception as e:
@@ -777,6 +785,7 @@ class BacktestEngine:
 
             # ── Build TP/SL debug context ────────────────────────────────
             _tp_sl_debug: Optional[Dict] = None
+            _opt_bar_debug = None
             if cfg.debug_candles and state.current_position:
                 _tp_sl_debug = {"current_option_price": None, "tp_price": None,
                                 "sl_price": None, "trailing_sl_price": None,
@@ -785,24 +794,34 @@ class BacktestEngine:
                 try:
                     _d_strike = getattr(state, "_bt_strike", atm_strike(c, cfg.derivative))
                     _d_opt_type = "CE" if state.current_position == BaseEnums.CALL else "PE"
-                    _d_opt_sym = f"{cfg.derivative}{_d_strike}{_d_opt_type}"
-                    _d_real_row = self._lookup_real_bar(_option_cache, _d_opt_sym, bar_time)
-                    _d_bar = pricer.resolve_bar(bar_time, o, h, l, c, _d_opt_type, _d_real_row, cfg.interval_minutes)
-                    _d_cur_price = _d_bar["close"]
-                    _tp_sl_debug["current_option_price"] = _d_cur_price
+                    _d_opt_sym = self._get_historical_option_symbol(
+                        derivative=cfg.derivative,
+                        strike=_d_strike,
+                        option_type=_d_opt_type,
+                        bar_time=bar_time
+                    )
+                    logger.debug(f"Looking up option: {_d_opt_sym} at {bar_time}")
+
+                    _d_bar = pricer.resolve_bar(bar_time, o, h, l, c, _d_opt_type, minutes_per_bar=cfg.execution_interval_minutes)
+                    _d_opt_high  = _d_bar["high"]
+                    _d_opt_low   = _d_bar["low"]
+                    _d_opt_close = _d_bar["close"]
+                    _tp_sl_debug["current_option_price"] = _d_opt_close
+                    _tp_sl_debug["option_high"] = _d_opt_high
+                    _tp_sl_debug["option_low"]  = _d_opt_low
                     _tp_sl_debug["price_source"] = str(_d_bar.get("source", ""))
                     if cfg.tp_pct and state.current_buy_price:
                         tp_p = state.current_buy_price * (1 + cfg.tp_pct)
                         _tp_sl_debug["tp_price"] = tp_p
-                        _tp_sl_debug["tp_hit"] = _d_cur_price >= tp_p
+                        _tp_sl_debug["tp_hit"] = _d_opt_high >= tp_p   # TP hit when high reaches target
                     if cfg.sl_pct and state.current_buy_price:
                         sl_p = state.current_buy_price * (1 - cfg.sl_pct)
                         _tp_sl_debug["sl_price"] = sl_p
-                        _tp_sl_debug["sl_hit"] = _d_cur_price <= sl_p
+                        _tp_sl_debug["sl_hit"] = _d_opt_low <= sl_p    # SL hit when low drops to stop
                     if cfg.trailing_sl_pct and _trailing_sl_high:
                         tsl_p = _trailing_sl_high * (1 - cfg.trailing_sl_pct)
                         _tp_sl_debug["trailing_sl_price"] = tsl_p
-                        _tp_sl_debug["trailing_sl_hit"] = _d_cur_price <= tsl_p
+                        _tp_sl_debug["trailing_sl_hit"] = _d_opt_low <= tsl_p
                     if cfg.index_sl is not None:
                         _e_spot = getattr(state, "_bt_spot_entry", None)
                         if _e_spot:
@@ -812,9 +831,9 @@ class BacktestEngine:
                                 idx_sl_level = _e_spot + cfg.index_sl
                             _tp_sl_debug["index_sl_level"] = idx_sl_level
                             if state.current_position == BaseEnums.CALL:
-                                _tp_sl_debug["index_sl_hit"] = c <= idx_sl_level
+                                _tp_sl_debug["index_sl_hit"] = l <= idx_sl_level   # intrabar low
                             else:
-                                _tp_sl_debug["index_sl_hit"] = c >= idx_sl_level
+                                _tp_sl_debug["index_sl_hit"] = h >= idx_sl_level   # intrabar high
                     # option bar for debug
                     _opt_bar_debug = {
                         "symbol": _d_opt_sym,
@@ -822,11 +841,10 @@ class BacktestEngine:
                         "low": _d_bar.get("low"), "close": _d_bar.get("close"),
                         "source": str(_d_bar.get("source", "")),
                     }
+                    result.debugger_entries = _debugger.get_entries()
                 except Exception as _dbe:
                     logger.debug(f"[CandleDebugger] TP/SL context build failed: {_dbe}")
                     _opt_bar_debug = None
-            else:
-                _opt_bar_debug = None
 
             # ── Record candle debug snapshot ──────────────────────────────────
             if cfg.debug_candles:
@@ -847,37 +865,44 @@ class BacktestEngine:
                 # Use the ENTRY strike, not the current ATM
                 strike = getattr(state, "_bt_strike", atm_strike(c, cfg.derivative))
                 opt_type = "CE" if state.current_position == BaseEnums.CALL else "PE"
-                opt_sym = f"{cfg.derivative}{strike}{opt_type}"
 
-                real_row = self._lookup_real_bar(_option_cache, opt_sym, bar_time)
-                bar = pricer.resolve_bar(bar_time, o, h, l, c, opt_type, real_row, cfg.interval_minutes)
-                current_price = bar["close"]
+                # Compute one full BS OHLC bar for this candle using spot OHLC.
+                bar = pricer.resolve_bar(
+                    bar_time, o, h, l, c, opt_type,
+                    minutes_per_bar=cfg.execution_interval_minutes,
+                    strike=strike,   # locked to entry strike for the life of the trade
+                )
+                opt_high  = bar["high"]   # highest option price reached inside this candle
+                opt_low   = bar["low"]    # lowest  option price reached inside this candle
+                opt_close = bar["close"]  # option price at candle close (used for signal exits)
 
-                # ── Check TP ────────────────────────────────────────────────
+                # ── Check TP ─────────────────────────────────────────────────
                 if cfg.tp_pct and state.current_buy_price:
                     tp_price = state.current_buy_price * (1 + cfg.tp_pct)
-                    if current_price >= tp_price:
+                    if opt_high >= tp_price:
+                        fill_price = tp_price
                         logger.debug(
-                            f"[BT {bar_time:%H:%M}] TP HIT: opt={current_price:.2f} >= tp={tp_price:.2f}"
+                            f"[BT {bar_time:%H:%M}] TP HIT: opt_high={opt_high:.2f} >= tp={tp_price:.2f}"
                         )
                         result, equity, trade_no = self._close_trade(
                             result, state, bar_time, c, pricer, equity, trade_no, "TP",
-                            forced_option_price=current_price, forced_source=bar["source"]
+                            forced_option_price=fill_price, forced_source=bar["source"]
                         )
                         state.reset_trade_attributes(current_position=None)
                         result.equity_curve.append({"timestamp": bar_time, "equity": round(equity, 2)})
                         continue
 
-                # ── Check SL ────────────────────────────────────────────────
+                # ── Check SL ─────────────────────────────────────────────────
                 if cfg.sl_pct and state.current_buy_price:
                     sl_price = state.current_buy_price * (1 - cfg.sl_pct)
-                    if current_price <= sl_price:
+                    if opt_low <= sl_price:
+                        fill_price = sl_price
                         logger.debug(
-                            f"[BT {bar_time:%H:%M}] SL HIT: opt={current_price:.2f} <= sl={sl_price:.2f}"
+                            f"[BT {bar_time:%H:%M}] SL HIT: opt_low={opt_low:.2f} <= sl={sl_price:.2f}"
                         )
                         result, equity, trade_no = self._close_trade(
                             result, state, bar_time, c, pricer, equity, trade_no, "SL",
-                            forced_option_price=current_price, forced_source=bar["source"]
+                            forced_option_price=fill_price, forced_source=bar["source"]
                         )
                         state.reset_trade_attributes(current_position=None)
                         _trailing_sl_high = None
@@ -885,19 +910,20 @@ class BacktestEngine:
                         result.equity_curve.append({"timestamp": bar_time, "equity": round(equity, 2)})
                         continue
 
-                # ── Check trailing SL ───────────────────────────────────────
+                # ── Check trailing SL ────────────────────────────────────────
                 if cfg.trailing_sl_pct and state.current_buy_price:
-                    _trailing_sl_high = max(_trailing_sl_high or current_price, current_price)
+                    _trailing_sl_high = max(_trailing_sl_high or opt_high, opt_high)
                     trailing_sl_price = _trailing_sl_high * (1 - cfg.trailing_sl_pct)
-                    if current_price <= trailing_sl_price:
+                    if opt_low <= trailing_sl_price:
+                        fill_price = trailing_sl_price
                         logger.debug(
                             f"[BT {bar_time:%H:%M}] TRAILING SL HIT: "
-                            f"opt={current_price:.2f} <= trail={trailing_sl_price:.2f} "
+                            f"opt_low={opt_low:.2f} <= trail={trailing_sl_price:.2f} "
                             f"(peak={_trailing_sl_high:.2f})"
                         )
                         result, equity, trade_no = self._close_trade(
                             result, state, bar_time, c, pricer, equity, trade_no, "TRAILING_SL",
-                            forced_option_price=current_price, forced_source=bar["source"]
+                            forced_option_price=fill_price, forced_source=bar["source"]
                         )
                         state.reset_trade_attributes(current_position=None)
                         _trailing_sl_high = None
@@ -909,28 +935,28 @@ class BacktestEngine:
                 if cfg.index_sl is not None:
                     entry_spot = getattr(state, "_bt_spot_entry", None)
                     if entry_spot is not None:
-                        if state.current_position == BaseEnums.CALL and c <= entry_spot - cfg.index_sl:
+                        if state.current_position == BaseEnums.CALL and l <= entry_spot - cfg.index_sl:
                             logger.debug(
                                 f"[BT {bar_time:%H:%M}] INDEX SL HIT (CALL): "
-                                f"spot={c:.0f} <= entry_spot({entry_spot:.0f}) - index_sl({cfg.index_sl})"
+                                f"spot_low={l:.0f} <= entry_spot({entry_spot:.0f}) - index_sl({cfg.index_sl})"
                             )
                             result, equity, trade_no = self._close_trade(
                                 result, state, bar_time, c, pricer, equity, trade_no, "INDEX_SL",
-                                forced_option_price=current_price, forced_source=bar["source"]
+                                forced_option_price=opt_low, forced_source=bar["source"]
                             )
                             state.reset_trade_attributes(current_position=None)
                             _trailing_sl_high = None
                             _bars_in_trade = 0
                             result.equity_curve.append({"timestamp": bar_time, "equity": round(equity, 2)})
                             continue
-                        elif state.current_position == BaseEnums.PUT and c >= entry_spot + cfg.index_sl:
+                        elif state.current_position == BaseEnums.PUT and h >= entry_spot + cfg.index_sl:
                             logger.debug(
                                 f"[BT {bar_time:%H:%M}] INDEX SL HIT (PUT): "
-                                f"spot={c:.0f} >= entry_spot({entry_spot:.0f}) + index_sl({cfg.index_sl})"
+                                f"spot_high={h:.0f} >= entry_spot({entry_spot:.0f}) + index_sl({cfg.index_sl})"
                             )
                             result, equity, trade_no = self._close_trade(
                                 result, state, bar_time, c, pricer, equity, trade_no, "INDEX_SL",
-                                forced_option_price=current_price, forced_source=bar["source"]
+                                forced_option_price=opt_low, forced_source=bar["source"]
                             )
                             state.reset_trade_attributes(current_position=None)
                             _trailing_sl_high = None
@@ -947,7 +973,7 @@ class BacktestEngine:
                     )
                     result, equity, trade_no = self._close_trade(
                         result, state, bar_time, c, pricer, equity, trade_no, "MAX_HOLD",
-                        forced_option_price=current_price, forced_source=bar["source"]
+                        forced_option_price=opt_close, forced_source=bar["source"]
                     )
                     state.reset_trade_attributes(current_position=None)
                     _trailing_sl_high = None
@@ -955,7 +981,7 @@ class BacktestEngine:
                     result.equity_curve.append({"timestamp": bar_time, "equity": round(equity, 2)})
                     continue
 
-                # ── Check signal exit ─────────────────────────────────────────
+                # ── Check signal exit (exits at candle close price) ───────────
                 should_exit = (
                         (state.current_position == BaseEnums.CALL and action in ("EXIT_CALL", "BUY_PUT")) or
                         (state.current_position == BaseEnums.PUT and action in ("EXIT_PUT", "BUY_CALL"))
@@ -966,7 +992,7 @@ class BacktestEngine:
                     )
                     result, equity, trade_no = self._close_trade(
                         result, state, bar_time, c, pricer, equity, trade_no, "SIGNAL",
-                        forced_option_price=current_price, forced_source=bar["source"]
+                        forced_option_price=opt_close, forced_source=bar["source"]
                     )
                     state.reset_trade_attributes(current_position=None)
                     _trailing_sl_high = None
@@ -989,8 +1015,7 @@ class BacktestEngine:
                 strike = atm_strike(c, cfg.derivative)
                 opt_sym = f"{cfg.derivative}{strike}{opt_type}"
 
-                real_row = self._lookup_real_bar(_option_cache, opt_sym, bar_time)
-                bar = pricer.resolve_bar(bar_time, o, h, l, c, opt_type, real_row, cfg.interval_minutes)
+                bar = pricer.resolve_bar(bar_time, o, h, l, c, opt_type, minutes_per_bar=cfg.execution_interval_minutes)
                 entry_price = round(bar["close"] * (1 + cfg.slippage_pct), 2)
 
                 # Update state with entry information
@@ -999,8 +1024,7 @@ class BacktestEngine:
                 state.put_option = opt_sym if opt_type == "PE" else getattr(state, "put_option", None)
                 state.call_option = opt_sym if opt_type == "CE" else getattr(state, "call_option", None)
 
-                # Store backtest-specific attributes (these are not part of the main state)
-                # We'll use private attributes that won't interfere with live trading
+                # Store backtest-specific attributes
                 object.__setattr__(state, "_bt_entry_time", bar_time)
                 object.__setattr__(state, "_bt_spot_entry", c)
                 object.__setattr__(state, "_bt_entry_source", bar["source"])
@@ -1010,7 +1034,7 @@ class BacktestEngine:
 
                 # Reset per-trade tracking
                 _trailing_sl_high = entry_price
-                _bars_in_trade = 0
+                _bars_in_trade = 1
 
                 logger.info(
                     f"[BT {bar_time:%d-%b %H:%M}] ENTRY #{trade_no + 1}: "
@@ -1037,9 +1061,9 @@ class BacktestEngine:
         _summary = (
             f"[Backtest] REPLAY COMPLETE - {total_bars} total bars processed | "
             f"sideway_skip={_skip_sideway} | market_skip={_skip_market} | "
-            f"warmup_skip={_skip_min_bars} | no_signal={_skip_no_signal} | "
-            f"in_trade={_skip_in_trade} | entries={_entry_attempts} | "
-            f"trades={trade_no} | signals={_signals_seen}"
+            f"warmup_skip={_skip_min_bars} | cooldown_skip={_skip_cooldown} | "
+            f"no_signal={_skip_no_signal} | in_trade={_skip_in_trade} | "
+            f"entries={_entry_attempts} | trades={trade_no} | signals={_signals_seen}"
         )
         logger.info(_summary)
 
@@ -1079,6 +1103,93 @@ class BacktestEngine:
         self._emit(100, f"Complete — {result.total_trades} trades | Net P&L ₹{result.total_net_pnl:,.0f}")
         return result
 
+    def _get_historical_option_symbol(
+            self,
+            derivative: str,
+            strike: float,
+            option_type: str,
+            bar_time: datetime
+    ) -> Optional[str]:
+        """
+        Generate the correct option symbol for a historical date.
+        Uses the expiry that was active on that specific date.
+        """
+        try:
+            from Utils.OptionUtils import OptionUtils
+
+            exchange_symbol = OptionUtils.get_exchange_symbol(derivative)
+
+            # Determine which expiry was active on this historical date
+            if self.config.expiry_type == "monthly":
+                # For monthly: find the monthly expiry that was current on bar_time
+                if bar_time.month == 12:
+                    expiry_year = bar_time.year + 1
+                    expiry_month = 1
+                else:
+                    expiry_year = bar_time.year
+                    expiry_month = bar_time.month + 1
+
+                # Get the monthly expiry date for that month
+                expiry_date = OptionUtils.get_monthly_expiry_date(
+                    expiry_year, expiry_month, derivative=exchange_symbol
+                )
+
+                # If bar_time is after that expiry, move to next month
+                if bar_time > expiry_date:
+                    if expiry_month == 12:
+                        expiry_year += 1
+                        expiry_month = 1
+                    else:
+                        expiry_month += 1
+                    expiry_date = OptionUtils.get_monthly_expiry_date(
+                        expiry_year, expiry_month, derivative=exchange_symbol
+                    )
+
+                # Generate monthly format symbol
+                year_2d = str(expiry_date.year)[2:]
+                month_code = OptionUtils.MONTHLY_MONTH_CODES.get(expiry_date.month, "JAN")
+                symbol = f"{exchange_symbol}{year_2d}{month_code}{int(strike)}{option_type}"
+
+            else:  # weekly
+                # For weekly: find the weekly expiry that was current on bar_time
+                target_weekday = OptionUtils.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
+
+                # Find the next expiry on or after bar_time
+                days_ahead = (target_weekday - bar_time.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7  # Next week if today is expiry day
+
+                expiry_date = bar_time + timedelta(days=days_ahead)
+
+                # Adjust for holidays
+                max_adjustments = 10
+                adjustments = 0
+                from Utils.common import is_holiday
+                while is_holiday(expiry_date) and adjustments < max_adjustments:
+                    expiry_date -= timedelta(days=1)
+                    adjustments += 1
+
+                # Generate weekly format symbol
+                year_2d = str(expiry_date.year)[2:]
+                month_code = OptionUtils.WEEKLY_MONTH_CODES.get(expiry_date.month, str(expiry_date.month))
+                day_str = f"{expiry_date.day:02d}"
+                symbol = f"{exchange_symbol}{year_2d}{month_code}{day_str}{int(strike)}{option_type}"
+
+            # Add broker prefix if needed
+            broker_type = getattr(getattr(self.broker, "broker_setting", None), "broker_type", None)
+
+            broker_type = broker_type
+            if broker_type:
+                symbol = OptionUtils.get_option_symbol_for_broker(symbol, broker_type)
+
+            logger.debug(f"Generated historical option symbol for {bar_time}: {symbol} (expiry: {expiry_date.date()})")
+            return symbol
+
+        except Exception as e:
+            logger.error(f"Failed to generate historical option symbol: {e}")
+            # Fallback to simple format
+            return f"{derivative}{int(strike)}{option_type}"
+
     def _build_analysis_data(self, spot_df: pd.DataFrame, signal_engine) -> Dict:
         """
         Re-runs the signal engine on each requested analysis timeframe and
@@ -1098,18 +1209,18 @@ class BacktestEngine:
                 tf_minutes = self._parse_tf_minutes(tf_str)
 
                 # Resample spot data to this timeframe
-                if tf_minutes == self.config.interval_minutes:
+                if tf_minutes == self.config.execution_interval_minutes:
                     tf_df = spot_df.copy()
                 elif tf_minutes == 1:
                     tf_df = spot_df.copy()
                 else:
-                    if self.config.interval_minutes == 1:
+                    if self.config.execution_interval_minutes == 1:
                         tf_df = resample_df(spot_df, tf_minutes)
                     else:
-                        if tf_minutes < self.config.interval_minutes:
+                        if tf_minutes < self.config.execution_interval_minutes:
                             logger.debug(
                                 f"[Analysis] Skipping {tf_str}: cannot upsample from "
-                                f"{self.config.interval_minutes}m execution interval"
+                                f"{self.config.execution_interval_minutes}m execution interval"
                             )
                             continue
                         tf_df = resample_df(spot_df, tf_minutes)
@@ -1197,7 +1308,6 @@ class BacktestEngine:
             if signal_value == "BUY_PUT" and current is None:
                 return "BUY_PUT"
 
-            # Exit signals — only when in matching position
             if signal_value in ("EXIT_CALL", "BUY_PUT") and current == BaseEnums.CALL:
                 return "EXIT_CALL"
             if signal_value in ("EXIT_PUT", "BUY_CALL") and current == BaseEnums.PUT:
@@ -1231,9 +1341,8 @@ class BacktestEngine:
                 exit_price = forced_option_price * (1 - self.config.slippage_pct)
                 exit_source = forced_source or PriceSource.SYNTHETIC
             else:
-                real_row = {}
                 bar = pricer.resolve_bar(exit_time, spot_exit, spot_exit, spot_exit, spot_exit,
-                                         opt_type, None, self.config.interval_minutes)
+                                         opt_type, minutes_per_bar=self.config.execution_interval_minutes)
                 exit_price = bar["close"] * (1 - self.config.slippage_pct)
                 exit_source = bar["source"]
 
@@ -1284,33 +1393,3 @@ class BacktestEngine:
             logger.error(f"[BacktestEngine._close_trade] {e}", exc_info=True)
 
         return result, equity, trade_no
-
-    def _lookup_real_bar(
-            self,
-            cache: Dict,
-            opt_sym: str,
-            bar_time: datetime,
-    ) -> Optional[Dict]:
-        """Look up a real option bar from the broker cache (lazy-loaded)."""
-        if opt_sym not in cache:
-            cache[opt_sym] = self._try_fetch_option_history(opt_sym)
-
-        df = cache[opt_sym]
-        if df is None or df.empty:
-            return None
-
-        try:
-            if bar_time in df.index:
-                row = df.loc[bar_time]
-                return {"open": row.get("open"), "high": row.get("high"),
-                        "low": row.get("low"), "close": row.get("close")}
-            # Nearest match within 1 bar interval
-            diffs = abs(df.index - bar_time)
-            nearest_idx = diffs.argmin()
-            if diffs[nearest_idx].seconds <= self.config.interval_minutes * 60 * 2:
-                row = df.iloc[nearest_idx]
-                return {"open": row.get("open"), "high": row.get("high"),
-                        "low": row.get("low"), "close": row.get("close")}
-        except Exception:
-            pass
-        return None

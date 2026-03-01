@@ -157,7 +157,7 @@ class CandleStore:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def fetch(self, days: int = 10, broker_type: Optional[str] = None) -> bool:
+    def fetch(self, days: int = 2, broker_type: Optional[str] = None) -> bool:
         """
         Fetch 1-minute data from the broker and populate the store.
 
@@ -176,7 +176,9 @@ class CandleStore:
             return False
 
         try:
+
             # Translate symbol and interval for the specific broker
+
             broker_sym = self._translate_symbol(broker_type)
             broker_int = self._translate_interval("1", broker_type)
 

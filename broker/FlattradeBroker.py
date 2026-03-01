@@ -168,6 +168,10 @@ class FlattradeBroker(BaseBroker):
             logger.critical(f"[FlattradeBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "flattrade"
+
     def _safe_defaults_init(self):
         self.state = None
         self.user_id = None

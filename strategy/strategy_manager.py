@@ -410,7 +410,7 @@ class StrategyManager:
 
             # Validate operator
             op = rule.get("op", "")
-            valid_ops = [">", "<", ">=", "<=", "==", "!=", "crosses_above", "crosses_below"]
+            valid_ops = [">", "<", ">=", "<=", "==", "!="]
             if op and op not in valid_ops:
                 errors.append(f"{signal} rule {rule_index}: Invalid operator '{op}'")
 

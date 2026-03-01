@@ -147,6 +147,10 @@ class IciciBroker(BaseBroker):
             logger.critical(f"[IciciBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "icici"
+
     def _safe_defaults_init(self):
         self.state = None
         self.api_key = None

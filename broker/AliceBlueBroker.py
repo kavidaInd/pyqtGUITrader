@@ -129,6 +129,10 @@ class AliceBlueBroker(BaseBroker):
             logger.critical(f"[AliceBlueBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "alice_blue"
+
     def _safe_defaults_init(self):
         self.state = None
         self.app_id = None

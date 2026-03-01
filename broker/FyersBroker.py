@@ -103,6 +103,10 @@ class FyersBroker(BaseBroker):
             logger.critical(f"[FyersBroker.__init__] Failed: {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "fyers"
+
     def _safe_defaults_init(self):
         self.state = None
         self.username = None

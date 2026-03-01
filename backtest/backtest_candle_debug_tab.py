@@ -48,52 +48,52 @@ from PyQt5.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 # ── Palette (matches the rest of the project) ────────────────────────────────
-BG        = "#0d1117"
-BG_PANEL  = "#161b22"
-BG_ITEM   = "#1c2128"
-BG_SEL    = "#1f3d5c"
-BORDER    = "#30363d"
-TEXT      = "#e6edf3"
-DIM       = "#8b949e"
-GREEN     = "#3fb950"
-RED       = "#f85149"
-BLUE      = "#58a6ff"
-YELLOW    = "#d29922"
-ORANGE    = "#ffa657"
-PURPLE    = "#bc8cff"
-TEAL      = "#39d0d8"
+BG = "#0d1117"
+BG_PANEL = "#161b22"
+BG_ITEM = "#1c2128"
+BG_SEL = "#1f3d5c"
+BORDER = "#30363d"
+TEXT = "#e6edf3"
+DIM = "#8b949e"
+GREEN = "#3fb950"
+RED = "#f85149"
+BLUE = "#58a6ff"
+YELLOW = "#d29922"
+ORANGE = "#ffa657"
+PURPLE = "#bc8cff"
+TEAL = "#39d0d8"
 
 SIGNAL_COLORS: Dict[str, str] = {
-    "BUY_CALL":  GREEN,
-    "BUY_PUT":   BLUE,
+    "BUY_CALL": GREEN,
+    "BUY_PUT": BLUE,
     "EXIT_CALL": RED,
-    "EXIT_PUT":  ORANGE,
-    "HOLD":      YELLOW,
-    "WAIT":      DIM,
+    "EXIT_PUT": ORANGE,
+    "HOLD": YELLOW,
+    "WAIT": DIM,
 }
 
 ACTION_COLORS: Dict[str, str] = {
-    "BUY_CALL":  GREEN,
-    "BUY_PUT":   BLUE,
+    "BUY_CALL": GREEN,
+    "BUY_PUT": BLUE,
     "EXIT_CALL": RED,
-    "EXIT_PUT":  ORANGE,
-    "HOLD":      YELLOW,
-    "WAIT":      DIM,
+    "EXIT_PUT": ORANGE,
+    "HOLD": YELLOW,
+    "WAIT": DIM,
 }
 
 SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 # ── Table column definitions ──────────────────────────────────────────────────
 _COLS = ["#", "Time", "Signal", "Conf%", "Action", "Pos", "Spot Close", "Skip", ""]
-_COL_IDX  = 0
+_COL_IDX = 0
 _COL_TIME = 1
-_COL_SIG  = 2
+_COL_SIG = 2
 _COL_CONF = 3
-_COL_ACT  = 4
-_COL_POS  = 5
+_COL_ACT = 4
+_COL_POS = 5
 _COL_SPOT = 6
 _COL_SKIP = 7
-_COL_BTN  = 8   # button placeholder (real buttons added via QPersistentModelIndex)
+_COL_BTN = 8  # button placeholder (real buttons added via QPersistentModelIndex)
 
 
 # ── Stylesheet ─────────────────────────────────────────────────────────────────
@@ -215,10 +215,10 @@ class CandleDetailPopup(QDialog):
         self._build_ui()
 
     def _build_ui(self):
-        bar  = self._entry.get("bar_index", "?")
+        bar = self._entry.get("bar_index", "?")
         time = self._entry.get("time", "")
-        sig  = self._entry.get("resolved_signal", "WAIT")
-        act  = self._entry.get("action", "WAIT")
+        sig = self._entry.get("resolved_signal", "WAIT")
+        act = self._entry.get("action", "WAIT")
 
         sig_color = SIGNAL_COLORS.get(sig, DIM)
         act_color = ACTION_COLORS.get(act, DIM)
@@ -248,7 +248,9 @@ class CandleDetailPopup(QDialog):
         hdr_row.addStretch()
 
         spot = self._entry.get("spot", {})
-        hdr_row.addWidget(_hdr_lbl(f"SPOT  O:{_f(spot.get('open'))}  H:{_f(spot.get('high'))}  L:{_f(spot.get('low'))}  C:{_f(spot.get('close'))}", ORANGE))
+        hdr_row.addWidget(_hdr_lbl(
+            f"SPOT  O:{_f(spot.get('open'))}  H:{_f(spot.get('high'))}  L:{_f(spot.get('low'))}  C:{_f(spot.get('close'))}",
+            ORANGE))
         hdr_row.addWidget(_sep_v())
         hdr_row.addWidget(_hdr_lbl(f"Signal: {sig}", sig_color, bold=True))
         hdr_row.addWidget(_sep_v())
@@ -263,11 +265,11 @@ class CandleDetailPopup(QDialog):
 
         # ── Tabs ──────────────────────────────────────────────────────────────
         tabs = QTabWidget()
-        tabs.addTab(self._build_overview_tab(),    "📋 Overview")
-        tabs.addTab(self._build_signals_tab(),     "📊 Signals")
-        tabs.addTab(self._build_indicators_tab(),  "📈 Indicators")
-        tabs.addTab(self._build_position_tab(),    "💼 Position & TP/SL")
-        tabs.addTab(self._build_raw_tab(),         "🗂 Raw JSON")
+        tabs.addTab(self._build_overview_tab(), "📋 Overview")
+        tabs.addTab(self._build_signals_tab(), "📊 Signals")
+        tabs.addTab(self._build_indicators_tab(), "📈 Indicators")
+        tabs.addTab(self._build_position_tab(), "💼 Position & TP/SL")
+        tabs.addTab(self._build_raw_tab(), "🗂 Raw JSON")
         root.addWidget(tabs)
 
         # ── Footer ────────────────────────────────────────────────────────────
@@ -322,8 +324,8 @@ class CandleDetailPopup(QDialog):
         opt = self._entry.get("option")
         if opt:
             ohlc_row.addWidget(_ohlc_group(
-                f"📄 Option: {opt.get('symbol','')}", opt,
-                extra_label=f"Source: {opt.get('price_source','?')}"
+                f"📄 Option: {opt.get('symbol', '')}", opt,
+                extra_label=f"Source: {opt.get('price_source', '?')}"
             ))
 
         lay.addLayout(ohlc_row)
@@ -355,22 +357,22 @@ class CandleDetailPopup(QDialog):
         return w
 
     def _build_signal_group_box(self, grp: str, data: Dict) -> QGroupBox:
-        conf    = data.get("confidence", 0.0)
-        thresh  = data.get("threshold",  0.6)
-        fired   = data.get("fired",      False)
-        rules   = data.get("rules",      [])
+        conf = data.get("confidence", 0.0)
+        thresh = data.get("threshold", 0.6)
+        fired = data.get("fired", False)
+        rules = data.get("rules", [])
 
         color = SIGNAL_COLORS.get(grp, DIM)
-        pct   = int(conf * 100)
+        pct = int(conf * 100)
 
         if fired:
-            status_txt   = "✅ FIRED"
+            status_txt = "✅ FIRED"
             status_color = GREEN
         elif conf >= thresh:
-            status_txt   = "⚠️ SUPPRESSED"
+            status_txt = "⚠️ SUPPRESSED"
             status_color = YELLOW
         else:
-            status_txt   = "✗ MISS"
+            status_txt = "✗ MISS"
             status_color = RED
 
         box = QGroupBox(f"{grp}  —  {pct}%  {status_txt}")
@@ -384,7 +386,7 @@ class CandleDetailPopup(QDialog):
 
         # Confidence bar
         conf_row = QHBoxLayout()
-        conf_lbl = QLabel(f"Confidence: {pct}%  (threshold {int(thresh*100)}%)")
+        conf_lbl = QLabel(f"Confidence: {pct}%  (threshold {int(thresh * 100)}%)")
         conf_lbl.setStyleSheet(f"color:{color}; font-weight:bold;")
         conf_row.addWidget(conf_lbl)
         conf_row.addStretch()
@@ -415,11 +417,11 @@ class CandleDetailPopup(QDialog):
             lay.addLayout(hdr_row)
 
             for r in rules:
-                passed  = r.get("passed", False)
-                rule_s  = r.get("rule",   "?")
-                detail  = r.get("detail", "")
-                weight  = r.get("weight", 1.0)
-                error   = r.get("error")
+                passed = r.get("passed", False)
+                rule_s = r.get("rule", "?")
+                detail = r.get("detail", "")
+                weight = r.get("weight", 1.0)
+                error = r.get("error")
 
                 row = QHBoxLayout()
                 row.setSpacing(6)
@@ -552,14 +554,14 @@ class CandleDetailPopup(QDialog):
 
         cur = pos.get("current")
         pos_fields = [
-            ("Current",       cur or "FLAT",       GREEN if cur else DIM),
-            ("Entry Time",    pos.get("entry_time") or "—",   TEXT),
-            ("Entry Spot",    _f(pos.get("entry_spot")),       ORANGE),
-            ("Entry Option",  _f(pos.get("entry_option")),     ORANGE),
-            ("Strike",        str(pos.get("strike") or "—"),   TEXT),
-            ("Bars In Trade", str(pos.get("bars_in_trade", 0)),BLUE),
-            ("Buy Price",     _f(pos.get("buy_price")),        TEXT),
-            ("Trailing High", _f(pos.get("trailing_high")),    TEAL),
+            ("Current", cur or "FLAT", GREEN if cur else DIM),
+            ("Entry Time", pos.get("entry_time") or "—", TEXT),
+            ("Entry Spot", _f(pos.get("entry_spot")), ORANGE),
+            ("Entry Option", _f(pos.get("entry_option")), ORANGE),
+            ("Strike", str(pos.get("strike") or "—"), TEXT),
+            ("Bars In Trade", str(pos.get("bars_in_trade", 0)), BLUE),
+            ("Buy Price", _f(pos.get("buy_price")), TEXT),
+            ("Trailing High", _f(pos.get("trailing_high")), TEAL),
         ]
         for i, (lbl, val, col) in enumerate(pos_fields):
             r, c = divmod(i, 2)
@@ -578,11 +580,11 @@ class CandleDetailPopup(QDialog):
             return lb
 
         tpsl_fields = [
-            ("TP Price",           _f(tpsl.get("tp_price"))),
-            ("SL Price",           _f(tpsl.get("sl_price"))),
-            ("Trailing SL Price",  _f(tpsl.get("trailing_sl_price"))),
-            ("Index SL Level",     _f(tpsl.get("index_sl_level"))),
-            ("Current Option Px",  _f(tpsl.get("current_option_price"))),
+            ("TP Price", _f(tpsl.get("tp_price"))),
+            ("SL Price", _f(tpsl.get("sl_price"))),
+            ("Trailing SL Price", _f(tpsl.get("trailing_sl_price"))),
+            ("Index SL Level", _f(tpsl.get("index_sl_level"))),
+            ("Current Option Px", _f(tpsl.get("current_option_price"))),
         ]
         for i, (lbl, val) in enumerate(tpsl_fields):
             r, c = divmod(i, 2)
@@ -591,10 +593,10 @@ class CandleDetailPopup(QDialog):
         # Hit indicators
         hits_row = QHBoxLayout()
         for flag_key, label in [
-            ("tp_hit",          "TP Hit"),
-            ("sl_hit",          "SL Hit"),
+            ("tp_hit", "TP Hit"),
+            ("sl_hit", "SL Hit"),
             ("trailing_sl_hit", "Trailing SL Hit"),
-            ("index_sl_hit",    "Index SL Hit"),
+            ("index_sl_hit", "Index SL Hit"),
         ]:
             hit = bool(tpsl.get(flag_key, False))
             pill = QLabel(f"  {'✅' if hit else '○'} {label}  ")
@@ -669,6 +671,12 @@ class CandleDebugTab(QWidget):
         self._entries = entries or []
         self._refresh_filter()
         self._count_lbl.setText(f"  {len(self._entries):,} candles  ")
+
+        if len(self._entries) == 0:
+            self._status_lbl.setText("No debug data available. Make sure debug_candles=True in config.")
+        else:
+            self._status_lbl.setText(f"Loaded {len(self._entries)} candle records")
+
         logger.debug(f"[CandleDebugTab] Loaded {len(self._entries)} candle records")
 
     def clear(self) -> None:
@@ -769,15 +777,15 @@ class CandleDebugTab(QWidget):
 
         # Column widths
         hdr = self._table.horizontalHeader()
-        hdr.resizeSection(_COL_IDX,  45)
+        hdr.resizeSection(_COL_IDX, 45)
         hdr.resizeSection(_COL_TIME, 145)
-        hdr.resizeSection(_COL_SIG,  95)
+        hdr.resizeSection(_COL_SIG, 95)
         hdr.resizeSection(_COL_CONF, 60)
-        hdr.resizeSection(_COL_ACT,  95)
-        hdr.resizeSection(_COL_POS,  60)
+        hdr.resizeSection(_COL_ACT, 95)
+        hdr.resizeSection(_COL_POS, 60)
         hdr.resizeSection(_COL_SPOT, 90)
         hdr.resizeSection(_COL_SKIP, 100)
-        hdr.resizeSection(_COL_BTN,  80)
+        hdr.resizeSection(_COL_BTN, 80)
 
         root.addWidget(self._table, 1)
 
@@ -798,11 +806,11 @@ class CandleDebugTab(QWidget):
 
     def _refresh_filter(self):
         """Re-apply all filters and repopulate the table."""
-        sig_f    = self._sig_filter.currentText()
-        act_f    = self._act_filter.currentText()
-        skip_f   = self._skip_filter.currentText()
-        pos_f    = self._pos_filter.currentText()
-        search   = self._search.text().strip().lower()
+        sig_f = self._sig_filter.currentText()
+        act_f = self._act_filter.currentText()
+        skip_f = self._skip_filter.currentText()
+        pos_f = self._pos_filter.currentText()
+        search = self._search.text().strip().lower()
 
         result = []
         for e in self._entries:
@@ -823,11 +831,11 @@ class CandleDebugTab(QWidget):
 
             if search:
                 haystack = (
-                    str(e.get("time", "")) + " " +
-                    str(e.get("resolved_signal", "")) + " " +
-                    str(e.get("action", "")) + " " +
-                    str(e.get("skip_reason", "")) + " " +
-                    str(e.get("explanation", ""))
+                        str(e.get("time", "")) + " " +
+                        str(e.get("resolved_signal", "")) + " " +
+                        str(e.get("action", "")) + " " +
+                        str(e.get("skip_reason", "")) + " " +
+                        str(e.get("explanation", ""))
                 ).lower()
                 if search not in haystack:
                     continue
@@ -850,13 +858,13 @@ class CandleDebugTab(QWidget):
         self._table.setSortingEnabled(False)
 
         for e in entries:
-            sig    = e.get("resolved_signal", "WAIT")
-            act    = e.get("action", "WAIT")
-            skip   = e.get("skip_reason") or ""
-            pos    = (e.get("position") or {}).get("current") or "FLAT"
+            sig = e.get("resolved_signal", "WAIT")
+            act = e.get("action", "WAIT")
+            skip = e.get("skip_reason") or ""
+            pos = (e.get("position") or {}).get("current") or "FLAT"
             spot_c = (e.get("spot") or {}).get("close")
-            time   = e.get("time", "")
-            bar    = e.get("bar_index", 0)
+            time = e.get("time", "")
+            bar = e.get("bar_index", 0)
 
             # Best confidence across fired signal groups
             sg = e.get("signal_groups", {})
@@ -864,7 +872,7 @@ class CandleDebugTab(QWidget):
             for grp, gd in sg.items():
                 if isinstance(gd, dict) and gd.get("fired"):
                     best_conf = max(best_conf, gd.get("confidence", 0.0))
-            conf_str = f"{int(best_conf*100)}%" if best_conf else "—"
+            conf_str = f"{int(best_conf * 100)}%" if best_conf else "—"
 
             sig_color = QColor(SIGNAL_COLORS.get(sig, DIM))
             act_color = QColor(ACTION_COLORS.get(act, DIM))
@@ -878,14 +886,14 @@ class CandleDebugTab(QWidget):
                 return it
 
             row = [
-                _item(str(bar),   align=Qt.AlignRight | Qt.AlignVCenter),
+                _item(str(bar), align=Qt.AlignRight | Qt.AlignVCenter),
                 _item(time),
-                _item(sig,        color=sig_color),
-                _item(conf_str,   align=Qt.AlignCenter),
-                _item(act,        color=act_color),
-                _item(pos,        color=QColor(GREEN if pos == "CALL" else BLUE if pos == "PUT" else DIM)),
+                _item(sig, color=sig_color),
+                _item(conf_str, align=Qt.AlignCenter),
+                _item(act, color=act_color),
+                _item(pos, color=QColor(GREEN if pos == "CALL" else BLUE if pos == "PUT" else DIM)),
                 _item(_f(spot_c), align=Qt.AlignRight | Qt.AlignVCenter),
-                _item(skip,       color=QColor(YELLOW) if skip else None),
+                _item(skip, color=QColor(YELLOW) if skip else None),
                 _item("🔍 Detail"),  # placeholder text; real click handled below
             ]
 
@@ -986,7 +994,7 @@ def _ohlc_group(title: str, ohlc: Dict, extra_label: str = "") -> QGroupBox:
     grid.setSpacing(8)
 
     fields = [("Open", "open", TEXT), ("High", "high", GREEN),
-              ("Low",  "low",  RED),  ("Close", "close", ORANGE)]
+              ("Low", "low", RED), ("Close", "close", ORANGE)]
     for i, (lbl, key, col) in enumerate(fields):
         r, c = divmod(i, 2)
         grid.addWidget(_kv(lbl, _f(ohlc.get(key), 2), val_color=col), r, c)

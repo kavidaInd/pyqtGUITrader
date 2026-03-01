@@ -92,7 +92,6 @@ import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -294,6 +293,10 @@ class CandleDebugger:
                 for idx, rr in enumerate(grp_rules):
                     lhs = rr.get("lhs_value")
                     rhs = rr.get("rhs_value")
+                    # Extract shift values if available
+                    lhs_shift = rr.get("lhs_shift", 0)
+                    rhs_shift = rr.get("rhs_shift", 0)
+
                     rules_list.append({
                         "index":  idx,
                         "rule":   rr.get("rule", "?"),
@@ -301,6 +304,8 @@ class CandleDebugger:
                         "weight": _r(rr.get("weight", 1.0)),
                         "lhs":    _r(lhs),
                         "rhs":    _r(rhs),
+                        "lhs_shift": lhs_shift,
+                        "rhs_shift": rhs_shift,
                         "detail": rr.get("detail", ""),
                         "error":  rr.get("error") or None,
                     })
@@ -388,23 +393,41 @@ def _r(v) -> Optional[float]:
 
 
 def _dt_str(dt) -> Optional[str]:
-    """Convert datetime to ISO string, or None."""
+    """Convert datetime to string, preserving timezone if present."""
     if dt is None:
         return None
     try:
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        # If datetime is timezone-aware, keep the timezone info in the string
+        if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+            # Format with timezone offset
+            return dt.strftime("%Y-%m-%d %H:%M:%S%z")
+        else:
+            # Naive datetime
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(dt)
 
 
 def _json_default(obj):
-    """JSON serializer fallback for non-standard types."""
+    """
+    JSON serializer fallback for non-standard types.
+    FIX #3: Enhanced to handle Enums, pandas objects, and more types.
+    """
     if isinstance(obj, datetime):
         return obj.isoformat()
+
+    # Handle Enum types (like PriceSource)
     if hasattr(obj, 'value'):
         return obj.value
+
+    # Handle pandas Series/DataFrame
     if isinstance(obj, (pd.Series, pd.DataFrame)):
         return obj.to_dict()
+
+    # Handle custom objects with __dict__
+    if hasattr(obj, '__dict__'):
+        return str(obj)
+
     try:
         return str(obj)
     except Exception:

@@ -13,9 +13,106 @@ from typing import Dict, List, Union
 # Helper shortcuts to make rule dicts more readable
 # ---------------------------------------------------------------------------
 
-def _ind(indicator: str, params: dict = None, shift: int = None) -> dict:
-    """Indicator side with proper column handling."""
-    d: dict = {"type": "indicator", "indicator": indicator, "params": params or {}}
+def _ind(indicator: str, params: dict = None, shift: int = None, sub_col: str = None) -> dict:
+    """
+    Indicator side helper with sub_col support for ALL multi-output indicators.
+
+    sub_col selects a specific output column. Valid keys per indicator:
+      macd:       MACD / SIGNAL / HIST
+      stoch:      K / D
+      stochrsi:   K / D
+      kvo:        KVO / SIGNAL
+      adx:        ADX / PLUS_DI / MINUS_DI
+      aroon:      AROON_UP / AROON_DOWN
+      dm:         PLUS_DM / MINUS_DM
+      supertrend: TREND / DIRECTION / LONG / SHORT
+      ichimoku:   ISA / ISB / ITS / IKS / ICS
+      bbands:     UPPER / MIDDLE / LOWER / BANDWIDTH / PERCENT
+      kc:         UPPER / MIDDLE / LOWER
+      donchian:   UPPER / MIDDLE / LOWER
+      adosc:      ADOSC / AD
+
+    Legacy "column" key inside params is automatically converted to sub_col
+    so that old presets continue to work without manual edits.
+    """
+    clean_params = {}
+    inferred_sub_col = sub_col   # explicit arg wins over auto-detection
+
+    if params:
+        for k, v in params.items():
+            if k == "column":
+                if inferred_sub_col is None and isinstance(v, str):
+                    v_up = v.upper()
+                    ind_lo = indicator.lower()
+
+                    if ind_lo == "macd":
+                        if v_up.startswith("MACDS"):   inferred_sub_col = "SIGNAL"
+                        elif v_up.startswith("MACDH"): inferred_sub_col = "HIST"
+                        else:                          inferred_sub_col = "MACD"
+
+                    elif ind_lo in ("stoch", "stochrsi"):
+                        if "STOCHRSID" in v_up or "STOCHD" in v_up: inferred_sub_col = "D"
+                        else:                                         inferred_sub_col = "K"
+
+                    elif ind_lo == "kvo":
+                        if v_up.startswith("KVOS"): inferred_sub_col = "SIGNAL"
+                        else:                        inferred_sub_col = "KVO"
+
+                    elif ind_lo == "adx":
+                        if v_up.startswith("DMP"):   inferred_sub_col = "PLUS_DI"
+                        elif v_up.startswith("DMN"): inferred_sub_col = "MINUS_DI"
+                        else:                        inferred_sub_col = "ADX"
+
+                    elif ind_lo == "dm":
+                        if v_up.startswith("DMN"): inferred_sub_col = "MINUS_DM"
+                        else:                       inferred_sub_col = "PLUS_DM"
+
+                    elif ind_lo == "aroon":
+                        if "AROOND" in v_up: inferred_sub_col = "AROON_DOWN"
+                        else:                inferred_sub_col = "AROON_UP"
+
+                    elif ind_lo == "supertrend":
+                        if "SUPERTD" in v_up:   inferred_sub_col = "DIRECTION"
+                        elif "SUPERTL" in v_up: inferred_sub_col = "LONG"
+                        elif "SUPERTS" in v_up: inferred_sub_col = "SHORT"
+                        else:                   inferred_sub_col = "TREND"
+
+                    elif ind_lo == "ichimoku":
+                        if v_up.startswith("ISA"):   inferred_sub_col = "ISA"
+                        elif v_up.startswith("ISB"): inferred_sub_col = "ISB"
+                        elif v_up.startswith("ITS"): inferred_sub_col = "ITS"
+                        elif v_up.startswith("IKS"): inferred_sub_col = "IKS"
+                        elif v_up.startswith("ICS"): inferred_sub_col = "ICS"
+
+                    elif ind_lo == "bbands":
+                        if v_up.startswith("BBU"):   inferred_sub_col = "UPPER"
+                        elif v_up.startswith("BBL"): inferred_sub_col = "LOWER"
+                        elif v_up.startswith("BBB"): inferred_sub_col = "BANDWIDTH"
+                        elif v_up.startswith("BBP"): inferred_sub_col = "PERCENT"
+                        else:                        inferred_sub_col = "MIDDLE"
+
+                    elif ind_lo == "kc":
+                        if v_up.startswith("KCU"):   inferred_sub_col = "UPPER"
+                        elif v_up.startswith("KCL"): inferred_sub_col = "LOWER"
+                        else:                        inferred_sub_col = "MIDDLE"
+
+                    elif ind_lo == "donchian":
+                        if v_up.startswith("DCU"):   inferred_sub_col = "UPPER"
+                        elif v_up.startswith("DCL"): inferred_sub_col = "LOWER"
+                        else:                        inferred_sub_col = "MIDDLE"
+
+                    elif ind_lo == "adosc":
+                        if v_up.startswith("AD") and not v_up.startswith("ADOSC"):
+                            inferred_sub_col = "AD"
+                        else:
+                            inferred_sub_col = "ADOSC"
+
+                continue   # never pass "column" key to the engine
+            clean_params[k] = v
+
+    d: dict = {"type": "indicator", "indicator": indicator, "params": clean_params}
+    if inferred_sub_col:
+        d["sub_col"] = inferred_sub_col
     if shift is not None:
         d["shift"] = shift
     return d
@@ -37,7 +134,7 @@ def _rule(lhs: dict, op: str, rhs: Union[dict, List[dict]], weight: float = 1.0)
 
     Args:
         lhs: Left-hand side definition
-        op: Operator string (>, <, >=, <=, ==, !=, crosses_above, crosses_below, between)
+        op: Operator string (>, <, >=, <=, ==, !=,  between)
         rhs: Right-hand side definition (can be a single dict or list of two dicts for 'between')
         weight: Rule weight (higher = more important in confidence calculation)
     """
@@ -82,15 +179,12 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "RSI Oversold Bounce",
             "rules": [
                 _rule(_ind("rsi", {"length": 14}), "<", _scalar(30), weight=1.5),
-                _rule(_ind("rsi", {"length": 14}), "crosses_above", _scalar(30), weight=2.0),
                 _rule(_col("close"), ">", _ind("ema", {"length": 20}), weight=1.2),
             ],
         },
         {
             "name": "MACD Bullish Crossover",
             "rules": [
-                _rule(_ind("macd", {"fast": 12, "slow": 26, "signal": 9, "column": "MACD_12_26_9"}),
-                      "crosses_above", _ind("macd", {"column": "MACDs_12_26_9"}), weight=2.0),
                 _rule(_ind("macd", {"column": "MACDh_12_26_9"}), ">", _scalar(0), weight=1.5),
                 _rule(_ind("rsi", {"length": 14}), ">", _scalar(40), weight=1.0),
             ],
@@ -98,7 +192,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Stochastic Bullish Cross",
             "rules": [
-                _rule(_ind("stoch", {"k": 14, "d": 3, "column": "STOCHk_14_3_3"}), "crosses_above", _scalar(20), weight=2.0),
                 _rule(_ind("stoch", {"column": "STOCHd_14_3_3"}), "<", _scalar(80), weight=1.2),
                 _rule(_col("close"), ">", _ind("sma", {"length": 50}), weight=1.5),
             ],
@@ -107,7 +200,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "CCI Oversold Reversal",
             "rules": [
                 _rule(_ind("cci", {"length": 20}), "<", _scalar(-100), weight=1.5),
-                _rule(_ind("cci", {"length": 20}), "crosses_above", _scalar(-100), weight=2.0),
                 _rule(_col("volume"), ">", _ind("sma", {"length": 20, "column": "volume"}), weight=1.2),
             ],
         },
@@ -115,7 +207,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "Williams %R Oversold",
             "rules": [
                 _rule(_ind("willr", {"length": 14}), "<", _scalar(-80), weight=1.5),
-                _rule(_ind("willr", {"length": 14}), "crosses_above", _scalar(-80), weight=2.0),
                 _rule(_ind("rsi", {"length": 14}), ">", _scalar(30), weight=1.2),
             ],
         },
@@ -124,7 +215,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Golden Cross (EMA)",
             "rules": [
-                _rule(_ind("ema", {"length": 9}), "crosses_above", _ind("ema", {"length": 21}), weight=2.5),
                 _rule(_ind("ema", {"length": 21}), ">", _ind("ema", {"length": 50}), weight=1.8),
                 _rule(_col("close"), ">", _ind("ema", {"length": 21}), weight=1.5),
             ],
@@ -132,7 +222,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Golden Cross (SMA)",
             "rules": [
-                _rule(_ind("sma", {"length": 50}), "crosses_above", _ind("sma", {"length": 200}), weight=3.0),
                 _rule(_ind("sma", {"length": 20}), ">", _ind("sma", {"length": 50}), weight=1.5),
                 _rule(_col("close"), ">", _ind("sma", {"length": 20}), weight=1.2),
             ],
@@ -173,15 +262,11 @@ PRESETS: Dict[str, List[Dict]] = {
                 _rule(_ind("bbands", {"length": 20, "std": 2, "column": "BBL_20_2.0"}), "<", _col("close"), weight=1.5),
                 _rule(_ind("bbands", {"length": 20, "std": 2, "column": "BBU_20_2.0"}), ">",
                       _ind("bbands", {"length": 20, "std": 2, "column": "BBU_20_2.0"}, shift=1), weight=1.8),
-                _rule(_ind("bbands", {"length": 20, "std": 2, "column": "BBL_20_2.0"}), "crosses_above",
-                      _col("close"), weight=2.0),
             ],
         },
         {
             "name": "Keltner Channel Breakout",
             "rules": [
-                _rule(_col("close"), "crosses_above",
-                      _ind("kc", {"length": 20, "scalar": 2, "column": "KCUe_20_2.0"}), weight=2.2),
                 _rule(_ind("kc", {"length": 20, "scalar": 2, "column": "KCUe_20_2.0"}), ">",
                       _ind("kc", {"length": 20, "scalar": 2, "column": "KCUe_20_2.0"}, shift=1), weight=1.5),
                 _rule(_col("volume"), ">", _ind("sma", {"length": 20, "column": "volume"}), weight=1.3),
@@ -201,8 +286,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "OBV Breakout",
             "rules": [
-                _rule(_ind("obv", {"column": "OBV"}), "crosses_above",
-                      _ind("ema", {"length": 20, "column": "OBV"}), weight=2.0),
                 _rule(_ind("obv", {"column": "OBV"}), ">", _ind("obv", {"column": "OBV"}, shift=1), weight=1.5),
                 _rule(_col("close"), ">", _ind("ema", {"length": 9}), weight=1.3),
             ],
@@ -219,7 +302,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "MFI Oversold",
             "rules": [
                 _rule(_ind("mfi", {"length": 14}), "<", _scalar(20), weight=1.8),
-                _rule(_ind("mfi", {"length": 14}), "crosses_above", _scalar(20), weight=2.0),
                 _rule(_col("close"), ">", _ind("sma", {"length": 20}), weight=1.2),
             ],
         },
@@ -281,7 +363,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Hull MA Crossover",
             "rules": [
-                _rule(_ind("hma", {"length": 9}), "crosses_above", _ind("hma", {"length": 21}), weight=2.2),
                 _rule(_ind("hma", {"length": 9}), ">", _ind("hma", {"length": 9}, shift=1), weight=1.5),
                 _rule(_ind("rsi", {"length": 14}), ">", _scalar(40), weight=1.2),
             ],
@@ -289,8 +370,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Donchian Channel Breakout",
             "rules": [
-                _rule(_col("close"), "crosses_above",
-                      _ind("donchian", {"column": "DCU_20_20", "length": 20}), weight=2.2),
                 _rule(_ind("donchian", {"column": "DCU_20_20", "length": 20}), ">",
                       _ind("donchian", {"column": "DCU_20_20", "length": 20}, shift=1), weight=1.8),
                 _rule(_col("volume"), ">", _ind("sma", {"length": 20, "column": "volume"}), weight=1.5),
@@ -307,15 +386,12 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "RSI Overbought Reversal",
             "rules": [
                 _rule(_ind("rsi", {"length": 14}), ">", _scalar(70), weight=1.5),
-                _rule(_ind("rsi", {"length": 14}), "crosses_below", _scalar(70), weight=2.0),
                 _rule(_col("close"), "<", _ind("ema", {"length": 20}), weight=1.2),
             ],
         },
         {
             "name": "MACD Bearish Crossover",
             "rules": [
-                _rule(_ind("macd", {"fast": 12, "slow": 26, "signal": 9, "column": "MACD_12_26_9"}),
-                      "crosses_below", _ind("macd", {"column": "MACDs_12_26_9"}), weight=2.0),
                 _rule(_ind("macd", {"column": "MACDh_12_26_9"}), "<", _scalar(0), weight=1.5),
                 _rule(_ind("rsi", {"length": 14}), "<", _scalar(60), weight=1.0),
             ],
@@ -323,7 +399,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Stochastic Bearish Cross",
             "rules": [
-                _rule(_ind("stoch", {"k": 14, "d": 3, "column": "STOCHk_14_3_3"}), "crosses_below", _scalar(80), weight=2.0),
                 _rule(_ind("stoch", {"column": "STOCHd_14_3_3"}), ">", _scalar(20), weight=1.2),
                 _rule(_col("close"), "<", _ind("sma", {"length": 50}), weight=1.5),
             ],
@@ -332,7 +407,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "CCI Overbought Reversal",
             "rules": [
                 _rule(_ind("cci", {"length": 20}), ">", _scalar(100), weight=1.5),
-                _rule(_ind("cci", {"length": 20}), "crosses_below", _scalar(100), weight=2.0),
                 _rule(_col("volume"), ">", _ind("sma", {"length": 20, "column": "volume"}), weight=1.2),
             ],
         },
@@ -340,7 +414,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "Williams %R Overbought",
             "rules": [
                 _rule(_ind("willr", {"length": 14}), ">", _scalar(-20), weight=1.5),
-                _rule(_ind("willr", {"length": 14}), "crosses_below", _scalar(-20), weight=2.0),
                 _rule(_ind("rsi", {"length": 14}), "<", _scalar(70), weight=1.2),
             ],
         },
@@ -349,7 +422,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Death Cross (EMA)",
             "rules": [
-                _rule(_ind("ema", {"length": 9}), "crosses_below", _ind("ema", {"length": 21}), weight=2.5),
                 _rule(_ind("ema", {"length": 21}), "<", _ind("ema", {"length": 50}), weight=1.8),
                 _rule(_col("close"), "<", _ind("ema", {"length": 21}), weight=1.5),
             ],
@@ -357,7 +429,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Death Cross (SMA)",
             "rules": [
-                _rule(_ind("sma", {"length": 50}), "crosses_below", _ind("sma", {"length": 200}), weight=3.0),
                 _rule(_ind("sma", {"length": 20}), "<", _ind("sma", {"length": 50}), weight=1.5),
                 _rule(_col("close"), "<", _ind("sma", {"length": 20}), weight=1.2),
             ],
@@ -403,8 +474,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "Keltner Channel Breakdown",
             "rules": [
-                _rule(_col("close"), "crosses_below",
-                      _ind("kc", {"length": 20, "scalar": 2, "column": "KCLe_20_2.0"}), weight=2.2),
                 _rule(_ind("kc", {"length": 20, "scalar": 2, "column": "KCLe_20_2.0"}), "<",
                       _ind("kc", {"length": 20, "scalar": 2, "column": "KCLe_20_2.0"}, shift=1), weight=1.5),
                 _rule(_col("volume"), ">", _ind("sma", {"length": 20, "column": "volume"}), weight=1.3),
@@ -415,8 +484,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "OBV Breakdown",
             "rules": [
-                _rule(_ind("obv", {"column": "OBV"}), "crosses_below",
-                      _ind("ema", {"length": 20, "column": "OBV"}), weight=2.0),
                 _rule(_ind("obv", {"column": "OBV"}), "<", _ind("obv", {"column": "OBV"}, shift=1), weight=1.5),
                 _rule(_col("close"), "<", _ind("ema", {"length": 9}), weight=1.3),
             ],
@@ -433,7 +500,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "MFI Overbought",
             "rules": [
                 _rule(_ind("mfi", {"length": 14}), ">", _scalar(80), weight=1.8),
-                _rule(_ind("mfi", {"length": 14}), "crosses_below", _scalar(80), weight=2.0),
                 _rule(_col("close"), "<", _ind("sma", {"length": 20}), weight=1.2),
             ],
         },
@@ -511,15 +577,12 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "RSI Overbought Exit",
             "rules": [
                 _rule(_ind("rsi", {"length": 14}), ">", _scalar(75), weight=1.5),
-                _rule(_ind("rsi", {"length": 14}), "crosses_below", _scalar(70), weight=2.0),
                 _rule(_col("close"), "<", _ind("ema", {"length": 9}), weight=1.3),
             ],
         },
         {
             "name": "MACD Bearish Cross Exit",
             "rules": [
-                _rule(_ind("macd", {"fast": 12, "slow": 26, "signal": 9, "column": "MACD_12_26_9"}),
-                      "crosses_below", _ind("macd", {"column": "MACDs_12_26_9"}), weight=2.5),
                 _rule(_ind("macd", {"column": "MACDh_12_26_9"}), "<", _scalar(0), weight=1.8),
             ],
         },
@@ -527,8 +590,6 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "Stochastic Overbought Exit",
             "rules": [
                 _rule(_ind("stoch", {"k": 14, "d": 3, "column": "STOCHk_14_3_3"}), ">", _scalar(80), weight=1.5),
-                _rule(_ind("stoch", {"k": 14, "d": 3, "column": "STOCHk_14_3_3"}), "crosses_below", _scalar(80), weight=2.0),
-                _rule(_col("close"), "<", _ind("ema", {"length": 9}), weight=1.3),
             ],
         },
 
@@ -536,15 +597,12 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "EMA Death Cross Exit",
             "rules": [
-                _rule(_ind("ema", {"length": 9}), "crosses_below", _ind("ema", {"length": 21}), weight=2.5),
                 _rule(_ind("ema", {"length": 21}), "<", _ind("ema", {"length": 50}), weight=1.8),
             ],
         },
         {
             "name": "Supertrend Flip to Sell",
             "rules": [
-                _rule(_ind("supertrend", {"length": 7, "multiplier": 3, "column": "SUPERT_7_3.0"}),
-                      "crosses_above", _col("close"), weight=3.0),
                 _rule(_col("close"), "<", _ind("ema", {"length": 9}), weight=1.5),
             ],
         },
@@ -599,8 +657,6 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "OBV Reversal Exit",
             "rules": [
-                _rule(_ind("obv", {"column": "OBV"}), "crosses_below",
-                      _ind("ema", {"length": 9, "column": "OBV"}), weight=2.2),
                 _rule(_col("close"), "<", _ind("ema", {"length": 9}), weight=1.5),
             ],
         },
@@ -649,15 +705,12 @@ PRESETS: Dict[str, List[Dict]] = {
             "name": "RSI Oversold Exit",
             "rules": [
                 _rule(_ind("rsi", {"length": 14}), "<", _scalar(25), weight=1.5),
-                _rule(_ind("rsi", {"length": 14}), "crosses_above", _scalar(30), weight=2.0),
                 _rule(_col("close"), ">", _ind("ema", {"length": 9}), weight=1.3),
             ],
         },
         {
             "name": "MACD Bullish Cross Exit",
             "rules": [
-                _rule(_ind("macd", {"fast": 12, "slow": 26, "signal": 9, "column": "MACD_12_26_9"}),
-                      "crosses_above", _ind("macd", {"column": "MACDs_12_26_9"}), weight=2.5),
                 _rule(_ind("macd", {"column": "MACDh_12_26_9"}), ">", _scalar(0), weight=1.8),
             ],
         },
@@ -666,15 +719,12 @@ PRESETS: Dict[str, List[Dict]] = {
         {
             "name": "EMA Golden Cross Exit",
             "rules": [
-                _rule(_ind("ema", {"length": 9}), "crosses_above", _ind("ema", {"length": 21}), weight=2.5),
                 _rule(_ind("ema", {"length": 21}), ">", _ind("ema", {"length": 50}), weight=1.8),
             ],
         },
         {
             "name": "Supertrend Flip to Buy",
             "rules": [
-                _rule(_ind("supertrend", {"length": 7, "multiplier": 3, "column": "SUPERT_7_3.0"}),
-                      "crosses_below", _col("close"), weight=3.0),
                 _rule(_col("close"), ">", _ind("ema", {"length": 9}), weight=1.5),
             ],
         },

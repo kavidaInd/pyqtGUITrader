@@ -720,36 +720,27 @@ class StrategyHelpTab(QWidget):
                 ("RSI Oversold Bounce", "BUY_CALL", [
                     {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
                      "op": "<", "rhs": {"type": "scalar", "value": 30}, "weight": 1.5},
-                    {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
-                     "op": "crosses_above", "rhs": {"type": "scalar", "value": 30}, "weight": 2.0}
                 ]),
                 ("RSI Overbought Reversal", "BUY_PUT", [
                     {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
                      "op": ">", "rhs": {"type": "scalar", "value": 70}, "weight": 1.5},
-                    {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
-                     "op": "crosses_below", "rhs": {"type": "scalar", "value": 70}, "weight": 2.0}
+
                 ]),
                 ("MACD Bullish Crossover", "BUY_CALL", [
-                    {"lhs": {"type": "indicator", "indicator": "macd", "params": {"fast": 12, "slow": 26, "signal": 9}},
-                     "op": "crosses_above",
-                     "rhs": {"type": "indicator", "indicator": "macd", "params": {"column": "signal"}}, "weight": 2.0},
+
                     {"lhs": {"type": "indicator", "indicator": "macd", "params": {"column": "histogram"}},
                      "op": ">", "rhs": {"type": "scalar", "value": 0}, "weight": 1.5}
                 ]),
             ],
             "Trend": [
                 ("Golden Cross", "BUY_CALL", [
-                    {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}},
-                     "op": "crosses_above", "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}},
-                     "weight": 2.5},
+
                     {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}},
                      "op": ">", "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 50}},
                      "weight": 1.8}
                 ]),
                 ("Death Cross", "BUY_PUT", [
-                    {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}},
-                     "op": "crosses_below", "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}},
-                     "weight": 2.5},
+
                     {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 21}},
                      "op": "<", "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 50}},
                      "weight": 1.8}
@@ -767,10 +758,6 @@ class StrategyHelpTab(QWidget):
                     {"lhs": {"type": "column", "column": "close"},
                      "op": "<", "rhs": {"type": "indicator", "indicator": "bbands",
                                         "params": {"length": 20, "std": 2, "column": "lower"}}, "weight": 1.5},
-                    {"lhs": {"type": "column", "column": "close"},
-                     "op": "crosses_above", "rhs": {"type": "indicator", "indicator": "bbands",
-                                                    "params": {"length": 20, "std": 2, "column": "lower"}},
-                     "weight": 2.0}
                 ]),
                 ("Bollinger Band Top Rejection", "BUY_PUT", [
                     {"lhs": {"type": "column", "column": "close"},
@@ -788,10 +775,6 @@ class StrategyHelpTab(QWidget):
                      "op": ">", "rhs": {"type": "column", "column": "open"}, "weight": 1.5},
                 ]),
                 ("OBV Breakout", "BUY_CALL", [
-                    {"lhs": {"type": "indicator", "indicator": "obv"},
-                     "op": "crosses_above",
-                     "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 20, "column": "obv"}},
-                     "weight": 2.0},
                     {"lhs": {"type": "column", "column": "close"},
                      "op": ">", "rhs": {"type": "indicator", "indicator": "ema", "params": {"length": 9}},
                      "weight": 1.3}
@@ -1164,8 +1147,6 @@ Example: 30, 70, 100.5</pre>
             <tr><td><code><=</code></td><td>Less than or equal</td><td>Volume <= 1000</td></tr>
             <tr><td><code>==</code></td><td>Equal</td><td>Close == Open</td></tr>
             <tr><td><code>!=</code></td><td>Not equal</td><td>Close != Open</td></tr>
-            <tr><td><code>crosses_above</code></td><td>Crosses above from below</td><td>RSI crosses_above 30</td></tr>
-            <tr><td><code>crosses_below</code></td><td>Crosses below from above</td><td>MACD crosses_below signal</td></tr>
             <tr><td><code>between</code></td><td>Value between two thresholds</td><td>RSI between 30 and 70</td></tr>
         </table>
 
@@ -1233,20 +1214,6 @@ Close != Open
 
         <h2>Cross Operators</h2>
         <p>These operators detect when a value crosses a threshold or another line. They require at least 2 bars of data to evaluate.</p>
-
-        <h3>crosses_above</h3>
-        <p>TRUE when the left side crosses ABOVE the right side from below.</p>
-        <pre style="background: #0d1117; padding: 10px; border-radius: 4px;">
-Previous bar: RSI(14) = 28, 30
-Current bar:  RSI(14) = 32, 30
-→ crosses_above is TRUE (28 < 30 and 32 > 30)</pre>
-
-        <h3>crosses_below</h3>
-        <p>TRUE when the left side crosses BELOW the right side from above.</p>
-        <pre style="background: #0d1117; padding: 10px; border-radius: 4px;">
-Previous bar: RSI(14) = 72, 70
-Current bar:  RSI(14) = 68, 70
-→ crosses_below is TRUE (72 > 70 and 68 < 70)</pre>
 
         <h2>Range Operator</h2>
 
@@ -1489,9 +1456,6 @@ Confidence = 3.5 / 4.5 = 0.78 (78%)</pre>
             <li>Ensure confidence is above the minimum threshold</li>
             <li>Verify indicator parameters are valid</li>
         </ul>
-
-        <h3>Q: How do I create a crossover condition?</h3>
-        <p><b>A:</b> Use the <code>crosses_above</code> or <code>crosses_below</code> operators. For example: <code>EMA(9) crosses_above EMA(21)</code>.</p>
 
         <h3>Q: What's the difference between AND and OR logic?</h3>
         <p><b>A:</b> 

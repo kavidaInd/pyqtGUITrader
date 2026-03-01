@@ -141,6 +141,9 @@ class AngelOneBroker(BaseBroker):
         self._scrip_cache: Dict[str, str] = {}
 
     # ── Authentication ────────────────────────────────────────────────────────
+    @property
+    def broker_type(self) -> str:
+        return "angel_one"
 
     def login(self, password: str, totp: Optional[str] = None) -> bool:
         """

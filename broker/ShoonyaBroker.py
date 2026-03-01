@@ -155,6 +155,10 @@ class ShoonyaBroker(BaseBroker):
             logger.critical(f"[ShoonyaBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "shoonya"
+
     def _safe_defaults_init(self):
         self.state = None
         self.user_id = None

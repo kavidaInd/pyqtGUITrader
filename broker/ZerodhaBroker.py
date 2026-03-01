@@ -115,6 +115,10 @@ class ZerodhaBroker(BaseBroker):
             logger.critical(f"[ZerodhaBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "zerodha"
+
     def _safe_defaults_init(self):
         self.state = None
         self.api_key = None

@@ -132,6 +132,10 @@ class KotakNeoBroker(BaseBroker):
             logger.critical(f"[KotakNeoBroker.__init__] {e}", exc_info=True)
             raise
 
+    @property
+    def broker_type(self) -> str:
+        return "kitak_neo"
+
     def _safe_defaults_init(self):
         self.state = None
         self.consumer_key = None

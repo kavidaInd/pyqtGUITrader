@@ -488,7 +488,7 @@ class _GroupPanel(QGroupBox):
 
                     # Extract operator from rule string
                     op = "?"
-                    for _op in ["crosses_above", "crosses_below", ">=", "<=", "!=", "==", ">", "<"]:
+                    for _op in [">=", "<=", "!=", "==", ">", "<"]:
                         if f" {_op} " in rule_str:
                             op = _op
                             break
@@ -515,7 +515,7 @@ def _parse_rule_display(rule_str: str, cache: Dict = None) -> Tuple[str, str, st
         if not rule_str:
             return "?", "?", "?"
 
-        OPERATORS = ["crosses_above", "crosses_below", ">=", "<=", "!=", "==", ">", "<"]
+        OPERATORS = [">=", "<=", "!=", "==", ">", "<"]
 
         for op in OPERATORS:
             if f" {op} " in rule_str:

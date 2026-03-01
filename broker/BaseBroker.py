@@ -62,6 +62,15 @@ class BaseBroker(ABC):
     MAX_REQUESTS_PER_SECOND = 10
     MAX_RETRIES = 3
 
+    @property
+    def broker_type(self) -> str:
+        """Return the broker type identifier."""
+        # Default implementation - override in each broker
+        class_name = self.__class__.__name__
+        if class_name.endswith("Broker"):
+            return class_name.replace("Broker", "").lower()
+        return class_name.lower()
+
     # ── Abstract REST methods every broker must implement ──────────────────────
 
     @abstractmethod
