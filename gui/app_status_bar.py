@@ -56,7 +56,7 @@ Usage:
     # Update metrics
     status_bar.update_metrics({'cpu': 12.5, 'message_count': 1250})
 
-Version: 1.0.0
+Version: 1.1.0 - Integrated with state_manager
 """
 
 import logging
@@ -65,6 +65,9 @@ from datetime import datetime, timedelta
 
 from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer, Qt
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QFrame, QProgressBar, QWidget
+
+# Import state manager for accessing trading state
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -474,6 +477,11 @@ class AppStatusBar(QFrame):
             self._operation_start_times = {}
             self._last_update_time = datetime.now()
 
+            # Cache for state snapshots to avoid excessive calls
+            self._last_snapshot = {}
+            self._last_snapshot_time = datetime.now()
+            self._snapshot_cache_duration = 0.1  # 100ms cache
+
             # Update timer for dynamic updates
             self._update_timer = QTimer()
             self._update_timer.timeout.connect(self._update_dynamic_info)
@@ -484,7 +492,7 @@ class AppStatusBar(QFrame):
             self._safety_timer.setSingleShot(True)
             self._safety_timer.timeout.connect(self._safety_update)
 
-            logger.info("Enhanced AppStatusBar initialized")
+            logger.info("Enhanced AppStatusBar initialized with state_manager integration")
 
         except Exception as e:
             logger.critical(f"[AppStatusBar.__init__] Failed: {e}", exc_info=True)
@@ -508,6 +516,7 @@ class AppStatusBar(QFrame):
         self.op_process = None
         self.op_order = None
         self.op_position = None
+        self.op_connection = None
         self.progress_bar = None
         self.blink_label = None
         self.metrics_container = None
@@ -524,6 +533,9 @@ class AppStatusBar(QFrame):
         self._message_rate = 0
         self._last_message_count = 0
         self._metrics = {}
+        self._last_snapshot = {}
+        self._last_snapshot_time = None
+        self._snapshot_cache_duration = 0.1
 
     def _create_status_section(self, layout):
         """
@@ -710,6 +722,23 @@ class AppStatusBar(QFrame):
                 duration = (datetime.now() - start_time).total_seconds()
                 tooltip_text += f"\nActive for: {duration:.1f}s"
 
+            # Add position info if applicable
+            if op_name == "position":
+                snapshot = self._get_cached_snapshot()
+                if snapshot.get('current_position'):
+                    pos_type = snapshot.get('current_position')
+                    entry_price = snapshot.get('current_buy_price')
+                    current_price = snapshot.get('current_price')
+                    pnl = snapshot.get('current_pnl')
+
+                    tooltip_text += f"\nPosition: {pos_type}"
+                    if entry_price:
+                        tooltip_text += f"\nEntry: ₹{entry_price:.2f}"
+                    if current_price:
+                        tooltip_text += f"\nCurrent: ₹{current_price:.2f}"
+                    if pnl:
+                        tooltip_text += f"\nP&L: ₹{pnl:.2f}"
+
             # Show tooltip
             if not hasattr(self, '_tooltip') or not self._tooltip:
                 self._tooltip = StatusToolTip(self)
@@ -725,12 +754,26 @@ class AppStatusBar(QFrame):
         if hasattr(self, '_tooltip') and self._tooltip:
             self._tooltip.hide()
 
+    def _get_cached_snapshot(self) -> Dict[str, Any]:
+        """
+        Get cached state snapshot to avoid excessive calls to state_manager.
+
+        Returns:
+            Dict[str, Any]: Cached state snapshot
+        """
+        now = datetime.now()
+        if (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration:
+            self._last_snapshot = state_manager.get_snapshot()
+            self._last_snapshot_time = now
+        return self._last_snapshot
+
     def update_status(self, status_info: Dict[str, Any], mode: str, app_running: bool) -> None:
         """
         Update status bar based on application state.
 
         This is the main update method that refreshes all status bar components
-        based on the current application state.
+        based on the current application state. It also pulls additional data
+        from state_manager when needed.
 
         Args:
             status_info: Dictionary with status information. Expected keys:
@@ -763,14 +806,17 @@ class AppStatusBar(QFrame):
             self._app_running = app_running
             self._last_update_time = datetime.now()
 
+            # Get state snapshot for additional info
+            snapshot = self._get_cached_snapshot()
+
             # Update mode indicator
             self._update_mode_display()
 
             # Update status text and icon
-            self._update_status_display(status_info)
+            self._update_status_display(status_info, snapshot)
 
             # Update operation indicators and track durations
-            self._update_operation_indicators(status_info)
+            self._update_operation_indicators(status_info, snapshot)
 
             # Update connection status
             self._update_connection_status(status_info)
@@ -802,12 +848,13 @@ class AppStatusBar(QFrame):
         except Exception as e:
             logger.error(f"Failed to update mode label: {e}")
 
-    def _update_status_display(self, status_info: Dict[str, Any]):
+    def _update_status_display(self, status_info: Dict[str, Any], snapshot: Dict[str, Any]):
         """
         Update status text and icon based on current state.
 
         Args:
             status_info: Status information dictionary
+            snapshot: State snapshot from state_manager
         """
         if self.status_icon is None or self.status_label is None:
             return
@@ -832,6 +879,8 @@ class AppStatusBar(QFrame):
                     self.status_icon.setStyleSheet("color: #58a6ff; font-size: 14px;")
                 elif status_info.get('order_pending', False):
                     self.status_icon.setStyleSheet("color: #d29922; font-size: 14px;")
+                elif snapshot.get('current_position') is not None:
+                    self.status_icon.setStyleSheet("color: #3fb950; font-size: 14px;")
                 else:
                     self.status_icon.setStyleSheet("color: #3fb950; font-size: 14px;")
             else:
@@ -840,12 +889,13 @@ class AppStatusBar(QFrame):
         except Exception as e:
             logger.error(f"Failed to update status display: {e}")
 
-    def _update_operation_indicators(self, status_info: Dict[str, Any]):
+    def _update_operation_indicators(self, status_info: Dict[str, Any], snapshot: Dict[str, Any]):
         """
         Update operation indicators and track operation durations.
 
         Args:
             status_info: Status information dictionary with boolean flags
+            snapshot: State snapshot from state_manager
         """
         operations = [
             ('fetching_history', self.op_fetch, "#f0883e"),
@@ -855,7 +905,11 @@ class AppStatusBar(QFrame):
         ]
 
         for key, label, color in operations:
-            active = bool(status_info.get(key, False))
+            # For position, check both status_info and snapshot
+            if key == 'has_position':
+                active = bool(status_info.get(key, False)) or (snapshot.get('current_position') is not None)
+            else:
+                active = bool(status_info.get(key, False))
 
             # Track operation duration for tooltips
             if active:
@@ -929,9 +983,11 @@ class AppStatusBar(QFrame):
             return
 
         try:
+            snapshot = self._get_cached_snapshot()
             should_blink = status_info.get('order_pending', False) or \
                            status_info.get('processing', False) or \
-                           status_info.get('fetching_history', False)
+                           status_info.get('fetching_history', False) or \
+                           snapshot.get('signal_conflict', False)
 
             if should_blink:
                 if not self.blink_label.isVisible():
@@ -940,6 +996,8 @@ class AppStatusBar(QFrame):
                     # Choose animation type based on operation
                     if status_info.get('order_pending', False):
                         self.blink_label.start_animation(AnimatedLabel.PULSE, "#d29922")
+                    elif snapshot.get('signal_conflict', False):
+                        self.blink_label.start_animation(AnimatedLabel.PULSE, "#f85149")  # Red for conflict
                     elif status_info.get('processing', False):
                         self.blink_label.start_animation(AnimatedLabel.BLINK, "#58a6ff")
                     elif status_info.get('fetching_history', False):
@@ -960,10 +1018,14 @@ class AppStatusBar(QFrame):
             - Application uptime
             - Performance metrics
             - Message rates
+            - P&L information from state
         """
         try:
             if not self._app_running:
                 return
+
+            # Get fresh snapshot for dynamic updates
+            snapshot = self._get_cached_snapshot()
 
             # Calculate uptime
             if self._start_time:
@@ -979,6 +1041,14 @@ class AppStatusBar(QFrame):
             if self.performance_label and hasattr(self, '_metrics'):
                 if 'cpu' in self._metrics:
                     self.performance_label.setText(f"💾 {self._metrics['cpu']:.1f}%")
+
+            # Update P&L if position is active
+            if snapshot.get('current_position') and snapshot.get('current_pnl') is not None:
+                pnl = snapshot.get('current_pnl')
+                if pnl is not None:
+                    pnl_color = "#3fb950" if pnl >= 0 else "#f85149"
+                    if hasattr(self, 'performance_label'):
+                        self.performance_label.setText(f"P&L: <span style='color:{pnl_color}'>₹{pnl:.2f}</span>")
 
             # Update message rate
             if self.rate_label and hasattr(self, '_last_message_count'):
@@ -1055,10 +1125,11 @@ class AppStatusBar(QFrame):
 
             # Reset blink if stuck
             if self.blink_label and self.blink_label.isVisible():
+                snapshot = self._get_cached_snapshot()
                 if not any([
                     op in self._operation_start_times
                     for op in ['fetching_history', 'processing', 'order_pending']
-                ]):
+                ]) and not snapshot.get('signal_conflict', False):
                     logger.warning("Safety update: hiding stuck blink label")
                     self.blink_label.stop_animation()
                     self.blink_label.setVisible(False)
@@ -1141,6 +1212,8 @@ class AppStatusBar(QFrame):
             self._current_status = "Ready"
             self._last_message_count = 0
             self._message_rate = 0
+            self._last_snapshot = {}
+            self._last_snapshot_time = datetime.now()
 
             # Reset all indicators
             self.update_status({}, self._current_mode, False)
@@ -1197,6 +1270,8 @@ class AppStatusBar(QFrame):
             self.metrics_container = None
             self._update_timer = None
             self._safety_timer = None
+            self._last_snapshot = {}
+            self._last_snapshot_time = None
 
             logger.info("[AppStatusBar] Cleanup completed")
 

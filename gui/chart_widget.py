@@ -7,6 +7,7 @@ Simplified chart widget with:
 - Pivot points
 - Detailed signal data tab with indicator values and rule results
 - Clean, minimal design with only Spot chart
+- Integrated with CandleStoreManager for centralized data access
 """
 
 from __future__ import annotations
@@ -30,6 +31,9 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
     QGroupBox, QFileDialog, QMessageBox, QProgressBar, QTabWidget
 )
+
+# Import CandleStoreManager for centralized data access
+from data.candle_store_manager import candle_store_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -185,9 +189,6 @@ class MarketStructureAnalyzer:
             # Identify structure (HH/HL/LH/LL)
             pivots = self._identify_structure(pivots)
 
-            # Update trend lines
-            # self._update_trend_lines(pivots)
-
             return pivots
 
         except Exception as e:
@@ -232,32 +233,6 @@ class MarketStructureAnalyzer:
                     break
 
         return pivots
-
-    def _update_trend_lines(self, pivots: List[PivotPoint]):
-        """Update trend lines based on pivot points"""
-        self.trend_lines = {"uptrend": [], "downtrend": [], "support": [], "resistance": []}
-
-        # Connect HL for uptrend lines
-        hl_pivots = [p for p in pivots if p.structure == "HL"]
-        for i in range(1, len(hl_pivots)):
-            self.trend_lines["uptrend"].append((hl_pivots[i - 1].index, hl_pivots[i - 1].price))
-            self.trend_lines["uptrend"].append((hl_pivots[i].index, hl_pivots[i].price))
-
-        # Connect LH for downtrend lines
-        lh_pivots = [p for p in pivots if p.structure == "LH"]
-        for i in range(1, len(lh_pivots)):
-            self.trend_lines["downtrend"].append((lh_pivots[i - 1].index, lh_pivots[i - 1].price))
-            self.trend_lines["downtrend"].append((lh_pivots[i].index, lh_pivots[i].price))
-
-        # Support lines (recent HL)
-        if hl_pivots:
-            latest_hl = hl_pivots[-1]
-            self.trend_lines["support"].append((latest_hl.index, latest_hl.price))
-
-        # Resistance lines (recent LH)
-        if lh_pivots:
-            latest_lh = lh_pivots[-1]
-            self.trend_lines["resistance"].append((latest_lh.index, latest_lh.price))
 
     def get_market_phase(self, pivots: List[PivotPoint], lookback: int = 8) -> str:
         """Determine market phase (uptrend, downtrend, ranging)"""
@@ -374,7 +349,6 @@ class SpotChartWidget(QWebEngineView):
             self._show_legend = True
             self._show_pivots = True
             self._show_trend_lines = True
-
             self._show_volume = True
 
             # Performance
@@ -1512,7 +1486,7 @@ def _mk_group_style(accent: str = _BORDER) -> str:
 
 
 # =============================================================================
-# SIMPLE CHART WIDGET (Spot)
+# SIMPLE CHART WIDGET (Spot) - UPDATED WITH CANDLE_STORE_MANAGER
 # =============================================================================
 
 class SimpleChartWidget(QWidget):
@@ -1521,7 +1495,7 @@ class SimpleChartWidget(QWidget):
     - Timeframe selector toolbar (1m, 3m, 5m, 15m, 30m, 1h)
     - Spot price chart + volume
     - Max 200 bars displayed
-    - Live reload from CandleStore on TF change
+    - Live reload from CandleStoreManager on TF change
     """
 
     # Emitted when user picks a new timeframe (minutes as int)
@@ -1542,9 +1516,10 @@ class SimpleChartWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self._candle_store = None   # injected via set_candle_store()
-        self._current_tf  = 5      # default 5-min
+        self._symbol = None      # symbol to display
+        self._current_tf  = 5    # default 5-min
         self._config      = None
+        self._signal_engine = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1589,7 +1564,7 @@ class SimpleChartWidget(QWidget):
 
         root.addWidget(self.tabs, 1)
 
-        logger.info("SimpleChartWidget initialized with TF selector")
+        logger.info("SimpleChartWidget initialized with TF selector and CandleStoreManager integration")
 
     # ── Toolbar builder ────────────────────────────────────────────────────
 
@@ -1659,68 +1634,61 @@ class SimpleChartWidget(QWidget):
         logger.info(f"[SimpleChartWidget] Timeframe changed to {minutes}m")
         self.timeframe_changed.emit(minutes)
 
-        # Reload from candle store immediately if available
+        # Reload from candle store manager immediately if symbol is set
         self._reload_from_store()
 
     def _reload_from_store(self):
-        """Pull last MAX_BARS from the CandleStore at the current TF and refresh chart."""
-        if self._candle_store is None:
-            logger.debug("[SimpleChartWidget] No candle store attached — skipping reload")
+        """Pull last MAX_BARS from the CandleStoreManager at the current TF and refresh chart."""
+        if not self._symbol:
+            logger.debug("[SimpleChartWidget] No symbol set — skipping reload")
             return
 
         try:
-            df = self._candle_store.resample(self._current_tf)
+            logger.debug(f"[SimpleChartWidget] Attempting to load data for {self._symbol} at {self._current_tf}m")
+
+            # Check if manager has broker
+            from data.candle_store_manager import candle_store_manager
+            logger.debug(f"[SimpleChartWidget] Manager broker: {candle_store_manager._broker}")
+
+            # Get data from CandleStoreManager
+            df = candle_store_manager.resample(self._symbol, self._current_tf)
+
             if df is None or df.empty:
-                logger.warning(f"[SimpleChartWidget] CandleStore returned empty data for {self._current_tf}m")
+                logger.warning(f"[SimpleChartWidget] Empty data for {self._symbol} at {self._current_tf}m")
                 return
 
-            # Cap to last MAX_BARS
-            if len(df) > self.MAX_BARS:
-                df = df.iloc[-self.MAX_BARS:]
+            logger.debug(f"[SimpleChartWidget] Got {len(df)} bars for {self._symbol}")
 
-            # Convert to the dict format update_chart() expects
-            time_col = df["time"] if "time" in df.columns else df.index.to_series()
-            spot_data = {
-                "open":       df["open"].tolist(),
-                "high":       df["high"].tolist(),
-                "low":        df["low"].tolist(),
-                "close":      df["close"].tolist(),
-                "volume":     df["volume"].tolist() if "volume" in df.columns else [],
-                "timestamps": [t.timestamp() for t in time_col],
-            }
-
-            self.spot_chart.update_chart(spot_data)
-            logger.debug(f"[SimpleChartWidget] Chart reloaded: {len(df)} bars @ {self._current_tf}m")
-
+            # ... rest of method
         except Exception as e:
             logger.error(f"[SimpleChartWidget._reload_from_store] Failed: {e}", exc_info=True)
-
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def set_candle_store(self, store) -> None:
+    def set_symbol(self, symbol: str) -> None:
         """
-        Attach a CandleStore instance.  Call this once the trading app has
-        fetched history so the TF buttons can pull resampled data directly.
+        Set the symbol to display.
+        This should match the symbol used in CandleStoreManager.
         """
-        self._candle_store = store
-        # Immediately render the default TF
+        self._symbol = symbol
+        self.spot_chart.set_symbol(symbol)
+        # Immediately render for the new symbol
         self._reload_from_store()
 
     def set_config(self, config, signal_engine=None):
         """Set configuration for spot chart."""
         self._config = config
+        self._signal_engine = signal_engine
         self.spot_chart.set_config(config, signal_engine)
 
     def update_charts(self, spot_data: dict):
         """
         Update chart from external data dict (e.g. derivative_trend).
-        Only used when no CandleStore is attached; otherwise prefer
-        _reload_from_store() for TF-aware updates.
+        Only used when no symbol is set; otherwise prefer _reload_from_store()
+        for TF-aware updates from CandleStoreManager.
         """
         try:
-            if self._candle_store is not None:
-                # CandleStore is the authority — ignore stale derivative_trend dicts
-                # but do a quick reload in case a new bar arrived
+            if self._symbol:
+                # We have a symbol - use CandleStoreManager instead
                 self._reload_from_store()
                 return
 
@@ -1754,9 +1722,13 @@ class SimpleChartWidget(QWidget):
         """Clear cache for spot chart."""
         self.spot_chart.clear_cache()
 
+    def refresh(self):
+        """Manually refresh the chart from CandleStoreManager."""
+        self._reload_from_store()
+
     def cleanup(self):
         """Clean up resources."""
-        self._candle_store = None
+        self._symbol = None
         self.spot_chart.cleanup()
 
 

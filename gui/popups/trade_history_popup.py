@@ -4,6 +4,7 @@ trade_history_popup.py
 Pure PyQt5 popup for displaying trade history from database.
 
 FEATURE 7: Rebuilt as pure PyQt5 QDialog with period filtering and CSV export.
+UPDATED: Connected to state_manager for real-time trade updates.
 """
 
 import csv
@@ -12,7 +13,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -22,6 +23,9 @@ from PyQt5.QtWidgets import (
 
 from db.connector import get_db
 from db.crud import orders as orders_crud
+
+# Import state manager for trade closed signals
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -48,7 +52,12 @@ class TradeHistoryPopup(QDialog):
 
     Displays trade history with period filtering, summary statistics,
     and CSV export functionality.
+
+    UPDATED: Listens to state_manager for trade closed signals to auto-refresh.
     """
+
+    # Signal for data refresh
+    data_refreshed = pyqtSignal(int)  # Number of trades loaded
 
     def __init__(self, parent=None):
         # Rule 2: Safe defaults first
@@ -70,7 +79,10 @@ class TradeHistoryPopup(QDialog):
             # Load initial data
             self.load_trades('today')
 
-            logger.info("TradeHistoryPopup initialized")
+            # Connect to state manager for trade closed events
+            self._connect_state_manager()
+
+            logger.info("TradeHistoryPopup initialized with state_manager integration")
 
         except Exception as e:
             logger.critical(f"[TradeHistoryPopup.__init__] Failed: {e}", exc_info=True)
@@ -81,6 +93,7 @@ class TradeHistoryPopup(QDialog):
         self._period_combo = None
         self._export_btn = None
         self._refresh_btn = None
+        self._auto_refresh_btn = None
         self._table = None
         self._summary_lbl = None
         self._stats_group = None
@@ -88,6 +101,8 @@ class TradeHistoryPopup(QDialog):
         self._current_orders = []
         self._cleanup_done = False
         self._refresh_timer = None
+        self._auto_refresh = True
+        self._last_load_time = None
 
     def _apply_dark_theme(self):
         """Apply dark theme styling"""
@@ -202,6 +217,13 @@ class TradeHistoryPopup(QDialog):
             QPushButton#danger:hover {
                 background: #f85149;
             }
+            QPushButton#warning {
+                background: #9e6a03;
+                border: 1px solid #d29922;
+            }
+            QPushButton#warning:hover {
+                background: #d29922;
+            }
         """)
 
     def _build_ui(self):
@@ -261,6 +283,14 @@ class TradeHistoryPopup(QDialog):
         controls.addWidget(self._period_combo)
 
         controls.addStretch()
+
+        # Auto-refresh toggle
+        self._auto_refresh_btn = QPushButton("🔄 Auto-refresh On")
+        self._auto_refresh_btn.setCheckable(True)
+        self._auto_refresh_btn.setChecked(True)
+        self._auto_refresh_btn.setObjectName("warning")
+        self._auto_refresh_btn.toggled.connect(self._toggle_auto_refresh)
+        controls.addWidget(self._auto_refresh_btn)
 
         # Action buttons
         self._refresh_btn = QPushButton("⟳ Refresh")
@@ -348,6 +378,45 @@ class TradeHistoryPopup(QDialog):
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
+    def _connect_state_manager(self):
+        """
+        UPDATED: Connect to state manager for trade closed events.
+        """
+        try:
+            # Try to connect to the state manager's trade_closed signal
+            if hasattr(state_manager, 'trade_closed'):
+                state_manager.trade_closed.connect(self._on_trade_closed)
+                logger.debug("Connected to state_manager.trade_closed signal")
+        except Exception as e:
+            logger.debug(f"Could not connect to state_manager.trade_closed: {e}")
+
+    def _on_trade_closed(self, pnl: float, is_winner: bool):
+        """
+        UPDATED: Handle trade closed event from state manager.
+        Auto-refresh if auto-refresh is enabled.
+        """
+        try:
+            if self._auto_refresh:
+                logger.debug(f"Trade closed (P&L: {pnl:.2f}), auto-refreshing")
+                # Use QTimer.singleShot to avoid blocking the signal
+                QTimer.singleShot(500, lambda: self.load_trades(self._period_combo.currentData()))
+        except Exception as e:
+            logger.error(f"[TradeHistoryPopup._on_trade_closed] Failed: {e}", exc_info=True)
+
+    def _toggle_auto_refresh(self, checked: bool):
+        """
+        UPDATED: Toggle auto-refresh on trade closed events.
+        """
+        try:
+            self._auto_refresh = checked
+            if checked:
+                self._auto_refresh_btn.setText("🔄 Auto-refresh On")
+            else:
+                self._auto_refresh_btn.setText("🔄 Auto-refresh Off")
+            logger.debug(f"Auto-refresh toggled: {checked}")
+        except Exception as e:
+            logger.error(f"[TradeHistoryPopup._toggle_auto_refresh] Failed: {e}", exc_info=True)
+
     def load_trades(self, period: str = 'today'):
         """
         Load trades for the specified period.
@@ -370,10 +439,12 @@ class TradeHistoryPopup(QDialog):
             orders = orders_crud.get_by_period(period, db)
 
             self._current_orders = orders
+            self._last_load_time = datetime.now()
 
             if not orders:
                 logger.info(f"No orders found for period: {period}")
                 self._update_statistics([])
+                self.data_refreshed.emit(0)
                 return
 
             # Populate table
@@ -382,6 +453,7 @@ class TradeHistoryPopup(QDialog):
             # Update statistics
             self._update_statistics(orders)
 
+            self.data_refreshed.emit(len(orders))
             logger.info(f"Loaded {len(orders)} orders for period: {period}")
 
         except Exception as e:
@@ -651,6 +723,7 @@ class TradeHistoryPopup(QDialog):
             self._period_combo = None
             self._export_btn = None
             self._refresh_btn = None
+            self._auto_refresh_btn = None
             self._stats_group = None
             self._summary_lbl = None
 

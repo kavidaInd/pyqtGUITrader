@@ -3,6 +3,8 @@ position_monitor_db.py
 ======================
 Position monitor that works with database-backed orders.
 Monitors positions, updates trailing stops, and confirms/cancels orders.
+
+UPDATED: Fully migrated to state_manager, removed legacy state parameter.
 """
 
 import logging
@@ -14,6 +16,7 @@ from Utils.Utils import Utils
 
 from db.connector import get_db
 from db.crud import orders as orders_crud
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -25,26 +28,29 @@ class PositionMonitor:
     """
     Position monitor that works with database-backed orders.
     Monitors positions, updates trailing stops, and confirms/cancels orders.
+
+    UPDATED: Fully uses state_manager for state access. Legacy state parameters
+    in method signatures are deprecated and will be ignored.
     """
 
-    def update_trailing_sl_tp(self, trading: Any, state: Any) -> None:
+    def update_trailing_sl_tp(self, trading: Any, state: Any = None) -> None:
         """
         Update the trailing stop-loss and take-profit levels based on price movement and strategy.
 
         BUG #1 FIX: Stop-loss direction corrected for long options (BELOW entry price)
+
+        Always operates on the singleton TradeState via state_manager.
+        The ``state`` parameter is deprecated and will be ignored.
         """
         try:
-            # Rule 6: Input validation
-            if state is None:
-                logger.debug("update_trailing_sl_tp called with None state")
-                return
+            state = state_manager.get_state()
 
             if state.current_position is None:
                 logger.debug("No current position. Skipping trailing SL/TP update.")
                 return
 
             if not getattr(state, "current_trade_confirmed", False):
-                self.confirm_trade(trading, state)
+                self.confirm_trade(trading)
                 return
 
             current_price = getattr(state, "current_price", None)
@@ -106,8 +112,6 @@ class PositionMonitor:
 
                         # Update SL and TP points
                         try:
-                            # BUG #1 FIX: Use NEGATIVE side for stop-loss (below price)
-                            # Original used POSITIVE which was wrong for long options
                             state.stop_loss = Utils.percentage_above_or_below(
                                 price=buy_price,
                                 side=NEGATIVE,  # Changed from POSITIVE to NEGATIVE
@@ -122,7 +126,7 @@ class PositionMonitor:
                             )
 
                             # Update stop loss in database
-                            self._update_orders_stop_loss(state, state.stop_loss)
+                            self._update_orders_stop_loss(state.stop_loss)
 
                             logger.info(f"Trailing update: stop_loss={state.stop_loss}, tp_point={state.tp_point}, "
                                         f"stoploss_percentage={state.stoploss_percentage}, tp_percentage={state.tp_percentage}")
@@ -134,15 +138,15 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Exception in update_trailing_sl_tp: {e}", exc_info=True)
 
-    def _update_orders_stop_loss(self, state: Any, stop_loss: float) -> None:
+    def _update_orders_stop_loss(self, stop_loss: float) -> None:
         """
         Update stop loss in database for all open orders.
 
         Args:
-            state: Trading state object
             stop_loss: New stop loss value
         """
         try:
+            state = state_manager.get_state()
             orders = getattr(state, "orders", [])
             if not orders:
                 return
@@ -156,17 +160,18 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Failed to update orders stop loss: {e}", exc_info=True)
 
-    def confirm_trade(self, trading: Any, state: Any) -> None:
+    def confirm_trade(self, trading: Any, state: Any = None) -> None:
         """
         Confirms executed orders and cancels pending ones if price drifts or timeout.
         Updates order status in database.
+
+        Always operates on the singleton TradeState via state_manager.
+        The ``state`` parameter is deprecated and will be ignored.
         """
         try:
-            # Rule 6: Input validation
-            if state is None:
-                logger.warning("confirm_trade called with None state")
-                return
+            state = state_manager.get_state()
 
+            # Rule 6: Input validation
             if trading is None:
                 logger.warning("confirm_trade called with None trading")
                 return
@@ -277,7 +282,7 @@ class PositionMonitor:
             if now > deadline or change > (3 + lower_per):
                 logger.warning(
                     f"❌ Trade not confirmed in time or price drifted. Change: {change:.2f}%, Deadline: {deadline}")
-                self.cancel_pending_trade(trading, state)
+                self.cancel_pending_trade(trading)
                 if hasattr(state, 'reset_trade_attributes'):
                     try:
                         state.reset_trade_attributes(current_position=None)
@@ -287,18 +292,19 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Exception in confirm_trade: {e}", exc_info=True)
 
-    def cancel_pending_trade(self, trading: Any, state: Any) -> None:
+    def cancel_pending_trade(self, trading: Any, state: Any = None) -> None:
         """
         Cancel all un-executed (unconfirmed) orders in `state.orders`.
         Updates order status in database.
         If any orders have already been confirmed, mark trade as confirmed.
+
+        Always operates on the singleton TradeState via state_manager.
+        The ``state`` parameter is deprecated and will be ignored.
         """
         try:
-            # Rule 6: Input validation
-            if state is None:
-                logger.warning("cancel_pending_trade called with None state")
-                return
+            state = state_manager.get_state()
 
+            # Rule 6: Input validation
             if trading is None:
                 logger.warning("cancel_pending_trade called with None trading")
                 return
@@ -371,33 +377,29 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Exception in cancel_pending_trade: {e}", exc_info=True)
 
-    def get_open_orders_count(self, state: Any) -> int:
+    def get_open_orders_count(self) -> int:
         """
         Get count of open orders from state.
-
-        Args:
-            state: Trading state object
 
         Returns:
             Number of open orders
         """
         try:
+            state = state_manager.get_state()
             return len(getattr(state, "orders", []))
         except Exception as e:
             logger.error(f"[get_open_orders_count] Failed: {e}", exc_info=True)
             return 0
 
-    def has_confirmed_orders(self, state: Any) -> bool:
+    def has_confirmed_orders(self) -> bool:
         """
         Check if there are any confirmed orders.
-
-        Args:
-            state: Trading state object
 
         Returns:
             True if there are confirmed orders
         """
         try:
+            state = state_manager.get_state()
             return bool(getattr(state, "confirmed_orders", []))
         except Exception as e:
             logger.error(f"[has_confirmed_orders] Failed: {e}", exc_info=True)

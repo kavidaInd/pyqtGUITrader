@@ -4,6 +4,7 @@ TradeHistoryViewer.py
 Pure PyQt5 trade history viewer using SQLite database.
 
 FEATURE 7: Rebuilt as pure PyQt5 QDialog with period filtering and CSV export.
+UPDATED: Connected to state_manager for real-time trade updates with null-safe operations.
 """
 
 import logging
@@ -21,6 +22,9 @@ from PyQt5.QtWidgets import (
 
 from db.connector import get_db
 from db.crud import orders as orders_crud
+
+# Import state manager for trade closed signals
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -47,6 +51,9 @@ class TradeHistoryViewer(QDialog):
 
     Displays trade history with period filtering, summary statistics,
     and CSV export functionality.
+
+    UPDATED: Listens to state_manager for trade closed signals to auto-refresh
+    with null-safe operations.
     """
 
     # Rule 3: Signals for operation feedback
@@ -80,6 +87,9 @@ class TradeHistoryViewer(QDialog):
             # Connect signals
             self._connect_signals()
 
+            # UPDATED: Connect to state manager for trade closed events
+            self._connect_state_manager()
+
             logger.info(f"TradeHistoryViewer initialized (session_id: {session_id})")
 
         except Exception as e:
@@ -92,6 +102,7 @@ class TradeHistoryViewer(QDialog):
         self._period_combo = None
         self._export_btn = None
         self._refresh_btn = None
+        self._auto_refresh_btn = None
         self._table = None
         self._summary_lbl = None
         self._stats_group = None
@@ -100,6 +111,8 @@ class TradeHistoryViewer(QDialog):
         self._cleanup_done = False
         self._refresh_timer = None
         self._session_info_lbl = None
+        self._auto_refresh = True
+        self._last_load_time = None
 
     def _apply_dark_theme(self):
         """Apply dark theme styling"""
@@ -223,6 +236,13 @@ class TradeHistoryViewer(QDialog):
             QPushButton#danger:hover {
                 background: #f85149;
             }
+            QPushButton#warning {
+                background: #9e6a03;
+                border: 1px solid #d29922;
+            }
+            QPushButton#warning:hover {
+                background: #d29922;
+            }
         """)
 
     def _build_ui(self):
@@ -275,6 +295,14 @@ class TradeHistoryViewer(QDialog):
             controls.addWidget(self._period_combo)
 
             controls.addStretch()
+
+        # Auto-refresh toggle
+        self._auto_refresh_btn = QPushButton("🔄 Auto-refresh On")
+        self._auto_refresh_btn.setCheckable(True)
+        self._auto_refresh_btn.setChecked(True)
+        self._auto_refresh_btn.setObjectName("warning")
+        self._auto_refresh_btn.clicked.connect(self._toggle_auto_refresh)
+        controls.addWidget(self._auto_refresh_btn)
 
         # Action buttons
         self._refresh_btn = QPushButton("⟳ Refresh")
@@ -375,6 +403,46 @@ class TradeHistoryViewer(QDialog):
         except Exception as e:
             logger.error(f"[TradeHistoryViewer._connect_signals] Failed: {e}", exc_info=True)
 
+    def _connect_state_manager(self):
+        """
+        UPDATED: Connect to state manager for trade closed events.
+        """
+        try:
+            # Note: This assumes state_manager has a trade_closed signal
+            # If not, we'll need to create a signal in the manager
+            if hasattr(state_manager, 'trade_closed'):
+                state_manager.trade_closed.connect(self._on_trade_closed)
+                logger.debug("Connected to state_manager.trade_closed signal")
+        except Exception as e:
+            logger.debug(f"Could not connect to state_manager.trade_closed: {e}")
+
+    def _on_trade_closed(self, pnl: float, is_winner: bool):
+        """
+        UPDATED: Handle trade closed event from state manager.
+        Auto-refresh if auto-refresh is enabled.
+        """
+        try:
+            if self._auto_refresh:
+                logger.debug(f"Trade closed (P&L: {pnl:.2f}), auto-refreshing")
+                # Use QTimer.singleShot to avoid blocking the signal
+                QTimer.singleShot(500, self._refresh_data)
+        except Exception as e:
+            logger.error(f"[TradeHistoryViewer._on_trade_closed] Failed: {e}", exc_info=True)
+
+    def _toggle_auto_refresh(self, checked: bool):
+        """
+        UPDATED: Toggle auto-refresh on trade closed events.
+        """
+        try:
+            self._auto_refresh = checked
+            if checked:
+                self._auto_refresh_btn.setText("🔄 Auto-refresh On")
+            else:
+                self._auto_refresh_btn.setText("🔄 Auto-refresh Off")
+            logger.debug(f"Auto-refresh toggled: {checked}")
+        except Exception as e:
+            logger.error(f"[TradeHistoryViewer._toggle_auto_refresh] Failed: {e}", exc_info=True)
+
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
         try:
@@ -394,6 +462,62 @@ class TradeHistoryViewer(QDialog):
 
         except Exception as e:
             logger.error(f"[TradeHistoryViewer._create_error_dialog] Failed: {e}", exc_info=True)
+
+    # ── Null-safe helper methods ───────────────────────────────────────────
+
+    def _safe_get_float(self, data: Dict[str, Any], key: str, default: float = 0.0) -> float:
+        """Safely get float value from dictionary"""
+        try:
+            value = data.get(key)
+            if value is None:
+                return default
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_get_str(self, data: Dict[str, Any], key: str, default: str = "") -> str:
+        """Safely get string value from dictionary"""
+        try:
+            value = data.get(key)
+            if value is None:
+                return default
+            return str(value)
+        except Exception:
+            return default
+
+    def _safe_get_int(self, data: Dict[str, Any], key: str, default: int = 0) -> int:
+        """Safely get integer value from dictionary"""
+        try:
+            value = data.get(key)
+            if value is None:
+                return default
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    def _fmt_currency(self, value: Any) -> str:
+        """Format value as currency"""
+        try:
+            if value is None:
+                return "—"
+            val = float(value)
+            if abs(val) >= 1000:
+                return f"₹{val:,.0f}"
+            return f"₹{val:.2f}"
+        except (ValueError, TypeError):
+            return str(value) if value else "—"
+
+    def _fmt_percent(self, value: Any) -> str:
+        """Format value as percentage"""
+        try:
+            if value is None:
+                return "—"
+            val = float(value)
+            return f"{val:.1f}%"
+        except (ValueError, TypeError):
+            return str(value) if value else "—"
+
+    # ── Data loading methods ───────────────────────────────────────────────
 
     def load_trades(self, period: str = 'today'):
         """
@@ -417,6 +541,7 @@ class TradeHistoryViewer(QDialog):
             orders = orders_crud.get_by_period(period, db)
 
             self._current_orders = orders
+            self._last_load_time = datetime.now()
 
             if not orders:
                 logger.info(f"No orders found for period: {period}")
@@ -453,6 +578,7 @@ class TradeHistoryViewer(QDialog):
             orders = orders_crud.list_for_session(session_id, db)
 
             self._current_orders = orders
+            self._last_load_time = datetime.now()
 
             if not orders:
                 logger.info(f"No orders found for session: {session_id}")
@@ -585,15 +711,15 @@ class TradeHistoryViewer(QDialog):
             self._stats_labels['winners'].setText(str(winners))
             self._stats_labels['losers'].setText(str(losers))
             self._stats_labels['win_rate'].setText(f'{win_rate:.1f}%')
-            self._stats_labels['avg_win'].setText(f'₹{avg_win:.2f}')
-            self._stats_labels['avg_loss'].setText(f'₹{avg_loss:.2f}')
-            self._stats_labels['max_win'].setText(f'₹{max_win:.2f}')
-            self._stats_labels['max_loss'].setText(f'₹{max_loss:.2f}')
+            self._stats_labels['avg_win'].setText(self._fmt_currency(avg_win))
+            self._stats_labels['avg_loss'].setText(self._fmt_currency(abs(avg_loss)))
+            self._stats_labels['max_win'].setText(self._fmt_currency(max_win))
+            self._stats_labels['max_loss'].setText(self._fmt_currency(abs(max_loss)))
             self._stats_labels['profit_factor'].setText(f'{profit_factor:.2f}')
 
             # Color total P&L
             total_pnl_label = self._stats_labels['total_pnl']
-            total_pnl_label.setText(f'₹{total_pnl:.2f}')
+            total_pnl_label.setText(self._fmt_currency(total_pnl))
             if total_pnl > 0:
                 total_pnl_label.setObjectName('positive')
             elif total_pnl < 0:
@@ -638,34 +764,35 @@ class TradeHistoryViewer(QDialog):
             grid.setHorizontalSpacing(15)
 
             details = [
-                ("Order ID:", str(order.get('id', ''))),
-                ("Session ID:", str(order.get('session_id', ''))),
-                ("Symbol:", str(order.get('symbol', ''))),
-                ("Position Type:", str(order.get('position_type', ''))),
-                ("Quantity:", str(order.get('quantity', ''))),
-                ("Entry Price:", f"₹{float(order.get('entry_price', 0)):.2f}" if order.get('entry_price') else "N/A"),
-                ("Exit Price:", f"₹{float(order.get('exit_price', 0)):.2f}" if order.get('exit_price') else "N/A"),
-                ("Stop Loss:", f"₹{float(order.get('stop_loss', 0)):.2f}" if order.get('stop_loss') else "N/A"),
-                ("Take Profit:", f"₹{float(order.get('take_profit', 0)):.2f}" if order.get('take_profit') else "N/A"),
-                ("P&L:", f"₹{float(order.get('pnl', 0)):.2f}" if order.get('pnl') else "0.00"),
-                ("Status:", str(order.get('status', ''))),
-                ("Exit Reason:", str(order.get('reason_to_exit', 'N/A'))),
-                ("Broker Order ID:", str(order.get('broker_order_id', 'N/A'))),
-                ("Entered At:", str(order.get('entered_at', ''))),
-                ("Exited At:", str(order.get('exited_at', 'N/A'))),
-                ("Created At:", str(order.get('created_at', ''))),
+                ("Order ID:", self._safe_get_str(order, 'id', 'N/A')),
+                ("Session ID:", self._safe_get_str(order, 'session_id', 'N/A')),
+                ("Symbol:", self._safe_get_str(order, 'symbol', 'N/A')),
+                ("Position Type:", self._safe_get_str(order, 'position_type', 'N/A')),
+                ("Quantity:", self._safe_get_str(order, 'quantity', 'N/A')),
+                ("Entry Price:", self._fmt_currency(self._safe_get_float(order, 'entry_price'))),
+                ("Exit Price:", self._fmt_currency(self._safe_get_float(order, 'exit_price'))),
+                ("Stop Loss:", self._fmt_currency(self._safe_get_float(order, 'stop_loss'))),
+                ("Take Profit:", self._fmt_currency(self._safe_get_float(order, 'take_profit'))),
+                ("P&L:", self._fmt_currency(self._safe_get_float(order, 'pnl'))),
+                ("Status:", self._safe_get_str(order, 'status', 'N/A')),
+                ("Exit Reason:", self._safe_get_str(order, 'reason_to_exit', 'N/A')),
+                ("Broker Order ID:", self._safe_get_str(order, 'broker_order_id', 'N/A')),
+                ("Entered At:", self._safe_get_str(order, 'entered_at', 'N/A')),
+                ("Exited At:", self._safe_get_str(order, 'exited_at', 'N/A')),
+                ("Created At:", self._safe_get_str(order, 'created_at', 'N/A')),
             ]
 
-            for i, (label, value) in enumerate(details):
-                label_widget = QLabel(label)
+            for i, (label_text, value) in enumerate(details):
+                label_widget = QLabel(label_text)
                 label_widget.setStyleSheet("font-weight: bold; color: #8b949e;")
                 grid.addWidget(label_widget, i, 0)
 
                 value_widget = QLabel(value)
                 value_widget.setStyleSheet("color: #e6edf3;")
+                value_widget.setWordWrap(True)
 
                 # Color P&L value
-                if label == "P&L:" and value != "N/A":
+                if "P&L:" in label_text and value != "N/A":
                     try:
                         pnl = float(order.get('pnl', 0))
                         if pnl > 0:
@@ -934,6 +1061,7 @@ class TradeHistoryViewer(QDialog):
             self._period_combo = None
             self._export_btn = None
             self._refresh_btn = None
+            self._auto_refresh_btn = None
             self._stats_group = None
             self._session_info_lbl = None
 

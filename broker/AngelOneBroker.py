@@ -22,11 +22,14 @@ Authentication:
 
 API docs: https://smartapi.angelbroking.com/docs
 SDK:      pip install smartapi-python
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -88,6 +91,8 @@ class AngelOneBroker(BaseBroker):
     To generate a session call:
         broker.login(password="YOUR_MPIN")
         # This auto-generates TOTP from the stored totp_secret and creates a session.
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -121,6 +126,11 @@ class AngelOneBroker(BaseBroker):
             else:
                 logger.warning("AngelOneBroker: no token in DB — call broker.login(password='MPIN')")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_obj = None
+
             logger.info(f"AngelOneBroker initialized for client {self.client_code}")
 
         except Exception as e:
@@ -139,11 +149,19 @@ class AngelOneBroker(BaseBroker):
         self._request_count = 0
         # Scrip token cache: "NSE:SYMBOL" -> symboltoken
         self._scrip_cache: Dict[str, str] = {}
+        self._token_to_symbol_cache: Dict[str, str] = {}
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_obj = None
+
+        self._angel_token_cache: Dict[str, Any] = {}
 
     # ── Authentication ────────────────────────────────────────────────────────
     @property
     def broker_type(self) -> str:
-        return "angel_one"
+        return "angelone"
 
     def login(self, password: str, totp: Optional[str] = None) -> bool:
         """
@@ -232,6 +250,7 @@ class AngelOneBroker(BaseBroker):
             if not match.empty:
                 token = str(match.iloc[0]['token'])
                 self._scrip_cache[symbol] = token
+                self._token_to_symbol_cache[token] = symbol
                 return token
             logger.warning(f"AngelOneBroker: token not found for {symbol}")
             return None
@@ -255,10 +274,14 @@ class AngelOneBroker(BaseBroker):
 
     @staticmethod
     def _exchange_from_symbol(symbol: str) -> str:
-        if symbol.startswith("NFO:") or "FUT" in symbol or "CE" in symbol or "PE" in symbol:
+        if symbol.startswith("NFO:"):
             return "NFO"
         if symbol.startswith("BSE:"):
             return "BSE"
+        import re as _re
+        bare = symbol.upper().split(":")[-1]
+        if _re.search(r'(CE|PE|FUT)$', bare):
+            return "NFO"
         return "NSE"
 
     @staticmethod
@@ -336,7 +359,6 @@ class AngelOneBroker(BaseBroker):
                 "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
                 "todate":   to_dt.strftime("%Y-%m-%d %H:%M"),
             }
-            self._check_rate_limit()
             result = self._call(lambda: self.smart.getCandleData(params), context="get_history")
             if self._is_ok(result):
                 data = result.get("data", [])
@@ -370,7 +392,7 @@ class AngelOneBroker(BaseBroker):
                 "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
                 "todate":   to_dt.strftime("%Y-%m-%d %H:%M"),
             }
-            self._check_rate_limit()
+            # BUG FIX: Same double rate-limit removal as get_history.
             result = self._call(lambda: self.smart.getCandleData(params), context="get_history_for_timeframe")
             if self._is_ok(result):
                 data = result.get("data", [])
@@ -583,16 +605,56 @@ class AngelOneBroker(BaseBroker):
             return []
 
     def get_current_order_status(self, order_id: str) -> Optional[Any]:
+        """
+        Return the integer fill status for the given order_id.
+
+        BUG FIX: The original returned the full order dict, but order_executor
+        checks `self.api.get_current_order_status(broker_id) == 2` to detect a
+        fill.  A dict never equals 2, so _wait_for_fill() always timed out and
+        every Angel One limit order fell back to the market-order fallback.
+
+        Angel One SmartAPI orderstatus values:
+            "complete"  → filled  (maps to 2)
+            "open"      → pending (maps to 1)
+            "rejected" / "cancelled" → maps to -1
+        """
         try:
             orders = self.get_orderbook()
             for order in orders:
                 if str(order.get("orderid")) == str(order_id):
-                    return order
+                    status_str = str(order.get("orderstatus") or "").lower()
+                    if status_str in ("complete", "filled", "traded"):
+                        return 2   # Filled — matches order_executor expectation
+                    if status_str in ("rejected", "cancelled", "canceled"):
+                        return -1
+                    return 1       # Open / pending
             return None
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[AngelOneBroker.get_current_order_status] {e!r}", exc_info=True)
+            return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+
+        Implements BaseBroker.get_fill_price() so order_executor can use real
+        fill prices instead of tick prices for P&L calculation.
+        Angel One SmartAPI returns 'averageprice' in the order book entry.
+        """
+        try:
+            if not broker_order_id or not self.smart:
+                return None
+            orders = self.get_orderbook()
+            for order in orders:
+                if str(order.get("orderid")) == str(broker_order_id):
+                    avg = order.get("averageprice") or order.get("avgprice")
+                    if avg:
+                        return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
     def is_connected(self) -> bool:
@@ -604,11 +666,50 @@ class AngelOneBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
+        """Clean up resources including WebSocket connection."""
+        logger.info("[AngelOneBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_obj is not None:
+            try:
+                if self._ws_cleanup_event is None:
+                    self._ws_cleanup_event = threading.Event()
+                self._ws_cleanup_event.clear()
+
+                def _do_disconnect():
+                    try:
+                        if hasattr(self._ws_obj, "close_connection"):
+                            self._ws_obj.close_connection()
+                            logger.debug("[AngelOneBroker] WebSocket close_connection called")
+                    except Exception as e:
+                        logger.warning(f"[AngelOneBroker] Error closing WebSocket: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run close in separate thread with timeout
+                close_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                close_thread.start()
+
+                # Wait for close with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[AngelOneBroker] WebSocket close timed out")
+
+            except Exception as e:
+                logger.error(f"[AngelOneBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_obj = None
+
+        # Terminate session if possible
         try:
-            if self.smart:
+            if self.smart and self.client_code:
                 self.smart.terminateSession(self.client_code)
         except Exception as e:
-            logger.warning(f"[AngelOneBroker.cleanup] {e}")
+            logger.warning(f"[AngelOneBroker.cleanup] Session termination error: {e}")
+
+        logger.info("[AngelOneBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -651,6 +752,8 @@ class AngelOneBroker(BaseBroker):
         SmartWebSocket v2 is the current official streaming API.
 
         feed_token is obtained after login() via self._feed_token.
+
+        FIXED: Store callbacks and track WebSocket state.
         """
         try:
             from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
@@ -667,6 +770,10 @@ class AngelOneBroker(BaseBroker):
                 )
                 return None
 
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
             sws = SmartWebSocketV2(
                 auth_token=auth_token,
                 api_key=api_key,
@@ -674,13 +781,40 @@ class AngelOneBroker(BaseBroker):
                 feed_token=feed_token,
             )
 
-            # SmartWebSocketV2 callbacks
-            sws.on_open    = lambda wsapp: on_connect()
-            sws.on_message = lambda wsapp, msg: on_tick(msg)
-            sws.on_error   = lambda wsapp, err: on_error(str(err))
-            sws.on_close   = lambda wsapp, code, msg: on_close(f"{code}: {msg}")
+            # Store callbacks
+            self._ws_on_tick = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close = on_close
+            self._ws_on_error = on_error
+
+            # SmartWebSocketV2 callbacks with safety checks
+            def safe_on_open(wsapp):
+                if self._ws_closed:
+                    return
+                on_connect()
+
+            def safe_on_message(wsapp, msg):
+                if self._ws_closed:
+                    return
+                on_tick(msg)
+
+            def safe_on_error(wsapp, err):
+                if self._ws_closed:
+                    return
+                on_error(str(err))
+
+            def safe_on_close(wsapp, code, msg):
+                if self._ws_closed:
+                    return
+                on_close(f"{code}: {msg}")
+
+            sws.on_open = safe_on_open
+            sws.on_message = safe_on_message
+            sws.on_error = safe_on_error
+            sws.on_close = safe_on_close
 
             logger.info("AngelOneBroker: SmartWebSocketV2 object created")
+            self._ws_obj = sws
             return sws
         except ImportError:
             logger.error("AngelOneBroker: SmartApi not installed — pip install smartapi-python")
@@ -693,10 +827,15 @@ class AngelOneBroker(BaseBroker):
         """
         Start SmartWebSocketV2 (blocking — must run in daemon thread).
         WebSocketManager wraps this in a thread automatically.
+
+        FIXED: Store ws_obj reference for cleanup.
         """
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
+
+            self._ws_obj = ws_obj
+
             # connect() blocks; WebSocketManager calls this in a daemon thread
             ws_obj.connect()
             logger.info("AngelOneBroker: SmartWebSocketV2 connect() returned")
@@ -713,7 +852,7 @@ class AngelOneBroker(BaseBroker):
         subscription_mode: 1=LTP, 2=Quote, 3=SnapQuote
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
 
             from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
@@ -733,7 +872,7 @@ class AngelOneBroker(BaseBroker):
 
             ws_obj.subscribe(
                 correlation_id="trading_app",
-                mode=SmartWebSocketV2.ONE,     # LTP mode
+                mode=1,   # LTP mode
                 token_list=token_list,
             )
             logger.info(f"AngelOneBroker: subscribed {len(token_list)} token groups")
@@ -743,7 +882,7 @@ class AngelOneBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from AngelOne live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
 
@@ -756,20 +895,51 @@ class AngelOneBroker(BaseBroker):
             if token_list:
                 ws_obj.unsubscribe(
                     correlation_id="trading_app",
-                    mode=SmartWebSocketV2.ONE,
+                    mode=1,  # BUG FIX: Same as ws_subscribe — use int 1, not SmartWebSocketV2.ONE
                     token_list=token_list,
                 )
         except Exception as e:
             logger.error(f"[AngelOneBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close SmartWebSocketV2."""
+        """
+        Close SmartWebSocketV2 with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
+
+            logger.info("[AngelOneBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
             if hasattr(ws_obj, "close_connection"):
-                ws_obj.close_connection()
-            logger.info("AngelOneBroker: SmartWebSocketV2 closed")
+                # Run close in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        ws_obj.close_connection()
+                        logger.debug("[AngelOneBroker] close_connection completed")
+                    except Exception as e:
+                        logger.warning(f"[AngelOneBroker] close_connection error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[AngelOneBroker] close_connection timed out")
+
+            # Clear reference
+            if self._ws_obj == ws_obj:
+                self._ws_obj = None
+
+            logger.info("[AngelOneBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[AngelOneBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -785,8 +955,9 @@ class AngelOneBroker(BaseBroker):
         Prices are in paise (1/100 rupee) → divide by 100.
         """
         try:
-            if not isinstance(raw_tick, dict):
+            if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
+
             ltp_raw = raw_tick.get("last_traded_price")
             if ltp_raw is None:
                 return None
@@ -795,7 +966,11 @@ class AngelOneBroker(BaseBroker):
             token       = raw_tick.get("token", "")
             exch_type   = raw_tick.get("exchange_type", 1)
             exch_prefix = {1: "NSE", 2: "NFO", 3: "BSE", 4: "MCX"}.get(exch_type, "NSE")
-            symbol      = f"{exch_prefix}:{token}"
+            reverse = getattr(self, "_token_to_symbol_cache", {})
+            if token in reverse:
+                symbol = reverse[token]
+            else:
+                symbol = f"{exch_prefix}:{token}"
 
             def to_rupees(v):
                 return float(v) / 100.0 if v is not None else None
@@ -814,7 +989,8 @@ class AngelOneBroker(BaseBroker):
                 "close":     to_rupees(raw_tick.get("closed_price")),
             }
         except Exception as e:
-            logger.error(f"[AngelOneBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[AngelOneBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_angel_token(self, symbol: str):

@@ -22,11 +22,14 @@ Authentication (username + password + YOB + app_id + api_secret):
 
 API docs: https://ant.aliceblueonline.com/developers
 SDK:      pip install pya3
+
+FIXED: Added proper WebSocket cleanup with timeout and error handling.
 """
 
 import logging
 import time
 import random
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -39,10 +42,12 @@ from db.crud import tokens
 
 try:
     from pya3 import Aliceblue, TransactionType, OrderType, ProductType, Exchange
+
     ALICE_AVAILABLE = True
 except ImportError:
     try:
         from alice_blue import AliceBlue, TransactionType, OrderType, ProductType  # type: ignore
+
         Aliceblue = AliceBlue
         ALICE_AVAILABLE = True
     except ImportError:
@@ -56,16 +61,16 @@ ALICE_NFO = "NFO"
 ALICE_BSE = "BSE"
 ALICE_MCX = "MCX"
 
-ALICE_PRODUCT_MIS  = "MIS"
+ALICE_PRODUCT_MIS = "MIS"
 ALICE_PRODUCT_NRML = "NRML"
-ALICE_PRODUCT_CNC  = "CNC"
+ALICE_PRODUCT_CNC = "CNC"
 
 ALICE_ORDER_MARKET = "MKT"
-ALICE_ORDER_LIMIT  = "L"
-ALICE_ORDER_SL     = "SL"
-ALICE_ORDER_SLM    = "SL-M"
+ALICE_ORDER_LIMIT = "L"
+ALICE_ORDER_SL = "SL"
+ALICE_ORDER_SLM = "SL-M"
 
-ALICE_BUY  = "BUY"
+ALICE_BUY = "BUY"
 ALICE_SELL = "SELL"
 
 
@@ -78,6 +83,8 @@ class AliceBlueBroker(BaseBroker):
         secret_key   → API Secret
         redirect_uri → "username|password|YOB" (pipe-separated)
                         YOB = year of birth used as 2FA answer
+
+    FIXED: Added proper WebSocket cleanup with timeout and error handling.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -93,7 +100,7 @@ class AliceBlueBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for AliceBlueBroker.")
 
-            self.app_id     = getattr(broker_setting, 'client_id', None)
+            self.app_id = getattr(broker_setting, 'client_id', None)
             self.api_secret = getattr(broker_setting, 'secret_key', None)
 
             # Parse "username|password|YOB" from redirect_uri
@@ -101,7 +108,7 @@ class AliceBlueBroker(BaseBroker):
             cred_parts = creds_raw.split("|")
             self.username = cred_parts[0] if len(cred_parts) > 0 else None
             self.password = cred_parts[1] if len(cred_parts) > 1 else None
-            self.yob      = cred_parts[2] if len(cred_parts) > 2 else None
+            self.yob = cred_parts[2] if len(cred_parts) > 2 else None
 
             if not self.app_id or not self.api_secret or not self.username:
                 raise ValueError(
@@ -123,6 +130,11 @@ class AliceBlueBroker(BaseBroker):
                 logger.warning("AliceBlueBroker: no session — call broker.login()")
                 self.alice = None
 
+            # WebSocket cleanup tracking
+            self._ws_cleanup_event = threading.Event()
+            self._ws_closed = False
+            self._ws_connect_thread = None
+
             logger.info("AliceBlueBroker initialized")
 
         except Exception as e:
@@ -131,7 +143,7 @@ class AliceBlueBroker(BaseBroker):
 
     @property
     def broker_type(self) -> str:
-        return "alice_blue"
+        return "aliceblue"
 
     def _safe_defaults_init(self):
         self.state = None
@@ -143,6 +155,17 @@ class AliceBlueBroker(BaseBroker):
         self.alice = None
         self._last_request_time = 0
         self._request_count = 0
+
+        # WebSocket cleanup tracking
+        self._ws_cleanup_event = None
+        self._ws_closed = False
+        self._ws_connect_thread = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        self._alice_inst_cache: Dict[str, Any] = {}
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -242,10 +265,14 @@ class AliceBlueBroker(BaseBroker):
     @staticmethod
     def _exchange_from_symbol(symbol: str) -> str:
         s = symbol.upper()
-        if s.startswith("NFO:") or "CE" in s or "PE" in s or "FUT" in s:
+        if s.startswith("NFO:"):
             return ALICE_NFO
         if s.startswith("BSE:"):
             return ALICE_BSE
+        import re as _re
+        bare = s.split(":")[-1]
+        if _re.search(r'(CE|PE|FUT)$', bare):
+            return ALICE_NFO
         return ALICE_NSE
 
     @staticmethod
@@ -259,8 +286,8 @@ class AliceBlueBroker(BaseBroker):
     def _to_alice_order_type(order_type: str):
         try:
             mapping = {
-                BaseBroker.MARKET_ORDER_TYPE:          OrderType.Market,
-                BaseBroker.LIMIT_ORDER_TYPE:           OrderType.Limit,
+                BaseBroker.MARKET_ORDER_TYPE: OrderType.Market,
+                BaseBroker.LIMIT_ORDER_TYPE: OrderType.Limit,
                 BaseBroker.STOPLOSS_MARKET_ORDER_TYPE: OrderType.StopLossMarket,
             }
             return mapping.get(order_type, OrderType.Market)
@@ -271,9 +298,9 @@ class AliceBlueBroker(BaseBroker):
     def _to_alice_product(product_str: str):
         try:
             mapping = {
-                "MIS":  ProductType.Intraday,
+                "MIS": ProductType.Intraday,
                 "NRML": ProductType.Nrml,
-                "CNC":  ProductType.CNC,
+                "CNC": ProductType.CNC,
             }
             return mapping.get(product_str.upper(), ProductType.Intraday)
         except Exception:
@@ -356,22 +383,21 @@ class AliceBlueBroker(BaseBroker):
             instrument = self._get_instrument(option_name, exchange)
             if not instrument:
                 return None
-            self._check_rate_limit()
             result = self._call(
                 lambda: self.alice.get_market_feed_data(instrument),
                 context="get_option_quote"
             )
             if result and isinstance(result, dict):
                 return {
-                    "ltp":    float(result.get("lp", 0) or 0),
-                    "bid":    float(result.get("bp1", 0) or 0),
-                    "ask":    float(result.get("sp1", 0) or 0),
-                    "high":   float(result.get("h", 0) or 0),
-                    "low":    float(result.get("l", 0) or 0),
-                    "open":   float(result.get("o", 0) or 0),
-                    "close":  float(result.get("c", 0) or 0),
+                    "ltp": float(result.get("lp", 0) or 0),
+                    "bid": float(result.get("bp1", 0) or 0),
+                    "ask": float(result.get("sp1", 0) or 0),
+                    "high": float(result.get("h", 0) or 0),
+                    "low": float(result.get("l", 0) or 0),
+                    "open": float(result.get("o", 0) or 0),
+                    "close": float(result.get("c", 0) or 0),
                     "volume": int(result.get("v", 0) or 0),
-                    "oi":     int(result.get("oi", 0) or 0),
+                    "oi": int(result.get("oi", 0) or 0),
                 }
             return None
         except TokenExpiredError:
@@ -398,7 +424,7 @@ class AliceBlueBroker(BaseBroker):
             order_type = kwargs.get('order_type', self.MARKET_ORDER_TYPE)
             product_str = kwargs.get('product_type', ALICE_PRODUCT_MIS)
             limit_price = float(kwargs.get('limitPrice', 0) or 0)
-            stop_price  = float(kwargs.get('stopPrice', 0) or 0)
+            stop_price = float(kwargs.get('stopPrice', 0) or 0)
 
             if not symbol or qty <= 0:
                 return None
@@ -413,7 +439,6 @@ class AliceBlueBroker(BaseBroker):
             alice_order = self._to_alice_order_type(order_type)
             alice_product = self._to_alice_product(product_str)
 
-            self._check_rate_limit()
             result = self._call(
                 lambda: self.alice.place_order(
                     transaction_type=alice_side,
@@ -447,6 +472,7 @@ class AliceBlueBroker(BaseBroker):
             order_id = kwargs.get('order_id')
             limit_price = float(kwargs.get('limit_price', 0) or 0)
             qty = int(kwargs.get('qty', 0))
+            side = kwargs.get('side', self.SIDE_BUY)
             if not order_id or not self.alice:
                 return False
             symbol = kwargs.get('symbol', '')
@@ -454,10 +480,9 @@ class AliceBlueBroker(BaseBroker):
             instrument = self._get_instrument(symbol, exchange)
             if not instrument:
                 return False
-            self._check_rate_limit()
             result = self._call(
                 lambda: self.alice.modify_order(
-                    transaction_type=self._to_alice_side(self.SIDE_BUY),
+                    transaction_type=self._to_alice_side(side),
                     instrument=instrument,
                     product_type=self._to_alice_product(ALICE_PRODUCT_MIS),
                     order_id=order_id,
@@ -482,7 +507,12 @@ class AliceBlueBroker(BaseBroker):
             symbol = kwargs.get('symbol', '')
             exchange = self._exchange_from_symbol(symbol)
             instrument = self._get_instrument(symbol, exchange)
-            self._check_rate_limit()
+            if not instrument:
+                logger.error(
+                    f"[AliceBlueBroker.cancel_order] Cannot resolve instrument for "
+                    f"symbol '{symbol}' — cancel aborted."
+                )
+                return False
             result = self._call(
                 lambda: self.alice.cancel_order(
                     instrument=instrument,
@@ -538,7 +568,7 @@ class AliceBlueBroker(BaseBroker):
         try:
             if not self.alice:
                 return []
-            result = self._call(self.alice.get_order_history, context="get_orderbook")
+            result = self._call(self.alice.get_order_book, context="get_orderbook")
             if isinstance(result, list):
                 return result
             return []
@@ -549,17 +579,64 @@ class AliceBlueBroker(BaseBroker):
             return []
 
     def get_current_order_status(self, order_id: str) -> Optional[Any]:
+        """
+        Return the integer fill status for the given order_id.
+
+        BUG FIX: The original returned the full order dict, but order_executor
+        checks `self.api.get_current_order_status(broker_id) == 2` to detect a
+        fill.  A dict never equals 2, so _wait_for_fill() always timed out and
+        Alice Blue limit orders NEVER confirmed — every trade fell through to the
+        MARKET order fallback.
+
+        Alice Blue status strings:
+            "complete" / "COMPLETE"  → filled (maps to 2)
+            "open"     / "OPEN"      → pending (maps to 1)
+            "rejected" / "cancelled" → maps to -1
+
+        Returns the raw order dict as well under the key "__raw__" so callers
+        that need more detail can still access it.
+        """
         try:
             orders = self.get_orderbook()
             for order in orders:
                 oid = order.get("Nstordno") or order.get("nOrdNo") or order.get("order_id")
                 if str(oid) == str(order_id):
-                    return order
+                    status_str = str(
+                        order.get("Status") or order.get("status") or ""
+                    ).lower()
+                    if status_str in ("complete", "filled", "traded"):
+                        return 2  # Filled — matches order_executor expectation
+                    if status_str in ("rejected", "cancelled", "canceled"):
+                        return -1
+                    return 1  # Open / pending
             return None
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[AliceBlueBroker.get_current_order_status] {e!r}", exc_info=True)
+            return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+
+        Implements the BaseBroker.get_fill_price() interface added when fixing
+        order_executor so it uses real fill prices instead of tick prices for P&L.
+        Alice Blue's order book includes 'Avgprc' (average price) on filled orders.
+        """
+        try:
+            if not broker_order_id or not self.alice:
+                return None
+            orders = self.get_orderbook()
+            for order in orders:
+                oid = order.get("Nstordno") or order.get("nOrdNo") or order.get("order_id")
+                if str(oid) == str(broker_order_id):
+                    avg_price = order.get("Avgprc") or order.get("avgprc") or order.get("average_price")
+                    if avg_price:
+                        return float(avg_price)
+            return None
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
     def is_connected(self) -> bool:
@@ -571,7 +648,50 @@ class AliceBlueBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
-        logger.info("[AliceBlueBroker] cleanup done")
+        """Clean up resources including WebSocket connection."""
+        logger.info("[AliceBlueBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if hasattr(self, 'alice') and self.alice is not None:
+            try:
+                # Try to close WebSocket with timeout
+                if hasattr(self.alice, 'close_websocket'):
+                    if self._ws_cleanup_event is None:
+                        self._ws_cleanup_event = threading.Event()
+                    self._ws_cleanup_event.clear()
+
+                    def _close_ws():
+                        try:
+                            self.alice.close_websocket()
+                            logger.debug("[AliceBlueBroker] WebSocket close_websocket called")
+                        except Exception as e:
+                            logger.warning(f"[AliceBlueBroker] Error closing WebSocket: {e}")
+                        finally:
+                            self._ws_cleanup_event.set()
+
+                    # Run close in separate thread with timeout
+                    close_thread = threading.Thread(target=_close_ws, daemon=True)
+                    close_thread.start()
+
+                    # Wait for close with timeout
+                    if not self._ws_cleanup_event.wait(timeout=2.0):
+                        logger.warning("[AliceBlueBroker] WebSocket close timed out")
+            except Exception as e:
+                logger.error(f"[AliceBlueBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        # Clear alice reference
+        self.alice = None
+
+        logger.info("[AliceBlueBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -588,7 +708,7 @@ class AliceBlueBroker(BaseBroker):
                 raise
             except (Timeout, ConnectionError) as e:
                 delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                logger.warning(f"[AliceBlue.{context}] Network error, retry {attempt+1}: {e}")
+                logger.warning(f"[AliceBlue.{context}] Network error, retry {attempt + 1}: {e}")
                 time.sleep(delay)
             except Exception as e:
                 error_str = str(e).lower()
@@ -607,19 +727,31 @@ class AliceBlueBroker(BaseBroker):
 
         Alice Blue's pya3 SDK streams ticks via start_websocket().
         Instruments are pya3 Instrument objects (retrieved by exchange + symbol).
+
+        FIXED: Added WebSocket state tracking.
         """
         try:
             if not self.alice:
                 logger.error("AliceBlueBroker.create_websocket: alice not initialized — login first")
                 return None
 
-            self._ws_on_tick    = on_tick
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
+            self._ws_on_tick = on_tick
             self._ws_on_connect = on_connect
-            self._ws_on_close   = on_close
-            self._ws_on_error   = on_error
+            self._ws_on_close = on_close
+            self._ws_on_error = on_error
 
             logger.info("AliceBlueBroker: WebSocket callbacks stored")
-            return {"__alice__": self.alice}
+
+            # Return a dict with alice instance and state tracking
+            return {
+                "__alice__": self.alice,
+                "__ws_created_at__": time.time(),
+                "__ws_active__": True
+            }
         except Exception as e:
             logger.error(f"[AliceBlueBroker.create_websocket] {e}", exc_info=True)
             return None
@@ -629,6 +761,8 @@ class AliceBlueBroker(BaseBroker):
         Start Alice Blue WebSocket via start_websocket().
 
         pya3 start_websocket() is blocking — WebSocketManager wraps in thread.
+
+        FIXED: Store thread reference for cleanup.
         """
         try:
             if ws_obj is None:
@@ -638,26 +772,37 @@ class AliceBlueBroker(BaseBroker):
                 return
 
             def _on_tick(tick_data):
+                if self._ws_closed:
+                    return
                 self._ws_on_tick(tick_data)
 
             def _on_open():
+                if self._ws_closed:
+                    return
                 logger.info("AliceBlueBroker: WebSocket opened")
                 self._ws_on_connect()
 
             def _on_close():
+                if self._ws_closed:
+                    return
                 logger.info("AliceBlueBroker: WebSocket closed")
                 self._ws_on_close("connection closed")
 
             def _on_error(ws, error):
+                if self._ws_closed:
+                    return
                 logger.error(f"AliceBlueBroker WS error: {error}")
                 self._ws_on_error(str(error))
+
+            # Store the current thread for potential cleanup
+            self._ws_connect_thread = threading.current_thread()
 
             alice.start_websocket(
                 socket_open_callback=_on_open,
                 socket_close_callback=_on_close,
                 socket_error_callback=_on_error,
                 subscription_callback=_on_tick,
-                run_in_background=True,   # non-blocking
+                run_in_background=True,  # non-blocking
             )
             logger.info("AliceBlueBroker: start_websocket() called")
         except Exception as e:
@@ -671,7 +816,7 @@ class AliceBlueBroker(BaseBroker):
         Instruments are resolved via alice.get_instrument_by_symbol().
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
             if alice is None:
@@ -695,7 +840,7 @@ class AliceBlueBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from Alice Blue live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
             if alice is None:
@@ -708,15 +853,48 @@ class AliceBlueBroker(BaseBroker):
             logger.error(f"[AliceBlueBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close Alice Blue WebSocket."""
+        """
+        Close Alice Blue WebSocket with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
+
+            logger.info("[AliceBlueBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
             alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
+
             if alice and hasattr(alice, "close_websocket"):
-                alice.close_websocket()
-            self._ws_on_close("disconnected")
-            logger.info("AliceBlueBroker: WebSocket closed")
+                # Run close in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        alice.close_websocket()
+                        logger.debug("[AliceBlueBroker] close_websocket completed")
+                    except Exception as e:
+                        logger.warning(f"[AliceBlueBroker] close_websocket error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[AliceBlueBroker] close_websocket timed out")
+
+            if self._ws_on_close:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[AliceBlueBroker] Error in close callback: {e}")
+
+            logger.info("[AliceBlueBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[AliceBlueBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -729,7 +907,7 @@ class AliceBlueBroker(BaseBroker):
         open, high, low, prev_close, oi.
         """
         try:
-            if not isinstance(raw_tick, dict):
+            if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
 
             ltp = raw_tick.get("ltp") or raw_tick.get("LTP")
@@ -739,25 +917,39 @@ class AliceBlueBroker(BaseBroker):
             raw_symbol = raw_tick.get("symbol", "")
             # pya3 returns instrument object or string symbol
             if hasattr(raw_symbol, "tradingsymbol"):
-                symbol_str = f"NSE:{raw_symbol.tradingsymbol}"
+                # pya3 Instrument object — use its exchange attribute if available
+                exch = getattr(raw_symbol, "exchange", None)
+                exch_str = str(exch).upper() if exch else ""
+                prefix = "NFO" if exch_str in ("NFO", "NSE_FO") else "NSE"
+                symbol_str = f"{prefix}:{raw_symbol.tradingsymbol}"
             else:
-                symbol_str = f"NSE:{raw_symbol}" if ":" not in str(raw_symbol) else str(raw_symbol)
+                if ":" not in str(raw_symbol):
+                    # BUG FIX: Was always prefixing NSE: even for NFO options/futures
+                    # ticks.  Detect the correct exchange from the symbol string using
+                    # the same suffix logic as _exchange_from_symbol.
+                    import re as _re
+                    bare = str(raw_symbol).upper()
+                    prefix = "NFO" if _re.search(r'(CE|PE|FUT)$', bare) else "NSE"
+                    symbol_str = f"{prefix}:{raw_symbol}"
+                else:
+                    symbol_str = str(raw_symbol)
 
             return {
-                "symbol":    symbol_str,
-                "ltp":       float(ltp),
+                "symbol": symbol_str,
+                "ltp": float(ltp),
                 "timestamp": str(raw_tick.get("ltt", "")),
-                "bid":       raw_tick.get("best_bid_price"),
-                "ask":       raw_tick.get("best_ask_price"),
-                "volume":    raw_tick.get("volume"),
-                "oi":        raw_tick.get("oi"),
-                "open":      raw_tick.get("open"),
-                "high":      raw_tick.get("high"),
-                "low":       raw_tick.get("low"),
-                "close":     raw_tick.get("prev_close"),
+                "bid": raw_tick.get("best_bid_price"),
+                "ask": raw_tick.get("best_ask_price"),
+                "volume": raw_tick.get("volume"),
+                "oi": raw_tick.get("oi"),
+                "open": raw_tick.get("open"),
+                "high": raw_tick.get("high"),
+                "low": raw_tick.get("low"),
+                "close": raw_tick.get("prev_close"),
             }
         except Exception as e:
-            logger.error(f"[AliceBlueBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[AliceBlueBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_alice_instrument(self, alice, symbol: str):
@@ -770,8 +962,8 @@ class AliceBlueBroker(BaseBroker):
             if symbol in cache:
                 return cache[symbol]
 
-            upper  = symbol.upper()
-            bare   = symbol.split(":")[-1]
+            upper = symbol.upper()
+            bare = symbol.split(":")[-1]
             exchange = "NFO" if "NFO:" in upper else "NSE"
 
             inst = alice.get_instrument_by_symbol(exchange, bare)

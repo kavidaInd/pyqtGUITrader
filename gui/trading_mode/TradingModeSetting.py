@@ -6,6 +6,8 @@ Database-backed trading mode settings using the SQLite database.
 Enhanced with support for:
 - FEATURE 6: Multi-Timeframe Filter
 - FEATURE 1: Risk Management
+
+UPDATED: Settings are automatically applied to trading state when saved.
 """
 
 import logging
@@ -14,6 +16,9 @@ from typing import Any, Dict, Optional
 
 from db.connector import get_db
 from db.crud import trading_mode
+
+# Import state manager for live updates
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -42,6 +47,8 @@ class TradingModeSetting:
     Enhanced with additional fields for new features.
     This is a drop-in replacement for the JSON-based TradingModeSetting class,
     maintaining the same interface while using the database.
+
+    UPDATED: When settings are saved, they are automatically applied to the trading state.
     """
 
     # Rule 2: Class-level defaults with new features
@@ -414,7 +421,7 @@ class TradingModeSetting:
 
     def save(self) -> bool:
         """
-        Save settings to database.
+        Save settings to database and apply to trading state.
 
         Returns:
             bool: True if save successful, False otherwise
@@ -426,6 +433,8 @@ class TradingModeSetting:
 
             if success:
                 logger.debug("Trading mode settings saved to database")
+                # UPDATED: Apply settings to trading state
+                self._apply_to_state()
             else:
                 logger.error("Failed to save trading mode settings to database")
 
@@ -434,6 +443,50 @@ class TradingModeSetting:
         except Exception as e:
             logger.error(f"[TradingModeSetting.save] Failed: {e}", exc_info=True)
             return False
+
+    def _apply_to_state(self):
+        """
+        UPDATED: Apply current settings to the trading state.
+        This ensures that when settings are saved, they are immediately
+        reflected in the running trading application.
+        """
+        try:
+            # Get state instance
+            state = state_manager.get_state()
+
+            # ── Paper balance ──────────────────────────────────────────────────
+            # In non-live modes the account balance shown in the UI must come
+            # from paper_balance, not from the real broker API.  Update it here
+            # whenever settings are saved so the display reflects instantly.
+            if self.mode != TradingMode.LIVE or not self.allow_live_trading:
+                paper_bal = float(self.paper_balance) if self.paper_balance else 100000.0
+                state.account_balance = paper_bal
+                logger.info(
+                    f"[TradingModeSetting._apply_to_state] "
+                    f"Paper balance applied to state: ₹{paper_bal:,.2f}"
+                )
+
+            # Apply mode settings that affect trading behavior
+
+            # FEATURE 6: MTF Filter settings
+            state.use_mtf_filter = self.use_mtf_filter
+            state.mtf_timeframes = self.mtf_timeframes
+            state.mtf_ema_fast = self.mtf_ema_fast
+            state.mtf_ema_slow = self.mtf_ema_slow
+            state.mtf_agreement_required = self.mtf_agreement_required
+
+            # FEATURE 1: Risk Management settings
+            state.max_daily_loss = self.max_daily_loss
+            state.max_trades_per_day = self.max_trades_per_day
+            state.daily_target = self.daily_target
+
+            # FEATURE 3: Signal Confidence
+            state.min_confidence = self.min_confidence
+
+            logger.debug("Applied trading mode settings to state")
+
+        except Exception as e:
+            logger.error(f"[TradingModeSetting._apply_to_state] Failed: {e}", exc_info=True)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert settings to dictionary."""

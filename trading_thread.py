@@ -6,6 +6,9 @@ from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 
 from broker.BaseBroker import TokenExpiredError
 
+# Import state manager for cleanup
+from models.trade_state_manager import state_manager
+
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,8 @@ class TradingThread(QThread):
     """
     # PYQT: Wraps TradingApp.run() in a QThread so it never blocks the GUI.
     # Signals are the only safe way to communicate results back to the main thread.
+
+    UPDATED: Ensures state manager is properly cleaned up on thread termination.
     """
 
     # Status signals - Rule 3: Typed signals
@@ -53,7 +58,7 @@ class TradingThread(QThread):
             # FEATURE 6: MTF filter state
             self._mtf_enabled = False
 
-            logger.info("TradingThread initialized")
+            logger.info("TradingThread initialized with state_manager integration")
 
         except Exception as e:
             logger.critical(f"[TradingThread.__init__] Failed: {e}", exc_info=True)
@@ -226,7 +231,6 @@ class TradingThread(QThread):
                     try:
                         # This would ideally be a non-blocking call or run in thread
                         pnl = self.trading_app.executor.exit_position(
-                            state,
                             reason="Manual stop - app exit"
                         )
                         if pnl is not None:
@@ -274,6 +278,14 @@ class TradingThread(QThread):
                     logger.info("Trading app cleanup completed")
                 except Exception as e:
                     logger.error(f"Cleanup error: {e}", exc_info=True)
+
+            # Reset state manager for clean state
+            self.status_update.emit("Resetting state manager...")
+            try:
+                state_manager.reset_for_backtest()
+                logger.info("State manager reset completed")
+            except Exception as e:
+                logger.error(f"State manager reset error: {e}", exc_info=True)
 
             self.stop_progress.emit(100)
             self.status_update.emit("Shutdown complete")
@@ -491,6 +503,13 @@ class TradingThread(QThread):
                     self.terminate()
                     self.wait(2000)
 
+            # Reset state manager as final cleanup
+            try:
+                state_manager.reset_for_backtest()
+                logger.info("State manager reset in cleanup")
+            except Exception as e:
+                logger.error(f"State manager reset error in cleanup: {e}", exc_info=True)
+
             logger.info("[TradingThread] Cleanup completed")
 
         except Exception as e:
@@ -623,7 +642,7 @@ class CooperativeTradingApp:
             # Your existing trading logic here
             # Check risk limits
             if self.risk_manager:
-                allowed, reason = self.risk_manager.should_allow_trade(self.state, self.config)
+                allowed, reason = self.risk_manager.should_allow_trade(self.config)
                 if not allowed:
                     logger.warning(f"Risk limit reached: {reason}")
                     # Optionally stop trading
@@ -687,7 +706,7 @@ if __name__ == "__main__":
 
             try:
                 self.state = type('State', (), {'current_position': 'NIFTY'})()
-                self.executor = type('Executor', (), {'exit_position': lambda s, r: 100})()
+                self.executor = type('Executor', (), {'exit_position': lambda r: 100})()
                 self.ws = type('WS', (), {'unsubscribe': lambda: None})()
 
                 # Mock risk manager

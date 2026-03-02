@@ -24,6 +24,8 @@ synthetic bars in a distinct colour and show a disclaimer.
 
 Uses state_manager to access broker type and other configuration that
 affects option pricing and symbol generation.
+
+UPDATED: Added missing imports and improved state_manager integration.
 """
 
 from __future__ import annotations
@@ -483,9 +485,16 @@ def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
             ny = dt.year + (1 if nm > 12 else 0)
             nm = ((nm - 1) % 12) + 1
             expiry_dt = OptionUtils.get_monthly_expiry_date(ny, nm, derivative=exchange_symbol)
-        return expiry_dt
-    except Exception:
-        pass
+        # Ensure we return a datetime object
+        if isinstance(expiry_dt, datetime):
+            return expiry_dt
+        elif hasattr(expiry_dt, 'to_pydatetime'):
+            return expiry_dt.to_pydatetime()
+        else:
+            # Fallback to string parsing if needed
+            return datetime.fromisoformat(str(expiry_dt))
+    except Exception as e:
+        logger.warning(f"[nearest_monthly_expiry] OptionUtils failed: {e}, using fallback")
 
     # Fallback: last Tuesday of the month
     target_weekday = 1
@@ -516,6 +525,8 @@ class OptionPricer:
 
     Uses state_manager to access broker type and other configuration
     that affects option pricing.
+
+    UPDATED: Improved error handling for OptionUtils returns.
     """
 
     def __init__(

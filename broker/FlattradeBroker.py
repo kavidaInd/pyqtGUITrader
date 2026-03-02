@@ -31,12 +31,15 @@ Authentication (OAuth token — daily refresh):
 
 API docs: https://pi.flattrade.in/docs
 GitHub:   https://github.com/flattrade/pythonAPI
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
 import hashlib
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -112,6 +115,8 @@ class FlattradeBroker(BaseBroker):
         client_id    → "user_id|api_key"  (pipe-separated, e.g. "FL12345|myapikey")
         secret_key   → API Secret
         redirect_uri → Registered redirect URI (e.g. https://127.0.0.1/callback)
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -162,6 +167,11 @@ class FlattradeBroker(BaseBroker):
                 logger.warning("FlattradeBroker: no token — call set_session(token=...) "
                                "after visiting get_login_url()")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_api = None
+
             logger.info(f"FlattradeBroker initialized for user {self.user_id}")
 
         except Exception as e:
@@ -182,6 +192,15 @@ class FlattradeBroker(BaseBroker):
         self._last_request_time = 0
         self._request_count = 0
         self._symbol_token_cache: Dict[str, str] = {}
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_api = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -655,11 +674,55 @@ class FlattradeBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
+        """Clean up resources including WebSocket connection."""
+        logger.info("[FlattradeBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_api is not None:
+            try:
+                # Try to close WebSocket with timeout
+                self._ws_cleanup_event.clear()
+
+                def _do_disconnect():
+                    try:
+                        if hasattr(self._ws_api, "close_websocket"):
+                            self._ws_api.close_websocket()
+                            logger.debug("[FlattradeBroker] close_websocket called")
+                    except Exception as e:
+                        logger.warning(f"[FlattradeBroker] Error closing WebSocket: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run close in separate thread with timeout
+                close_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                close_thread.start()
+
+                # Wait for close with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[FlattradeBroker] WebSocket close timed out")
+
+            except Exception as e:
+                logger.error(f"[FlattradeBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_api = None
+
+        # Logout from API
         try:
             if self.api:
                 self.api.logout()
         except Exception as e:
-            logger.warning(f"[FlattradeBroker.cleanup] {e}")
+            logger.warning(f"[FlattradeBroker.cleanup] Logout error: {e}")
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[FlattradeBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -695,11 +758,17 @@ class FlattradeBroker(BaseBroker):
 
         Flattrade uses the same NorenRestApiPy WebSocket as Shoonya.
         Symbols use "NSE|TOKEN" format same as Shoonya.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             if not self.api:
                 logger.error("FlattradeBroker.create_websocket: api not initialized — set_session first")
                 return None
+
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
 
             self._ws_on_tick    = on_tick
             self._ws_on_connect = on_connect
@@ -713,28 +782,40 @@ class FlattradeBroker(BaseBroker):
             return None
 
     def ws_connect(self, ws_obj) -> None:
-        """Start Flattrade NorenApi WebSocket."""
+        """Start Flattrade NorenApi WebSocket with safety checks."""
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
+
             api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
             if api is None:
                 return
 
             def _on_open():
+                if self._ws_closed:
+                    return
                 logger.info("FlattradeBroker: WebSocket opened")
                 self._ws_on_connect()
 
             def _on_message(msg):
+                if self._ws_closed:
+                    return
                 self._ws_on_tick(msg)
 
             def _on_error(msg):
+                if self._ws_closed:
+                    return
                 logger.error(f"FlattradeBroker WS error: {msg}")
                 self._ws_on_error(str(msg))
 
             def _on_close():
+                if self._ws_closed:
+                    return
                 logger.info("FlattradeBroker: WebSocket closed")
                 self._ws_on_close("connection closed")
+
+            # Store API reference for cleanup
+            self._ws_api = api
 
             api.start_websocket(
                 order_update_callback=_on_message,
@@ -750,7 +831,7 @@ class FlattradeBroker(BaseBroker):
     def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
         """Subscribe to Flattrade live feed (same token format as Shoonya)."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
             if api is None:
@@ -771,7 +852,7 @@ class FlattradeBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from Flattrade live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
             if api is None:
@@ -784,15 +865,52 @@ class FlattradeBroker(BaseBroker):
             logger.error(f"[FlattradeBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close Flattrade WebSocket."""
+        """
+        Close Flattrade WebSocket with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
+
+            logger.info("[FlattradeBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
             api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
+
             if api and hasattr(api, "close_websocket"):
-                api.close_websocket()
-            self._ws_on_close("disconnected")
-            logger.info("FlattradeBroker: WebSocket disconnected")
+                # Run close in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        api.close_websocket()
+                        logger.debug("[FlattradeBroker] close_websocket completed")
+                    except Exception as e:
+                        logger.warning(f"[FlattradeBroker] close_websocket error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[FlattradeBroker] close_websocket timed out")
+
+            # Clear reference
+            self._ws_api = None
+
+            # Call on_close callback
+            if self._ws_on_close and not self._ws_closed:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[FlattradeBroker] Error in close callback: {e}")
+
+            logger.info("[FlattradeBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[FlattradeBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -804,8 +922,9 @@ class FlattradeBroker(BaseBroker):
         ft (feed time), v (volume), oi (OI), bp1/sp1 (bid/ask), o/h/lo/c.
         """
         try:
-            if not isinstance(raw_tick, dict):
+            if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
+
             if raw_tick.get("t") not in ("sf", "tf", "if"):
                 return None
 
@@ -831,7 +950,8 @@ class FlattradeBroker(BaseBroker):
                 "close":     float(raw_tick["c"])  if raw_tick.get("c")  else None,
             }
         except Exception as e:
-            logger.error(f"[FlattradeBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[FlattradeBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_ft_symbol(self, symbol: str) -> Optional[str]:

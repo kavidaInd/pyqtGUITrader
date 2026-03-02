@@ -1,14 +1,19 @@
 """
 System Monitor Popup - Displays system resource usage and trading app performance metrics
+
+UPDATED: Now uses state_manager for trading state access.
 """
 import logging
 import psutil
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QProgressBar, QTabWidget
+
+# Import state manager
+from models.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +97,12 @@ class SystemMonitorPopup(QDialog):
 
         self._init_ui()
         self._init_timer()
+
+        # Cache for snapshots
+        self._last_snapshot = {}
+        self._last_snapshot_time = None
+        self._last_position_snapshot = {}
+        self._snapshot_cache_duration = 0.1  # 100ms
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -454,6 +465,16 @@ class SystemMonitorPopup(QDialog):
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._run_garbage_collection] Failed: {e}")
 
+    def _get_cached_snapshot(self) -> Dict[str, Any]:
+        """Get cached snapshot to avoid excessive state_manager calls"""
+        now = datetime.now()
+        if (self._last_snapshot_time is None or
+            (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration):
+            self._last_snapshot = state_manager.get_snapshot()
+            self._last_position_snapshot = state_manager.get_position_snapshot()
+            self._last_snapshot_time = now
+        return self._last_snapshot
+
     def refresh(self):
         """Refresh all metrics"""
         try:
@@ -513,9 +534,13 @@ class SystemMonitorPopup(QDialog):
             logger.error(f"[SystemMonitorPopup._refresh_system_metrics] Failed: {e}")
 
     def _refresh_app_metrics(self):
-        """Refresh trading app metrics"""
+        """Refresh trading app metrics using state_manager"""
         try:
-            # Process info
+            # Get snapshots from state manager
+            snapshot = self._get_cached_snapshot()
+            position_snapshot = self._last_position_snapshot
+
+            # Process info (still from psutil)
             process = psutil.Process()
 
             # Threads
@@ -542,59 +567,61 @@ class SystemMonitorPopup(QDialog):
             except:
                 self.process_fds.setText("N/A")
 
-            # Trading stats from app
+            # Trading stats from state_manager
             if self.trading_app:
-                # Queue size
+                # Queue size (still from trading_app)
                 if hasattr(self.trading_app, '_tick_queue'):
                     self.trading_queue_size.setText(str(self.trading_app._tick_queue.qsize()))
 
-                # Symbols
-                if hasattr(self.trading_app.state, 'all_symbols'):
-                    symbols = self.trading_app.state.all_symbols or []
-                    self.trading_symbols.setText(str(len(symbols)))
+                # Symbols from snapshot
+                symbols = snapshot.get('all_symbols', [])
+                self.trading_symbols.setText(str(len(symbols)))
 
                 # Active chain
-                if hasattr(self.trading_app.state, 'option_chain'):
-                    chain = self.trading_app.state.option_chain or {}
-                    active = sum(1 for data in chain.values() if data and data.get('ltp'))
-                    self.trading_active_chain.setText(str(active))
+                option_chain = snapshot.get('option_chain', {})
+                active = 0
+                for data in option_chain.values():
+                    if data and data.get('ltp') is not None:
+                        active += 1
+                self.trading_active_chain.setText(str(active))
 
-                # Open orders
-                if hasattr(self.trading_app.state, 'orders'):
-                    orders = self.trading_app.state.orders or []
-                    self.trading_open_orders.setText(str(len(orders)))
+                # Open orders from snapshot
+                orders = snapshot.get('orders', [])
+                self.trading_open_orders.setText(str(len(orders)) if orders else "0")
 
-                # Position
-                if hasattr(self.trading_app.state, 'current_position'):
-                    pos = self.trading_app.state.current_position
-                    self.trading_position.setText(pos if pos else "None")
+                # Position from position snapshot
+                pos = position_snapshot.get('current_position')
+                self.trading_position.setText(pos if pos else "None")
 
-                # P&L
-                if hasattr(self.trading_app.state, 'current_pnl'):
-                    pnl = self.trading_app.state.current_pnl or 0
-                    self.trading_pnl.setText(f"₹{pnl:,.2f}")
-                    # Color based on P&L
-                    if pnl > 0:
-                        self.trading_pnl.setProperty("cssClass", "positive")
-                    elif pnl < 0:
-                        self.trading_pnl.setProperty("cssClass", "critical")
-                    else:
-                        self.trading_pnl.setProperty("cssClass", "value")
+                # P&L from position snapshot
+                pnl = position_snapshot.get('current_pnl', 0)
+                self.trading_pnl.setText(f"₹{pnl:,.2f}" if pnl else "₹0.00")
 
-                # Signal
-                if hasattr(self.trading_app.state, 'option_signal'):
-                    signal = self.trading_app.state.option_signal or "WAIT"
-                    self.trading_signal.setText(signal)
+                # Color based on P&L
+                if pnl and pnl > 0:
+                    self.trading_pnl.setProperty("cssClass", "positive")
+                elif pnl and pnl < 0:
+                    self.trading_pnl.setProperty("cssClass", "critical")
+                else:
+                    self.trading_pnl.setProperty("cssClass", "value")
 
-                # FEATURE 1: Risk metrics
-                if hasattr(self.trading_app, 'risk_manager'):
-                    risk = self.trading_app.risk_manager
-                    config = self.trading_app.config if hasattr(self.trading_app, 'config') else None
-                    summary = risk.get_risk_summary(config)
+                # Signal from position snapshot
+                signal = position_snapshot.get('option_signal', 'WAIT')
+                self.trading_signal.setText(signal)
 
-                    self.risk_trades_today.setText(str(summary.get('trades_today', 0)))
-                    self.risk_loss_remaining.setText(f"₹{summary.get('max_loss_remaining', 5000):,.2f}")
-                    self.risk_trades_left.setText(str(summary.get('max_trades_remaining', 10)))
+                # FEATURE 1: Risk metrics from snapshot
+                max_loss = snapshot.get('max_daily_loss', -5000)
+                trades_today = 1 if pos else 0
+                trades_left = snapshot.get('max_trades_per_day', 10) - trades_today
+                loss_remaining = abs(max_loss) - abs(pnl) if pnl and pnl < 0 else abs(max_loss)
+
+                self.risk_trades_today.setText(str(trades_today))
+                self.risk_loss_remaining.setText(f"₹{loss_remaining:,.2f}")
+                self.risk_trades_left.setText(str(max(0, trades_left)))
+
+            # Update styles
+            self.trading_pnl.style().unpolish(self.trading_pnl)
+            self.trading_pnl.style().polish(self.trading_pnl)
 
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._refresh_app_metrics] Failed: {e}")
@@ -602,7 +629,7 @@ class SystemMonitorPopup(QDialog):
     def _refresh_network_metrics(self):
         """Refresh network metrics"""
         try:
-            # WebSocket stats from app
+            # WebSocket stats from app (still from trading_app)
             if self.trading_app and hasattr(self.trading_app, 'ws') and self.trading_app.ws:
                 ws = self.trading_app.ws
 
@@ -630,7 +657,7 @@ class SystemMonitorPopup(QDialog):
                 self.ws_status.setText("No WebSocket")
                 self.ws_status.setProperty("cssClass", "value")
 
-            # Network I/O
+            # Network I/O (from psutil)
             net_io = psutil.net_io_counters()
             if net_io:
                 self.net_bytes_sent.setText(self._format_bytes(net_io.bytes_sent))
@@ -656,6 +683,7 @@ class SystemMonitorPopup(QDialog):
             self.ws_status.style().polish(self.ws_status)
             self.trading_pnl.style().unpolish(self.trading_pnl)
             self.trading_pnl.style().polish(self.trading_pnl)
+
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._refresh_network_metrics] Failed: {e}")
 

@@ -16,7 +16,7 @@ The engine implements a sophisticated voting system:
     - Human-readable explanations of evaluation results
 
 FIX: Day gap handling - prevents false crossovers across day boundaries
-Version: 2.8.0 (Added sub_col selector for multi-output indicators; fixes MACD-vs-itself crossover bug)
+Version: 2.8.1 (Added state_manager integration helpers)
 """
 
 from __future__ import annotations

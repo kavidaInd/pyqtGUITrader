@@ -2,16 +2,20 @@
 logs_popup.py
 =============
 High-performance log viewer popup with filtering, export, and syntax highlighting.
+
+UPDATED: Fixed AttributeError when source_combo is None during log appending.
 """
 
 import logging
 import logging.handlers
 import traceback
-from typing import Optional
+import re
+from typing import Optional, Dict, Any
 from collections import deque
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QTextCharFormat, QColor, QFont, QTextCursor, QSyntaxHighlighter
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QApplication,
     QHBoxLayout, QCheckBox, QSpinBox, QGroupBox, QComboBox, QLineEdit,
@@ -20,6 +24,89 @@ from PyQt5.QtWidgets import (
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
+
+
+class LogHighlighter(QSyntaxHighlighter):
+    """
+    Syntax highlighter for log messages with level-based coloring.
+    """
+
+    # Define colors for different log levels
+    LEVEL_COLORS = {
+        'DEBUG': QColor('#8b949e'),    # Gray
+        'INFO': QColor('#58a6ff'),     # Blue
+        'WARNING': QColor('#d29922'),  # Yellow
+        'ERROR': QColor('#f85149'),    # Red
+        'CRITICAL': QColor('#ff7b72')  # Bright red
+    }
+
+    # Source colors (for different application components)
+    SOURCE_COLORS = {
+        'state_manager': QColor('#bc8cff'),  # Purple
+        'trading_app': QColor('#3fb950'),    # Green
+        'websocket': QColor('#ffa657'),      # Orange
+        'executor': QColor('#79c0ff'),       # Light blue
+        'signal_engine': QColor('#ff7b72'),  # Light red
+        'risk_manager': QColor('#d29922'),   # Yellow
+        'notifier': QColor('#a5d6ff'),       # Light blue
+        'gui': QColor('#c9d1d9'),            # Light gray
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_rules()
+
+    def _init_rules(self):
+        """Initialize highlighting rules"""
+        self.rules = []
+
+        # Timestamp pattern (YYYY-MM-DD HH:MM:SS,mmm)
+        timestamp_format = QTextCharFormat()
+        timestamp_format.setForeground(QColor('#6e7681'))
+        timestamp_format.setFontWeight(QFont.Normal)
+        self.rules.append((re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}'), timestamp_format))
+
+        # Thread/Process ID pattern
+        thread_format = QTextCharFormat()
+        thread_format.setForeground(QColor('#8b949e'))
+        thread_format.setFontWeight(QFont.Normal)
+        self.rules.append((re.compile(r'\[.*?\]'), thread_format))
+
+        # Level patterns
+        for level, color in self.LEVEL_COLORS.items():
+            level_format = QTextCharFormat()
+            level_format.setForeground(color)
+            level_format.setFontWeight(QFont.Bold)
+            self.rules.append((re.compile(f'\\b{level}\\b'), level_format))
+            self.rules.append((re.compile(f'\\| {level} \\|'), level_format))
+
+        # Source patterns
+        for source, color in self.SOURCE_COLORS.items():
+            source_format = QTextCharFormat()
+            source_format.setForeground(color)
+            source_format.setFontWeight(QFont.Bold)
+            self.rules.append((re.compile(f'\\b{source}\\b'), source_format))
+
+        # Number patterns
+        number_format = QTextCharFormat()
+        number_format.setForeground(QColor('#79c0ff'))
+        self.rules.append((re.compile(r'\b\d+\.?\d*\b'), number_format))
+
+        # Exception patterns
+        exception_format = QTextCharFormat()
+        exception_format.setForeground(QColor('#f85149'))
+        exception_format.setFontWeight(QFont.Bold)
+        self.rules.append((re.compile(r'Traceback \(most recent call last\)'), exception_format))
+        self.rules.append((re.compile(r'  File .*, line \d+, in .*'), exception_format))
+        self.rules.append((re.compile(r'    .*'), exception_format))
+
+    def highlightBlock(self, text):
+        """Apply highlighting to a block of text"""
+        for pattern, format in self.rules:
+            for match in pattern.finditer(text):
+                start = match.start()
+                length = match.end() - start
+                self.setFormat(start, length, format)
 
 
 class LogViewerWidget(QPlainTextEdit):
@@ -39,6 +126,9 @@ class LogViewerWidget(QPlainTextEdit):
 
         # Enable custom context menu
         self.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        # Add syntax highlighter
+        self.highlighter = LogHighlighter(self.document())
 
     def append_log_batch(self, messages):
         """Append multiple messages efficiently"""
@@ -60,6 +150,9 @@ class LogPopup(QDialog):
 
     # Signal for filtered log messages
     log_filtered = pyqtSignal(str)
+
+    # Signal for log statistics
+    stats_updated = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         # Rule 2: Safe defaults first
@@ -155,6 +248,22 @@ class LogPopup(QDialog):
                 QLineEdit:focus {
                     border: 1px solid #58a6ff;
                 }
+                QComboBox::drop-down {
+                    border: none;
+                }
+                QComboBox::down-arrow {
+                    image: none;
+                    border-left: 5px solid transparent;
+                    border-right: 5px solid transparent;
+                    border-top: 5px solid #8b949e;
+                    margin-right: 5px;
+                }
+                QComboBox QAbstractItemView {
+                    background: #21262d;
+                    color: #e6edf3;
+                    border: 1px solid #30363d;
+                    selection-background-color: #1f6feb;
+                }
             """)
 
             # Initialize components
@@ -177,10 +286,13 @@ class LogPopup(QDialog):
         self.pause_btn = None
         self.filter_edit = None
         self.level_combo = None
+        self.source_combo = None
         self.wrap_check = None
         self.max_lines_spin = None
         self.copy_filtered_btn = None
         self.export_btn = None
+        self.stats_btn = None
+        self.case_sensitive_check = None
 
         # Message handling
         self._message_queue = deque(maxlen=10000)
@@ -193,21 +305,24 @@ class LogPopup(QDialog):
         # Filtering
         self._filter_text = ""
         self._filter_level = "ALL"
+        self._filter_source = "ALL"
         self._filter_regex = False
         self._case_sensitive = False
+
+        # Statistics
+        self._level_counts = {
+            'DEBUG': 0,
+            'INFO': 0,
+            'WARNING': 0,
+            'ERROR': 0,
+            'CRITICAL': 0
+        }
+        self._source_counts = {}
+        self._source_set = set()  # Track unique sources
 
         # Timers
         self._batch_timer = None
         self._stats_timer = None
-
-        # Level colors for syntax highlighting
-        self._level_colors = {
-            'DEBUG': '#8b949e',    # Gray
-            'INFO': '#58a6ff',     # Blue
-            'WARNING': '#d29922',  # Yellow
-            'ERROR': '#f85149',    # Red
-            'CRITICAL': '#ff7b72'  # Bright red
-        }
 
     def _init_ui(self):
         """Initialize UI components"""
@@ -262,34 +377,14 @@ class LogPopup(QDialog):
         # Level filter
         self.level_combo = QComboBox()
         self.level_combo.addItems(['ALL', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
-        self.level_combo.setStyleSheet("""
-            QComboBox {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 5px;
-                min-width: 100px;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid #8b949e;
-                margin-right: 5px;
-            }
-            QComboBox QAbstractItemView {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                selection-background-color: #1f6feb;
-            }
-        """)
         self.level_combo.currentTextChanged.connect(self._on_filter_changed)
         toolbar.addWidget(self.level_combo)
+
+        # Source filter
+        self.source_combo = QComboBox()
+        self.source_combo.addItem('ALL')
+        self.source_combo.currentTextChanged.connect(self._on_filter_changed)
+        toolbar.addWidget(self.source_combo)
 
         # Case sensitive checkbox
         self.case_sensitive_check = QCheckBox("Aa")
@@ -339,6 +434,11 @@ class LogPopup(QDialog):
         self.copy_filtered_btn.clicked.connect(self.copy_filtered_logs)
         button_bar.addWidget(self.copy_filtered_btn)
 
+        # Stats button
+        self.stats_btn = QPushButton("📊 Statistics")
+        self.stats_btn.clicked.connect(self._show_statistics)
+        button_bar.addWidget(self.stats_btn)
+
         button_bar.addStretch()
 
         # Export button
@@ -372,6 +472,7 @@ class LogPopup(QDialog):
         """Initialize filter settings"""
         self._filter_text = ""
         self._filter_level = "ALL"
+        self._filter_source = "ALL"
         self._case_sensitive = False
 
     def _create_error_dialog(self, parent):
@@ -419,16 +520,63 @@ class LogPopup(QDialog):
             if not message:
                 return
 
+            # Extract level for statistics
+            level = self._extract_level(message)
+            self._level_counts[level] = self._level_counts.get(level, 0) + 1
+
+            # Extract source if present (format: [source] message or source: message)
+            source = self._extract_source(message)
+            if source:
+                self._source_counts[source] = self._source_counts.get(source, 0) + 1
+
+                # === FIX: Check if source_combo exists before updating it ===
+                if source not in self._source_set:
+                    self._source_set.add(source)
+                    # Only update combo box if it exists and we're in the main thread
+                    if self.source_combo is not None and self._initialized:
+                        # Use QTimer to ensure this runs in the main thread
+                        QTimer.singleShot(0, self._update_source_combo)
+
             # Add to queue
-            self._message_queue.append(message)
+            self._message_queue.append((message, level, source))
 
             # Also add to filtered queue for filter operations
-            self._filtered_queue.append(message)
+            self._filtered_queue.append((message, level, source))
             if len(self._filtered_queue) > 10000:
                 self._filtered_queue.popleft()
 
         except Exception as e:
             logger.error(f"[LogPopup.append_log] Failed: {e}", exc_info=True)
+
+    def _update_source_combo(self):
+        """Update source combo box with new sources (runs in main thread)"""
+        try:
+            if self.source_combo is None or not self._initialized:
+                return
+
+            # Block signals to prevent filter triggers
+            self.source_combo.blockSignals(True)
+
+            # Get current selection
+            current = self.source_combo.currentText()
+
+            # Clear and rebuild
+            self.source_combo.clear()
+            self.source_combo.addItem('ALL')
+
+            # Add all unique sources
+            for source in sorted(self._source_set):
+                self.source_combo.addItem(source)
+
+            # Restore selection
+            index = self.source_combo.findText(current)
+            if index >= 0:
+                self.source_combo.setCurrentIndex(index)
+
+            self.source_combo.blockSignals(False)
+
+        except Exception as e:
+            logger.error(f"[LogPopup._update_source_combo] Failed: {e}", exc_info=True)
 
     def _process_batch(self):
         """Process queued messages in batches to prevent UI freeze"""
@@ -443,14 +591,16 @@ class LogPopup(QDialog):
             batch_size = 50  # Messages per batch
 
             while self._message_queue and processed < batch_size:
-                msg = self._message_queue.popleft()
+                msg, level, source = self._message_queue.popleft()
 
                 # Apply filters
-                if self._should_show_message(msg):
+                if self._should_show_message(msg, level, source):
                     try:
-                        # Apply syntax highlighting
-                        formatted_msg = self._format_message(msg)
-                        self.log_widget.appendPlainText(formatted_msg)
+                        # Use the log widget's append method
+                        if hasattr(self.log_widget, 'appendPlainText'):
+                            self.log_widget.appendPlainText(msg)
+                        else:
+                            self.log_widget.append(msg)
                         processed += 1
 
                     except RuntimeError:
@@ -477,13 +627,21 @@ class LogPopup(QDialog):
         except Exception as e:
             logger.error(f"[LogPopup._process_batch] Failed: {e}", exc_info=True)
 
-    def _should_show_message(self, message: str) -> bool:
+    def _should_show_message(self, message: str, level: str = None, source: str = None) -> bool:
         """Check if message should be shown based on filters"""
         try:
             # Level filter
             if self._filter_level != "ALL":
-                level = self._extract_level(message)
+                if level is None:
+                    level = self._extract_level(message)
                 if level and level != self._filter_level:
+                    return False
+
+            # Source filter
+            if self._filter_source != "ALL":
+                if source is None:
+                    source = self._extract_source(message)
+                if source != self._filter_source:
                     return False
 
             # Text filter
@@ -519,17 +677,28 @@ class LogPopup(QDialog):
         except:
             return 'INFO'
 
-    def _format_message(self, message: str) -> str:
-        """Apply syntax highlighting to message"""
+    def _extract_source(self, message: str) -> str:
+        """Extract source from message (format: [source] or source:)"""
         try:
-            level = self._extract_level(message)
-            color = self._level_colors.get(level, '#e6edf3')
+            # Look for [source] pattern
+            import re
+            match = re.search(r'\[([^\]]+)\]', message)
+            if match:
+                return match.group(1)
 
-            # For now, return as-is since QPlainTextEdit doesn't support colors per line easily
-            # This could be extended with QSyntaxHighlighter
-            return message
+            # Look for source: pattern
+            match = re.search(r'^(\w+):', message)
+            if match:
+                return match.group(1)
+
+            # Look for source in log format: "source - message"
+            match = re.search(r'^([\w_]+) -', message)
+            if match:
+                return match.group(1)
+
+            return ''
         except:
-            return message
+            return ''
 
     def _apply_filters_to_existing(self):
         """Re-apply filters to existing log content"""
@@ -543,11 +712,13 @@ class LogPopup(QDialog):
 
             # Re-add filtered lines from the filtered queue
             messages_added = 0
-            for msg in list(self._filtered_queue):  # Use a copy to avoid modification during iteration
-                if msg and self._should_show_message(msg):
+            for msg, level, source in list(self._filtered_queue):  # Use a copy to avoid modification during iteration
+                if msg and self._should_show_message(msg, level, source):
                     try:
-                        formatted_msg = self._format_message(msg)
-                        self.log_widget.appendPlainText(formatted_msg)
+                        if hasattr(self.log_widget, 'appendPlainText'):
+                            self.log_widget.appendPlainText(msg)
+                        else:
+                            self.log_widget.append(msg)
                         messages_added += 1
                     except Exception as e:
                         logger.warning(f"Failed to add message during filter: {e}")
@@ -560,8 +731,9 @@ class LogPopup(QDialog):
     def _on_filter_changed(self):
         """Handle filter changes"""
         try:
-            self._filter_text = self.filter_edit.text()
-            self._filter_level = self.level_combo.currentText()
+            self._filter_text = self.filter_edit.text() if self.filter_edit else ""
+            self._filter_level = self.level_combo.currentText() if self.level_combo else "ALL"
+            self._filter_source = self.source_combo.currentText() if self.source_combo else "ALL"
 
             # Clear and reapply filters to existing content
             self._apply_filters_to_existing()
@@ -580,7 +752,8 @@ class LogPopup(QDialog):
     def _on_max_lines_changed(self, value: int):
         """Handle max lines change"""
         try:
-            self.log_widget.setMaximumBlockCount(value)
+            if self.log_widget:
+                self.log_widget.setMaximumBlockCount(value)
             self._update_stats()
         except Exception as e:
             logger.error(f"[LogPopup._on_max_lines_changed] Failed: {e}", exc_info=True)
@@ -588,9 +761,10 @@ class LogPopup(QDialog):
     def _on_wrap_toggled(self, checked: bool):
         """Handle word wrap toggle"""
         try:
-            self.log_widget.setLineWrapMode(
-                QPlainTextEdit.WidgetWidth if checked else QPlainTextEdit.NoWrap
-            )
+            if self.log_widget:
+                self.log_widget.setLineWrapMode(
+                    QPlainTextEdit.WidgetWidth if checked else QPlainTextEdit.NoWrap
+                )
         except Exception as e:
             logger.error(f"[LogPopup._on_wrap_toggled] Failed: {e}", exc_info=True)
 
@@ -598,7 +772,8 @@ class LogPopup(QDialog):
         """Handle pause button toggle"""
         try:
             self._paused = checked
-            self.pause_btn.setText("▶️ Resume" if checked else "⏸️ Pause")
+            if self.pause_btn:
+                self.pause_btn.setText("▶️ Resume" if checked else "⏸️ Pause")
 
             if not checked:
                 # Process any queued messages immediately
@@ -613,7 +788,7 @@ class LogPopup(QDialog):
             if self.status_label is None:
                 return
 
-            block_count = self.log_widget.blockCount()
+            block_count = self.log_widget.blockCount() if self.log_widget else 0
             queue_size = len(self._message_queue)
 
             status = f"📋 Log Viewer - {block_count} messages"
@@ -621,10 +796,27 @@ class LogPopup(QDialog):
                 status += f" ({queue_size} queued)"
             if self._paused:
                 status += " ⏸️ PAUSED"
-            if self._filter_text or self._filter_level != "ALL":
+            if self._filter_text or self._filter_level != "ALL" or self._filter_source != "ALL":
                 status += " 🔍 Filtered"
 
+            # Add level counts
+            if any(self._level_counts.values()):
+                counts = []
+                for level in ['ERROR', 'WARNING', 'INFO', 'DEBUG']:
+                    if self._level_counts.get(level, 0) > 0:
+                        counts.append(f"{level}: {self._level_counts[level]}")
+                if counts:
+                    status += f" | {' | '.join(counts)}"
+
             self.status_label.setText(status)
+
+            # Emit statistics
+            self.stats_updated.emit({
+                'total': block_count,
+                'queued': queue_size,
+                'levels': dict(self._level_counts),
+                'sources': dict(self._source_counts)
+            })
 
         except Exception as e:
             logger.error(f"[LogPopup._update_stats] Failed: {e}", exc_info=True)
@@ -637,7 +829,19 @@ class LogPopup(QDialog):
                 self._message_queue.clear()
                 self._filtered_queue.clear()
                 self._message_count = 0
-                self.status_label.setText("📋 Log Viewer - Cleared")
+                self._level_counts = {k: 0 for k in self._level_counts}
+                self._source_counts.clear()
+                self._source_set.clear()
+
+                # Clear source combo
+                if self.source_combo:
+                    self.source_combo.blockSignals(True)
+                    self.source_combo.clear()
+                    self.source_combo.addItem('ALL')
+                    self.source_combo.blockSignals(False)
+
+                if self.status_label:
+                    self.status_label.setText("📋 Log Viewer - Cleared")
                 logger.debug("Logs cleared")
         except Exception as e:
             logger.error(f"[LogPopup.clear_logs] Failed: {e}", exc_info=True)
@@ -647,7 +851,8 @@ class LogPopup(QDialog):
         try:
             if self.log_widget is not None:
                 clipboard = QApplication.clipboard()
-                clipboard.setText(self.log_widget.toPlainText())
+                if clipboard:
+                    clipboard.setText(self.log_widget.toPlainText())
 
                 # Show feedback
                 self._show_copy_feedback("All logs copied to clipboard!")
@@ -658,11 +863,18 @@ class LogPopup(QDialog):
     def copy_filtered_logs(self):
         """Copy filtered logs to clipboard"""
         try:
-            text = '\n'.join(self._filtered_queue)
+            # Build filtered text from filtered_queue
+            filtered_lines = []
+            for msg, level, source in self._filtered_queue:
+                if self._should_show_message(msg, level, source):
+                    filtered_lines.append(msg)
+
+            text = '\n'.join(filtered_lines)
             if text:
                 clipboard = QApplication.clipboard()
-                clipboard.setText(text)
-                self._show_copy_feedback(f"Copied {len(self._filtered_queue)} filtered messages!")
+                if clipboard:
+                    clipboard.setText(text)
+                self._show_copy_feedback(f"Copied {len(filtered_lines)} filtered messages!")
             else:
                 self._show_copy_feedback("No filtered messages to copy")
         except Exception as e:
@@ -679,7 +891,7 @@ class LogPopup(QDialog):
                 "Text Files (*.txt);;All Files (*)"
             )
 
-            if filename:
+            if filename and self.log_widget:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(self.log_widget.toPlainText())
                 self._show_copy_feedback(f"Logs exported to {filename}")
@@ -688,6 +900,49 @@ class LogPopup(QDialog):
         except Exception as e:
             logger.error(f"[LogPopup.export_logs] Failed: {e}", exc_info=True)
             self._show_copy_feedback(f"Export failed: {e}")
+
+    def _show_statistics(self):
+        """Show detailed statistics dialog"""
+        try:
+            from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Log Statistics")
+            dialog.setMinimumSize(300, 400)
+            dialog.setStyleSheet(self.styleSheet())
+
+            layout = QVBoxLayout(dialog)
+
+            # Level statistics
+            layout.addWidget(QLabel("<b>Level Counts:</b>"))
+            for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+                count = self._level_counts.get(level, 0)
+                color = LogHighlighter.LEVEL_COLORS.get(level, QColor('#e6edf3'))
+                label = QLabel(f"{level}: {count}")
+                label.setStyleSheet(f"color: {color.name()};")
+                layout.addWidget(label)
+
+            # Source statistics
+            if self._source_counts:
+                layout.addWidget(QLabel("<br><b>Source Counts:</b>"))
+                for source, count in sorted(self._source_counts.items()):
+                    label = QLabel(f"{source}: {count}")
+                    label.setStyleSheet("color: #8b949e;")
+                    layout.addWidget(label)
+
+            # Total messages
+            total = sum(self._level_counts.values())
+            layout.addWidget(QLabel(f"<br><b>Total Messages:</b> {total}"))
+
+            # Close button
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.accept)
+            layout.addWidget(close_btn)
+
+            dialog.exec_()
+
+        except Exception as e:
+            logger.error(f"[LogPopup._show_statistics] Failed: {e}", exc_info=True)
 
     def _show_copy_feedback(self, message: str):
         """Show temporary feedback in status label"""
@@ -726,6 +981,7 @@ class LogPopup(QDialog):
             # Clear queues
             self._message_queue.clear()
             self._filtered_queue.clear()
+            self._source_set.clear()
 
             # Clear log widget
             if self.log_widget is not None:
@@ -743,10 +999,12 @@ class LogPopup(QDialog):
             self.pause_btn = None
             self.filter_edit = None
             self.level_combo = None
+            self.source_combo = None
             self.case_sensitive_check = None
             self.wrap_check = None
             self.max_lines_spin = None
             self.export_btn = None
+            self.stats_btn = None
 
             logger.info(f"[LogPopup] Cleanup completed (ID: {id(self)})")
 
@@ -777,7 +1035,8 @@ class LogPopup(QDialog):
             super().showEvent(event)
             # Reset pause state when shown
             self._paused = False
-            self.pause_btn.setChecked(False)
+            if self.pause_btn:
+                self.pause_btn.setChecked(False)
             # Process any pending messages
             self._process_batch()
         except Exception as e:

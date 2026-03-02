@@ -5,6 +5,7 @@ Trend detector that works with database-backed dynamic signal engine.
 Detects trends in market data and evaluates strategy signals.
 
 FEATURE 3: Handles confidence scores and threshold filtering.
+UPDATED: Now uses state_manager for state updates instead of direct state parameter.
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ import pandas as pd
 import numpy as np
 
 from strategy.dynamic_signal_engine import DynamicSignalEngine
+
+# Import state manager for updating state
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -231,6 +235,7 @@ class TrendDetector:
     Detects trends in market data and evaluates strategy signals.
 
     FEATURE 3: Handles confidence scores and threshold filtering.
+    UPDATED: Now uses state_manager for state updates instead of direct state parameter.
     """
 
     def __init__(self, config: object, signal_engine: DynamicSignalEngine = None):
@@ -242,7 +247,7 @@ class TrendDetector:
             self.signal_engine = signal_engine
             self._last_cache = {}  # Store last indicator cache for debugging
 
-            logger.debug("TrendDetector (database) initialized")
+            logger.debug("TrendDetector (database) initialized with state_manager integration")
 
         except Exception as e:
             logger.critical(f"[TrendDetector.__init__] Failed: {e}", exc_info=True)
@@ -263,8 +268,18 @@ class TrendDetector:
         except Exception as e:
             logger.error(f"[TrendDetector.set_signal_engine] Failed: {e}", exc_info=True)
 
-    def detect(self, df: pd.DataFrame, state: object, symbol: str) -> Optional[Dict]:
-        """Detect trends in the provided dataframe"""
+    def detect(self, df: pd.DataFrame, symbol: str, current_position: Optional[str] = None) -> Optional[Dict]:
+        """
+        Detect trends in the provided dataframe and update state via state_manager.
+
+        Args:
+            df: OHLCV DataFrame
+            symbol: Symbol being analyzed
+            current_position: Current trading position (for signal resolution)
+
+        Returns:
+            Dict containing trend data and signal results
+        """
         try:
             # Rule 6: Input validation
             if df is None:
@@ -311,11 +326,12 @@ class TrendDetector:
             option_signal_result = None
             if self.signal_engine is not None:
                 try:
-                    option_signal_result = self.signal_engine.evaluate(df)
+                    # Pass current position to signal engine for better resolution
+                    option_signal_result = self.signal_engine.evaluate(df, current_position)
 
-                    # FEATURE 3: Add confidence data to state if available
-                    if state is not None and option_signal_result:
-                        self._update_state_with_confidence(state, option_signal_result)
+                    # FEATURE 3: Add confidence data to state via state_manager
+                    if option_signal_result:
+                        self._update_state_with_signal_result(option_signal_result)
 
                     # ── Structured debug log ──────────────────────────────────
                     _debug_signal_result(option_signal_result)
@@ -345,25 +361,29 @@ class TrendDetector:
             logger.error(f"Trend detection error for {symbol}: {e}", exc_info=True)
             return None
 
-    def _update_state_with_confidence(self, state: object, signal_result: Dict[str, Any]):
+    def _update_state_with_signal_result(self, signal_result: Dict[str, Any]):
         """
-        FEATURE 3: Update state with confidence data.
+        FEATURE 3: Update state with signal result via state_manager.
 
         Args:
-            state: TradeState object
             signal_result: Signal evaluation result
         """
         try:
-            if state is None or not signal_result:
+            if not signal_result:
                 return
 
-            # Update state with confidence data if available
-            if hasattr(state, 'signal_confidence'):
-                # This will be handled by the property setter in TradeState
-                pass  # The state object will handle this via its properties
+            # Get state instance
+            state = state_manager.get_state()
+
+            # Update option_signal_result directly
+            # The state properties (option_signal, should_buy_call, etc.) will
+            # automatically reflect these changes
+            state.option_signal_result = signal_result
+
+            logger.debug(f"Updated state with signal result: {signal_result.get('signal_value', 'WAIT')}")
 
         except Exception as e:
-            logger.error(f"[TrendDetector._update_state_with_confidence] Failed: {e}", exc_info=True)
+            logger.error(f"[TrendDetector._update_state_with_signal_result] Failed: {e}", exc_info=True)
 
     def get_indicator_cache(self) -> Dict:
         """Return the last indicator cache for debugging"""

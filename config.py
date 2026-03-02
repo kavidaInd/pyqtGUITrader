@@ -15,6 +15,8 @@ Key Features:
     - Grouped configuration access for specific features
     - Context manager for temporary modifications
     - Singleton pattern for global configuration access
+
+UPDATED: Added integration with state_manager for automatic state updates.
 """
 
 import logging
@@ -22,6 +24,9 @@ from typing import Any, Dict, Optional
 
 from db.config_crud import config_crud
 from db.connector import get_db
+
+# Import state manager for configuration sync
+from models.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,9 @@ class Config:
 
     All methods include comprehensive error handling to prevent crashes,
     logging errors and returning safe defaults when database operations fail.
+
+    UPDATED: When configuration is updated, changes are automatically synced
+             to the trading state via state_manager.
 
     Default Configuration Values:
     -----------------------------
@@ -80,7 +88,7 @@ class Config:
         """
         self._config_crud = config_crud
         self._ensure_defaults()
-        logger.info("Config (database) initialized")
+        logger.info("Config (database) initialized with state_manager integration")
 
     def _ensure_defaults(self) -> None:
         """
@@ -249,12 +257,46 @@ class Config:
             logger.error(f"[Config.get] Failed for key '{key}': {e}", exc_info=True)
             return default
 
+    def _sync_to_state(self, key: str, value: Any) -> None:
+        """
+        UPDATED: Sync configuration changes to the trading state.
+
+        When certain configuration values change, they need to be reflected
+        in the trading state immediately. This method handles that sync.
+
+        Args:
+            key: Configuration key that changed
+            value: New value
+        """
+        try:
+            state = state_manager.get_state()
+
+            # Map configuration keys to state attributes
+            config_to_state = {
+                'max_daily_loss': 'max_daily_loss',
+                'max_trades_per_day': 'max_trades_per_day',
+                'daily_target': 'daily_target',
+                'min_confidence': 'min_confidence',
+                'use_mtf_filter': 'use_mtf_filter',
+                'market_open_time': 'market_open_time',
+                'market_close_time': 'market_close_time',
+            }
+
+            if key in config_to_state:
+                state_attr = config_to_state[key]
+                setattr(state, state_attr, value)
+                logger.debug(f"Synced config {key}={value} to state.{state_attr}")
+
+        except Exception as e:
+            logger.error(f"[Config._sync_to_state] Failed for {key}: {e}", exc_info=True)
+
     def set(self, key: str, value: Any) -> bool:
         """
         Set configuration value.
 
         Stores a single configuration value in the database. The value is
         automatically persisted and available across application restarts.
+        UPDATED: Also syncs relevant configuration changes to trading state.
 
         Args:
             key: str: Configuration key to set
@@ -271,7 +313,11 @@ class Config:
         """
         try:
             db = get_db()
-            return self._config_crud.set(key, value, db)
+            success = self._config_crud.set(key, value, db)
+            if success:
+                # Sync to state if needed
+                self._sync_to_state(key, value)
+            return success
         except Exception as e:
             logger.error(f"[Config.set] Failed for key '{key}': {e}", exc_info=True)
             return False
@@ -283,6 +329,7 @@ class Config:
         Performs a batch update of multiple configuration settings in a single
         operation. All updates are attempted; if any fail, the method continues
         but returns False.
+        UPDATED: Also syncs relevant configuration changes to trading state.
 
         Args:
             data: Dict[str, Any]: Dictionary of key-value pairs to update
@@ -305,6 +352,9 @@ class Config:
             for key, value in data.items():
                 if not self._config_crud.set(key, value, db):
                     success = False
+                else:
+                    # Sync to state if needed
+                    self._sync_to_state(key, value)
             return success
         except Exception as e:
             logger.error(f"[Config.update] Failed: {e}", exc_info=True)
@@ -641,6 +691,7 @@ class Config:
         Dictionary-style assignment to configuration values.
 
         Enables bracket notation for setting configuration values.
+        UPDATED: Also syncs relevant configuration changes to trading state.
 
         Args:
             key: str: Configuration key to set
@@ -656,6 +707,8 @@ class Config:
         try:
             db = get_db()
             self._config_crud.set(key, value, db)
+            # Sync to state if needed
+            self._sync_to_state(key, value)
         except Exception as e:
             logger.error(f"[Config.__setitem__] Failed: {e}", exc_info=True)
             raise

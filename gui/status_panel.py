@@ -1,3 +1,9 @@
+"""
+status_panel.py
+===============
+Enhanced status panel with null-safe operations and state_manager integration.
+"""
+
 from __future__ import annotations
 
 import logging.handlers
@@ -15,6 +21,9 @@ from PyQt5.QtWidgets import (
 
 # Import Utils for market status
 from Utils.Utils import Utils
+
+# Import state manager
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -319,7 +328,7 @@ class ConfidenceBar(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# StatusPanel - ENHANCED WITH ALL FEATURES
+# StatusPanel - ENHANCED WITH ALL FEATURES AND NULL-SAFE OPERATIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StatusPanel(QWidget):
@@ -330,6 +339,8 @@ class StatusPanel(QWidget):
     - FEATURE 1: Risk management display
     - FEATURE 3: Signal confidence bars
     - FEATURE 6: Multi-timeframe filter status
+
+    UPDATED: Now uses state_manager with null-safe operations.
     """
 
     # Cards that only make sense when a trade is open
@@ -400,6 +411,11 @@ class StatusPanel(QWidget):
             self._market_open = Utils.is_market_open()
             self._is_holiday = Utils.is_today_holiday()
 
+            # Cache for snapshots to avoid excessive calls
+            self._last_snapshot = {}
+            self._last_snapshot_time = datetime.now()
+            self._snapshot_cache_duration = 0.1  # 100ms
+
             # Main layout
             root = QVBoxLayout(self)
             root.setContentsMargins(4, 4, 4, 4)
@@ -437,7 +453,7 @@ class StatusPanel(QWidget):
             self._market_timer.timeout.connect(self._update_market_status)
             self._market_timer.start(60000)  # Update every minute
 
-            logger.info("Enhanced StatusPanel initialized with all features")
+            logger.info("Enhanced StatusPanel initialized with state_manager integration")
 
         except Exception as e:
             logger.critical(f"[StatusPanel.__init__] Failed: {e}", exc_info=True)
@@ -470,6 +486,9 @@ class StatusPanel(QWidget):
         self.conn_status = None
         self.market_status = None
         self.conflict_label = None
+        self._last_snapshot = {}
+        self._last_snapshot_time = None
+        self._snapshot_cache_duration = 0.1
 
     def _create_header(self) -> QWidget:
         """Create header with timestamp and market status from Utils"""
@@ -493,6 +512,18 @@ class StatusPanel(QWidget):
         header_layout.addWidget(self.market_status)
 
         return header
+
+    def _get_cached_snapshot(self) -> Dict[str, Any]:
+        """Get cached snapshot to avoid excessive state_manager calls"""
+        now = datetime.now()
+        if (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration:
+            self._last_snapshot = state_manager.get_snapshot()
+            self._last_snapshot_time = now
+        return self._last_snapshot
+
+    def _get_cached_position_snapshot(self) -> Dict[str, Any]:
+        """Get cached position snapshot"""
+        return state_manager.get_position_snapshot()
 
     def _update_market_status(self):
         """Update market status using Utils"""
@@ -799,15 +830,60 @@ class StatusPanel(QWidget):
 
         self._tabs.addTab(account_tab, "🏦 Account")
 
-    # ── Private helpers ───────────────────────────────────────────────────
+    # ── Private helpers with null-safe operations ──────────────────────────
 
-    def _safe_get(self, obj: Any, attr: str, default: Any = None) -> Any:
+    def _safe_get_float(self, snap: Dict[str, Any], key: str, default: float = 0.0) -> float:
+        """Safely get float value from snapshot"""
         try:
-            if obj is None:
+            value = snap.get(key)
+            if value is None:
                 return default
-            return getattr(obj, attr) if hasattr(obj, attr) else default
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_get_str(self, snap: Dict[str, Any], key: str, default: str = "") -> str:
+        """Safely get string value from snapshot"""
+        try:
+            value = snap.get(key)
+            if value is None:
+                return default
+            return str(value)
         except Exception:
             return default
+
+    def _safe_get_bool(self, snap: Dict[str, Any], key: str, default: bool = False) -> bool:
+        """Safely get boolean value from snapshot"""
+        try:
+            value = snap.get(key)
+            if value is None:
+                return default
+            return bool(value)
+        except Exception:
+            return default
+
+    def _safe_get_dict(self, snap: Dict[str, Any], key: str, default: Dict = None) -> Dict:
+        """Safely get dictionary value from snapshot"""
+        if default is None:
+            default = {}
+        try:
+            value = snap.get(key)
+            if value is None:
+                return default
+            if isinstance(value, dict):
+                return value
+            return default
+        except Exception:
+            return default
+
+    def _safe_upper(self, text: Optional[str]) -> str:
+        """Safely convert to uppercase"""
+        if text is None:
+            return ""
+        try:
+            return str(text).upper()
+        except Exception:
+            return ""
 
     def _fmt(self, value: Any, spec: str = ".2f") -> str:
         try:
@@ -824,9 +900,10 @@ class StatusPanel(QWidget):
         try:
             if value is None:
                 return "—"
-            if abs(float(value)) >= 1000:
-                return f"₹{float(value):,.0f}"
-            return f"₹{float(value):.2f}"
+            val = float(value)
+            if abs(val) >= 1000:
+                return f"₹{val:,.0f}"
+            return f"₹{val:.2f}"
         except (ValueError, TypeError):
             return str(value) if value else "—"
 
@@ -834,11 +911,12 @@ class StatusPanel(QWidget):
         try:
             if value is None:
                 return "—"
-            return f"{float(value):+.1f}%"
+            val = float(value)
+            return f"{val:+.1f}%"
         except (ValueError, TypeError):
             return str(value) if value else "—"
 
-    def _pnl_color(self, pnl) -> str:
+    def _pnl_color(self, pnl: Any) -> str:
         try:
             if pnl is None:
                 return self.COLORS["neutral"]
@@ -851,7 +929,7 @@ class StatusPanel(QWidget):
         except Exception:
             return self.COLORS["neutral"]
 
-    def _pos_color(self, pos) -> str:
+    def _pos_color(self, pos: Any) -> str:
         try:
             if pos and str(pos).upper() in ("LONG", "SHORT", "CALL", "PUT"):
                 return self.COLORS["positive"]
@@ -861,16 +939,18 @@ class StatusPanel(QWidget):
 
     def _signal_color(self, signal: str) -> str:
         """Get color for signal"""
+        if signal is None:
+            return GREY_OFF
         return self.SIGNAL_COLORS.get(signal, GREY_OFF)
 
-    def _trade_open(self, state) -> bool:
+    def _trade_open(self, snap: Dict[str, Any]) -> bool:
+        """Check if trade is open from snapshot"""
         try:
-            if state is None:
+            pos = snap.get('current_position')
+            if pos is None:
                 return False
-            pos = self._safe_get(state, "current_position")
-            if pos and str(pos).upper() not in ("NONE", ""):
-                return True
-            return False
+            pos_str = str(pos).upper()
+            return pos_str not in ("NONE", "")
         except Exception:
             return False
 
@@ -891,9 +971,14 @@ class StatusPanel(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def refresh(self, state, config):
-        """Refresh all tabs with current state"""
-        if self._closing or not self._refresh_enabled or state is None:
+    def refresh(self, config=None):
+        """
+        Refresh all tabs with current state from state_manager.
+
+        Args:
+            config: Optional config object (kept for backward compatibility)
+        """
+        if self._closing or not self._refresh_enabled:
             return
 
         try:
@@ -903,32 +988,35 @@ class StatusPanel(QWidget):
             # Update market status periodically
             self._update_market_status()
 
-            # Get values
-            with self._lock:
-                pos = self._safe_get(state, "current_position")
-                symbol = self._safe_get(state, "current_trading_symbol")
-                buy_price = self._safe_get(state, "current_buy_price")
-                cur_price = self._safe_get(state, "current_price")
-                tp = self._safe_get(state, "tp_point")
-                sl = self._safe_get(state, "stop_loss")
-                pnl_pct = self._safe_get(state, "percentage_change")
-                pnl_abs = self._safe_get(state, "current_pnl")
-                balance = self._safe_get(state, "account_balance")
-                deriv = self._safe_get(state, "derivative_current_price")
-                lots = self._safe_get(state, "positions_hold", 0)
-                lot_size = self._safe_get(state, "lot_size", 1)
+            # Get snapshots
+            full_snap = self._get_cached_snapshot()
+            pos_snap = self._get_cached_position_snapshot()
+            print(full_snap)
+            # Get signal snapshot safely
+            try:
+                signal_snap = state_manager.get_state().get_option_signal_snapshot()
+            except Exception:
+                signal_snap = {}
 
-                # Get signal
-                signal_result = self._safe_get(state, "option_signal_result", {})
-                if signal_result and isinstance(signal_result, dict):
-                    signal = signal_result.get("signal_value", "WAIT")
-                    conflict = signal_result.get("conflict", False)
-                else:
-                    signal = "WAIT"
-                    conflict = False
+            # Get values from snapshots with null-safe operations
+            pos = full_snap.get('current_position')
+            symbol = full_snap.get('current_trading_symbol')
+            buy_price = self._safe_get_float(pos_snap, 'current_buy_price', None)
+            cur_price = self._safe_get_float(pos_snap, 'current_price', None)
+            tp = self._safe_get_float(pos_snap, 'tp_point', None)
+            sl = self._safe_get_float(pos_snap, 'stop_loss', None)
+            pnl_pct = self._safe_get_float(pos_snap, 'percentage_change', None)
+            pnl_abs = self._safe_get_float(pos_snap, 'current_pnl', None)
+            balance = self._safe_get_float(full_snap, 'account_balance', 0.0)
+            deriv = self._safe_get_float(full_snap, 'derivative_current_price', 0.0)
+            lots = self._safe_get_float(full_snap, 'positions_hold', 0)
+
+            # Get signal
+            signal = self._safe_get_str(pos_snap, 'option_signal', 'WAIT')
+            conflict = self._safe_get_bool(pos_snap, 'signal_conflict', False)
 
             # Update trade active state
-            trade_active = self._trade_open(state)
+            trade_active = self._trade_open(full_snap)
             if trade_active != self._trade_active:
                 self._trade_active = trade_active
                 for key in self._TRADE_ONLY:
@@ -973,7 +1061,7 @@ class StatusPanel(QWidget):
                 self._set_card("pnl", pnl_txt, self._pnl_color(pnl_pct))
 
             # Update positions table
-            self._update_positions_table(trade_active, symbol, pos, lots, lot_size, pnl_abs)
+            self._update_positions_table(trade_active, symbol, pos, int(lots) if lots else 0, pnl_abs)
 
             # Update account tab
             if "balance" in self._account_labels:
@@ -983,42 +1071,37 @@ class StatusPanel(QWidget):
             if "m2m" in self._account_labels:
                 self._account_labels["m2m"].setText(self._fmt_currency(pnl_abs))
 
-            # FEATURE 1: Update risk cards
-            self._update_risk_cards(state, config)
+            # FEATURE 1: Update risk cards (with null-safe operations)
+            self._update_risk_cards(full_snap, pos_snap)
 
             # FEATURE 3: Update confidence tab
-            self._update_confidence_tab(state)
+            self._update_confidence_tab(signal_snap, pos_snap)
 
-            # FEATURE 6: Update MTF tab
-            self._update_mtf_tab(state)
+            # FEATURE 6: Update MTF tab (with null-safe operations)
+            self._update_mtf_tab(full_snap, pos_snap)
 
         except Exception as e:
             logger.error(f"StatusPanel.refresh error: {e}", exc_info=True)
 
-    def _update_risk_cards(self, state, config):
+    def _update_risk_cards(self, full_snap: Dict, pos_snap: Dict):
         """
-        FEATURE 1: Update risk management cards
+        FEATURE 1: Update risk management cards with null-safe operations.
         """
         try:
-            # Try to get risk summary from state
-            daily_pnl = 0.0
-            trades_today = 0
-            max_loss = -5000
-            daily_target = 5000
+            # Get daily P&L with null-safe conversion
+            daily_pnl = self._safe_get_float(pos_snap, 'current_pnl', 0.0)
 
-            if hasattr(state, 'get_risk_summary'):
-                try:
-                    risk_summary = state.get_risk_summary(state)
-                    daily_pnl = risk_summary.get('pnl_today', 0)
-                    trades_today = risk_summary.get('trades_today', 0)
-                    max_loss = risk_summary.get('max_loss', -5000)
-                    daily_target = risk_summary.get('daily_target', 5000)
-                except:
-                    pass
+            # Count trades today (would need to track this separately)
+            trades_today = 1 if self._trade_open(full_snap) else 0
 
-            # Update cards
+            # Update cards with safe color determination
             if "daily_pnl" in self.cards:
-                pnl_color = GREEN if daily_pnl > 0 else RED if daily_pnl < 0 else TEXT_MAIN
+                if daily_pnl > 0:
+                    pnl_color = GREEN
+                elif daily_pnl < 0:
+                    pnl_color = RED
+                else:
+                    pnl_color = TEXT_MAIN
                 self.cards["daily_pnl"].set_value(self._fmt_currency(daily_pnl), pnl_color)
 
             if "trades_today" in self.cards:
@@ -1027,27 +1110,18 @@ class StatusPanel(QWidget):
         except Exception as e:
             logger.error(f"[StatusPanel._update_risk_cards] Failed: {e}", exc_info=True)
 
-    def _update_confidence_tab(self, state):
+    def _update_confidence_tab(self, signal_snap: Dict, pos_snap: Dict):
         """
         FEATURE 3: Update confidence tab
         """
         try:
-            confidence = {}
-            explanation = ""
-            threshold = 0.6
-
-            if hasattr(state, 'signal_confidence'):
-                confidence = state.signal_confidence
-            if hasattr(state, 'signal_explanation'):
-                explanation = state.signal_explanation
-            if hasattr(state, 'option_signal_result'):
-                result = state.option_signal_result
-                if result:
-                    threshold = result.get('threshold', 0.6)
+            confidence = self._safe_get_dict(signal_snap, 'confidence')
+            explanation = self._safe_get_str(signal_snap, 'explanation', "No signal evaluation yet")
+            threshold = self._safe_get_float(signal_snap, 'threshold', 0.6)
 
             # Update explanation
             if self.conf_explanation:
-                self.conf_explanation.setText(explanation or "No signal evaluation yet")
+                self.conf_explanation.setText(explanation)
 
             # Update threshold
             threshold_pct = int(threshold * 100)
@@ -1061,53 +1135,49 @@ class StatusPanel(QWidget):
         except Exception as e:
             logger.error(f"[StatusPanel._update_confidence_tab] Failed: {e}", exc_info=True)
 
-    def _update_mtf_tab(self, state):
+    def _update_mtf_tab(self, full_snap: Dict, pos_snap: Dict):
         """
-        FEATURE 6: Update MTF filter tab
+        FEATURE 6: Update MTF filter tab with null-safe operations.
         """
         try:
-            # Get MTF results from state
-            mtf_results = {}
-            if hasattr(state, 'mtf_results'):
-                mtf_results = state.mtf_results
+            # Get MTF results from state with safe dict access
+            mtf_results = self._safe_get_dict(full_snap, 'mtf_results')
 
-            # Update timeframe directions
-            self.mtf_1m.setText(mtf_results.get('1', 'NEUTRAL'))
-            self.mtf_5m.setText(mtf_results.get('5', 'NEUTRAL'))
-            self.mtf_15m.setText(mtf_results.get('15', 'NEUTRAL'))
+            # Update timeframe directions with safe string conversion
+            self.mtf_1m.setText(self._safe_get_str(mtf_results, '1', 'NEUTRAL'))
+            self.mtf_5m.setText(self._safe_get_str(mtf_results, '5', 'NEUTRAL'))
+            self.mtf_15m.setText(self._safe_get_str(mtf_results, '15', 'NEUTRAL'))
 
             # Color based on direction
-            self._set_mtf_direction_color(self.mtf_1m, mtf_results.get('1', 'NEUTRAL'))
-            self._set_mtf_direction_color(self.mtf_5m, mtf_results.get('5', 'NEUTRAL'))
-            self._set_mtf_direction_color(self.mtf_15m, mtf_results.get('15', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_1m, self._safe_get_str(mtf_results, '1', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_5m, self._safe_get_str(mtf_results, '5', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_15m, self._safe_get_str(mtf_results, '15', 'NEUTRAL'))
 
             # Count agreement
-            target = 'BULLISH' if getattr(state, 'option_signal', '') == 'BUY_CALL' else 'BEARISH'
+            target = 'BULLISH' if self._safe_get_str(pos_snap, 'option_signal', '') == 'BUY_CALL' else 'BEARISH'
             matches = sum(1 for d in mtf_results.values() if d == target)
             self.mtf_agreement.setText(f"{matches}/3")
 
             # Update enabled status
-            enabled = False
-            if hasattr(state, 'mtf_allowed'):
-                enabled = state.mtf_allowed
-            self.mtf_enabled.setText("Yes" if enabled else "No")
-            self.mtf_enabled.setStyleSheet(f"color: {GREEN if enabled else RED}; font-weight: bold;")
+            mtf_allowed = self._safe_get_bool(full_snap, 'mtf_allowed', True)
+            self.mtf_enabled.setText("Yes" if mtf_allowed else "No")
+            self.mtf_enabled.setStyleSheet(f"color: {GREEN if mtf_allowed else RED}; font-weight: bold;")
 
-            # Update decision
-            if hasattr(state, 'last_mtf_summary'):
-                summary = state.last_mtf_summary or "No decision yet"
-                self.mtf_summary.setText(summary)
+            # Update decision with safe upper conversion
+            summary = self._safe_get_str(full_snap, 'last_mtf_summary', 'No MTF evaluation yet')
+            self.mtf_summary.setText(summary)
 
-                # Color based on decision
-                if "ALLOWED" in summary:
-                    self.mtf_decision.setText("ALLOWED")
-                    self.mtf_decision.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
-                elif "BLOCKED" in summary:
-                    self.mtf_decision.setText("BLOCKED")
-                    self.mtf_decision.setStyleSheet(f"color: {RED}; font-weight: bold;")
-                else:
-                    self.mtf_decision.setText(summary)
-                    self.mtf_decision.setStyleSheet(f"color: {TEXT_DIM}; font-weight: bold;")
+            # Color based on decision (using safe upper)
+            summary_upper = self._safe_upper(summary)
+            if "ALLOWED" in summary_upper:
+                self.mtf_decision.setText("ALLOWED")
+                self.mtf_decision.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
+            elif "BLOCKED" in summary_upper:
+                self.mtf_decision.setText("BLOCKED")
+                self.mtf_decision.setStyleSheet(f"color: {RED}; font-weight: bold;")
+            else:
+                self.mtf_decision.setText(summary)
+                self.mtf_decision.setStyleSheet(f"color: {TEXT_DIM}; font-weight: bold;")
 
         except Exception as e:
             logger.error(f"[StatusPanel._update_mtf_tab] Failed: {e}", exc_info=True)
@@ -1122,7 +1192,7 @@ class StatusPanel(QWidget):
             label.setStyleSheet(f"color: {GREY_OFF}; font-weight: bold;")
 
     def _update_positions_table(self, trade_active: bool, symbol: str, pos: str,
-                                lots: int, lot_size: int, pnl: float):
+                                lots: int, pnl: float):
         """Update positions table"""
         try:
             self.positions_table.setRowCount(0)
@@ -1235,6 +1305,8 @@ class StatusPanel(QWidget):
     def clear_cache(self):
         with self._lock:
             self._last_state.clear()
+            self._last_snapshot = {}
+            self._last_snapshot_time = datetime.now()
 
     def cleanup(self):
         try:
@@ -1245,7 +1317,6 @@ class StatusPanel(QWidget):
             self.cards.clear()
             self._recent_trades.clear()
             self._confidence_bars.clear()
-            self._mtf_labels.clear()
 
             if self._market_timer and self._market_timer.isActive():
                 self._market_timer.stop()

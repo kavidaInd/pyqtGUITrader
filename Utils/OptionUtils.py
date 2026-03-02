@@ -244,27 +244,114 @@ class OptionUtils:
     # ==========================================================================
 
     @classmethod
-    def get_index_symbol_for_broker(cls, derivative: str, broker_type: str) -> str:
-        """Translate a canonical derivative name to the symbol string expected by a specific broker."""
+    def get_symbol_for_broker(cls, symbol: str, broker_type: str) -> str:
+        """
+        Translate any symbol — index or option — to the format expected by a
+        specific broker in a single call.
+
+        Detection logic
+        ───────────────
+        1. Resolve ``symbol`` to its canonical exchange name via
+           ``get_exchange_symbol()`` (e.g. "NIFTY50-INDEX" → "NIFTY").
+        2. If the canonical name is a **known index** (present in
+           ``_INDEX_SYMBOL_MAP`` for the requested broker), return the full
+           broker-specific index string from that map
+           (e.g. "NSE:NIFTY50-INDEX" for Fyers, "NSE_INDEX|Nifty 50" for
+           Upstox).  This covers the old ``get_index_symbol_for_broker`` path.
+        3. Otherwise treat ``symbol`` as an **option / futures core symbol**
+           and prepend the broker's exchange prefix from ``_OPTION_PREFIX``
+           (e.g. "NSE:" for Fyers, "NFO:" for Zerodha).  This covers the old
+           ``get_option_symbol_for_broker`` path.
+
+        Because both paths share the same canonical-name resolution step you
+        can now pass any symbol — NIFTY50-INDEX, NIFTYBANK, NIFTY25021CE,
+        NSE:NIFTY50-INDEX, etc. — without knowing in advance which lookup
+        table to hit.
+
+        Args:
+            symbol      : Raw symbol string in any recognised format.
+            broker_type : Broker identifier (e.g. "fyers", "zerodha").
+
+        Returns:
+            Broker-ready symbol string.  Returns ``symbol`` unchanged on error.
+        """
+        if not symbol:
+            return symbol
         try:
-            canonical = cls.get_exchange_symbol(derivative)
-            broker_map = cls._INDEX_SYMBOL_MAP.get(broker_type.lower(), {})
-            return broker_map.get(canonical, canonical)
+            broker_key = broker_type.lower()
+
+            # ── Idempotency guard ─────────────────────────────────────────────
+            # Strip any existing exchange prefix so that symbols which have
+            # already been formatted (e.g. "NSE:NIFTY25021CE" coming from
+            # build_option_symbol, or "NSE:NIFTY50-INDEX" stored in state) are
+            # not double-prefixed when passed through ws_subscribe or any other
+            # path that calls _format_symbol a second time.
+            # We detect a prefix as a known exchange identifier followed by
+            # ":" or "|".
+            core_symbol = symbol
+            known_prefixes = ("NSE:", "NFO:", "BSE:", "NSE_INDEX|", "NSE_FO|",
+                              "NFO|", "BSE|", "MCX:", "MCX|", "CDS:")
+            for pfx in known_prefixes:
+                if symbol.startswith(pfx):
+                    core_symbol = symbol[len(pfx):]
+                    break
+
+            # ── Index path ────────────────────────────────────────────────────
+            # Resolve core_symbol to its canonical exchange name.
+            # If it maps to a known index canonical (NIFTY, BANKNIFTY, …),
+            # return the full broker-specific index string from _INDEX_SYMBOL_MAP.
+            canonical = cls.get_exchange_symbol(core_symbol)
+            broker_index_map = cls._INDEX_SYMBOL_MAP.get(broker_key, {})
+            if canonical in broker_index_map:
+                return broker_index_map[canonical]
+
+            # ── Already-translated index guard ────────────────────────────────
+            # If the symbol was already the broker's own index string (e.g.
+            # Upstox's "NSE_INDEX|Nifty 50" or Zerodha's "NSE:NIFTY 50"),
+            # after prefix-stripping the core won't match SYMBOL_MAP but it
+            # IS valid for this broker — check all broker index maps to see if
+            # the original symbol is already a canonical broker value.
+            for _broker_map in cls._INDEX_SYMBOL_MAP.values():
+                if symbol in _broker_map.values():
+                    return symbol  # already a valid broker index string
+
+            # ── Option / futures path ─────────────────────────────────────────
+            # core_symbol is a formed option/futures string (e.g. "NIFTY25021CE").
+            # Prepend the broker's exchange prefix exactly once.
+            prefix = cls._OPTION_PREFIX.get(broker_key, "")
+            return f"{prefix}{core_symbol}"
+
         except Exception as e:
-            logger.error(f"[get_index_symbol_for_broker] Failed for {derivative}/{broker_type}: {e}", exc_info=True)
-            return derivative
+            logger.error(
+                f"[get_symbol_for_broker] Failed for {symbol}/{broker_type}: {e}",
+                exc_info=True,
+            )
+            return symbol
+
+    # ── Backward-compatible aliases (deprecated — use get_symbol_for_broker) ──
+
+    @classmethod
+    def get_index_symbol_for_broker(cls, derivative: str, broker_type: str) -> str:
+        """
+        Deprecated: use ``get_symbol_for_broker(derivative, broker_type)`` instead.
+
+        Kept for backward compatibility.  Delegates entirely to the merged
+        method; the index-detection logic there guarantees the same result as
+        the original implementation.
+        """
+        return cls.get_symbol_for_broker(derivative, broker_type)
 
     @classmethod
     def get_option_symbol_for_broker(cls, core_symbol: str, broker_type: str) -> str:
-        """Add the exchange prefix required by the given broker to a core option symbol string."""
-        try:
-            if not core_symbol:
-                return core_symbol
-            prefix = cls._OPTION_PREFIX.get(broker_type.lower(), "")
-            return f"{prefix}{core_symbol}"
-        except Exception as e:
-            logger.error(f"[get_option_symbol_for_broker] Failed for {core_symbol}/{broker_type}: {e}", exc_info=True)
-            return core_symbol
+        """
+        Deprecated: use ``get_symbol_for_broker(core_symbol, broker_type)`` instead.
+
+        Kept for backward compatibility.  Delegates to the merged method.
+        Because a formed option symbol (e.g. "NIFTY25021CE") will not match
+        any index canonical name, the merged method always takes the prefix
+        path — identical behaviour to the original.
+        """
+        return cls.get_symbol_for_broker(core_symbol, broker_type)
 
     @classmethod
     def translate_interval(cls, interval: str, broker_type: str) -> str:

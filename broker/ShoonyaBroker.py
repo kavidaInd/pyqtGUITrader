@@ -27,12 +27,15 @@ Authentication (TOTP-based, no browser OAuth):
 
 API docs: https://www.shoonya.com/api-documentation
 SDK:      pip install NorenRestApiPy
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import hashlib
 import logging
 import time
 import random
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -103,6 +106,8 @@ class ShoonyaBroker(BaseBroker):
                        e.g.  "FA12345|FA12345_U"
         secret_key  → Password in plain text (broker will hash it) OR pre-hashed SHA256
         redirect_uri → TOTP secret (base32) for auto-TOTP generation
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     SHOONYA_URL = "https://api.shoonya.com/NorenWClientTP/"
@@ -149,6 +154,11 @@ class ShoonyaBroker(BaseBroker):
             else:
                 logger.warning("ShoonyaBroker: no token found — call broker.login()")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_api = None
+
             logger.info(f"ShoonyaBroker initialized for user {self.user_id}")
 
         except Exception as e:
@@ -169,6 +179,15 @@ class ShoonyaBroker(BaseBroker):
         self._last_request_time = 0
         self._request_count = 0
         self._symbol_token_cache: Dict[str, str] = {}
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_api = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -642,11 +661,55 @@ class ShoonyaBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
+        """Clean up resources including WebSocket connection."""
+        logger.info("[ShoonyaBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_api is not None:
+            try:
+                # Try to close WebSocket with timeout
+                self._ws_cleanup_event.clear()
+
+                def _do_disconnect():
+                    try:
+                        if hasattr(self._ws_api, "close_websocket"):
+                            self._ws_api.close_websocket()
+                            logger.debug("[ShoonyaBroker] close_websocket called")
+                    except Exception as e:
+                        logger.warning(f"[ShoonyaBroker] Error closing WebSocket: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run close in separate thread with timeout
+                close_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                close_thread.start()
+
+                # Wait for close with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[ShoonyaBroker] WebSocket close timed out")
+
+            except Exception as e:
+                logger.error(f"[ShoonyaBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_api = None
+
+        # Logout from API
         try:
             if self.api:
                 self.api.logout()
         except Exception as e:
-            logger.warning(f"[ShoonyaBroker.cleanup] {e}")
+            logger.warning(f"[ShoonyaBroker.cleanup] Logout error: {e}")
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[ShoonyaBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -683,20 +746,27 @@ class ShoonyaBroker(BaseBroker):
         NorenApi has built-in WebSocket support via api.start_websocket().
         We store callbacks and use them in ws_connect().
         Shoonya symbols use "NSE|NIFTY-INDEX" or "NFO|TOKEN" format.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             if not self.api:
                 logger.error("ShoonyaBroker.create_websocket: api not initialized — login first")
                 return None
 
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
             # Store callbacks for ws_connect
             self._ws_on_tick    = on_tick
             self._ws_on_connect = on_connect
             self._ws_on_close   = on_close
             self._ws_on_error   = on_error
+            self._ws_api = self.api
 
             logger.info("ShoonyaBroker: WebSocket callbacks stored (connect via ws_connect)")
-            return {"__shoonya_api__": self.api}
+            return {"__shoonya_api__": self.api, "__ws_active__": True}
         except Exception as e:
             logger.error(f"[ShoonyaBroker.create_websocket] {e}", exc_info=True)
             return None
@@ -707,9 +777,11 @@ class ShoonyaBroker(BaseBroker):
 
         NorenApi WebSocket is initiated by calling api.start_websocket()
         with the open/subscribe/message/error callbacks.
+
+        FIXED: Added safety checks.
         """
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
             api = ws_obj.get("__shoonya_api__") if isinstance(ws_obj, dict) else self.api
             if api is None:
@@ -717,17 +789,25 @@ class ShoonyaBroker(BaseBroker):
                 return
 
             def _on_open():
+                if self._ws_closed:
+                    return
                 logger.info("ShoonyaBroker: WebSocket opened")
                 self._ws_on_connect()
 
             def _on_message(msg):
+                if self._ws_closed:
+                    return
                 self._ws_on_tick(msg)
 
             def _on_error(msg):
+                if self._ws_closed:
+                    return
                 logger.error(f"ShoonyaBroker WS error: {msg}")
                 self._ws_on_error(str(msg))
 
             def _on_close():
+                if self._ws_closed:
+                    return
                 logger.info("ShoonyaBroker: WebSocket closed")
                 self._ws_on_close("connection closed")
 
@@ -750,7 +830,7 @@ class ShoonyaBroker(BaseBroker):
         Translates generic NSE:SYMBOL → Shoonya scrip token.
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             api = ws_obj.get("__shoonya_api__") if isinstance(ws_obj, dict) else self.api
             if api is None:
@@ -771,7 +851,7 @@ class ShoonyaBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from Shoonya live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             api = ws_obj.get("__shoonya_api__") if isinstance(ws_obj, dict) else self.api
             if api is None:
@@ -784,14 +864,53 @@ class ShoonyaBroker(BaseBroker):
             logger.error(f"[ShoonyaBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close Shoonya WebSocket."""
+        """
+        Close Shoonya WebSocket with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
+
+            logger.info("[ShoonyaBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
             api = ws_obj.get("__shoonya_api__") if isinstance(ws_obj, dict) else self.api
+
             if api and hasattr(api, "close_websocket"):
-                api.close_websocket()
-            logger.info("ShoonyaBroker: WebSocket disconnected")
+                # Run close in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        api.close_websocket()
+                        logger.debug("[ShoonyaBroker] close_websocket completed")
+                    except Exception as e:
+                        logger.warning(f"[ShoonyaBroker] close_websocket error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[ShoonyaBroker] close_websocket timed out")
+
+            # Clear reference
+            if self._ws_api == api:
+                self._ws_api = None
+
+            # Call on_close callback
+            if self._ws_on_close and not self._ws_closed:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[ShoonyaBroker] Error in close callback: {e}")
+
+            logger.info("[ShoonyaBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[ShoonyaBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -803,8 +922,9 @@ class ShoonyaBroker(BaseBroker):
         ft (feed time), v (volume), oi (OI), bp1/sp1 (bid/ask), o/h/l/c (ohlc).
         """
         try:
-            if not isinstance(raw_tick, dict):
+            if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
+
             if raw_tick.get("t") not in ("sf", "tf", "if"):
                 return None   # skip non-feed messages (order updates, etc.)
 
@@ -830,7 +950,8 @@ class ShoonyaBroker(BaseBroker):
                 "close":     float(raw_tick["c"]) if raw_tick.get("c") else None,
             }
         except Exception as e:
-            logger.error(f"[ShoonyaBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[ShoonyaBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_shoonya_symbol(self, symbol: str) -> Optional[str]:

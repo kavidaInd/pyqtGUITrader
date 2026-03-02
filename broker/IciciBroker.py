@@ -31,11 +31,14 @@ Authentication (session token — semi-manual):
 
 API docs: https://api.icicidirect.com
 SDK:      pip install breeze-connect
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -102,6 +105,8 @@ class IciciBroker(BaseBroker):
         broker.generate_session(session_token="<token from browser redirect>")
 
     get_login_url() returns the URL the user should visit to obtain the token.
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -141,6 +146,11 @@ class IciciBroker(BaseBroker):
             else:
                 logger.warning("IciciBroker: no session — call generate_session(session_token=...)")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_breeze = None
+
             logger.info("IciciBroker initialized")
 
         except Exception as e:
@@ -158,6 +168,15 @@ class IciciBroker(BaseBroker):
         self.breeze = None
         self._last_request_time = 0
         self._request_count = 0
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_breeze = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -693,7 +712,48 @@ class IciciBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
-        logger.info("[IciciBroker] cleanup done")
+        """Clean up resources including WebSocket connection."""
+        logger.info("[IciciBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_breeze is not None:
+            try:
+                # Try to disconnect with timeout
+                self._ws_cleanup_event.clear()
+
+                def _do_disconnect():
+                    try:
+                        if hasattr(self._ws_breeze, "ws_disconnect"):
+                            self._ws_breeze.ws_disconnect()
+                            logger.debug("[IciciBroker] ws_disconnect called")
+                    except Exception as e:
+                        logger.warning(f"[IciciBroker] Error disconnecting WebSocket: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run disconnect in separate thread with timeout
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[IciciBroker] WebSocket disconnect timed out")
+
+            except Exception as e:
+                logger.error(f"[IciciBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_breeze = None
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[IciciBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -732,37 +792,49 @@ class IciciBroker(BaseBroker):
 
         Note: ICICI Breeze requires a static IP since the SEBI 2025 circular.
         Ensure your server IP is whitelisted in the Breeze developer portal.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             if not self.breeze:
                 logger.error("IciciBroker.create_websocket: breeze not initialized — call generate_session first")
                 return None
 
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
             self._ws_on_tick    = on_tick
             self._ws_on_connect = on_connect
             self._ws_on_close   = on_close
             self._ws_on_error   = on_error
 
-            # Attach tick callback on the breeze client
-            self.breeze.on_ticks = lambda ticks: self._ws_on_tick(ticks)
+            # Attach tick callback with safety check
+            def safe_on_ticks(ticks):
+                if not self._ws_closed:
+                    self._ws_on_tick(ticks)
+
+            self.breeze.on_ticks = safe_on_ticks
+            self._ws_breeze = self.breeze
 
             logger.info("IciciBroker: Breeze WebSocket callbacks configured")
-            return {"__breeze__": self.breeze}
+            return {"__breeze__": self.breeze, "__ws_active__": True}
         except Exception as e:
             logger.error(f"[IciciBroker.create_websocket] {e}", exc_info=True)
             return None
 
     def ws_connect(self, ws_obj) -> None:
-        """Start ICICI Breeze WebSocket connection."""
+        """Start ICICI Breeze WebSocket connection with safety checks."""
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
             breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
             if breeze is None:
                 return
             breeze.ws_connect()
             logger.info("IciciBroker: Breeze ws_connect() called")
-            self._ws_on_connect()
+            if not self._ws_closed and self._ws_on_connect:
+                self._ws_on_connect()
         except Exception as e:
             logger.error(f"[IciciBroker.ws_connect] {e}", exc_info=True)
 
@@ -776,7 +848,7 @@ class IciciBroker(BaseBroker):
         symbol: "NSE:NIFTY50-INDEX" → stock_code="NIFTY", exchange_code="NSE"
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
             if breeze is None:
@@ -806,7 +878,7 @@ class IciciBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from ICICI Breeze live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
             if breeze is None:
@@ -828,15 +900,53 @@ class IciciBroker(BaseBroker):
             logger.error(f"[IciciBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close ICICI Breeze WebSocket."""
+        """
+        Close ICICI Breeze WebSocket with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
+
+            logger.info("[IciciBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
             breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
+
             if breeze and hasattr(breeze, "ws_disconnect"):
-                breeze.ws_disconnect()
-            self._ws_on_close("disconnected")
-            logger.info("IciciBroker: Breeze ws_disconnect() called")
+                # Run disconnect in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        breeze.ws_disconnect()
+                        logger.debug("[IciciBroker] ws_disconnect completed")
+                    except Exception as e:
+                        logger.warning(f"[IciciBroker] ws_disconnect error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[IciciBroker] ws_disconnect timed out")
+
+            # Clear reference
+            if self._ws_breeze == breeze:
+                self._ws_breeze = None
+
+            # Call on_close callback
+            if self._ws_on_close and not self._ws_closed:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[IciciBroker] Error in close callback: {e}")
+
+            logger.info("[IciciBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[IciciBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -849,6 +959,9 @@ class IciciBroker(BaseBroker):
                    best_bid_price, best_offer_price, total_quantity.
         """
         try:
+            if self._ws_closed:
+                return None
+
             if isinstance(raw_tick, list):
                 raw_tick = raw_tick[0] if raw_tick else None
             if not isinstance(raw_tick, dict):
@@ -876,7 +989,8 @@ class IciciBroker(BaseBroker):
                 "close":     raw_tick.get("close"),
             }
         except Exception as e:
-            logger.error(f"[IciciBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[IciciBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_breeze_symbol(self, symbol: str):

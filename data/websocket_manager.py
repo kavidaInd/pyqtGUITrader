@@ -10,6 +10,8 @@ ws_disconnect / normalize_tick) so this class works identically for all
 
 This replaces the former Fyers-only implementation.
 
+UPDATED: Added connection status callbacks for state manager integration.
+
 Usage:
     broker = BrokerFactory.create(broker_setting, state)
     ws = WebSocketManager(
@@ -52,6 +54,8 @@ class WebSocketManager:
     Handles connection lifecycle, auto-reconnect with exponential backoff,
     heartbeat monitoring, and network-failure recovery for any broker
     that implements the BaseBroker WebSocket interface.
+
+    UPDATED: Added connection status callbacks for state manager integration.
     """
 
     def __init__(
@@ -82,6 +86,11 @@ class WebSocketManager:
             self.heartbeat_interval = heartbeat_interval
             self.connection_timeout = connection_timeout
 
+            # Additional callbacks for state manager
+            self.on_connected_callback = None
+            self.on_disconnected_callback = None
+            self.on_reconnected_callback = None
+
             logger.info(f"WebSocketManager initialized for {broker!r}")
 
         except Exception as e:
@@ -104,6 +113,11 @@ class WebSocketManager:
         self._manual_stop = False
         self._connection_lock = threading.RLock()
 
+        # Additional callbacks
+        self.on_connected_callback = None
+        self.on_disconnected_callback = None
+        self.on_reconnected_callback = None
+
         # Background threads
         self._connect_thread = None  # thread running broker.ws_connect()
         self._heartbeat_thread = None
@@ -122,11 +136,21 @@ class WebSocketManager:
         self._reconnect_count = 0
         self._cleanup_done = False
 
-        # Telegram / notification callbacks
+        # Legacy callbacks
         self.on_disconnect_callback = None
         self.on_reconnect_callback = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
+
+    def set_state_callbacks(self, on_connected=None, on_disconnected=None, on_reconnected=None):
+        """
+        Set callbacks for connection state changes.
+        Used by state manager to update connection status in the trading state.
+        """
+        with self._connection_lock:
+            self.on_connected_callback = on_connected
+            self.on_disconnected_callback = on_disconnected
+            self.on_reconnected_callback = on_reconnected
 
     def connect(self):
         """Connect to the broker's WebSocket and start monitoring threads."""
@@ -242,32 +266,54 @@ class WebSocketManager:
                 logger.error(f"[WebSocketManager.unsubscribe] {e!r}", exc_info=True)
 
     def disconnect(self):
-        """Disconnect and clean up all resources."""
+        """Disconnect and clean up all resources with timeout protection."""
         with self._connection_lock:
             try:
                 logger.info("Initiating WebSocket disconnect...")
                 self._manual_stop = True
+                old_state = self._state
                 self._state = ConnectionState.CLOSING
 
+                # Disconnect WebSocket with timeout
                 if self._ws_obj is not None and self.broker is not None:
                     try:
-                        self.broker.ws_disconnect(self._ws_obj)
+                        # Try to unsubscribe first
+                        if self.symbols:
+                            try:
+                                self.broker.ws_unsubscribe(self._ws_obj, self.symbols)
+                                logger.debug("Unsubscribed from symbols")
+                            except Exception as e:
+                                logger.warning(f"Unsubscribe error (continuing): {e}")
+
+                        # Run disconnect in a separate thread with timeout
+                        disconnect_complete = threading.Event()
+
+                        def _do_disconnect():
+                            try:
+                                self.broker.ws_disconnect(self._ws_obj)
+                                logger.debug("ws_disconnect completed")
+                            except Exception as e:
+                                logger.error(f"ws_disconnect error: {e}")
+                            finally:
+                                disconnect_complete.set()
+
+                        disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                        disconnect_thread.start()
+
+                        # Wait for disconnect with timeout
+                        if not disconnect_complete.wait(timeout=3.0):
+                            logger.warning("ws_disconnect timed out after 3 seconds")
+
                     except Exception as e:
-                        logger.error(f"broker.ws_disconnect error: {e}", exc_info=True)
+                        logger.error(f"Error during disconnect: {e}", exc_info=True)
                     finally:
                         self._ws_obj = None
 
-                for tname, t in [
-                    ("connect", self._connect_thread),
-                    ("heartbeat", self._heartbeat_thread),
-                    ("network_monitor", self._network_monitor_thread),
-                    ("reconnect", self._reconnect_thread),
-                ]:
-                    if t and t.is_alive():
-                        try:
-                            t.join(timeout=3)
-                        except Exception as e:
-                            logger.warning(f"Error waiting for {tname} thread: {e}")
+                # Don't wait for threads - just mark them for garbage collection
+                self._connect_thread = None
+                self._heartbeat_thread = None
+                self._network_monitor_thread = None
+                self._reconnect_thread = None
 
                 self._state = ConnectionState.DISCONNECTED
                 logger.info(f"WebSocket disconnected — messages={self._message_count}, "
@@ -296,11 +342,25 @@ class WebSocketManager:
                     except Exception as e:
                         logger.error(f"Re-subscribe failed: {e}", exc_info=True)
 
+                # UPDATED: Call state manager callback
+                if self.on_connected_callback:
+                    try:
+                        self.on_connected_callback()
+                    except Exception as e:
+                        logger.error(f"on_connected_callback error: {e}", exc_info=True)
+
                 if self.on_reconnect_callback:
                     try:
                         self.on_reconnect_callback()
                     except Exception as e:
                         logger.error(f"on_reconnect_callback error: {e}", exc_info=True)
+
+                # UPDATED: Call reconnected callback
+                if self.on_reconnected_callback:
+                    try:
+                        self.on_reconnected_callback()
+                    except Exception as e:
+                        logger.error(f"on_reconnected_callback error: {e}", exc_info=True)
 
             except Exception as e:
                 logger.error(f"[WebSocketManager._on_connect] {e}", exc_info=True)
@@ -312,6 +372,13 @@ class WebSocketManager:
                 logger.warning(f"WebSocket closed: {message}")
                 if self._state != ConnectionState.CLOSING:
                     self._state = ConnectionState.DISCONNECTED
+
+                # UPDATED: Call state manager callback
+                if self.on_disconnected_callback:
+                    try:
+                        self.on_disconnected_callback()
+                    except Exception as e:
+                        logger.error(f"on_disconnected_callback error: {e}", exc_info=True)
 
                 if not self._manual_stop and self._state != ConnectionState.CLOSING:
                     if self.on_disconnect_callback:
@@ -334,6 +401,13 @@ class WebSocketManager:
                 logger.error(f"WebSocket error: {message}")
                 if self._state != ConnectionState.CLOSING:
                     self._state = ConnectionState.DISCONNECTED
+
+                # UPDATED: Call state manager callback
+                if self.on_disconnected_callback:
+                    try:
+                        self.on_disconnected_callback()
+                    except Exception as e:
+                        logger.error(f"on_disconnected_callback error: {e}", exc_info=True)
 
                 if not self._manual_stop:
                     if self.on_disconnect_callback:
@@ -434,6 +508,11 @@ class WebSocketManager:
             try:
                 if self._state == ConnectionState.CONNECTED and not self._manual_stop:
                     self._state = ConnectionState.DISCONNECTED
+                    if self.on_disconnected_callback:
+                        try:
+                            self.on_disconnected_callback()
+                        except Exception:
+                            pass
                     if self.on_disconnect_callback:
                         try:
                             self.on_disconnect_callback()
@@ -448,6 +527,11 @@ class WebSocketManager:
             try:
                 if self._state == ConnectionState.CONNECTED and not self._manual_stop:
                     self._state = ConnectionState.DISCONNECTED
+                    if self.on_disconnected_callback:
+                        try:
+                            self.on_disconnected_callback()
+                        except Exception:
+                            pass
                     if self.on_disconnect_callback:
                         try:
                             self.on_disconnect_callback()
@@ -523,12 +607,26 @@ class WebSocketManager:
             return False
 
     def _cleanup_socket(self):
-        """Destroy the current broker socket object."""
+        """Destroy the current broker socket object with timeout."""
         if self._ws_obj is not None and self.broker is not None:
             try:
-                self.broker.ws_disconnect(self._ws_obj)
+                # Try to disconnect with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        self.broker.ws_disconnect(self._ws_obj)
+                    except Exception as e:
+                        logger.error(f"ws_disconnect in cleanup: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                cleanup_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                cleanup_thread.start()
+                disconnect_complete.wait(timeout=2.0)
+
             except Exception as e:
-                logger.error(f"_cleanup_socket ws_disconnect error: {e!r}", exc_info=True)
+                logger.error(f"_cleanup_socket error: {e!r}", exc_info=True)
             finally:
                 self._ws_obj = None
 
@@ -596,22 +694,47 @@ class WebSocketManager:
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
-    def cleanup(self):
-        """Release all resources (safe to call multiple times)."""
+    def cleanup(self, timeout: float = 3.0):
+        """Release all resources with timeout (safe to call multiple times)."""
         try:
             if self._cleanup_done:
                 return
             logger.info("[WebSocketManager] Starting cleanup")
-            self.disconnect()
+
+            # Use a separate thread for disconnect with timeout
+            disconnect_complete = threading.Event()
+
+            def _do_cleanup():
+                try:
+                    self.disconnect()
+                except Exception as e:
+                    logger.error(f"Error in disconnect during cleanup: {e}")
+                finally:
+                    disconnect_complete.set()
+
+            cleanup_thread = threading.Thread(target=_do_cleanup, daemon=True)
+            cleanup_thread.start()
+
+            # Wait for disconnect to complete with timeout
+            if not disconnect_complete.wait(timeout=timeout):
+                logger.warning(f"Cleanup timed out after {timeout}s, forcing completion")
+
+            # Clear all references
             self.broker = None
+            self._ws_obj = None
             self._connect_thread = None
             self._heartbeat_thread = None
             self._network_monitor_thread = None
             self._reconnect_thread = None
             self.on_disconnect_callback = None
             self.on_reconnect_callback = None
+            self.on_connected_callback = None
+            self.on_disconnected_callback = None
+            self.on_reconnected_callback = None
+
             self._cleanup_done = True
             logger.info("[WebSocketManager] Cleanup completed")
+
         except Exception as e:
             logger.error(f"[WebSocketManager.cleanup] {e}", exc_info=True)
             self._cleanup_done = True

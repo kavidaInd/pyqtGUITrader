@@ -1,41 +1,7 @@
+# main.py (updated version with proper onboarding integration)
 """
-app_main.py
-===========
-Application entry point for the Algo Trading SaaS.
-
-Replaces any existing main.py / run.py.  Every feature that must run
-before the main window is shown is sequenced here:
-
-  Step 1 — DB initialisation (schema + migrations)
-  Step 2 — License verification (blocks if not activated / expired)
-  Step 3 — Auto-update check (blocks on mandatory, optional banner otherwise)
-  Step 4 — Main window launch
-
-Activation gate
-───────────────
-  Free / unactivated users: app starts immediately.  No startup gate.
-  Paper trading and historical backtesting are always available for free.
-  The license gate fires only when a user attempts to start LIVE trading
-  (handled inside TradingGUI._start_app via license_manager.is_live_trading_allowed()).
-
-  If a stored paid license fails verification (revoked/expired/machine mismatch)
-  the ActivationDialog is still shown on startup so the user can re-activate.
-
-Auto-update gate
-────────────────
-  • OPTIONAL update → UpdateBanner is injected into TradingGUI's toolbar.
-  • MANDATORY update → MandatoryUpdateDialog blocks the main window.
-    - User clicks "Download & Install" → progress dialog, installer launched, app exits.
-    - User clicks "Exit" → sys.exit(1).
-
-Usage
-─────
-  python app_main.py
-  # or as the entry_point in setup.cfg / pyproject.toml:
-  #   algotrade = app_main:main
+Application entry point with splash screen and first-time onboarding.
 """
-
-from __future__ import annotations
 
 import logging
 import logging.handlers
@@ -45,6 +11,8 @@ import traceback
 from typing import Optional
 
 import PyQt5.QtCore
+from PyQt5.QtWidgets import QMessageBox
+
 PyQt5.QtCore.QCoreApplication.setAttribute(PyQt5.QtCore.Qt.AA_ShareOpenGLContexts, True)
 
 # ── Bootstrap logging before any other import ─────────────────────────────────
@@ -65,8 +33,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ── Deferred Qt import (so logging is set up before PyQt crashes) ─────────────
-def _qt_app() -> "QApplication":
+# ── Deferred Qt import ──────────────────────────────────────────────────────
+def _qt_app():
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import Qt
     app = QApplication.instance() or QApplication(sys.argv)
@@ -81,27 +49,46 @@ def _apply_dark_palette(app):
         from PyQt5.QtGui import QPalette, QColor
         from PyQt5.QtCore import Qt
         dark = QPalette()
-        dark.setColor(QPalette.Window,          QColor("#0d1117"))
-        dark.setColor(QPalette.WindowText,      QColor("#e6edf3"))
-        dark.setColor(QPalette.Base,            QColor("#161b22"))
-        dark.setColor(QPalette.AlternateBase,   QColor("#21262d"))
-        dark.setColor(QPalette.Text,            QColor("#e6edf3"))
-        dark.setColor(QPalette.Button,          QColor("#21262d"))
-        dark.setColor(QPalette.ButtonText,      QColor("#e6edf3"))
-        dark.setColor(QPalette.Highlight,       QColor("#388bfd"))
+        dark.setColor(QPalette.Window, QColor("#0d1117"))
+        dark.setColor(QPalette.WindowText, QColor("#e6edf3"))
+        dark.setColor(QPalette.Base, QColor("#161b22"))
+        dark.setColor(QPalette.AlternateBase, QColor("#21262d"))
+        dark.setColor(QPalette.Text, QColor("#e6edf3"))
+        dark.setColor(QPalette.Button, QColor("#21262d"))
+        dark.setColor(QPalette.ButtonText, QColor("#e6edf3"))
+        dark.setColor(QPalette.Highlight, QColor("#388bfd"))
         dark.setColor(QPalette.HighlightedText, QColor("#ffffff"))
         app.setPalette(dark)
     except Exception as e:
         logger.warning(f"Could not apply dark palette: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 1 — Database
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Splash Screen ──────────────────────────────────────────────────────────
+def _show_splash():
+    """Create and show the splash screen."""
+    from gui.splash_screen import AnimatedSplashScreen
+    splash = AnimatedSplashScreen("resources/logo.png")  # Update path as needed
+    splash.show()
+    splash.set_status("Initializing application...")
+    splash.set_progress(0)
+    return splash
 
-def _run_db_init() -> bool:
+
+def _update_splash(splash, status, progress):
+    """Update splash screen status and progress."""
+    if splash:
+        splash.set_status(status)
+        splash.set_progress(progress)
+        # Process events to ensure UI updates
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+
+
+# ── Database ───────────────────────────────────────────────────────────────
+def _run_db_init(splash=None):
     """Initialise / migrate the SQLite database. Returns True on success."""
     try:
+        _update_splash(splash, "Initializing database...", 10)
         from db.db_installer import run_startup_check
         result = run_startup_check()
         if not result.ok:
@@ -114,24 +101,28 @@ def _run_db_init() -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 2 — License gate
-# ─────────────────────────────────────────────────────────────────────────────
+# ── State Manager ──────────────────────────────────────────────────────────
+def _init_state_manager(splash=None):
+    """
+    Initialise the state manager and ensure the trade state singleton is ready.
+    """
+    try:
+        _update_splash(splash, "Initializing state manager...", 20)
+        from models.trade_state_manager import state_manager
+        state = state_manager.get_state()
+        logger.info(f"State manager initialised with state ID: {id(state)}")
+        return True
+    except Exception as e:
+        logger.critical(f"State manager initialisation failed: {e}", exc_info=True)
+        return False
 
-def _run_license_gate(qt_app) -> bool:
+
+# ── License Gate ───────────────────────────────────────────────────────────
+def _run_license_gate(qt_app, splash=None):
     """
     Soft license check on startup.
-
-    - not_activated / trial_expired / expired → app starts freely.
-      Free users land straight in the app; paper + backtest always work.
-      The live-trading gate is enforced inside TradingGUI._start_app.
-
-    - revoked / invalid_machine / order_cancelled → hard block.
-      These indicate misuse or support issues that need resolving before
-      the app should run at all.
-
-    Returns True if the app should continue launching.
     """
+    _update_splash(splash, "Checking license...", 30)
     from license.license_manager import license_manager
     from license.activation_dialog import ActivationDialog
     from PyQt5.QtWidgets import QMessageBox, QDialog
@@ -139,13 +130,11 @@ def _run_license_gate(qt_app) -> bool:
     result = license_manager.verify_on_startup()
     logger.info(f"License check: {result}")
 
-    # ── Happy path: valid paid/trial license ─────────────────────────────
     if result.ok:
         if result.offline:
             logger.warning(f"Running in offline grace mode: {result.reason}")
         return True
 
-    # ── Soft failures: no license yet, or expired — let the user in freely ─
     SOFT_REASONS = {"not_activated", "trial_expired", "expired"}
     if result.reason in SOFT_REASONS:
         logger.info(
@@ -154,9 +143,9 @@ def _run_license_gate(qt_app) -> bool:
         )
         return True
 
-    # ── Hard failures: revoke, machine mismatch, cancelled order ─────────
+    # Hard failures
     reason_map = {
-        "revoked":         "Your license has been deactivated. Please contact support.",
+        "revoked": "Your license has been deactivated. Please contact support.",
         "invalid_machine": (
             "This machine is not authorised for your license. "
             "Contact support to transfer your license to this machine."
@@ -188,49 +177,144 @@ def _run_license_gate(qt_app) -> bool:
                 return False
 
 
+# ── Onboarding ─────────────────────────────────────────────────────────────
+def _run_onboarding(splash=None):
+    """
+    Run the first-time setup wizard if this is the first launch.
+    Returns True if onboarding was completed or skipped (not first time).
+    """
+    from gui.onboarding_popup import is_first_time, OnboardingWizard
+    from PyQt5.QtWidgets import QDialog
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3 — Main window
-# ─────────────────────────────────────────────────────────────────────────────
+    _update_splash(splash, "Checking first-time setup...", 35)
 
-def _launch_main_window(qt_app, update_info=None) -> int:
+    # Check if this is first run
+    if not is_first_time():
+        logger.info("Not first time - skipping onboarding")
+        return True
+
+    logger.info("First-time launch detected - showing onboarding wizard")
+
+    # Hide splash while showing wizard
+    if splash:
+        splash.hide()
+
+    # Create and show wizard
+    wizard = OnboardingWizard()
+    result = wizard.exec_()
+
+    # Show splash again
+    if splash:
+        splash.show()
+
+    if result == QDialog.Accepted:
+        logger.info("Onboarding completed successfully")
+
+        # Reload all settings to ensure they're fresh in memory
+        _reload_all_settings()
+
+        return True
+    else:
+        logger.warning("Onboarding cancelled by user")
+        # Ask if user wants to exit or continue without setup
+        from PyQt5.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            None,
+            "Continue without setup?",
+            "You haven't completed the initial setup.\n\n"
+            "You can continue with default settings, but some features may not work.\n\n"
+            "Continue anyway?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        return reply == QMessageBox.Yes
+
+
+def _reload_all_settings():
+    """Reload all settings from database after onboarding."""
+    try:
+        from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
+        from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
+        from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
+        from gui.trading_mode.TradingModeSetting import TradingModeSetting
+
+        # Force reload all settings from database
+        BrokerageSetting().load()
+        DailyTradeSetting().load()
+        ProfitStoplossSetting().load()
+        TradingModeSetting().load()
+
+        logger.info("All settings reloaded from database after onboarding")
+    except Exception as e:
+        logger.error(f"Failed to reload settings: {e}", exc_info=True)
+
+
+# ── Main Window ────────────────────────────────────────────────────────────
+# main.py (updated _launch_main_window function)
+
+def _launch_main_window(qt_app, splash=None, update_info=None) -> int:
     """Create TradingGUI, inject optional update banner, enter event loop."""
-    from TradingGUI import TradingGUI
-    from config import Config
+    _update_splash(splash, "Loading main window...", 80)
 
-    config = Config()
-    window = TradingGUI()
+    try:
+        from TradingGUI import TradingGUI
 
-    # Inject optional update banner into the main window
-    if update_info and update_info.available:
-        _inject_update_banner(window, update_info)
+        # Create the main window
+        window = TradingGUI()
 
-    # Inject trial expiry banner if the user is on a trial
-    _inject_trial_banner(window)
+        # Inject optional update banner
+        if update_info and update_info.available:
+            _inject_update_banner(window, update_info)
 
-    window.show()
-    return qt_app.exec_()
+        # Inject trial expiry banner
+        _inject_trial_banner(window)
 
+        # Update splash to ready
+        _update_splash(splash, "Ready!", 100)
 
-def _inject_update_banner(window: "TradingGUI", update_info) -> None:
-    """
-    Prepend UpdateBanner to TradingGUI's central widget layout.
-    Safe — does nothing if the window layout doesn't support it.
-    """
+        # Process events to ensure splash updates
+        qt_app.processEvents()
+
+        # IMPORTANT: First show the main window, THEN finish the splash
+        window.show()
+        window.raise_()  # Bring to front
+        window.activateWindow()  # Activate window
+
+        # Now finish the splash screen (this will close it)
+        if splash:
+            # Small delay to ensure window is fully rendered
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, lambda: splash.finish(window))
+
+        # Enter event loop
+        return qt_app.exec_()
+
+    except Exception as e:
+        logger.critical(f"Failed to launch main window: {e}", exc_info=True)
+        if splash:
+            splash.close()
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None,
+            "Launch Error",
+            f"Failed to launch main window:\n{e}\n\nPlease check the logs for details."
+        )
+        return 1
+
+def _inject_update_banner(window, update_info):
+    """Inject update banner into main window."""
     try:
         from license.activation_dialog import UpdateBanner
         from license.auto_updater import auto_updater
         from PyQt5.QtWidgets import QWidget, QVBoxLayout
 
         banner = UpdateBanner(
-            version = update_info.latest_version,
-            notes   = update_info.release_notes or "",
-            parent  = window,
+            version=update_info.latest_version,
+            notes=update_info.release_notes or "",
+            parent=window,
         )
 
         def _start_update():
             from license.activation_dialog import MandatoryUpdateDialog
-            # Reuse the mandatory dialog for the optional flow
             dlg = MandatoryUpdateDialog(update_info, parent=window)
             dlg.update_requested.connect(lambda: _download_in_thread(dlg))
             dlg.exec_()
@@ -241,7 +325,6 @@ def _inject_update_banner(window: "TradingGUI", update_info) -> None:
 
             def _run():
                 def _cb(p: DownloadProgress):
-                    # Qt signal proxy via QTimer
                     from PyQt5.QtCore import QMetaObject, Qt
                     pct = p.percent
                     msg = f"Downloading… {pct:.0f}%" if not p.done else "Installing…"
@@ -259,7 +342,6 @@ def _inject_update_banner(window: "TradingGUI", update_info) -> None:
         banner.update_requested.connect(_start_update)
         banner.dismissed.connect(banner.deleteLater)
 
-        # Insert at top of central widget's layout
         central = window.centralWidget()
         if central:
             layout = central.layout()
@@ -271,12 +353,8 @@ def _inject_update_banner(window: "TradingGUI", update_info) -> None:
         logger.warning(f"Could not inject update banner: {e}", exc_info=True)
 
 
-def _inject_trial_banner(window: "TradingGUI") -> None:
-    """
-    If the active license is a trial, inject a TrialExpiryBanner at the top
-    of the main window.  Clicking "Upgrade Now" opens the ActivationDialog
-    directly on the "Activate License" tab.
-    """
+def _inject_trial_banner(window):
+    """Inject trial expiry banner if user is on trial."""
     try:
         from license.license_manager import license_manager, PLAN_TRIAL
         info = license_manager.get_local_info()
@@ -297,7 +375,6 @@ def _inject_trial_banner(window: "TradingGUI") -> None:
             )
             from PyQt5.QtWidgets import QDialog
             if dlg.exec_() == QDialog.Accepted:
-                # Reload the window title / status to reflect paid plan
                 banner.hide()
 
         banner.upgrade_clicked.connect(_open_upgrade)
@@ -321,31 +398,61 @@ def main() -> int:
     logger.info("  Algo Trading Pro — starting up")
     logger.info("=" * 60)
 
-    # ── Step 1: DB ────────────────────────────────────────────────────────────
-    if not _run_db_init():
-        from PyQt5.QtWidgets import QApplication, QMessageBox
-        _app = _qt_app()
-        QMessageBox.critical(
-            None, "Database Error",
-            "Database initialisation failed.\n"
-            "Check the logs/ folder for details.\n\n"
-            "The application will now exit."
-        )
+    try:
+        # ── Step 1: Create Qt app and splash screen ──────────────────────────────
+        qt_app = _qt_app()
+        _apply_dark_palette(qt_app)
+
+        splash = _show_splash()
+        qt_app.processEvents()
+
+        # ── Step 2: DB ───────────────────────────────────────────────────────────
+        if not _run_db_init(splash):
+            QMessageBox.critical(
+                None, "Database Error",
+                "Database initialisation failed.\n"
+                "Check the logs/ folder for details.\n\n"
+                "The application will now exit."
+            )
+            return 1
+
+        # ── Step 3: State manager ─────────────────────────────────────────────────
+        if not _init_state_manager(splash):
+            QMessageBox.critical(
+                None, "State Manager Error",
+                "State manager initialisation failed.\n"
+                "Check the logs/ folder for details.\n\n"
+                "The application will now exit."
+            )
+            return 1
+
+        # ── Step 4: License ───────────────────────────────────────────────────────
+        if not _run_license_gate(qt_app, splash):
+            logger.info("License gate rejected — exiting")
+            return 1
+
+        # ── Step 5: Onboarding (first-time setup) ─────────────────────────────────
+        if not _run_onboarding(splash):
+            logger.info("User chose to exit after onboarding")
+            return 1
+
+        # ── Step 6: Main window ───────────────────────────────────────────────────
+        exit_code = _launch_main_window(qt_app, splash)
+        logger.info(f"Application exited with code {exit_code}")
+        return exit_code
+
+    except Exception as e:
+        logger.critical(f"Unhandled exception in main: {e}", exc_info=True)
+        # Try to show error message if possible
+        try:
+            QMessageBox.critical(
+                None,
+                "Startup Error",
+                f"An unexpected error occurred during startup:\n{e}\n\nPlease check the logs for details."
+            )
+        except:
+            pass
         return 1
-
-    # ── Step 2: Qt app object ─────────────────────────────────────────────────
-    qt_app = _qt_app()
-    _apply_dark_palette(qt_app)
-
-    # ── Step 3: License ───────────────────────────────────────────────────────
-    if not _run_license_gate(qt_app):
-        logger.info("License gate rejected — exiting")
-        return 1
-
-    # ── Step 5: Main window ───────────────────────────────────────────────────
-    exit_code = _launch_main_window(qt_app)
-    logger.info(f"Application exited with code {exit_code}")
-    return exit_code
 
 
 if __name__ == "__main__":

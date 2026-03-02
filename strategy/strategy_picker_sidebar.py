@@ -14,6 +14,8 @@ Shows:
 
 Embed in TradingGUI as a pinned sidebar OR show as a floating popup.
 
+UPDATED: Now uses state_manager instead of direct trading_app.state access.
+
 Usage (as floating popup from TradingGUI):
     # __init__:
     self.strategy_picker = None
@@ -46,6 +48,9 @@ from PyQt5.QtWidgets import (
 )
 
 from strategy.strategy_manager import strategy_manager
+
+# Import state manager
+from models.trade_state_manager import state_manager
 
 # Import SIGNAL_GROUPS as strings from the right place
 # These are the string values used in the engine config
@@ -336,6 +341,7 @@ class StrategyPickerSidebar(QDialog):
     Non-modal — can stay open while trading. Uses database-backed strategy manager.
 
     FEATURE 3: Displays confidence scores for signal groups.
+    UPDATED: Now uses state_manager for signal data.
     """
     strategy_activated = pyqtSignal(str)  # emitted with slug
     open_editor_requested = pyqtSignal()  # user wants full editor
@@ -351,6 +357,11 @@ class StrategyPickerSidebar(QDialog):
             self._current_threshold = 0.6
             self._confidence_bars = {}
 
+            # Cache for snapshots
+            self._last_snapshot = {}
+            self._last_snapshot_time = None
+            self._snapshot_cache_duration = 0.1  # 100ms
+
             self.setWindowTitle("⚡ Strategy Picker")
             self.setFixedWidth(400)  # Slightly wider for confidence bars
             self.setMinimumHeight(600)
@@ -365,7 +376,7 @@ class StrategyPickerSidebar(QDialog):
             self._timer.timeout.connect(self._refresh_data)
             self._timer.start(2000)
 
-            logger.info("StrategyPickerSidebar (database) initialized with Feature 3")
+            logger.info("StrategyPickerSidebar (database) initialized with Feature 3 and state_manager")
 
         except Exception as e:
             logger.critical(f"[StrategyPickerSidebar.__init__] Failed: {e}", exc_info=True)
@@ -395,6 +406,19 @@ class StrategyPickerSidebar(QDialog):
         self._activate_btn = None
         self._status_lbl = None
         self._confidence_group = None
+        self._last_snapshot = {}
+        self._last_snapshot_time = None
+        self._snapshot_cache_duration = 0.1
+
+    def _get_cached_snapshot(self) -> Dict[str, Any]:
+        """Get cached snapshot to avoid excessive state_manager calls"""
+        from datetime import datetime
+        now = datetime.now()
+        if (self._last_snapshot_time is None or
+            (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration):
+            self._last_snapshot = state_manager.get_snapshot()
+            self._last_snapshot_time = now
+        return self._last_snapshot
 
     def _build_ui(self):
         """Build the UI components"""
@@ -537,7 +561,7 @@ class StrategyPickerSidebar(QDialog):
 
     @pyqtSlot()
     def _refresh_data(self):
-        """Pull current data from trading_app and update UI."""
+        """Pull current data from state_manager and update UI."""
         try:
             if not self.isVisible():
                 return
@@ -548,32 +572,23 @@ class StrategyPickerSidebar(QDialog):
             logger.debug(f"[_refresh_data] Failed: {e}")
 
     def _update_active_display(self):
-        """Update active strategy card and confidence bars"""
+        """Update active strategy card and confidence bars using state_manager"""
         try:
-            # Get current signal from trading app
-            signal_value = "WAIT"
-            confidence = {}
-            threshold = 0.6
+            # Get snapshots from state manager
+            snapshot = self._get_cached_snapshot()
+            position_snapshot = state_manager.get_position_snapshot()
 
-            if self.trading_app is not None:
-                state = getattr(self.trading_app, "state", None)
-                if state is not None:
-                    # FIXED: Safely access option_signal_result
-                    signal_result = getattr(state, "option_signal_result", None)
-                    if signal_result and isinstance(signal_result, dict):
-                        signal_value = signal_result.get("signal_value", "WAIT")
-                        confidence = signal_result.get("confidence", {})
-                        threshold = signal_result.get("threshold", 0.6)
+            # Get signal from position snapshot
+            signal_value = position_snapshot.get('option_signal', 'WAIT')
 
-                    # Fallback to derivative_trend if option_signal_result not available
-                    elif hasattr(state, "derivative_trend"):
-                        trend = state.derivative_trend
-                        if trend and isinstance(trend, dict):
-                            option_signal = trend.get("option_signal")
-                            if option_signal and isinstance(option_signal, dict):
-                                signal_value = option_signal.get("signal_value", "WAIT")
-                                confidence = option_signal.get("confidence", {})
-                                threshold = option_signal.get("threshold", 0.6)
+            # Get signal snapshot for confidence
+            try:
+                signal_snap = state_manager.get_state().get_option_signal_snapshot()
+                confidence = signal_snap.get('confidence', {})
+                threshold = signal_snap.get('threshold', 0.6)
+            except Exception:
+                confidence = {}
+                threshold = 0.6
 
             # Update active strategy
             active = strategy_manager.get_active()
@@ -666,6 +681,8 @@ class StrategyPickerSidebar(QDialog):
             self._status_lbl = None
             self._confidence_group = None
             self._confidence_bars.clear()
+            self._last_snapshot = {}
+            self._last_snapshot_time = None
 
             logger.info("[StrategyPickerSidebar] Cleanup completed")
 

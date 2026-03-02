@@ -8,6 +8,8 @@ FEATURE 1: Risk management display
 FEATURE 3: Signal confidence display
 FEATURE 5: Daily P&L tracking
 FEATURE 6: Multi-timeframe filter display
+
+UPDATED: Now uses state_manager instead of direct state access
 """
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -18,6 +20,9 @@ from PyQt5.QtGui import QFont, QColor
 from datetime import datetime
 import pandas as pd
 import logging
+
+# Import state manager instead of direct state
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -44,18 +49,18 @@ class StatsTab(QWidget):
     Live-updating statistics tabs with stored label references.
 
     BUG #3 FIX: All labels are stored in self._labels dict for live updates.
+    UPDATED: Now uses state_manager instead of direct state access.
     """
 
     # Signals for external updates
     data_refreshed = pyqtSignal(dict)  # Emits snapshot data
 
-    def __init__(self, state, parent=None):
+    def __init__(self, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
-            self.state = state
             self._labels = {}  # BUG #3 FIX: Store all label references
             self._progress_bars = {}  # Store progress bars
             self._last_data = {}  # Cache for change detection
@@ -66,19 +71,20 @@ class StatsTab(QWidget):
             # Build UI
             self.init_ui()
 
-            logger.info("StatsTab initialized with live refresh support")
+            # Initial refresh
+            QTimer.singleShot(100, self.refresh)
+
+            logger.info("StatsTab initialized with state_manager integration")
 
         except Exception as e:
             logger.critical(f"[StatsTab.__init__] Failed: {e}", exc_info=True)
             super().__init__(parent)
-            self.state = state
             self._labels = {}
             self._progress_bars = {}
             self._last_data = {}
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.state = None
         self._labels = {}
         self._progress_bars = {}
         self._last_data = {}
@@ -745,7 +751,8 @@ class StatsTab(QWidget):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
 
-        snap = self.state.get_snapshot() if self.state else {}
+        # Get snapshot from state manager
+        snap = state_manager.get_snapshot()
 
         # Display all key-value pairs
         for key, value in sorted(snap.items()):
@@ -777,24 +784,27 @@ class StatsTab(QWidget):
         """
         BUG #3 FIX: Refresh all displayed stats with live data.
         Called by timer in parent widget.
+        UPDATED: Now uses state_manager instead of direct state.
         """
         try:
-            if self.state is None:
-                logger.debug("refresh called with None state")
-                return
+            # Get latest snapshots from state manager
+            snap = state_manager.get_snapshot()
+            pos_snap = state_manager.get_position_snapshot()
+            print(snap)
 
-            # Get latest snapshot
-            snap = self.state.get_snapshot()
-            pos_snap = self.state.get_position_snapshot()
-            signal_snap = self.state.get_option_signal_snapshot()
+            # Get signal snapshot
+            try:
+                signal_snap = state_manager.get_state().get_option_signal_snapshot()
+            except Exception:
+                signal_snap = {}
 
             # Update all labels with new values
-            self._update_position_labels(pos_snap)
+            self._update_position_labels(pos_snap, snap)
             self._update_risk_labels(snap, pos_snap)
             self._update_signal_labels(signal_snap, pos_snap)
             self._update_performance_labels(snap, pos_snap)
             self._update_market_labels(snap)
-            self._update_mtf_labels(snap)
+            self._update_mtf_labels(snap, pos_snap)
 
             # Emit signal with snapshot data
             self.data_refreshed.emit(snap)
@@ -802,38 +812,38 @@ class StatsTab(QWidget):
         except Exception as e:
             logger.error(f"[StatsTab.refresh] Failed: {e}", exc_info=True)
 
-    def _update_position_labels(self, snap: dict):
+    def _update_position_labels(self, pos_snap: dict, full_snap: dict):
         """Update position tab labels"""
         try:
             # Position Status
-            pos = snap.get('current_position', 'None')
+            pos = pos_snap.get('current_position', 'None')
             self._update_label("current_position", str(pos) if pos else "None")
 
             # Trade Confirmed
-            confirmed = snap.get('current_trade_confirmed', False)
+            confirmed = pos_snap.get('current_trade_confirmed', False)
             self._update_label("current_trade_confirmed", str(confirmed))
 
             # Order Pending
-            pending = snap.get('order_pending', False)
+            pending = pos_snap.get('order_pending', False)
             self._update_label("order_pending", str(pending))
 
             # Positions Hold
-            self._update_label("positions_hold", str(snap.get('positions_hold', 0)))
+            self._update_label("positions_hold", str(pos_snap.get('positions_hold', 0)))
 
             # Entry Price
-            entry = snap.get('current_buy_price')
+            entry = pos_snap.get('current_buy_price')
             self._update_label("current_buy_price", f"{entry:.2f}" if entry else "None")
 
             # Current Price
-            current = snap.get('current_price')
+            current = pos_snap.get('current_price')
             self._update_label("current_price", f"{current:.2f}" if current else "None")
 
             # Highest Price
-            high = snap.get('highest_current_price')
+            high = pos_snap.get('highest_current_price')
             self._update_label("highest_current_price", f"{high:.2f}" if high else "None")
 
             # P&L
-            pnl = snap.get('current_pnl')
+            pnl = pos_snap.get('current_pnl')
             if pnl is not None:
                 pnl_str = f"₹{pnl:.2f}"
                 pnl_color = "positive" if pnl > 0 else "negative" if pnl < 0 else "value"
@@ -842,7 +852,7 @@ class StatsTab(QWidget):
                 self._update_label("current_pnl", "None")
 
             # Percentage Change
-            pct = snap.get('percentage_change')
+            pct = pos_snap.get('percentage_change')
             if pct is not None:
                 pct_str = f"{pct:.2f}%"
                 pct_color = "positive" if pct > 0 else "negative" if pct < 0 else "value"
@@ -851,7 +861,7 @@ class StatsTab(QWidget):
                 self._update_label("percentage_change", "None")
 
             # Exit Reason
-            reason = snap.get('reason_to_exit', 'None')
+            reason = pos_snap.get('reason_to_exit', 'None')
             self._update_label("reason_to_exit", str(reason))
 
         except Exception as e:
@@ -943,11 +953,14 @@ class StatsTab(QWidget):
             # Trade Timing
             start_time = snap.get('current_trade_started_time')
             if start_time:
-                self._update_label("current_trade_started_time", start_time.strftime("%H:%M:%S"))
+                if isinstance(start_time, datetime):
+                    self._update_label("current_trade_started_time", start_time.strftime("%H:%M:%S"))
+                else:
+                    self._update_label("current_trade_started_time", str(start_time))
 
                 # Calculate duration
-                if snap.get('current_price'):
-                    duration = datetime.now() - start_time
+                if pos_snap.get('current_price'):
+                    duration = datetime.now() - start_time if isinstance(start_time, datetime) else datetime.now() - datetime.now()
                     hours = duration.seconds // 3600
                     minutes = (duration.seconds % 3600) // 60
                     seconds = duration.seconds % 60
@@ -997,10 +1010,10 @@ class StatsTab(QWidget):
         except Exception as e:
             logger.error(f"[_update_market_labels] Failed: {e}", exc_info=True)
 
-    def _update_mtf_labels(self, snap: dict):
+    def _update_mtf_labels(self, snap: dict, pos_snap: dict):
         """Update MTF filter tab labels"""
         try:
-            # Enabled status
+            # Enabled status - this might come from config
             mtf_enabled = snap.get('use_mtf_filter', False)
             self._update_label("mtf_enabled", "Yes" if mtf_enabled else "No",
                                "positive" if mtf_enabled else "value")
@@ -1020,7 +1033,7 @@ class StatsTab(QWidget):
                 self._update_label(f"mtf_{key}", direction, color)
 
             # Agreement
-            target = 'BULLISH' if snap.get('option_signal', '') == 'BUY_CALL' else 'BEARISH'
+            target = 'BULLISH' if pos_snap.get('option_signal', '') == 'BUY_CALL' else 'BEARISH'
             matches = sum(1 for d in mtf_results.values() if d == target)
             self._update_label("mtf_agreement", f"{matches}/3")
 

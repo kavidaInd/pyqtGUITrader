@@ -43,6 +43,8 @@ Usage:
 Thread Safety:
     The factory itself is stateless and thread-safe. However, the created
     broker instances may have their own thread-safety considerations.
+
+UPDATED: Added support for state_manager integration in broker instances.
 """
 
 import logging
@@ -91,11 +93,14 @@ class BrokerType:
     FLATTRADE = "flattrade"
 
     # ── Complete list of supported brokers ────────────────────────────────────
-    ALL = [
+    # BUG FIX: Changed from list [] to tuple () so external code cannot
+    # accidentally mutate the canonical broker list (e.g. ALL.append("newbroker")
+    # would silently affect every isinstance/membership check in the app).
+    ALL = (
         FYERS, ZERODHA, DHAN,
         ANGELONE, UPSTOX, SHOONYA,
         KOTAK, ICICI, ALICEBLUE, FLATTRADE,
-    ]
+    )
 
     # ── Human-readable display names for UI components ────────────────────────
     # Used in dropdown menus, settings dialogs, and status displays
@@ -174,6 +179,9 @@ class BrokerFactory:
         The factory does not handle authentication - the created broker
         instance may require login() or generate_session() to be called
         before it can be used for trading.
+
+    UPDATED: Broker instances now have access to state_manager through the
+             state parameter, which is the TradeState singleton.
     """
 
     @staticmethod
@@ -185,7 +193,7 @@ class BrokerFactory:
         (defaulting to "fyers") and instantiates the corresponding broker class.
 
         Args:
-            state: Shared application state object (TradeState instance)
+            state: Shared application state object (TradeState instance from state_manager)
             broker_setting: BrokerageSetting object containing configuration
                            including broker_type, client_id, secret_key, etc.
                            If None, defaults to Fyers broker.
@@ -214,7 +222,13 @@ class BrokerFactory:
 
         logger.info(f"BrokerFactory: creating broker '{broker_type}'")
 
-        # Route to appropriate broker implementation
+        # Route to appropriate broker implementation.
+        # NOTE: KotakNeoBroker's auto-derived broker_type would be "kotakneo"
+        # (class name minus "Broker" suffix), but BrokerType.KOTAK is "kotak".
+        # The factory routes by the config string ("kotak"), which is correct.
+        # However KotakNeoBroker must override the broker_type property to return
+        # "kotak" explicitly, or the base-class derivation will produce a mismatch
+        # when any code compares broker.broker_type against BrokerType.KOTAK.
         if broker_type == BrokerType.FYERS:
             return FyersBroker(state=state, broker_setting=broker_setting)
         elif broker_type == BrokerType.ZERODHA:
@@ -236,9 +250,16 @@ class BrokerFactory:
         elif broker_type == BrokerType.FLATTRADE:
             return FlattradeBroker(state=state, broker_setting=broker_setting)
         else:
-            raise ValueError(
-                f"Unknown broker_type: '{broker_type}'. Supported: {BrokerType.ALL}"
+            # BUG FIX: The ValueError was raised bare with no log entry, so in
+            # production it would silently disappear if the caller catches broadly.
+            # Log it as CRITICAL first so it always appears in the log file even
+            # if the exception is swallowed higher up.
+            msg = (
+                f"BrokerFactory: unknown broker_type '{broker_type}'. "
+                f"Supported types: {list(BrokerType.ALL)}"
             )
+            logger.critical(msg)
+            raise ValueError(msg)
 
     @staticmethod
     def get_display_name(broker_type: str) -> str:
@@ -255,6 +276,11 @@ class BrokerFactory:
             >>> BrokerFactory.get_display_name("angelone")
             "Angel One (SmartAPI)"
         """
+        # BUG FIX: Guard against None — broker_type can be None when reading
+        # from incomplete settings objects; without this the .lower() call raises
+        # AttributeError and propagates up to the UI with no useful message.
+        if not broker_type:
+            return broker_type or ""
         return BrokerType.DISPLAY_NAMES.get(broker_type.lower(), broker_type)
 
     @staticmethod
@@ -281,6 +307,10 @@ class BrokerFactory:
             Brokers without historical data support (Kotak, Alice Blue) will
             need an alternative data source for backtesting and charting.
         """
+        # BUG FIX: Same None guard as get_display_name — broker_type.lower() will
+        # raise AttributeError if broker_type is None.
+        if not broker_type:
+            return False
         return BrokerType.SUPPORTS_HISTORY.get(broker_type.lower(), False)
 
     @staticmethod
@@ -309,4 +339,25 @@ class BrokerFactory:
             >>> BrokerFactory.get_auth_method("angelone")
             "totp"
         """
+        # BUG FIX: Same None guard — returns safe default "oauth" for unknown/None.
+        if not broker_type:
+            return "oauth"
         return BrokerType.AUTH_METHOD.get(broker_type.lower(), "oauth")
+
+    @staticmethod
+    def get_token_expiry_support(broker_type: str) -> bool:
+        """
+        Check if a broker provides token expiry information.
+
+        Args:
+            broker_type: Broker identifier string
+
+        Returns:
+            bool: True if the broker provides token expiry information
+        """
+        # BUG FIX: Same None guard as other utility methods.
+        if not broker_type:
+            return False
+
+        auth_method = BrokerType.AUTH_METHOD.get(broker_type.lower(), "oauth")
+        return auth_method in ["oauth", "session", "totp"]

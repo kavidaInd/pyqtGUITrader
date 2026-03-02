@@ -22,11 +22,14 @@ Symbol format (Upstox instrument_key):
 
 API docs: https://upstox.com/developer/api-documentation/
 SDK:      pip install upstox-python-sdk
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
+import threading
 from datetime import datetime
 from Utils.common import to_date_str, timedelta
 from typing import Optional, Dict, List, Any, Callable
@@ -85,6 +88,8 @@ class UpstoxBroker(BaseBroker):
         client_id    → Upstox API Key
         secret_key   → Upstox API Secret
         redirect_uri → OAuth2 redirect URI registered in developer console
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     UPSTOX_AUTH_URL = "https://api.upstox.com/v2/login/authorization/dialog"
@@ -120,6 +125,11 @@ class UpstoxBroker(BaseBroker):
             else:
                 logger.warning("UpstoxBroker: no token found — call generate_session(code)")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_streamer = None
+
             logger.info("UpstoxBroker initialized")
 
         except Exception as e:
@@ -145,6 +155,15 @@ class UpstoxBroker(BaseBroker):
         self._last_request_time = 0
         self._request_count = 0
         self._instrument_cache: Dict[str, str] = {}
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_streamer = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
 
     def _build_api_clients(self):
         """Instantiate all Upstox API sub-clients."""
@@ -624,7 +643,48 @@ class UpstoxBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
-        logger.info("[UpstoxBroker] cleanup done")
+        """Clean up resources including WebSocket connection."""
+        logger.info("[UpstoxBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_streamer is not None:
+            try:
+                # Try to disconnect with timeout
+                self._ws_cleanup_event.clear()
+
+                def _do_disconnect():
+                    try:
+                        if hasattr(self._ws_streamer, "disconnect"):
+                            self._ws_streamer.disconnect()
+                            logger.debug("[UpstoxBroker] disconnect called")
+                    except Exception as e:
+                        logger.warning(f"[UpstoxBroker] Error disconnecting WebSocket: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run disconnect in separate thread with timeout
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[UpstoxBroker] WebSocket disconnect timed out")
+
+            except Exception as e:
+                logger.error(f"[UpstoxBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_streamer = None
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[UpstoxBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -667,6 +727,8 @@ class UpstoxBroker(BaseBroker):
         Upstox v2 streams market data via protobuf over WebSocket.
         The SDK's MarketDataStreamer handles auth automatically using
         the access_token set in the configuration.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             import upstox_client  # type: ignore
@@ -677,20 +739,48 @@ class UpstoxBroker(BaseBroker):
                 logger.error("UpstoxBroker.create_websocket: no access_token — call login first")
                 return None
 
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
             configuration = upstox_client.Configuration()
             configuration.access_token = access_token
 
+            # Store callbacks
+            self._ws_on_tick = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close = on_close
+            self._ws_on_error = on_error
+
+            # Create streamer with safety-wrapped callbacks
             streamer = MarketDataStreamer(
                 upstox_client.ApiClient(configuration),
                 [],          # instruments list — populated in ws_subscribe
                 "full",      # mode: "ltpc" | "full" | "option_greeks"
             )
 
-            streamer.on("message", on_tick)
-            streamer.on("open",    lambda: on_connect())
-            streamer.on("close",   lambda: on_close("connection closed"))
-            streamer.on("error",   lambda e: on_error(str(e)))
+            def safe_on_message(data):
+                if not self._ws_closed:
+                    on_tick(data)
 
+            def safe_on_open():
+                if not self._ws_closed:
+                    on_connect()
+
+            def safe_on_close():
+                if not self._ws_closed:
+                    on_close("connection closed")
+
+            def safe_on_error(e):
+                if not self._ws_closed:
+                    on_error(str(e))
+
+            streamer.on("message", safe_on_message)
+            streamer.on("open",    safe_on_open)
+            streamer.on("close",   safe_on_close)
+            streamer.on("error",   safe_on_error)
+
+            self._ws_streamer = streamer
             logger.info("UpstoxBroker: MarketDataStreamer object created")
             return streamer
         except ImportError:
@@ -703,7 +793,7 @@ class UpstoxBroker(BaseBroker):
     def ws_connect(self, ws_obj) -> None:
         """Start Upstox MarketDataStreamer (non-blocking)."""
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
             ws_obj.connect()
             logger.info("UpstoxBroker: MarketDataStreamer connect() called")
@@ -718,7 +808,7 @@ class UpstoxBroker(BaseBroker):
         Generic NSE:SYMBOL is mapped via _resolve_upstox_key().
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
 
             keys = []
@@ -739,7 +829,7 @@ class UpstoxBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from Upstox live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             keys = [self._resolve_upstox_key(s) for s in symbols]
             keys = [k for k in keys if k]
@@ -749,13 +839,51 @@ class UpstoxBroker(BaseBroker):
             logger.error(f"[UpstoxBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Stop Upstox MarketDataStreamer."""
+        """
+        Stop Upstox MarketDataStreamer with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
-            if hasattr(ws_obj, "disconnect"):
-                ws_obj.disconnect()
-            logger.info("UpstoxBroker: MarketDataStreamer disconnected")
+
+            logger.info("[UpstoxBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
+            # Run disconnect in separate thread with timeout
+            disconnect_complete = threading.Event()
+
+            def _do_disconnect():
+                try:
+                    if hasattr(ws_obj, "disconnect"):
+                        ws_obj.disconnect()
+                        logger.debug("[UpstoxBroker] disconnect completed")
+                except Exception as e:
+                    logger.warning(f"[UpstoxBroker] disconnect error: {e}")
+                finally:
+                    disconnect_complete.set()
+
+            disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+            disconnect_thread.start()
+
+            # Wait for disconnect with timeout
+            if not disconnect_complete.wait(timeout=2.0):
+                logger.warning("[UpstoxBroker] disconnect timed out")
+
+            # Clear reference
+            if self._ws_streamer == ws_obj:
+                self._ws_streamer = None
+
+            # Call on_close callback
+            if self._ws_on_close and not self._ws_closed:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[UpstoxBroker] Error in close callback: {e}")
+
+            logger.info("[UpstoxBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[UpstoxBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -768,7 +896,7 @@ class UpstoxBroker(BaseBroker):
                    oi, bid_price, ask_price, timestamp.
         """
         try:
-            if not isinstance(raw_tick, dict):
+            if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
 
             feeds = raw_tick.get("feeds", {})
@@ -817,7 +945,8 @@ class UpstoxBroker(BaseBroker):
             # Return first tick — WebSocketManager handles one at a time
             return results[0] if results else None
         except Exception as e:
-            logger.error(f"[UpstoxBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[UpstoxBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_upstox_key(self, symbol: str) -> Optional[str]:

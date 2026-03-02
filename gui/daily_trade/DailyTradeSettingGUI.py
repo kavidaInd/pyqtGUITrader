@@ -1,6 +1,14 @@
+"""
+DailyTradeSettingGUI.py
+=======================
+GUI for daily trade settings with database integration.
+
+UPDATED: Derivative selection now uses dropdown from OptionUtils constants.
+"""
+
 import logging
 import threading
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QDoubleValidator, QIntValidator
@@ -11,6 +19,7 @@ from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QGroupBox, QHBoxLayout)
 
 from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
+from Utils.OptionUtils import OptionUtils
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -25,11 +34,20 @@ class DailyTradeSettingGUI(QDialog):
     operation_finished = pyqtSignal()
 
     INTERVAL_CHOICES = [
-         ("1 minute", "1m"),
+        ("1 minute", "1m"),
         ("2 minutes", "2m"), ("3 minutes", "3m"), ("5 minutes", "5m"),
         ("10 minutes", "10m"), ("15 minutes", "15m"), ("20 minutes", "20m"),
         ("30 minutes", "30m"), ("60 minutes", "60m"), ("120 minutes", "120m"),
         ("240 minutes", "240m")
+    ]
+
+    # UPDATED: Derivative choices from OptionUtils
+    DERIVATIVE_CHOICES = [
+        ("NIFTY 50", "NIFTY50"),
+        ("BANK NIFTY", "BANKNIFTY"),
+        ("FIN NIFTY", "FINNIFTY"),
+        ("MIDCP NIFTY", "MIDCPNIFTY"),
+        ("SENSEX", "SENSEX"),
     ]
 
     VALIDATION_RANGES = {
@@ -206,6 +224,7 @@ class DailyTradeSettingGUI(QDialog):
         self.vars = {}
         self.entries = {}
         self.interval_combo = None
+        self.derivative_combo = None  # UPDATED: New field for derivative dropdown
         self.sideway_check = None
         self.status_label = None
         self.save_btn = None
@@ -276,10 +295,7 @@ class DailyTradeSettingGUI(QDialog):
                  "Week number for options expiry (0–53).",
                  "0 means the current/nearest expiry week. Increase for far-dated contracts."),
 
-                ("Derivative", "derivative", str, "💡",
-                 "e.g. NIFTY",
-                 "Underlying symbol for the derivative contract.",
-                 "The instrument name, e.g. NIFTY, BANKNIFTY."),
+                # UPDATED: Derivative will be handled separately as dropdown
 
                 ("Lot Size", "lot_size", int, "🔢",
                  "e.g. 50",
@@ -346,8 +362,21 @@ class DailyTradeSettingGUI(QDialog):
                     edit.setEnabled(False)
                     form.addRow(f"{icon} {label}:", edit)
 
+            # UPDATED: Derivative Dropdown
+            derivative_label = QLabel("💡 Derivative:")
+            derivative_label.setToolTip("The underlying instrument whose options or futures will be traded.")
+            form.addRow(derivative_label, self._create_derivative_dropdown())
+            derivative_hint = QLabel("Underlying symbol for the derivative contract (NIFTY50, BANKNIFTY, etc.)")
+            derivative_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            form.addRow("", derivative_hint)
+
             # History Interval ComboBox
             try:
+                interval_label = QLabel("⏱️ History Interval:")
+                interval_label.setToolTip(
+                    "Candle interval used to fetch historical price data.\n"
+                    "Smaller intervals = more granular signals but heavier data load."
+                )
                 self.interval_combo = QComboBox()
                 for display, value in self.INTERVAL_CHOICES:
                     self.interval_combo.addItem(display, value)
@@ -366,14 +395,13 @@ class DailyTradeSettingGUI(QDialog):
                 if not found:
                     logger.warning(f"Interval value {current_val} not found in choices")
 
-                self.interval_combo.setToolTip(
-                    "Candle interval used to fetch historical price data.\n"
-                    "Smaller intervals = more granular signals but heavier data load."
-                )
+                form.addRow(interval_label, self.interval_combo)
                 interval_hint = QLabel("Candle size used for historical data and signal generation.")
                 interval_hint.setStyleSheet("color:#484f58; font-size:8pt;")
-                form.addRow("⏱️ History Interval:", self.interval_combo)
                 form.addRow("", interval_hint)
+
+                # Store interval in vars for validation
+                self.vars["history_interval"] = (self.interval_combo, str)
 
             except Exception as e:
                 logger.error(f"Failed to create interval combo: {e}", exc_info=True)
@@ -402,6 +430,9 @@ class DailyTradeSettingGUI(QDialog):
                 layout.addWidget(self.sideway_check)
                 layout.addWidget(sideway_hint)
 
+                # Store sideway in vars
+                self.vars["sideway_zone_trade"] = (self.sideway_check, bool)
+
             except Exception as e:
                 logger.error(f"Failed to create sideway checkbox: {e}", exc_info=True)
                 self.sideway_check = QCheckBox("Error loading setting")
@@ -415,6 +446,45 @@ class DailyTradeSettingGUI(QDialog):
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._build_settings_tab] Failed: {e}", exc_info=True)
             return self._create_error_scroll(f"Error building settings tab: {e}")
+
+    def _create_derivative_dropdown(self) -> QComboBox:
+        """UPDATED: Create dropdown for derivative selection"""
+        try:
+            self.derivative_combo = QComboBox()
+            self.derivative_combo.setToolTip("The underlying instrument whose options or futures will be traded.")
+
+            # Populate from DERIVATIVE_CHOICES
+            for display, value in self.DERIVATIVE_CHOICES:
+                self.derivative_combo.addItem(display, value)
+
+            # Get current value from settings
+            current_val = "NIFTY50"
+            if self.daily_setting is not None and hasattr(self.daily_setting, 'derivative'):
+                current_val = self.daily_setting.derivative
+
+            # Select current value
+            found = False
+            for i in range(self.derivative_combo.count()):
+                if self.derivative_combo.itemData(i) == current_val:
+                    self.derivative_combo.setCurrentIndex(i)
+                    found = True
+                    break
+
+            if not found:
+                logger.warning(f"Derivative value {current_val} not found in choices")
+
+            # Store in vars for saving
+            self.vars["derivative"] = (self.derivative_combo, str)
+            self.entries["derivative"] = self.derivative_combo
+
+            return self.derivative_combo
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._create_derivative_dropdown] Failed: {e}", exc_info=True)
+            combo = QComboBox()
+            combo.addItem("Error", "NIFTY50")
+            combo.setEnabled(False)
+            return combo
 
     # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
     def _build_risk_tab(self):
@@ -730,7 +800,7 @@ class DailyTradeSettingGUI(QDialog):
                 (
                     "💡  Derivative",
                     "The underlying instrument whose options or futures will be traded.\n\n"
-                    "• Examples: NIFTY, BANKNIFTY, FINNIFTY.\n"
+                    "• Supported values: NIFTY50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX.\n"
                     "• Must match the symbol name exactly as listed on your exchange.\n"
                     "• The lot size and contract specs depend on this choice."
                 ),
@@ -1007,12 +1077,16 @@ class DailyTradeSettingGUI(QDialog):
                 self.operation_finished.emit()
                 return
 
+            # UPDATED: Add derivative from dropdown if not already in vars
+            if "derivative" not in data_to_save and self.derivative_combo is not None:
+                data_to_save["derivative"] = self.derivative_combo.currentData()
+
             # Add interval combo value
             if self.interval_combo is not None:
                 data_to_save["history_interval"] = self.interval_combo.currentData()
 
-            # Add sideway checkbox
-            if self.sideway_check is not None:
+            # Add sideway checkbox if not already in vars
+            if "sideway_zone_trade" not in data_to_save and self.sideway_check is not None:
                 data_to_save["sideway_zone_trade"] = self.sideway_check.isChecked()
 
             # Save in background thread
@@ -1128,6 +1202,7 @@ class DailyTradeSettingGUI(QDialog):
             self.vars.clear()
             self.entries.clear()
             self.interval_combo = None
+            self.derivative_combo = None  # UPDATED: Clear new field
             self.sideway_check = None
             self.status_label = None
             self.save_btn = None

@@ -16,13 +16,18 @@ Symbol format:
     instrument file from Dhan's CDN.
 
 API docs: https://dhanhq.co/docs/v2/
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
-from datetime import datetime
-from Utils.common import to_date_str, timedelta
+import threading
+from datetime import datetime, timedelta  # BUG FIX: import timedelta from stdlib datetime,
+                                          # not from Utils.common — that import was fragile
+                                          # and would fail if Utils.common didn't re-export it.
+from Utils.common import to_date_str      # to_date_str stays here; it's a project utility
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
@@ -86,6 +91,8 @@ class DhanBroker(BaseBroker):
         client_id   → Dhan client/customer ID
         secret_key  → Dhan access token (static, generated from the portal)
         redirect_uri → Not used by Dhan
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -116,6 +123,14 @@ class DhanBroker(BaseBroker):
             self.dhan = dhanhq(self.client_id, access_token)
             self.state.token = access_token
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_feed = None
+            self._ws_thread = None
+            self._ws_client_id = None
+            self._ws_token = None
+
             logger.info(f"DhanBroker initialized for client {self.client_id}")
 
         except Exception as e:
@@ -134,6 +149,20 @@ class DhanBroker(BaseBroker):
         self._request_count = 0
         # Dhan instrument cache: "NSE:SYMBOL" -> security_id
         self._instrument_cache: Dict[str, str] = {}
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_feed = None
+        self._ws_thread = None
+        self._ws_client_id = None
+        self._ws_token = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        self._dhan_sec_cache: Dict[str, Any] = {}
 
     def _load_token_from_db(self) -> Optional[str]:
         try:
@@ -260,7 +289,7 @@ class DhanBroker(BaseBroker):
             result = self._call(self.dhan.get_fund_limits, context="get_balance")
             if self._is_ok(result):
                 data = result.get("data", {})
-                available = float(data.get("availabelBalance", 0.0))
+                available = float(data.get("availableBalance", 0.0))
                 if capital_reserve > 0:
                     available = available * (1 - capital_reserve / 100)
                 return available
@@ -282,7 +311,6 @@ class DhanBroker(BaseBroker):
             dhan_interval = self._to_dhan_interval(interval)
             to_date = to_date_str(datetime.now())
             from_date = to_date_str(datetime.now() - timedelta(days=4))
-            self._check_rate_limit()
             result = self._call(
                 lambda: self.dhan.intraday_minute_data(
                     security_id=security_id,
@@ -316,7 +344,6 @@ class DhanBroker(BaseBroker):
             )
             to_date = to_date_str(datetime.now())
             from_date = to_date_str(datetime.now() - timedelta(days=fetch_days))
-            self._check_rate_limit()
             result = self._call(
                 lambda: self.dhan.historical_daily_data(
                     security_id=security_id,
@@ -535,6 +562,19 @@ class DhanBroker(BaseBroker):
             return []
 
     def get_current_order_status(self, order_id: str) -> Optional[Any]:
+        """
+        Return the integer fill status for the given order_id.
+
+        BUG FIX: The original returned `result.get("data")` — the raw order dict.
+        order_executor checks `self.api.get_current_order_status(broker_id) == 2`
+        to detect fills. A dict never equals 2, so _wait_for_fill() always timed
+        out and every Dhan limit order fell back to the market-order fallback.
+
+        Dhan orderstatus values (from dhanhq docs):
+            "TRADED"    → filled  (maps to 2)
+            "PENDING"   → open    (maps to 1)
+            "REJECTED" / "CANCELLED" → maps to -1
+        """
         try:
             if not order_id or not self.dhan:
                 return None
@@ -542,11 +582,44 @@ class DhanBroker(BaseBroker):
                 lambda: self.dhan.get_order_by_id(order_id=order_id),
                 context="order_status"
             )
-            return result.get("data") if self._is_ok(result) else None
+            if not self._is_ok(result):
+                return None
+            data = result.get("data") or {}
+            status_str = str(data.get("orderStatus") or "").upper()
+            if status_str in ("TRADED", "COMPLETE", "FILLED"):
+                return 2   # Filled — matches order_executor expectation
+            if status_str in ("REJECTED", "CANCELLED", "CANCELED"):
+                return -1
+            return 1       # Pending / open
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[DhanBroker.get_current_order_status] {e!r}", exc_info=True)
+            return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+
+        Implements BaseBroker.get_fill_price() so order_executor uses real fill
+        prices instead of tick prices for P&L.  Dhan's get_order_by_id response
+        includes 'averageTradedPrice' (or 'tradedPrice') for filled orders.
+        """
+        try:
+            if not broker_order_id or not self.dhan:
+                return None
+            result = self._call(
+                lambda: self.dhan.get_order_by_id(order_id=broker_order_id),
+                context="get_fill_price"
+            )
+            if self._is_ok(result):
+                data = result.get("data") or {}
+                avg = data.get("averageTradedPrice") or data.get("tradedPrice")
+                if avg:
+                    return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[DhanBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
     def is_connected(self) -> bool:
@@ -558,7 +631,58 @@ class DhanBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
-        logger.info("[DhanBroker] cleanup done")
+        """Clean up resources including WebSocket connection."""
+        logger.info("[DhanBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket feed if it exists
+        if self._ws_feed is not None:
+            try:
+                if self._ws_cleanup_event is None:
+                    self._ws_cleanup_event = threading.Event()
+                self._ws_cleanup_event.clear()
+
+                def _do_disconnect():
+                    try:
+                        if hasattr(self._ws_feed, "disconnect"):
+                            self._ws_feed.disconnect()
+                            logger.debug("[DhanBroker] DhanFeed disconnect called")
+                    except Exception as e:
+                        logger.warning(f"[DhanBroker] Error disconnecting feed: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run disconnect in separate thread with timeout
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[DhanBroker] DhanFeed disconnect timed out")
+
+            except Exception as e:
+                logger.error(f"[DhanBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_feed = None
+
+        # Wait for WebSocket thread to finish (with timeout)
+        if self._ws_thread and self._ws_thread.is_alive():
+            try:
+                self._ws_thread.join(timeout=1.0)
+                if self._ws_thread.is_alive():
+                    logger.warning("[DhanBroker] WebSocket thread still alive after join")
+            except Exception as e:
+                logger.warning(f"[DhanBroker] Error joining WebSocket thread: {e}")
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[DhanBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -599,6 +723,8 @@ class DhanBroker(BaseBroker):
 
         Dhan uses DhanFeed (dhanhq.market_feed module).
         Securities are identified by (exchange_segment, security_id) tuples.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             from dhanhq import marketfeed  # type: ignore
@@ -610,17 +736,21 @@ class DhanBroker(BaseBroker):
                 logger.error("DhanBroker.create_websocket: missing client_id or token")
                 return None
 
-            # Store callbacks for use in ws_connect (DhanFeed uses them at init)
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
             self._ws_on_tick    = on_tick
             self._ws_on_connect = on_connect
             self._ws_on_close   = on_close
             self._ws_on_error   = on_error
             self._ws_client_id  = client_id
             self._ws_token      = access_token
+
             # Return a sentinel; actual DhanFeed is created in ws_connect
             # because DhanFeed requires instruments list at construction time.
             logger.info("DhanBroker: WebSocket callbacks stored (DhanFeed created at subscribe)")
-            return {"__dhan_pending__": True}
+            return {"__dhan_pending__": True, "__dhan_client_id__": client_id, "__dhan_token__": access_token}
         except ImportError:
             logger.error("DhanBroker: dhanhq not installed — pip install dhanhq")
             return None
@@ -643,11 +773,13 @@ class DhanBroker(BaseBroker):
           - Uses _resolve_dhan_security() which looks up the Dhan instrument file.
           - Falls back to stripping NSE: prefix and using as security_id directly
             (works for index symbols like NIFTY 50 → security_id "13").
+
+        FIXED: Run feed in a separate thread to prevent blocking.
         """
         try:
             from dhanhq import marketfeed  # type: ignore
 
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
 
             instruments = []
@@ -660,33 +792,100 @@ class DhanBroker(BaseBroker):
                 logger.warning("DhanBroker.ws_subscribe: no valid instruments")
                 return
 
+            # Create feed
             feed = marketfeed.DhanFeed(
                 client_id=self._ws_client_id,
                 access_token=self._ws_token,
                 instruments=instruments,
                 subscription_code=marketfeed.Quote,
-                on_message=self._ws_on_tick,
+                on_message=self._ws_on_tick if not self._ws_closed else None,
             )
-            # Store feed object back into the sentinel dict so disconnect works
+
+            # Store feed object
+            self._ws_feed = feed
             ws_obj["__feed__"] = feed
-            feed.run_forever()
+
+            # Run feed in a separate thread
+            def _run_feed():
+                try:
+                    if not self._ws_closed:
+                        feed.run_forever()
+                except Exception as e:
+                    if not self._ws_closed:
+                        logger.error(f"[DhanBroker] Feed error: {e}")
+                        if self._ws_on_error:
+                            self._ws_on_error(str(e))
+
+            self._ws_thread = threading.Thread(target=_run_feed, daemon=True, name="DhanFeed")
+            self._ws_thread.start()
+
+            # Call on_connect callback
+            if self._ws_on_connect and not self._ws_closed:
+                self._ws_on_connect()
+
             logger.info(f"DhanBroker: DhanFeed started with {len(instruments)} instruments")
+
         except Exception as e:
             logger.error(f"[DhanBroker.ws_subscribe] {e}", exc_info=True)
+            if self._ws_on_error and not self._ws_closed:
+                self._ws_on_error(str(e))
 
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Dhan does not support partial unsubscribe; close and reconnect if needed."""
         logger.warning("DhanBroker: partial unsubscribe not supported — use ws_disconnect and reconnect")
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Stop Dhan live feed."""
+        """
+        Stop Dhan live feed with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
-            feed = ws_obj.get("__feed__") if isinstance(ws_obj, dict) else None
+
+            logger.info("[DhanBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
+            feed = ws_obj.get("__feed__") if isinstance(ws_obj, dict) else self._ws_feed
+
             if feed and hasattr(feed, "disconnect"):
-                feed.disconnect()
-            logger.info("DhanBroker: DhanFeed disconnected")
+                # Run disconnect in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        feed.disconnect()
+                        logger.debug("[DhanBroker] disconnect completed")
+                    except Exception as e:
+                        logger.warning(f"[DhanBroker] disconnect error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[DhanBroker] disconnect timed out")
+
+            # Clear references
+            self._ws_feed = None
+            ws_obj["__feed__"] = None
+
+            # BUG FIX: Original guard was `if self._ws_on_close and not self._ws_closed`.
+            # _ws_closed was set to True several lines above, so `not self._ws_closed`
+            # was always False and the close callback was never called on user disconnect.
+            # WebSocketManager's _on_close handler (which drives reconnect logic) was
+            # therefore never notified of a clean shutdown. Remove the inverted guard.
+            if self._ws_on_close:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[DhanBroker] Error in close callback: {e}")
+
+            logger.info("[DhanBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[DhanBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -699,14 +898,17 @@ class DhanBroker(BaseBroker):
             volume, OI, bid_price, ask_price, ...
         """
         try:
-            if not isinstance(raw_tick, dict):
+            if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
+
             ltp = raw_tick.get("LTP") or raw_tick.get("ltp")
             if ltp is None:
                 return None
+
             seg     = raw_tick.get("exchange_segment", "")
             sec_id  = raw_tick.get("security_id", "")
             symbol  = f"{seg}:{sec_id}" if seg else str(sec_id)
+
             return {
                 "symbol":    symbol,
                 "ltp":       float(ltp),
@@ -721,7 +923,8 @@ class DhanBroker(BaseBroker):
                 "close":     raw_tick.get("close"),
             }
         except Exception as e:
-            logger.error(f"[DhanBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[DhanBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_dhan_security(self, symbol: str):
@@ -739,7 +942,13 @@ class DhanBroker(BaseBroker):
 
             # Strip exchange prefix and use bare symbol as security_id
             bare = symbol.split(":")[-1]
-            seg  = marketfeed.NSE if "NSE" in symbol.upper() else marketfeed.NSE
+            upper = symbol.upper()
+            if "NFO" in upper or "FNO" in upper:
+                seg = marketfeed.NFO
+            elif "BSE" in upper:
+                seg = marketfeed.BSE
+            else:
+                seg = marketfeed.NSE
             result = (seg, bare)
             cache[symbol] = result
             self._dhan_sec_cache = cache

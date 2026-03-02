@@ -4,6 +4,9 @@ import os
 import sys
 import threading
 from datetime import datetime
+
+import pandas as pd
+
 from Utils.common import to_date_str
 from typing import Optional, Dict, Any, List
 
@@ -42,6 +45,10 @@ from strategy.strategy_manager import StrategyManager
 from strategy.strategy_picker_sidebar import StrategyPickerSidebar
 from trading_thread import TradingThread
 from license.license_manager import license_manager
+
+# IMPORTANT: Use the state manager for all state access
+from models.trade_state_manager import state_manager
+from data.candle_store_manager import candle_store_manager  # We'll create this
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -248,7 +255,11 @@ class TradingGUI(QMainWindow):
             self._create_menu()
             self._build_layout()
             self._setup_timers()
+
+            # Initialize managers first, then trading app
+            self._initialize_infrastructure()
             self._init_trading_app()
+
             self._setup_system_tray()
 
             # Rule 3: Connect internal signals
@@ -316,6 +327,23 @@ class TradingGUI(QMainWindow):
         self._update_count = 0
         self._connection_status = "Disconnected"
         self._last_heartbeat = None
+
+    def _initialize_infrastructure(self):
+        """
+        Initialize the infrastructure managers.
+        This ensures state_manager and candle_store_manager are ready.
+        """
+        try:
+            # Reset state manager for fresh start
+            state_manager.reset_for_backtest()
+
+            # Initialize candle store manager (will be properly set when broker is available)
+            from data.candle_store_manager import candle_store_manager
+            candle_store_manager.initialize(None)  # Broker will be set later
+
+            logger.info("Infrastructure managers initialized successfully")
+        except Exception as e:
+            logger.error(f"[TradingGUI._initialize_infrastructure] Failed: {e}", exc_info=True)
 
     def _create_error_window(self):
         """Create error window if initialization fails"""
@@ -783,8 +811,8 @@ class TradingGUI(QMainWindow):
             if self.trading_app is None:
                 return
 
-            state = self.trading_app.state
-            self.status_panel.refresh(state, self.config)
+            # Use state manager to get snapshot for display
+            self.status_panel.refresh(self.config)
 
             # Update popups if they're open
             if self.stats_popup is not None and self.stats_popup.isVisible():
@@ -815,7 +843,6 @@ class TradingGUI(QMainWindow):
         try:
             if self.trading_app is None:
                 return
-
             # Update chart
             self._update_chart_if_needed()
 
@@ -832,61 +859,64 @@ class TradingGUI(QMainWindow):
             if self.trading_app is None:
                 return
 
-            # Get status information
+            # Check if thread is actually running
+            thread_is_running = self.trading_thread is not None and self.trading_thread.isRunning()
+
+            # Only consider app running if both flag and thread are running
+            actual_running = self.app_running and thread_is_running
+
+            # If app_running is True but thread isn't running, correct the state
+            if self.app_running and not thread_is_running:
+                logger.warning("App state inconsistency: app_running=True but thread not running")
+                self.app_running = False
+                self.app_status_bar.update_status(
+                    {'status': 'Stopped (unexpected)'},
+                    self.trading_mode,
+                    False
+                )
+                return
+
+            # Get position snapshot for decision making
+            position_snapshot = state_manager.get_position_snapshot()
+
+            # Get status information from snapshot
             status_info = {
                 'fetching_history': False,
                 'processing': False,
-                'order_pending': False,
-                'has_position': False,
-                'trade_confirmed': False,
-                'last_exit_reason': None,
+                'order_pending': position_snapshot.get('order_pending', False),
+                'has_position': position_snapshot.get('current_position') is not None,
+                'trade_confirmed': position_snapshot.get('current_trade_confirmed', False),
+                'last_exit_reason': position_snapshot.get('reason_to_exit'),
                 'connection_status': self._connection_status
             }
 
-            # Check history fetch status
+            # Add position type if exists
+            if status_info['has_position']:
+                status_info['position_type'] = position_snapshot.get('current_position')
+
+            # Get current P&L
+            current_pnl = position_snapshot.get('current_pnl')
+            if current_pnl is not None:
+                status_info['current_pnl'] = current_pnl
+                # FEATURE 5: Emit unrealized P&L for DailyPnLWidget
+                self.unrealized_pnl_updated.emit(float(current_pnl))
+            else:
+                # Emit 0.0 when no position (no unrealized P&L)
+                self.unrealized_pnl_updated.emit(0.0)
+
+            # Check history fetch status from trading app
             if hasattr(self.trading_app, '_history_fetch_in_progress'):
                 status_info['fetching_history'] = self.trading_app._history_fetch_in_progress.is_set()
 
             # Check processing status
             if hasattr(self.trading_app, '_tick_queue'):
-                # Queue-based processing doesn't have an "in progress" flag
                 status_info['processing'] = not self.trading_app._tick_queue.empty()
 
-            # Check order pending status
-            if hasattr(self.trading_app.state, 'order_pending'):
-                status_info['order_pending'] = self.trading_app.state.order_pending
-
-            # Check if position is active
-            if hasattr(self.trading_app.state, 'current_position'):
-                status_info['has_position'] = self.trading_app.state.current_position is not None
-                if status_info['has_position']:
-                    status_info['position_type'] = self.trading_app.state.current_position
-
-            # Check if trade is confirmed
-            if hasattr(self.trading_app.state, 'current_trade_confirmed'):
-                status_info['trade_confirmed'] = self.trading_app.state.current_trade_confirmed
-
-            # Get last reason to exit
-            if hasattr(self.trading_app.state, 'reason_to_exit'):
-                status_info['last_exit_reason'] = self.trading_app.state.reason_to_exit
-
-            # Get current P&L
-            if hasattr(self.trading_app.state, 'current_pnl'):
-                status_info['current_pnl'] = self.trading_app.state.current_pnl
-
-                # FEATURE 5: Emit unrealized P&L for DailyPnLWidget (FIX: handle None)
-                pnl_value = status_info['current_pnl']
-                if pnl_value is not None:
-                    self.unrealized_pnl_updated.emit(float(pnl_value))
-                else:
-                    # Emit 0.0 when no position (no unrealized P&L)
-                    self.unrealized_pnl_updated.emit(0.0)
-
-            # Update status bar
+            # Update status bar with correct running state
             self.app_status_bar.update_status(
                 status_info,
                 self.trading_mode,
-                self.app_running
+                actual_running  # Use actual_running instead of self.app_running
             )
 
         except Exception as e:
@@ -940,53 +970,156 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._check_connection] Failed: {e}", exc_info=True)
 
     def _update_chart_if_needed(self):
-        """Update chart only if data has changed"""
+        """Check if chart needs update by comparing with CandleStore last bar time"""
         try:
             if self._chart_update_pending:
                 return
 
-            trend_data = getattr(self.trading_app.state, "derivative_trend", {}) or {}
-            if not trend_data:
+            # Get symbol from daily settings
+            symbol = self.daily_setting.derivative if self.daily_setting else None
+            if not symbol:
                 return
 
-            # Create fingerprint to detect real changes
-            try:
-                close = trend_data.get("close") or []
-                fp = f"{len(close)}:{close[-1] if close else None}"
+            # Get current timeframe
+            tf_minutes = self.chart_widget.get_current_timeframe() if hasattr(self.chart_widget,
+                                                                              'get_current_timeframe') else 5
 
-                if fp != self._last_chart_fp:
-                    self._last_chart_fp = fp
-                    self._chart_update_pending = True
-                    # Schedule update with small delay to batch rapid changes
-                    QTimer.singleShot(100, self._do_chart_update)
-            except Exception as e:
-                logger.warning(f"Chart fingerprint failed: {e}")
-                if not self._chart_update_pending:
-                    self._chart_update_pending = True
-                    QTimer.singleShot(100, self._do_chart_update)
+            # Get last bar time from CandleStore
+            from data.candle_store_manager import candle_store_manager
+            last_bar_time = candle_store_manager.last_bar_time(symbol)
+
+            if last_bar_time is None:
+                # No data yet, try to fetch
+                logger.debug(f"[TradingGUI] No data in CandleStore for {symbol}, will attempt fetch")
+                self._chart_update_pending = True
+                QTimer.singleShot(100, self._do_chart_update)
+                return
+
+            # Create fingerprint based on last bar time and bar count
+            bar_count = candle_store_manager.bar_count(symbol)
+            current_fp = f"{last_bar_time.timestamp()}:{bar_count}:{tf_minutes}"
+
+            if current_fp != self._last_chart_fp:
+                logger.debug(f"[TradingGUI] Chart fingerprint changed: {self._last_chart_fp} -> {current_fp}")
+                self._last_chart_fp = current_fp
+                self._chart_update_pending = True
+                QTimer.singleShot(100, self._do_chart_update)
 
         except Exception as e:
             logger.error(f"[TradingGUI._update_chart_if_needed] Failed: {e}", exc_info=True)
-            self._chart_update_pending = False
+            # Schedule update anyway on error
+            if not self._chart_update_pending:
+                self._chart_update_pending = True
+                QTimer.singleShot(100, self._do_chart_update)
 
     def _do_chart_update(self):
-        """Perform actual chart update"""
+        """Perform actual chart update - fetch directly from CandleStoreManager"""
         try:
-            if self.trading_app:
-                state = self.trading_app.state
-                self.chart_widget.update_charts(
-                    spot_data=getattr(state, "derivative_trend", {}) or {}
-                )
+            if not self.chart_widget:
+                self._chart_update_pending = False
+                return
+
+            # Get symbol from daily settings
+            symbol = self.daily_setting.derivative if self.daily_setting else None
+            if not symbol:
+                logger.warning("[TradingGUI] No symbol set for chart")
+                self._chart_update_pending = False
+                return
+
+            # Get current timeframe from chart widget
+            tf_minutes = self.chart_widget.get_current_timeframe() if hasattr(self.chart_widget,
+                                                                              'get_current_timeframe') else 5
+
+            # Fetch directly from candle_store_manager
+            from data.candle_store_manager import candle_store_manager
+
+            # Check if store has data, if not try to fetch
+            if candle_store_manager.is_empty(symbol):
+                logger.info(f"[TradingGUI] CandleStore empty for {symbol}, attempting to fetch...")
+
+                # Get broker type from brokerage setting
+                broker_type = None
+                if hasattr(self, 'brokerage_setting') and self.brokerage_setting:
+                    broker_type = getattr(self.brokerage_setting, 'broker_type', None)
+
+                # Fetch data (2 days by default)
+                success = candle_store_manager.fetch_all(days=2, symbols=[symbol], broker_type=broker_type)
+                if not success.get(symbol, False):
+                    logger.warning(f"[TradingGUI] Failed to fetch data for {symbol}")
+                    self._chart_update_pending = False
+                    return
+
+            # Get resampled data
+            df = candle_store_manager.resample(symbol, tf_minutes)
+
+            if df is None or df.empty:
+                logger.debug(f"[TradingGUI] No data available for {symbol} at {tf_minutes}m")
+                self._chart_update_pending = False
+                return
+
+            # Convert timestamps to strings for display (format based on timeframe)
+            time_col = df["time"] if "time" in df.columns else pd.Series()
+
+            # Format timestamps based on timeframe
+            if tf_minutes >= 60:  # Hourly or higher
+                time_str = [t.strftime("%Y-%m-%d %H:%M") for t in time_col]
+            elif tf_minutes >= 15:  # 15min or 30min
+                time_str = [t.strftime("%H:%M") for t in time_col]
+            else:  # 1min, 3min, 5min
+                time_str = [t.strftime("%H:%M") for t in time_col]
+
+            # Convert to the format expected by chart widget
+            chart_data = {
+                "open": df["open"].tolist(),
+                "high": df["high"].tolist(),
+                "low": df["low"].tolist(),
+                "close": df["close"].tolist(),
+                "volume": df["volume"].tolist() if "volume" in df.columns else [],
+                "timestamps": time_str,  # Use formatted strings for display
+                "datetime": time_col.tolist(),  # Keep original datetime objects
+            }
+
+            # Update chart
+            self.chart_widget.update_charts(spot_data=chart_data)
+            logger.debug(f"[TradingGUI] Chart updated with {len(df)} bars for {symbol} at {tf_minutes}m")
+
         except Exception as e:
             logger.error(f"[TradingGUI._do_chart_update] Failed: {e}", exc_info=True)
         finally:
             self._chart_update_pending = False
 
+    def _force_chart_refresh(self):
+        """Force a chart refresh - useful after app start or timeframe change"""
+        try:
+            logger.info("[TradingGUI] Forcing chart refresh")
+            self._chart_update_pending = False
+            self._last_chart_fp = ""
+
+            # Clear cache in chart widget
+            if hasattr(self.chart_widget, 'clear_cache'):
+                self.chart_widget.clear_cache()
+
+            # Force update
+            self._do_chart_update()
+        except Exception as e:
+            logger.error(f"[TradingGUI._force_chart_refresh] Failed: {e}", exc_info=True)
+
+    def _on_timeframe_changed(self, minutes: int):
+        """Handle timeframe change from chart widget"""
+        try:
+            logger.info(f"[TradingGUI] Timeframe changed to {minutes}m")
+            # Force chart refresh on timeframe change
+            self._last_chart_fp = ""  # Reset fingerprint
+            self._force_chart_refresh()
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_timeframe_changed] Failed: {e}", exc_info=True)
+
     def _update_button_states(self):
         """Enable/disable buttons based on app state"""
         try:
-            state = self.trading_app.state if self.trading_app else None
-            has_pos = bool(state and getattr(state, "current_position", None))
+            # Get position snapshot
+            position_snapshot = state_manager.get_position_snapshot()
+            has_pos = position_snapshot.get('current_position') is not None
             manual = self.trading_mode == "manual"
 
             self.btn_start.setDisabled(self.app_running)
@@ -1017,10 +1150,18 @@ class TradingGUI(QMainWindow):
             logger.info(
                 f"  P&L: tp={self.profit_loss_setting.tp_percentage}%, sl={self.profit_loss_setting.stoploss_percentage}%")
             logger.info(f"  Mode: {self.trading_mode_setting.mode.value}")
+
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,
+                trading_mode_var=self.trading_mode_setting,  # ← pass paper/live mode
             )
+
+            # Initialize candle store manager with broker from trading app
+            if hasattr(self.trading_app, 'broker') and self.trading_app.broker:
+                from data.candle_store_manager import candle_store_manager
+                candle_store_manager.initialize(self.trading_app.broker)
+                logger.info(f"CandleStoreManager initialized with broker for symbol: {self.daily_setting.derivative}")
 
             # FEATURE 5: Connect trade closed callback
             if hasattr(self.trading_app, 'executor'):
@@ -1101,26 +1242,55 @@ class TradingGUI(QMainWindow):
             self.trading_thread.error_occurred.connect(self._on_engine_error)
             self.trading_thread.token_expired.connect(self._on_token_expired)
             self.trading_thread.finished.connect(self._on_engine_finished)
-            self.trading_thread.started.connect(lambda: logger.info("Trading thread started"))
+
+            # FIX: Connect to started signal to update app_running
+            self.trading_thread.started.connect(self._on_thread_started)
 
             # FEATURE 5: Connect trade closed signal from thread
             self.trading_thread.position_closed.connect(
                 lambda sym, pnl: self.trade_closed.emit(pnl, pnl > 0)
             )
 
+            # Set initial state to starting
+            self.app_running = True
+            self.app_status_bar.update_status(
+                {'status': 'Starting...'},
+                self.trading_mode,
+                True
+            )
+            self._update_button_states()
+            self.status_updated.emit("Starting trading engine...")
+
+            # Start the thread
             self.trading_thread.start()
 
-            self.app_running = True
-            self.app_status_bar.update_status({'status': 'Starting...'}, self.trading_mode, True)
-            self._update_button_states()
-            self.status_updated.emit("Trading engine started")
-
-            logger.info("Trading engine started")
-            self.app_state_changed.emit(True, self.trading_mode)
+            logger.info("Trading engine thread started")
 
         except Exception as e:
             logger.error(f"[TradingGUI._start_app] Failed: {e}", exc_info=True)
             self.error_occurred.emit(f"Failed to start trading engine: {e}")
+            self.app_running = False
+            self.app_status_bar.update_status(
+                {'status': f'Start failed: {str(e)[:50]}'},
+                self.trading_mode,
+                False
+            )
+
+    @pyqtSlot()
+    def _on_thread_started(self):
+        """Handle thread started signal"""
+        try:
+            self.app_running = True
+            self.app_status_bar.update_status(
+                {'status': 'Running'},
+                self.trading_mode,
+                True
+            )
+            self.status_updated.emit("Trading engine running")
+            logger.info("Trading thread started successfully")
+            self.app_state_changed.emit(True, self.trading_mode)
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_thread_started] Failed: {e}", exc_info=True)
 
     def _is_live_mode(self) -> bool:
         """Return True when the trading mode setting is set to LIVE."""
@@ -1152,7 +1322,7 @@ class TradingGUI(QMainWindow):
             def _on_activated(result):
                 """License now paid — immediately start the trading engine."""
                 logger.info(f"Upgraded to {result.plan} — starting live engine")
-                self._update_mode_display()   # refresh mode label colour
+                self._update_mode_display()  # refresh mode label colour
                 # Small delay so the success message is visible in the dialog
                 from PyQt5.QtCore import QTimer
                 QTimer.singleShot(1400, self._start_app)
@@ -1222,7 +1392,11 @@ class TradingGUI(QMainWindow):
         """Slot called when engine finishes"""
         try:
             self.app_running = False
-            self.app_status_bar.update_status({'status': 'Stopped'}, self.trading_mode, False)
+            self.app_status_bar.update_status(
+                {'status': 'Stopped'},
+                self.trading_mode,
+                False
+            )
             self._update_button_states()
             self.status_updated.emit("Trading engine stopped")
 
@@ -1292,7 +1466,7 @@ class TradingGUI(QMainWindow):
         """Execute manual buy in background"""
         try:
             self.trading_app.executor.buy_option(
-                self.trading_app.state, option_type=option_type)
+                option_type=option_type)  # executor should use state_manager internally
             QTimer.singleShot(0, lambda: self.app_status_bar.update_status(
                 {'status': f'{option_type} order placed'}, self.trading_mode, True))
             logger.info(f"Manual {option_type} order placed successfully")
@@ -1325,8 +1499,7 @@ class TradingGUI(QMainWindow):
     def _threaded_manual_exit(self):
         """Execute manual exit in background"""
         try:
-            self.trading_app.executor.exit_position(
-                self.trading_app.state, reason="Manual Exit")
+            self.trading_app.executor.exit_position(reason="Manual Exit")  # executor should use state_manager
             QTimer.singleShot(0, lambda: self.app_status_bar.update_status(
                 {'status': 'Position exited'}, self.trading_mode, True))
             logger.info("Manual exit completed successfully")
@@ -1429,8 +1602,7 @@ class TradingGUI(QMainWindow):
             brokerage_settings.triggered.connect(self._open_brokerage)
             settings_menu.addAction(brokerage_settings)
 
-            broker_name = getattr(self.brokerage_setting, 'broker_type', 'Broker') or 'Broker'
-            login_act = QAction(f"🔑 Manual {broker_name.title()} Login", self)
+            login_act = QAction(f"🔑 Manual Broker Login", self)
             login_act.triggered.connect(self._open_login)
             settings_menu.addAction(login_act)
 
@@ -1523,7 +1695,8 @@ class TradingGUI(QMainWindow):
         try:
             if self.trading_app:
                 if not self.stats_popup:
-                    self.stats_popup = StatsPopup(self.trading_app.state, self)
+                    # Use state_manager to get state for stats popup
+                    self.stats_popup = StatsPopup(self)
                 self.stats_popup.show()
                 self.stats_popup.raise_()
                 self.stats_popup.activateWindow()
@@ -1649,9 +1822,8 @@ class TradingGUI(QMainWindow):
     def _open_login_for_token_expiry(self, reason: str = None):
         """Open login popup for token expiry"""
         try:
-            broker_name = getattr(self.brokerage_setting, 'broker_type', 'Broker') or 'Broker'
-            logger.info(f"Opening BrokerLoginPopup for {broker_name} due to token expiry")
-            reason_msg = reason or f"Your {broker_name.title()} access token has expired or is invalid."
+            logger.info(f"Opening BrokerLoginPopup for Broker due to token expiry")
+            reason_msg = reason or f"Your Broker access token has expired or is invalid."
             dlg = BrokerLoginPopup(self, self.brokerage_setting, reason=reason_msg)
             dlg.login_completed.connect(lambda _: self._reload_broker())
             result = dlg.exec_()
@@ -1681,7 +1853,13 @@ class TradingGUI(QMainWindow):
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,
+                trading_mode_var=self.trading_mode_setting,  # ← pass paper/live mode
             )
+
+            # Update candle store manager with new broker
+            if hasattr(self.trading_app, 'broker') and self.trading_app.broker:
+                from data.candle_store_manager import candle_store_manager
+                candle_store_manager.initialize(self.trading_app.broker)
 
             # FEATURE 5: Reconnect trade closed callback
             if hasattr(self.trading_app, 'executor'):
@@ -1701,6 +1879,7 @@ class TradingGUI(QMainWindow):
                 self._backtest_window = BacktestWindow(
                     trading_app=self.trading_app,
                     strategy_manager=self.strategy_manager,
+                    state_manager=state_manager,  # Pass state manager
                     parent=self,
                 )
             self._backtest_window.show()
@@ -1847,6 +2026,9 @@ class TradingGUI(QMainWindow):
                 if self.daily_pnl_widget:
                     self.daily_pnl_widget.reset()
 
+                # Reset state manager for clean state
+                state_manager.reset_for_backtest()
+
                 QMessageBox.information(self, "Cache Cleared", "Cache has been cleared successfully.")
                 logger.info("Cache cleared")
 
@@ -1898,7 +2080,9 @@ class TradingGUI(QMainWindow):
         """Open strategy editor"""
         try:
             if not self.strategy_editor:
-                self.strategy_editor = StrategyEditorWindow(parent=self)
+                self.strategy_editor = StrategyEditorWindow(
+                    parent=self,
+                )
                 self.strategy_editor.strategy_activated.connect(self._on_strategy_changed)
                 self.strategy_editor.setWindowState(Qt.WindowMaximized)
                 self.strategy_editor.setWindowFlags(Qt.Window)
@@ -2011,6 +2195,12 @@ class TradingGUI(QMainWindow):
                     self.daily_pnl_widget.cleanup()
                 except Exception as e:
                     logger.error(f"DailyPnLWidget cleanup error: {e}")
+
+            # Reset state manager
+            try:
+                state_manager.reset_for_backtest()
+            except Exception as e:
+                logger.error(f"State manager reset error: {e}")
 
             logger.info("Cleanup completed, closing application")
             event.accept()

@@ -5,6 +5,8 @@ A live-updating popup that shows every detail of the DynamicSignalEngine
 evaluation: indicator values, rule-by-rule results, group fired/not-fired
 status, conflict detection, confidence scores, and the final resolved signal.
 Works with database-backed signal engine.
+
+UPDATED: Now uses state_manager instead of direct state access.
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView, QGroupBox,
     QGridLayout, QTabWidget, QTextEdit, QProgressBar,
 )
+
+# Import state manager
+from models.trade_state_manager import state_manager
 
 from strategy.dynamic_signal_engine import SIGNAL_COLORS, SIGNAL_LABELS, SIGNAL_GROUPS
 
@@ -819,9 +824,10 @@ class _RawJsonPanel(QTextEdit):
 class DynamicSignalDebugPopup(QDialog):
     """
     Non-modal popup that lives alongside the main TradingGUI window.
-    Call  refresh()  every second (or from _tick_fast) to keep it live.
+    Call refresh() every second (or from _tick_fast) to keep it live.
     Works with database-backed signal engine.
     FEATURE 3: Added confidence display tab.
+    UPDATED: Now uses state_manager for state access.
     """
 
     def __init__(self, trading_app, parent=None):
@@ -851,7 +857,7 @@ class DynamicSignalDebugPopup(QDialog):
             self._timer.timeout.connect(self._maybe_refresh)
             self._timer.start(1000)
 
-            logger.info("DynamicSignalDebugPopup (database) initialized")
+            logger.info("DynamicSignalDebugPopup (database) initialized with state_manager")
 
         except Exception as e:
             logger.critical(f"[DynamicSignalDebugPopup.__init__] Failed: {e}", exc_info=True)
@@ -1101,17 +1107,18 @@ class DynamicSignalDebugPopup(QDialog):
 
     @pyqtSlot()
     def refresh(self):
-        """Pull the latest option_signal from trading_app.state and update UI."""
+        """Pull the latest signal data from state_manager and update UI."""
         try:
             if self.trading_app is None:
                 if self._status_lbl is not None:
                     self._status_lbl.setText("⚠  trading_app is None")
                 return
 
-            state = getattr(self.trading_app, "state", None)
+            # UPDATED: Use state_manager to get state
+            state = state_manager.get_state()
             if state is None:
                 if self._status_lbl is not None:
-                    self._status_lbl.setText("⚠  trading_app.state is None")
+                    self._status_lbl.setText("⚠  state_manager returned None")
                 return
 
             # Get trend data (derivative_trend holds the last detect() result)

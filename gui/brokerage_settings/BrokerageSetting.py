@@ -7,6 +7,7 @@ New field stored in brokerage_setting table:
     broker_type  → "fyers" | "zerodha" | "dhan"  (default: "fyers")
 
 All existing code that uses BrokerageSetting continues to work unchanged.
+UPDATED: Better integration with state_manager and logging.
 """
 
 import logging
@@ -17,6 +18,9 @@ from datetime import datetime, timedelta
 from db.connector import get_db
 from db.crud import brokerage, tokens
 from db.config_crud import config_crud
+
+# Import state manager for token status updates
+from models.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,7 @@ class BrokerageSetting:
     - broker_type selection (fyers / zerodha / dhan)
     - Telegram notification settings
     - Token management and expiry tracking
+    - Integration with state_manager for token status
     """
 
     REQUIRED_FIELDS = ["client_id", "secret_key", "redirect_uri"]
@@ -43,6 +48,8 @@ class BrokerageSetting:
             self.load()
             self._load_telegram_settings()
             self._load_token_info()
+            # Update state manager with token status
+            self._update_state_token_status()
             logger.info("BrokerageSetting initialized")
         except Exception as e:
             logger.critical(f"[BrokerageSetting.__init__] Failed: {e}", exc_info=True)
@@ -63,6 +70,18 @@ class BrokerageSetting:
         self._token_loaded = False
         self._telegram_loaded = False
 
+    def _update_state_token_status(self):
+        """Update state manager with current token status"""
+        try:
+            if hasattr(state_manager, 'set_token_status'):
+                state_manager.set_token_status(
+                    broker_type=self.broker_type,
+                    has_valid_token=self.has_valid_token,
+                    token_expiry=self.token_expiry
+                )
+        except Exception as e:
+            logger.debug(f"Could not update state manager token status: {e}")
+
     # ── Load ──────────────────────────────────────────────────────────────────
 
     def load(self) -> bool:
@@ -77,6 +96,7 @@ class BrokerageSetting:
                     data.get("broker_type", self.DEFAULT_BROKER_TYPE)
                 ) or self.DEFAULT_BROKER_TYPE
             self._loaded = True
+            self._update_state_token_status()
             return True
         except Exception as e:
             logger.error(f"[BrokerageSetting.load] {e}", exc_info=True)
@@ -104,6 +124,7 @@ class BrokerageSetting:
                     "is_valid": self._check_token_valid(),
                 })
             self._token_loaded = True
+            self._update_state_token_status()
         except Exception as e:
             logger.error(f"[BrokerageSetting._load_token_info] {e}", exc_info=True)
 
@@ -137,6 +158,7 @@ class BrokerageSetting:
             success = brokerage.save(save_data, db)
             if success:
                 self._save_telegram_settings()
+                self._update_state_token_status()
             return success
         except Exception as e:
             logger.error(f"[BrokerageSetting.save] {e}", exc_info=True)
@@ -160,6 +182,7 @@ class BrokerageSetting:
                     "access_token": access_token, "refresh_token": refresh_token,
                     "issued_at": issued_at, "expires_at": expires_at, "is_valid": True,
                 })
+                self._update_state_token_status()
             return success
         except Exception as e:
             logger.error(f"[BrokerageSetting.save_token] {e}", exc_info=True)
@@ -174,6 +197,7 @@ class BrokerageSetting:
                     "access_token": "", "refresh_token": "",
                     "issued_at": None, "expires_at": None, "is_valid": False
                 }
+                self._update_state_token_status()
             return success
         except Exception as e:
             logger.error(f"[BrokerageSetting.clear_token] {e}", exc_info=True)
@@ -283,6 +307,7 @@ class BrokerageSetting:
     @broker_type.setter
     def broker_type(self, value: str):
         self._broker_data["broker_type"] = str(value).lower() if value else self.DEFAULT_BROKER_TYPE
+        self._update_state_token_status()
 
     @property
     def telegram_bot_token(self) -> str:

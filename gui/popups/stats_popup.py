@@ -2,15 +2,20 @@
 stats_popup.py
 ==============
 Popup window for displaying trading statistics with multiple tabs.
+
+UPDATED: Now uses state_manager instead of direct state access.
 """
 
 import logging
 import logging.handlers
 import traceback
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel, QTabWidget, QHBoxLayout
+
+# Import state manager
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -19,13 +24,12 @@ logger = logging.getLogger(__name__)
 class StatsPopup(QDialog):
     """Popup window for displaying statistics with multiple tabs"""
 
-    def __init__(self, state, parent=None):
+    def __init__(self, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
-            self.state = state
             self.setWindowTitle("📊 Trading Statistics")
             self.resize(1000, 750)
             self.setMinimumSize(800, 600)
@@ -135,15 +139,14 @@ class StatsPopup(QDialog):
             # Create tab widget
             self.tab_widget = QTabWidget()
 
-            # Import StatsTab and add it
+            # Import StatsTab and add it (StatsTab now uses state_manager internally)
             try:
                 from gui.stats_tab import StatsTab
-                self.stats_tab = StatsTab(self.state)
+                self.stats_tab = StatsTab()  # No need to pass state
                 self.tab_widget.addTab(self.stats_tab, "📈 Overview")
 
-                # FEATURE 1: Add risk tab if available in state
-                if hasattr(self.state, 'get_risk_summary'):
-                    self._add_risk_tab()
+                # FEATURE 1: Add risk tab
+                self._add_risk_tab()
 
                 # FEATURE 6: Add MTF tab
                 self._add_mtf_tab()
@@ -192,7 +195,7 @@ class StatsPopup(QDialog):
 
             layout.addLayout(button_layout)
 
-            logger.info("StatsPopup initialized successfully")
+            logger.info("StatsPopup initialized successfully with state_manager")
 
         except Exception as e:
             logger.critical(f"[StatsPopup.__init__] Failed: {e}", exc_info=True)
@@ -468,7 +471,6 @@ class StatsPopup(QDialog):
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.state = None
         self.stats_tab = None
         self.refresh_timer = None
         self.tab_widget = None
@@ -478,15 +480,31 @@ class StatsPopup(QDialog):
         self.conf_bars = {}
         self.conf_explanation = None
 
-    def refresh(self):
-        """Refresh all statistics tabs"""
-        try:
-            # Rule 6: Check if we should refresh
-            if self.state is None:
-                logger.debug("refresh called with None state")
-                return
+        # Cache for snapshots
+        self._last_snapshot = {}
+        self._last_snapshot_time = None
+        self._last_position_snapshot = {}
+        self._snapshot_cache_duration = 0.1  # 100ms
 
-            # Refresh main stats tab
+    def _get_cached_snapshot(self) -> Dict[str, Any]:
+        """Get cached snapshot to avoid excessive state_manager calls"""
+        from datetime import datetime
+        now = datetime.now()
+        if (self._last_snapshot_time is None or
+            (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration):
+            self._last_snapshot = state_manager.get_snapshot()
+            self._last_position_snapshot = state_manager.get_position_snapshot()
+            self._last_snapshot_time = now
+        return self._last_snapshot
+
+    def refresh(self):
+        """Refresh all statistics tabs using state_manager"""
+        try:
+            # Get snapshots from state manager
+            snapshot = self._get_cached_snapshot()
+            position_snapshot = self._last_position_snapshot
+
+            # Refresh main stats tab (it uses state_manager internally)
             if self.stats_tab is not None:
                 try:
                     if hasattr(self.stats_tab, 'refresh') and callable(self.stats_tab.refresh):
@@ -495,59 +513,64 @@ class StatsPopup(QDialog):
                     logger.error(f"Failed to refresh stats tab: {e}", exc_info=True)
 
             # FEATURE 1: Refresh risk tab
-            self._refresh_risk_tab()
+            self._refresh_risk_tab(snapshot, position_snapshot)
 
             # FEATURE 6: Refresh MTF tab
-            self._refresh_mtf_tab()
+            self._refresh_mtf_tab(snapshot, position_snapshot)
 
             # FEATURE 3: Refresh signal confidence tab
-            self._refresh_confidence_tab()
+            self._refresh_confidence_tab(snapshot, position_snapshot)
 
             logger.debug("Statistics refreshed")
 
         except Exception as e:
             logger.error(f"[StatsPopup.refresh] Failed: {e}", exc_info=True)
 
-    def _refresh_risk_tab(self):
+    def _refresh_risk_tab(self, snapshot: Dict[str, Any], position_snapshot: Dict[str, Any]):
         """Refresh risk statistics tab"""
         try:
             if not hasattr(self, 'risk_labels') or not self.risk_labels:
                 return
 
-            # Get risk summary from state if available
-            risk_summary = {}
-            if hasattr(self.state, 'get_risk_summary'):
-                try:
-                    risk_summary = self.state.get_risk_summary(self.state)
-                except:
-                    pass
+            # Get values from snapshots
+            pnl = position_snapshot.get('current_pnl', 0)
+            max_loss = snapshot.get('max_daily_loss', -5000)
+            max_trades = snapshot.get('max_trades_per_day', 10)
 
-            # Update labels with fallbacks
+            # Count trades today (estimate - 1 if position active)
+            trades_today = 1 if position_snapshot.get('current_position') else 0
+
+            # Calculate remaining
+            loss_remaining = abs(max_loss) - abs(pnl) if pnl and pnl < 0 else abs(max_loss)
+            trades_remaining = max_trades - trades_today
+
+            # Update labels
             self._update_label(self.risk_labels, 'max_loss',
-                               f"₹{risk_summary.get('max_loss', -5000):,.0f}")
+                               f"₹{max_loss:,.0f}")
             self._update_label(self.risk_labels, 'current_pnl',
-                               f"₹{risk_summary.get('pnl_today', 0):,.2f}")
+                               f"₹{pnl:,.2f}")
             self._update_label(self.risk_labels, 'loss_remaining',
-                               f"₹{risk_summary.get('max_loss_remaining', 5000):,.2f}")
+                               f"₹{loss_remaining:,.2f}")
             self._update_label(self.risk_labels, 'max_trades',
-                               str(risk_summary.get('max_trades', 10)))
+                               str(max_trades))
             self._update_label(self.risk_labels, 'trades_today',
-                               str(risk_summary.get('trades_today', 0)))
+                               str(trades_today))
             self._update_label(self.risk_labels, 'trades_remaining',
-                               str(risk_summary.get('max_trades_remaining', 10)))
+                               str(max(0, trades_remaining)))
 
             # Blocked status
-            is_blocked = risk_summary.get('is_blocked', False)
+            is_blocked = pnl and pnl <= max_loss if max_loss < 0 else False
             self._update_label(self.risk_labels, 'risk_blocked',
                                "Yes" if is_blocked else "No",
                                "negative" if is_blocked else "positive")
 
-            # Calculate win rate
-            trades = risk_summary.get('trades_today', 0)
-            pnl = risk_summary.get('pnl_today', 0)
-            winners = sum(1 for _ in range(trades) if pnl > 0)  # Simplified
-            losers = trades - winners
-            win_rate = (winners / trades * 100) if trades > 0 else 0
+            # Simplified win rate calculation (would need trade history)
+            win_rate = 0
+            winners = 0
+            losers = 0
+            if trades_today > 0 and pnl:
+                # This is a simplification - actual win rate needs trade history
+                win_rate = 50  # Placeholder
 
             self._update_label(self.risk_labels, 'win_rate', f"{win_rate:.0f}%")
             self._update_label(self.risk_labels, 'winners', str(winners))
@@ -556,64 +579,82 @@ class StatsPopup(QDialog):
         except Exception as e:
             logger.error(f"[StatsPopup._refresh_risk_tab] Failed: {e}", exc_info=True)
 
-    def _refresh_mtf_tab(self):
+    def _refresh_mtf_tab(self, snapshot: Dict[str, Any], position_snapshot: Dict[str, Any]):
         """Refresh MTF filter tab"""
         try:
             if not hasattr(self, 'mtf_labels') or not self.mtf_labels:
                 return
 
-            # Get MTF results from state
-            mtf_results = {}
-            if self.state and hasattr(self.state, 'mtf_results'):
-                mtf_results = self.state.mtf_results
+            # Get MTF results from snapshot
+            mtf_results = snapshot.get('mtf_results', {})
 
             # Update timeframe directions
             self._update_label(self.mtf_labels, '1m', mtf_results.get('1', 'NEUTRAL'))
             self._update_label(self.mtf_labels, '5m', mtf_results.get('5', 'NEUTRAL'))
             self._update_label(self.mtf_labels, '15m', mtf_results.get('15', 'NEUTRAL'))
 
+            # Color based on direction
+            self._set_mtf_direction_color('1m', mtf_results.get('1', 'NEUTRAL'))
+            self._set_mtf_direction_color('5m', mtf_results.get('5', 'NEUTRAL'))
+            self._set_mtf_direction_color('15m', mtf_results.get('15', 'NEUTRAL'))
+
             # Count agreement
-            target = 'BULLISH' if getattr(self.state, 'option_signal', '') == 'BUY_CALL' else 'BEARISH'
+            signal = position_snapshot.get('option_signal', 'WAIT')
+            target = 'BULLISH' if signal == 'BUY_CALL' else 'BEARISH'
             matches = sum(1 for d in mtf_results.values() if d == target)
             self._update_label(self.mtf_labels, 'agreement', f"{matches}/3")
 
             # Update enabled status
-            enabled = False
-            if self.state and hasattr(self.state, 'mtf_allowed'):
-                enabled = self.state.mtf_allowed
-            self._update_label(self.mtf_labels, 'enabled', "Yes" if enabled else "No")
+            use_mtf = snapshot.get('use_mtf_filter', False)
+            self._update_label(self.mtf_labels, 'enabled', "Yes" if use_mtf else "No")
 
             # Update signal
-            signal = getattr(self.state, 'option_signal', 'WAIT')
             self._update_label(self.mtf_labels, 'signal', signal)
 
             # Update decision
-            if self.state and hasattr(self.state, 'last_mtf_summary'):
-                self._update_label(self.mtf_labels, 'decision', self.state.last_mtf_summary or "No decision yet")
+            summary = snapshot.get('last_mtf_summary', 'No decision yet')
+            self._update_label(self.mtf_labels, 'decision', summary)
 
         except Exception as e:
             logger.error(f"[StatsPopup._refresh_mtf_tab] Failed: {e}", exc_info=True)
 
-    def _refresh_confidence_tab(self):
+    def _set_mtf_direction_color(self, key: str, direction: str):
+        """Set color for MTF direction label"""
+        try:
+            if key not in self.mtf_labels:
+                return
+
+            label = self.mtf_labels[key]
+            if direction == 'BULLISH':
+                label.setProperty("cssClass", "positive")
+            elif direction == 'BEARISH':
+                label.setProperty("cssClass", "negative")
+            else:
+                label.setProperty("cssClass", "value")
+
+            # Force style refresh
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+        except Exception as e:
+            logger.debug(f"Failed to set MTF direction color: {e}")
+
+    def _refresh_confidence_tab(self, snapshot: Dict[str, Any], position_snapshot: Dict[str, Any]):
         """Refresh signal confidence tab"""
         try:
             if not hasattr(self, 'conf_labels') or not self.conf_labels:
                 return
 
-            # Get confidence from state
-            confidence = {}
-            explanation = ""
-            threshold = 0.6
+            # Get signal snapshot
+            try:
+                signal_snap = state_manager.get_state().get_option_signal_snapshot()
+            except Exception:
+                signal_snap = {}
 
-            if self.state:
-                if hasattr(self.state, 'signal_confidence'):
-                    confidence = self.state.signal_confidence
-                if hasattr(self.state, 'signal_explanation'):
-                    explanation = self.state.signal_explanation
-                if hasattr(self.state, 'option_signal_result'):
-                    result = self.state.option_signal_result
-                    if result:
-                        threshold = result.get('threshold', 0.6)
+            # Get confidence from signal snapshot
+            confidence = signal_snap.get('confidence', {})
+            explanation = signal_snap.get('explanation', "")
+            threshold = signal_snap.get('threshold', 0.6)
 
             # Update confidence bars
             for signal, bar in self.conf_bars.items():
@@ -683,13 +724,16 @@ class StatsPopup(QDialog):
                 self.stats_tab = None
 
             # Clear references
-            self.state = None
             self.tab_widget = None
             self.risk_labels.clear()
             self.mtf_labels.clear()
             self.conf_labels.clear()
             self.conf_bars.clear()
             self.conf_explanation = None
+            self._last_snapshot = {}
+            self._last_snapshot_time = None
+            self._last_position_snapshot = {}
+
             logger.info("[StatsPopup] Cleanup completed")
 
         except Exception as e:

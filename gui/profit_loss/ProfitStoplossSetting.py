@@ -5,6 +5,8 @@ Database-backed profit/stoploss settings using the SQLite database.
 
 BUG #1 FIX: Stop-loss is now stored as a positive percentage (absolute value)
             The sign is applied in the order executor (negative for buyers).
+
+UPDATED: Settings are automatically applied to trading state when saved.
 """
 
 import logging
@@ -12,6 +14,9 @@ from typing import Any, Dict, Optional
 
 from db.connector import get_db
 from db.crud import profit_stoploss
+
+# Import state manager for live updates
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -23,6 +28,8 @@ class ProfitStoplossSetting:
 
     BUG #1 FIX: stoploss_percentage is stored as positive value (absolute).
                 The sign is applied by the order executor when calculating actual stop price.
+
+    UPDATED: When settings are saved, they are automatically applied to the trading state.
     """
 
     DEFAULTS = {
@@ -167,7 +174,7 @@ class ProfitStoplossSetting:
 
     def save(self) -> bool:
         """
-        Save settings to database.
+        Save settings to database and apply to trading state.
 
         Returns:
             bool: True if save successful, False otherwise
@@ -178,6 +185,8 @@ class ProfitStoplossSetting:
 
             if success:
                 logger.debug("Profit/stoploss settings saved to database")
+                # UPDATED: Apply settings to trading state
+                self._apply_to_state()
             else:
                 logger.error("Failed to save profit/stoploss settings to database")
 
@@ -186,6 +195,34 @@ class ProfitStoplossSetting:
         except Exception as e:
             logger.error(f"[ProfitStoplossSetting.save] Failed: {e}", exc_info=True)
             return False
+
+    def _apply_to_state(self):
+        """
+        UPDATED: Apply current settings to the trading state.
+        This ensures that when settings are saved, they are immediately
+        reflected in the running trading application.
+        """
+        try:
+            # Get state instance
+            state = state_manager.get_state()
+
+            # Apply profit/loss settings to state
+            state.tp_percentage = self.tp_percentage
+            state.stoploss_percentage = self.stoploss_percentage
+            state.trailing_first_profit = self.trailing_first_profit
+            state.max_profit = self.max_profit
+            state.profit_step = self.profit_step
+            state.loss_step = self.loss_step
+            state.take_profit_type = self.profit_type
+
+            # Also update original values (for reset)
+            state.original_profit_per = self.tp_percentage
+            state.original_stoploss_per = self.stoploss_percentage
+
+            logger.debug("Applied profit/stoploss settings to trading state")
+
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSetting._apply_to_state] Failed: {e}", exc_info=True)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert settings to dictionary."""

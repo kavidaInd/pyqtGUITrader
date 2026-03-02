@@ -4,6 +4,7 @@ strategy/strategy_manager_db.py
 Database-backed strategy manager using the SQLite database instead of JSON files.
 
 FEATURE 3: Added support for confidence thresholds and rule weights.
+UPDATED: Added state manager integration helpers and improved validation.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ class StrategyManager:
     Thread-safety: all public methods are guarded by a re-entrant lock.
 
     FEATURE 3: Supports confidence thresholds and rule weights.
+    UPDATED: Added helpers for state manager integration.
     """
 
     def __init__(self):
@@ -342,6 +344,41 @@ class StrategyManager:
                 return result
             except Exception as e:
                 logger.error(f"[get_rule_weights] Failed: {e}", exc_info=True)
+                return {}
+
+    # ==================================================================
+    # UPDATED: State manager integration helpers
+    # ==================================================================
+
+    def get_state_config(self) -> Dict[str, Any]:
+        """
+        Get configuration that should be applied to the trading state.
+
+        This method extracts the relevant parts of the active strategy
+        that need to be synced with the trading state.
+
+        Returns:
+            Dict with state configuration values
+        """
+        with self._lock:
+            try:
+                engine = self.get_active_engine_config()
+
+                # Extract only the fields that affect trading behavior
+                config = {
+                    "conflict_resolution": engine.get("conflict_resolution", "WAIT"),
+                    "min_confidence": engine.get("min_confidence", 0.6),
+                }
+
+                # Add signal group enabled status
+                for signal in SIGNAL_GROUPS:
+                    group = engine.get(signal, {})
+                    config[f"{signal}_enabled"] = group.get("enabled", True)
+
+                return config
+
+            except Exception as e:
+                logger.error(f"[get_state_config] Failed: {e}", exc_info=True)
                 return {}
 
     def validate_strategy(self, strategy: Dict) -> Tuple[bool, List[str]]:

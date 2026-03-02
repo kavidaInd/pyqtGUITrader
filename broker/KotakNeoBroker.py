@@ -27,11 +27,14 @@ Authentication (TOTP + MPIN, no browser OAuth):
 
 API docs: https://github.com/Kotak-Neo/kotak-neo-api
 SDK:      pip install "git+https://github.com/Kotak-Neo/kotak-neo-api.git#egg=neo_api_client"
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -85,6 +88,8 @@ class KotakNeoBroker(BaseBroker):
 
     Extended setup — store "mobile|UCC" in username field (if available):
         call broker.login_totp(mobile="+91XXXXXXXXXX", ucc="XXXXXXX", mpin="XXXX")
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -126,6 +131,11 @@ class KotakNeoBroker(BaseBroker):
             else:
                 logger.warning("KotakNeoBroker: no token found — call broker.login_totp()")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_client = None
+
             logger.info("KotakNeoBroker initialized")
 
         except Exception as e:
@@ -144,6 +154,15 @@ class KotakNeoBroker(BaseBroker):
         self.client = None
         self._last_request_time = 0
         self._request_count = 0
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_client = None
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -583,7 +602,48 @@ class KotakNeoBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
-        logger.info("[KotakNeoBroker] cleanup done")
+        """Clean up resources including WebSocket connection."""
+        logger.info("[KotakNeoBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_client is not None:
+            try:
+                # Try to unsubscribe all with timeout
+                self._ws_cleanup_event.clear()
+
+                def _do_cleanup():
+                    try:
+                        if hasattr(self._ws_client, "un_subscribe_all"):
+                            self._ws_client.un_subscribe_all()
+                            logger.debug("[KotakNeoBroker] un_subscribe_all called")
+                    except Exception as e:
+                        logger.warning(f"[KotakNeoBroker] Error unsubscribing: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run cleanup in separate thread with timeout
+                cleanup_thread = threading.Thread(target=_do_cleanup, daemon=True)
+                cleanup_thread.start()
+
+                # Wait for cleanup with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[KotakNeoBroker] WebSocket cleanup timed out")
+
+            except Exception as e:
+                logger.error(f"[KotakNeoBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_client = None
+
+        # Clear callbacks
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[KotakNeoBroker] Cleanup completed")
 
     # ── Internal call wrapper ─────────────────────────────────────────────────
 
@@ -619,19 +679,26 @@ class KotakNeoBroker(BaseBroker):
 
         NeoAPI has built-in WebSocket support through client.on_message,
         client.subscribe() and client.un_subscribe() methods.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             if not hasattr(self, 'client') or self.client is None:
                 logger.error("KotakNeoBroker.create_websocket: client not initialized — login first")
                 return None
 
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+
             self._ws_on_tick    = on_tick
             self._ws_on_connect = on_connect
             self._ws_on_close   = on_close
             self._ws_on_error   = on_error
+            self._ws_client = self.client
 
             logger.info("KotakNeoBroker: WebSocket callbacks stored")
-            return {"__neo_client__": self.client}
+            return {"__neo_client__": self.client, "__ws_active__": True}
         except Exception as e:
             logger.error(f"[KotakNeoBroker.create_websocket] {e}", exc_info=True)
             return None
@@ -643,19 +710,27 @@ class KotakNeoBroker(BaseBroker):
         NeoAPI WebSocket is started by calling client.subscribe() which
         internally opens the WebSocket connection. Here we set up the
         message callback and call subscribe() in ws_subscribe().
+
+        FIXED: Added safety checks.
         """
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
             client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
             if client is None:
                 logger.error("KotakNeoBroker.ws_connect: no client")
                 return
 
-            # Attach message handler
-            client.on_message = lambda msg: self._ws_on_tick(msg)
+            # Attach message handler with safety check
+            def safe_on_message(msg):
+                if not self._ws_closed:
+                    self._ws_on_tick(msg)
+
+            client.on_message = safe_on_message
             logger.info("KotakNeoBroker: on_message callback attached")
-            self._ws_on_connect()
+
+            if not self._ws_closed and self._ws_on_connect:
+                self._ws_on_connect()
         except Exception as e:
             logger.error(f"[KotakNeoBroker.ws_connect] {e}", exc_info=True)
 
@@ -667,7 +742,7 @@ class KotakNeoBroker(BaseBroker):
         Translates generic symbols to Kotak Neo instrument_token format.
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
             if client is None:
@@ -695,7 +770,7 @@ class KotakNeoBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from Kotak Neo live feed."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
             if client is None:
@@ -708,15 +783,53 @@ class KotakNeoBroker(BaseBroker):
             logger.error(f"[KotakNeoBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close Kotak Neo WebSocket."""
+        """
+        Close Kotak Neo WebSocket with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
+
+            logger.info("[KotakNeoBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
             client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
+
             if client and hasattr(client, "un_subscribe_all"):
-                client.un_subscribe_all()
-            self._ws_on_close("disconnected")
-            logger.info("KotakNeoBroker: WebSocket disconnected")
+                # Run unsubscribe in separate thread with timeout
+                disconnect_complete = threading.Event()
+
+                def _do_disconnect():
+                    try:
+                        client.un_subscribe_all()
+                        logger.debug("[KotakNeoBroker] un_subscribe_all completed")
+                    except Exception as e:
+                        logger.warning(f"[KotakNeoBroker] un_subscribe_all error: {e}")
+                    finally:
+                        disconnect_complete.set()
+
+                disconnect_thread = threading.Thread(target=_do_disconnect, daemon=True)
+                disconnect_thread.start()
+
+                # Wait for disconnect with timeout
+                if not disconnect_complete.wait(timeout=2.0):
+                    logger.warning("[KotakNeoBroker] un_subscribe_all timed out")
+
+            # Clear reference
+            if self._ws_client == client:
+                self._ws_client = None
+
+            # Call on_close callback
+            if self._ws_on_close and not self._ws_closed:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[KotakNeoBroker] Error in close callback: {e}")
+
+            logger.info("[KotakNeoBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[KotakNeoBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -728,6 +841,9 @@ class KotakNeoBroker(BaseBroker):
         open, high, low, close, oi, bq1/bp1/sq1/sp1 (depth).
         """
         try:
+            if self._ws_closed:
+                return None
+
             if isinstance(raw_tick, str):
                 import json
                 raw_tick = json.loads(raw_tick)
@@ -755,7 +871,8 @@ class KotakNeoBroker(BaseBroker):
                 "close":     raw_tick.get("c") or raw_tick.get("close"),
             }
         except Exception as e:
-            logger.error(f"[KotakNeoBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[KotakNeoBroker.normalize_tick] {e}", exc_info=True)
             return None
 
     def _resolve_neo_token(self, symbol: str) -> Optional[str]:

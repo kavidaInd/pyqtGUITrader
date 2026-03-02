@@ -5,6 +5,8 @@ Pure-Python backtest engine that replays historical spot candles through
 the same signal logic used by the live trading app.
 
 Uses TradeState singleton via state_manager for consistent state access.
+
+UPDATED: Fully integrated with state_manager and candle_store_manager.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from backtest.backtest_option_pricer import OptionPricer, PriceSource, atm_strik
 from backtest.backtest_candle_debugger import CandleDebugger
 from data.candle_store import CandleStore, resample_df
 from models.trade_state_manager import state_manager
+from data.candle_store_manager import candle_store_manager
 from Utils.Utils import Utils
 from Utils.common import (MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,
                           MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE)
@@ -331,6 +334,8 @@ class BacktestEngine:
     The engine uses state_manager to access and update the trade state,
     ensuring that all backtest operations are reflected in the same state
     object used by the live trading system.
+
+    UPDATED: Also uses candle_store_manager for centralized data access.
     """
 
     def __init__(self, broker, config: BacktestConfig):
@@ -350,6 +355,9 @@ class BacktestEngine:
 
         # Save initial state for restoration after backtest
         self._saved_state = state_manager.save_state()
+
+        # Initialize candle store manager for backtest
+        candle_store_manager.initialize_for_backtest()
 
     def stop(self):
         self._stop_requested = True
@@ -394,6 +402,9 @@ class BacktestEngine:
             # Reset state for clean backtest
             state_manager.reset_for_backtest()
 
+            # Clear candle store manager for clean backtest
+            candle_store_manager.clear()
+
             # Run the replay
             result = self._replay(spot_df, pricer, signal_engine, detector)
 
@@ -404,36 +415,41 @@ class BacktestEngine:
             # Restore original state after backtest
             state_manager.restore_state(self._saved_state)
 
+            # Clear backtest candle stores
+            candle_store_manager.clear()
+
         return result
 
     # ── Private methods ───────────────────────────────────────────────────
 
     def _fetch_spot(self) -> Optional[pd.DataFrame]:
         """
-        Fetch 1-minute spot data from the broker, then resample to the
-        configured interval_minutes.
+        Fetch 1-minute spot data from the broker using CandleStoreManager,
+        then resample to the configured interval_minutes.
         """
         try:
             days = (self.config.end_date - self.config.start_date).days + 2
 
             # Detect broker type for correct symbol/interval translation
-            broker_type = self.broker.broker_type if self.broker else None
-            store = CandleStore(symbol=self.config.derivative, broker=self.broker)
+            broker_type = getattr(self.broker, 'broker_type', None) if self.broker else None
+
+            # Get store from manager
+            store = candle_store_manager.get_store(self.config.derivative)
             ok = store.fetch(days=days, broker_type=broker_type)
 
             if not ok or store.is_empty():
-                # Legacy fallback
+                # Try legacy fallback
                 logger.warning(
                     "[BacktestEngine._fetch_spot] CandleStore fetch failed — "
-                    "falling back to direct broker fetch at target interval."
+                    "trying direct broker fetch."
                 )
-                return None  # 1-min fetch is the only path; no fallback to direct broker fetch
+                return self._fetch_spot_legacy()
 
             # Resample 1-min → target interval
             if self.config.execution_interval_minutes == 1:
                 df = store.get_1min()
             else:
-                df = resample_df(store.get_1min(), self.config.execution_interval_minutes)
+                df = store.resample(self.config.execution_interval_minutes)
 
             if df is None or df.empty:
                 return None

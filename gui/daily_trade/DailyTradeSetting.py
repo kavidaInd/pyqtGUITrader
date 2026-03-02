@@ -7,6 +7,7 @@ Enhanced with support for:
 - FEATURE 6: Multi-Timeframe Filter settings
 - Risk management defaults
 - Improved validation
+- Integration with state_manager for live updates
 """
 
 import logging
@@ -15,6 +16,9 @@ from typing import Any, Dict, Optional
 
 from db.connector import get_db
 from db.crud import daily_trade
+
+# Import state manager for live updates
+from models.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -27,6 +31,9 @@ class DailyTradeSetting:
     Enhanced with additional fields for new features.
     This is a drop-in replacement for the JSON-based DailyTradeSetting class,
     maintaining the same interface while using the database.
+
+    UPDATED: When settings are saved, they are automatically applied to the
+    trading state via state_manager.apply_settings().
     """
 
     DEFAULTS = {
@@ -209,7 +216,7 @@ class DailyTradeSetting:
 
     def save(self) -> bool:
         """
-        Save settings to database.
+        Save settings to database and apply to trading state.
 
         Returns:
             bool: True if save successful, False otherwise
@@ -228,6 +235,8 @@ class DailyTradeSetting:
 
             if success:
                 logger.debug("Daily trade settings saved to database")
+                # UPDATED: Apply settings to trading state
+                self._apply_to_state()
             else:
                 logger.error("Failed to save daily trade settings to database")
 
@@ -236,6 +245,47 @@ class DailyTradeSetting:
         except Exception as e:
             logger.error(f"[DailyTradeSetting.save] Failed: {e}", exc_info=True)
             return False
+
+    def _apply_to_state(self):
+        """
+        UPDATED: Apply current settings to the trading state.
+        This ensures that when settings are saved, they are immediately
+        reflected in the running trading application.
+        """
+        try:
+            # Get state instance
+            state = state_manager.get_state()
+
+            # Apply trade config settings to state
+            state.capital_reserve = self.capital_reserve
+            state.derivative = self.derivative
+            state.expiry = self.week
+            state.lot_size = self.lot_size
+            state.call_lookback = self.call_lookback
+            state.put_lookback = self.put_lookback
+            state.original_call_lookback = self.call_lookback
+            state.original_put_lookback = self.put_lookback
+            state.interval = self.history_interval
+            state.max_num_of_option = self.max_num_of_option
+            state.lower_percentage = self.lower_percentage
+            state.cancel_after = self.cancel_after
+            state.sideway_zone_trade = self.sideway_zone_trade
+
+            # Apply MTF settings
+            state.use_mtf_filter = self.use_mtf_filter
+
+            # Apply risk limits
+            state.max_daily_loss = self.max_daily_loss
+            state.max_trades_per_day = self.max_trades_per_day
+            state.daily_target = self.daily_target
+
+            # Apply confidence threshold
+            state.min_confidence = self.min_confidence
+
+            logger.debug("Applied daily trade settings to trading state")
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSetting._apply_to_state] Failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Original property accessors (preserved)

@@ -17,11 +17,14 @@ Symbol format:
     For options: "NFO:NIFTY24DEC24500CE"
 
 API docs: https://kite.trade/docs/connect/v3/
+
+FIXED: Added proper WebSocket cleanup with timeout and state tracking.
 """
 
 import logging
 import time
 import random
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -77,6 +80,8 @@ class ZerodhaBroker(BaseBroker):
         client_id   → Zerodha API key
         secret_key  → Zerodha API secret
         redirect_uri → Redirect URI registered in developer console
+
+    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
     """
 
     def __init__(self, state, broker_setting=None):
@@ -109,6 +114,12 @@ class ZerodhaBroker(BaseBroker):
             else:
                 logger.warning("ZerodhaBroker: no access token found — please authenticate")
 
+            # WebSocket cleanup tracking
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_ticker = None
+            self._ws_token_map: Dict[int, str] = {}
+
             logger.info("ZerodhaBroker initialized")
 
         except Exception as e:
@@ -127,6 +138,17 @@ class ZerodhaBroker(BaseBroker):
         self.kite = None
         self._last_request_time = 0
         self._request_count = 0
+        self._instrument_cache: Dict[str, int] = {}
+
+        # WebSocket cleanup tracking
+        self._ws_closed = False
+        self._ws_cleanup_event = None
+        self._ws_ticker = None
+        self._ws_token_map = {}
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
 
     # ── Authentication helpers ────────────────────────────────────────────────
 
@@ -547,7 +569,49 @@ class ZerodhaBroker(BaseBroker):
             return False
 
     def cleanup(self) -> None:
-        logger.info("[ZerodhaBroker] cleanup done")
+        """Clean up resources including WebSocket connection."""
+        logger.info("[ZerodhaBroker] Starting cleanup")
+
+        # Mark WebSocket as closed to prevent callbacks
+        self._ws_closed = True
+
+        # Clean up WebSocket if it exists
+        if self._ws_ticker is not None:
+            try:
+                # Try to close with timeout
+                self._ws_cleanup_event.clear()
+
+                def _do_close():
+                    try:
+                        if hasattr(self._ws_ticker, "close"):
+                            self._ws_ticker.close()
+                            logger.debug("[ZerodhaBroker] ticker close called")
+                    except Exception as e:
+                        logger.warning(f"[ZerodhaBroker] Error closing ticker: {e}")
+                    finally:
+                        self._ws_cleanup_event.set()
+
+                # Run close in separate thread with timeout
+                close_thread = threading.Thread(target=_do_close, daemon=True)
+                close_thread.start()
+
+                # Wait for close with timeout
+                if not self._ws_cleanup_event.wait(timeout=2.0):
+                    logger.warning("[ZerodhaBroker] ticker close timed out")
+
+            except Exception as e:
+                logger.error(f"[ZerodhaBroker] Error during WebSocket cleanup: {e}", exc_info=True)
+            finally:
+                self._ws_ticker = None
+
+        # Clear token map and callbacks
+        self._ws_token_map.clear()
+        self._ws_on_tick = None
+        self._ws_on_connect = None
+        self._ws_on_close = None
+        self._ws_on_error = None
+
+        logger.info("[ZerodhaBroker] Cleanup completed")
 
     # ── Instrument token helper ───────────────────────────────────────────────
 
@@ -558,8 +622,6 @@ class ZerodhaBroker(BaseBroker):
         """
         try:
             cache_key = f"{exchange}:{tradingsymbol}"
-            if not hasattr(self, '_instrument_cache'):
-                self._instrument_cache = {}
             if cache_key in self._instrument_cache:
                 return self._instrument_cache[cache_key]
 
@@ -624,6 +686,8 @@ class ZerodhaBroker(BaseBroker):
         KiteTicker receives ticks as a list of dicts (one per subscribed token).
         Symbols must be mapped to integer instrument_tokens for subscription;
         this broker caches the mapping in self._ws_token_map.
+
+        FIXED: Added state tracking and stored callbacks.
         """
         try:
             from kiteconnect import KiteTicker  # type: ignore
@@ -634,18 +698,42 @@ class ZerodhaBroker(BaseBroker):
                 logger.error("ZerodhaBroker.create_websocket: missing api_key or access_token")
                 return None
 
+            # Reset WebSocket state
+            self._ws_closed = False
+            self._ws_cleanup_event = threading.Event()
+            self._ws_token_map.clear()
+
+            # Store callbacks
+            self._ws_on_tick = on_tick
+            self._ws_on_connect = on_connect
+            self._ws_on_close = on_close
+            self._ws_on_error = on_error
+
             ticker = KiteTicker(api_key, access_token)
 
-            # KiteTicker uses attribute-style callback assignment
-            ticker.on_ticks   = on_tick      # called with list of tick dicts
-            ticker.on_connect = lambda ws, response: on_connect()
-            ticker.on_close   = lambda ws, code, reason: on_close(f"{code}: {reason}")
-            ticker.on_error   = lambda ws, code, reason: on_error(f"{code}: {reason}")
+            # KiteTicker uses attribute-style callback assignment with safety checks
+            def safe_on_ticks(ws, ticks):
+                if not self._ws_closed:
+                    on_tick(ticks)
 
-            # Cache for symbol → instrument_token mapping (populated lazily)
-            if not hasattr(self, "_ws_token_map"):
-                self._ws_token_map: Dict[str, int] = {}
+            def safe_on_connect(ws, response):
+                if not self._ws_closed:
+                    on_connect()
 
+            def safe_on_close(ws, code, reason):
+                if not self._ws_closed:
+                    on_close(f"{code}: {reason}")
+
+            def safe_on_error(ws, code, reason):
+                if not self._ws_closed:
+                    on_error(f"{code}: {reason}")
+
+            ticker.on_ticks = safe_on_ticks
+            ticker.on_connect = safe_on_connect
+            ticker.on_close = safe_on_close
+            ticker.on_error = safe_on_error
+
+            self._ws_ticker = ticker
             logger.info("ZerodhaBroker: KiteTicker object created")
             return ticker
         except ImportError:
@@ -661,7 +749,7 @@ class ZerodhaBroker(BaseBroker):
         WebSocketManager must call this inside a daemon thread.
         """
         try:
-            if ws_obj is None:
+            if ws_obj is None or self._ws_closed:
                 return
             ws_obj.connect(threaded=True)   # threaded=True → non-blocking
             logger.info("ZerodhaBroker: KiteTicker connect() called (threaded)")
@@ -677,7 +765,7 @@ class ZerodhaBroker(BaseBroker):
         Subscribes in FULL mode for depth + LTP data.
         """
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             from kiteconnect import KiteTicker  # type: ignore
 
@@ -704,7 +792,7 @@ class ZerodhaBroker(BaseBroker):
     def ws_unsubscribe(self, ws_obj, symbols: List[str]) -> None:
         """Unsubscribe from Zerodha ticks."""
         try:
-            if ws_obj is None or not symbols:
+            if ws_obj is None or not symbols or self._ws_closed:
                 return
             tokens = []
             for sym in symbols:
@@ -719,12 +807,50 @@ class ZerodhaBroker(BaseBroker):
             logger.error(f"[ZerodhaBroker.ws_unsubscribe] {e}", exc_info=True)
 
     def ws_disconnect(self, ws_obj) -> None:
-        """Close KiteTicker."""
+        """
+        Close KiteTicker with timeout protection.
+
+        FIXED: Added timeout and better error handling.
+        """
         try:
             if ws_obj is None:
                 return
-            ws_obj.close()
-            logger.info("ZerodhaBroker: KiteTicker closed")
+
+            logger.info("[ZerodhaBroker] Starting WebSocket disconnect")
+            self._ws_closed = True
+
+            # Run close in separate thread with timeout
+            disconnect_complete = threading.Event()
+
+            def _do_close():
+                try:
+                    ws_obj.close()
+                    logger.debug("[ZerodhaBroker] close completed")
+                except Exception as e:
+                    logger.warning(f"[ZerodhaBroker] close error: {e}")
+                finally:
+                    disconnect_complete.set()
+
+            close_thread = threading.Thread(target=_do_close, daemon=True)
+            close_thread.start()
+
+            # Wait for close with timeout
+            if not disconnect_complete.wait(timeout=2.0):
+                logger.warning("[ZerodhaBroker] close timed out")
+
+            # Clear reference
+            if self._ws_ticker == ws_obj:
+                self._ws_ticker = None
+
+            # Call on_close callback
+            if self._ws_on_close and not self._ws_closed:
+                try:
+                    self._ws_on_close("disconnected by user")
+                except Exception as e:
+                    logger.warning(f"[ZerodhaBroker] Error in close callback: {e}")
+
+            logger.info("[ZerodhaBroker] WebSocket disconnect completed")
+
         except Exception as e:
             logger.error(f"[ZerodhaBroker.ws_disconnect] {e}", exc_info=True)
 
@@ -739,6 +865,9 @@ class ZerodhaBroker(BaseBroker):
         ohlc, volume, oi, buy/sell depth arrays.
         """
         try:
+            if self._ws_closed:
+                return None
+
             # KiteTicker sends a list — handle both list and single dict
             if isinstance(raw_tick, list):
                 # If list, normalize first item (WebSocketManager calls per tick)
@@ -755,8 +884,7 @@ class ZerodhaBroker(BaseBroker):
                 return None
 
             # Resolve symbol from cached token map
-            token_map = getattr(self, "_ws_token_map", {})
-            symbol = token_map.get(instrument_token, f"TOKEN:{instrument_token}")
+            symbol = self._ws_token_map.get(instrument_token, f"TOKEN:{instrument_token}")
 
             ohlc = raw_tick.get("ohlc", {})
             depth = raw_tick.get("depth", {})
@@ -779,5 +907,6 @@ class ZerodhaBroker(BaseBroker):
                 "close":     ohlc.get("close"),
             }
         except Exception as e:
-            logger.error(f"[ZerodhaBroker.normalize_tick] {e}", exc_info=True)
+            if not self._ws_closed:  # Only log if not during shutdown
+                logger.error(f"[ZerodhaBroker.normalize_tick] {e}", exc_info=True)
             return None

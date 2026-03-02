@@ -1,5 +1,7 @@
 """
 Connection Monitor Popup - Displays WebSocket and broker connection status
+
+UPDATED: Now uses state_manager instead of direct state access.
 """
 import logging
 from datetime import datetime
@@ -7,6 +9,9 @@ from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QTabWidget
+
+# Import state manager
+from models.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 
@@ -438,15 +443,19 @@ class ConnectionMonitorPopup(QDialog):
         self.timer.start(2000)  # Refresh every 2 seconds
 
     def refresh(self):
-        """Refresh connection status"""
+        """Refresh connection status using state_manager"""
         try:
             if not self.trading_app:
                 return
 
+            # Get snapshots from state manager
+            snapshot = state_manager.get_snapshot()
+            position_snapshot = state_manager.get_position_snapshot()
+
             self._refresh_connection_tab()
             self._refresh_statistics_tab()
-            self._refresh_risk_tab()  # FEATURE 1
-            self._refresh_mtf_tab()   # FEATURE 6
+            self._refresh_risk_tab(snapshot, position_snapshot)  # FEATURE 1
+            self._refresh_mtf_tab(snapshot, position_snapshot)   # FEATURE 6
 
             # Update styles
             self.ws_status_label.style().unpolish(self.ws_status_label)
@@ -507,25 +516,23 @@ class ConnectionMonitorPopup(QDialog):
                 if hasattr(broker, 'token_expiry') and broker.token_expiry:
                     self.token_expiry_label.setText(broker.token_expiry.strftime("%Y-%m-%d %H:%M"))
 
+            # UPDATED: Get symbol counts from state manager
+            snapshot = state_manager.get_snapshot()
+
             # Update symbol counts
-            if hasattr(self.trading_app, 'state'):
-                state = self.trading_app.state
+            symbols = snapshot.get('all_symbols', [])
+            self.symbols_subscribed.setText(str(len(symbols)))
 
-                if hasattr(state, 'all_symbols'):
-                    symbols = state.all_symbols or []
-                    self.symbols_subscribed.setText(str(len(symbols)))
+            # Count active symbols (with recent data)
+            option_chain = snapshot.get('option_chain', {})
+            active = 0
+            for sym, data in option_chain.items():
+                if data and data.get('ltp') is not None:
+                    active += 1
+            self.active_symbols.setText(str(active))
 
-                    # Count active symbols (with recent data)
-                    active = 0
-                    if hasattr(state, 'option_chain'):
-                        for sym, data in state.option_chain.items():
-                            if data and data.get('ltp') is not None:
-                                active += 1
-                    self.active_symbols.setText(str(active))
-
-                # Option chain size
-                if hasattr(state, 'option_chain'):
-                    self.option_chain_size.setText(str(len(state.option_chain)))
+            # Option chain size
+            self.option_chain_size.setText(str(len(option_chain)))
 
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup._refresh_connection_tab] Failed: {e}")
@@ -571,44 +578,42 @@ class ConnectionMonitorPopup(QDialog):
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup._refresh_statistics_tab] Failed: {e}")
 
-    def _refresh_risk_tab(self):
+    def _refresh_risk_tab(self, snapshot: dict, position_snapshot: dict):
         """
-        FEATURE 1: Refresh risk tab data
+        FEATURE 1: Refresh risk tab data using state manager snapshots
         """
         try:
-            if not hasattr(self.trading_app, 'risk_manager') or not self.trading_app.risk_manager:
-                return
-
-            risk = self.trading_app.risk_manager
-            config = self.trading_app.config if hasattr(self.trading_app, 'config') else None
-
-            summary = risk.get_risk_summary(config)
+            # Get P&L from position snapshot
+            pnl = position_snapshot.get('current_pnl', 0)
 
             # Format P&L
-            pnl = summary.get('pnl_today', 0)
-            pnl_color = "#3fb950" if pnl >= 0 else "#f85149"
+            pnl_color = "#3fb950" if pnl and pnl >= 0 else "#f85149"
             self.daily_pnl.setText(f"₹{pnl:,.2f}")
             self.daily_pnl.setStyleSheet(f"color: {pnl_color}; font-weight: bold;")
 
-            # Trades
-            self.trades_today.setText(str(summary.get('trades_today', 0)))
+            # Trades today (estimate - 1 if position active)
+            trades_today = 1 if position_snapshot.get('current_position') else 0
+            self.trades_today.setText(str(trades_today))
 
-            # Limits
-            max_loss = summary.get('max_loss', -5000)
+            # Get risk limits from snapshot
+            max_loss = snapshot.get('max_daily_loss', -5000)
             self.max_loss.setText(f"₹{max_loss:,.0f}")
 
-            loss_rem = summary.get('max_loss_remaining', 0)
-            self.loss_remaining.setText(f"₹{loss_rem:,.2f}")
+            # Calculate loss remaining
+            loss_remaining = abs(max_loss) - abs(pnl) if pnl and pnl < 0 else abs(max_loss)
+            self.loss_remaining.setText(f"₹{loss_remaining:,.2f}")
 
-            trades_rem = summary.get('max_trades_remaining', 0)
-            self.trades_remaining.setText(str(trades_rem))
+            # Trades remaining
+            max_trades = snapshot.get('max_trades_per_day', 10)
+            trades_remaining = max_trades - trades_today
+            self.trades_remaining.setText(str(max(0, trades_remaining)))
 
-            # Blocked status
-            is_blocked = summary.get('is_blocked', False)
+            # Risk blocked status (if loss limit hit)
+            is_blocked = pnl and pnl <= max_loss if max_loss < 0 else False
             if is_blocked:
                 self.risk_blocked.setText("Yes")
                 self.risk_blocked.setObjectName("error")
-                self.block_reason.setText(summary.get('block_reason', 'Unknown'))
+                self.block_reason.setText("Daily loss limit exceeded")
             else:
                 self.risk_blocked.setText("No")
                 self.risk_blocked.setObjectName("success")
@@ -621,61 +626,55 @@ class ConnectionMonitorPopup(QDialog):
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup._refresh_risk_tab] Failed: {e}")
 
-    def _refresh_mtf_tab(self):
+    def _refresh_mtf_tab(self, snapshot: dict, position_snapshot: dict):
         """
-        FEATURE 6: Refresh multi-timeframe filter tab data
+        FEATURE 6: Refresh multi-timeframe filter tab data using state manager snapshots
         """
         try:
-            if not hasattr(self.trading_app, 'mtf_filter') or not self.trading_app.mtf_filter:
-                return
+            # Check if MTF filter is enabled
+            use_mtf = snapshot.get('use_mtf_filter', False)
+            self.mtf_enabled.setText("Yes" if use_mtf else "No")
+            self.mtf_enabled.setObjectName("success" if use_mtf else "value")
 
-            mtf = self.trading_app.mtf_filter
-            config = self.trading_app.config if hasattr(self.trading_app, 'config') else None
+            # Get current signal from position snapshot
+            signal = position_snapshot.get('option_signal', 'WAIT')
+            self.mtf_signal.setText(signal)
 
-            # Check if enabled
-            enabled = False
-            if config:
-                enabled = config.get('use_mtf_filter', False)
-            self.mtf_enabled.setText("Yes" if enabled else "No")
-            self.mtf_enabled.setObjectName("success" if enabled else "value")
+            # Color based on signal
+            if signal in ['BUY_CALL', 'BUY_PUT']:
+                self.mtf_signal.setObjectName("success")
+            elif signal in ['EXIT_CALL', 'EXIT_PUT']:
+                self.mtf_signal.setObjectName("warning")
+            else:
+                self.mtf_signal.setObjectName("value")
 
-            # Get current signal from state
-            if hasattr(self.trading_app, 'state') and self.trading_app.state:
-                signal = self.trading_app.state.option_signal
-                self.mtf_signal.setText(signal)
+            # Get MTF results from snapshot
+            mtf_results = snapshot.get('mtf_results', {})
+            self.mtf_1m.setText(mtf_results.get('1', 'NEUTRAL'))
+            self.mtf_5m.setText(mtf_results.get('5', 'NEUTRAL'))
+            self.mtf_15m.setText(mtf_results.get('15', 'NEUTRAL'))
 
-                # Color based on signal
-                if signal in ['BUY_CALL', 'BUY_PUT']:
-                    self.mtf_signal.setObjectName("success")
-                elif signal in ['EXIT_CALL', 'EXIT_PUT']:
-                    self.mtf_signal.setObjectName("warning")
-                else:
-                    self.mtf_signal.setObjectName("value")
+            # Color the direction labels
+            self._set_mtf_direction_color(self.mtf_1m, mtf_results.get('1', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_5m, mtf_results.get('5', 'NEUTRAL'))
+            self._set_mtf_direction_color(self.mtf_15m, mtf_results.get('15', 'NEUTRAL'))
 
-            # Get MTF results from state
-            if hasattr(self.trading_app.state, 'mtf_results'):
-                results = self.trading_app.state.mtf_results
-                self.mtf_1m.setText(results.get('1', 'NEUTRAL'))
-                self.mtf_5m.setText(results.get('5', 'NEUTRAL'))
-                self.mtf_15m.setText(results.get('15', 'NEUTRAL'))
-
-                # Count agreement
-                target = 'BULLISH' if self.mtf_signal.text() == 'BUY_CALL' else 'BEARISH'
-                matches = sum(1 for d in results.values() if d == target)
-                self.mtf_agreement.setText(f"{matches}/3")
+            # Count agreement
+            target = 'BULLISH' if signal == 'BUY_CALL' else 'BEARISH'
+            matches = sum(1 for d in mtf_results.values() if d == target)
+            self.mtf_agreement.setText(f"{matches}/3")
 
             # Last decision
-            if hasattr(self.trading_app.state, 'last_mtf_summary'):
-                summary = self.trading_app.state.last_mtf_summary or ""
-                if "ALLOWED" in summary:
-                    self.mtf_decision.setText("ALLOWED")
-                    self.mtf_decision.setObjectName("success")
-                elif "BLOCKED" in summary:
-                    self.mtf_decision.setText("BLOCKED")
-                    self.mtf_decision.setObjectName("error")
-                else:
-                    self.mtf_decision.setText(summary)
-                    self.mtf_decision.setObjectName("value")
+            summary = snapshot.get('last_mtf_summary', '')
+            if "ALLOWED" in summary.upper():
+                self.mtf_decision.setText("ALLOWED")
+                self.mtf_decision.setObjectName("success")
+            elif "BLOCKED" in summary.upper():
+                self.mtf_decision.setText("BLOCKED")
+                self.mtf_decision.setObjectName("error")
+            else:
+                self.mtf_decision.setText(summary or "No decision")
+                self.mtf_decision.setObjectName("value")
 
             # Update styles
             self.mtf_enabled.style().unpolish(self.mtf_enabled)
@@ -687,6 +686,17 @@ class ConnectionMonitorPopup(QDialog):
 
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup._refresh_mtf_tab] Failed: {e}")
+
+    def _set_mtf_direction_color(self, label: QLabel, direction: str):
+        """Set color for MTF direction label"""
+        if direction == 'BULLISH':
+            label.setObjectName("success")
+        elif direction == 'BEARISH':
+            label.setObjectName("error")
+        else:
+            label.setObjectName("value")
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def _reconnect(self):
         """Attempt to reconnect WebSocket"""
