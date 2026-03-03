@@ -26,7 +26,7 @@ from db.config_crud import config_crud
 from db.connector import get_db
 
 # Import state manager for configuration sync
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 

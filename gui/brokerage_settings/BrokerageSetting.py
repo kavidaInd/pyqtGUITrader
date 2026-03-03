@@ -20,7 +20,7 @@ from db.crud import brokerage, tokens
 from db.config_crud import config_crud
 
 # Import state manager for token status updates
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 

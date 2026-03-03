@@ -2,6 +2,7 @@
 System Monitor Popup - Displays system resource usage and trading app performance metrics
 
 UPDATED: Now uses state_manager for trading state access.
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 import logging
 import psutil
@@ -13,99 +14,306 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QProgressBar, QTabWidget
 
 # Import state manager
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
+
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
 
 logger = logging.getLogger(__name__)
 
 
-class SystemMonitorPopup(QDialog):
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+class SystemMonitorPopup(QDialog, ThemedMixin):
     """Popup window for monitoring system resources and trading app performance"""
 
     def __init__(self, trading_app=None, parent=None):
-        super().__init__(parent)
-        self.trading_app = trading_app
-        self.setWindowTitle("System Monitor")
-        self.resize(600, 600)
-        self.setMinimumSize(550, 550)
+        # Rule 2: Safe defaults first
+        self._safe_defaults_init()
 
-        # Set window flags
-        self.setWindowFlags(Qt.Window)
+        try:
+            super().__init__(parent)
 
-        # Apply dark theme
-        self.setStyleSheet("""
-            QDialog { background: #0d1117; color: #e6edf3; }
-            QTabWidget::pane {
-                border: 1px solid #30363d;
-                background: #0d1117;
-            }
-            QTabBar::tab {
-                background: #161b22;
-                color: #8b949e;
-                padding: 8px 16px;
-                border: 1px solid #30363d;
-            }
-            QTabBar::tab:selected {
-                background: #21262d;
-                color: #e6edf3;
-                border-bottom: 2px solid #58a6ff;
-            }
-            QGroupBox {
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                margin-top: 10px;
-                font-weight: bold;
-                color: #e6edf3;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }
-            QLabel { color: #e6edf3; }
-            QLabel#value { color: #58a6ff; font-weight: bold; }
-            QLabel#warning { color: #d29922; }
-            QLabel#critical { color: #f85149; }
-            QLabel#positive { color: #3fb950; }
-            QProgressBar {
-                border: 1px solid #30363d;
-                border-radius: 3px;
-                text-align: center;
-                color: #e6edf3;
-            }
-            QProgressBar::chunk {
-                background-color: #58a6ff;
-                border-radius: 3px;
-            }
-            QProgressBar#memory::chunk { background-color: #3fb950; }
-            QProgressBar#cpu::chunk { background-color: #d29922; }
-            QProgressBar#disk::chunk { background-color: #8957e5; }
-            QPushButton {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover { background: #30363d; }
-            QPushButton#dangerBtn {
-                background: #da3633;
-            }
-            QPushButton#dangerBtn:hover {
-                background: #f85149;
-            }
-        """)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
-        self._init_ui()
-        self._init_timer()
+            self.trading_app = trading_app
+            self.setWindowTitle("System Monitor")
+            self.resize(600, 600)
+            self.setMinimumSize(550, 550)
 
-        # Cache for snapshots
+            # Set window flags
+            self.setWindowFlags(Qt.Window)
+
+            # Build UI (without hardcoded styles)
+            self._init_ui()
+            self._init_timer()
+
+            # Cache for snapshots
+            self._last_snapshot = {}
+            self._last_snapshot_time = None
+            self._last_position_snapshot = {}
+            self._snapshot_cache_duration = 0.1  # 100ms
+
+            # Apply theme initially
+            self.apply_theme()
+
+            logger.info("SystemMonitorPopup initialized")
+
+        except Exception as e:
+            logger.critical(f"[SystemMonitorPopup.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        self.trading_app = None
+        self.timer = None
+        self.tab_widget = None
+        self.refresh_btn = None
+        self.gc_btn = None
+
+        # System tab widgets
+        self.cpu_progress = None
+        self.cpu_cores = None
+        self.cpu_freq = None
+        self.cpu_load = None
+        self.mem_progress = None
+        self.mem_used = None
+        self.mem_available = None
+        self.mem_total = None
+        self.disk_progress = None
+        self.disk_used = None
+        self.disk_free = None
+        self.disk_total = None
+
+        # App tab widgets
+        self.process_pid = None
+        self.process_threads = None
+        self.process_memory = None
+        self.process_cpu = None
+        self.process_uptime = None
+        self.process_fds = None
+        self.trading_msg_rate = None
+        self.trading_queue_size = None
+        self.trading_symbols = None
+        self.trading_active_chain = None
+        self.trading_open_orders = None
+        self.trading_position = None
+        self.trading_pnl = None
+        self.trading_signal = None
+        self.risk_trades_today = None
+        self.risk_loss_remaining = None
+        self.risk_trades_left = None
+
+        # Network tab widgets
+        self.ws_status = None
+        self.ws_messages = None
+        self.ws_errors = None
+        self.ws_reconnects = None
+        self.ws_last_msg = None
+        self.net_bytes_sent = None
+        self.net_bytes_recv = None
+        self.net_packets_sent = None
+        self.net_packets_recv = None
+        self.conn_list = None
+
+        # Cache
         self._last_snapshot = {}
         self._last_snapshot_time = None
         self._last_position_snapshot = {}
-        self._snapshot_cache_duration = 0.1  # 100ms
+        self._snapshot_cache_duration = 0.1
+        self.process_start_time = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the popup.
+        Called on theme change, density change, and initial render.
+        """
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Apply main stylesheet
+            self.setStyleSheet(self._get_stylesheet())
+
+            # Update button styles
+            if self.refresh_btn:
+                self.refresh_btn.setStyleSheet(self._get_button_style("normal"))
+
+            if self.gc_btn:
+                self.gc_btn.setStyleSheet(self._get_button_style("danger"))
+
+            # Update progress bar colors based on current values (will be refreshed)
+            self._update_progress_bar_colors()
+
+            logger.debug("[SystemMonitorPopup.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[SystemMonitorPopup.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_stylesheet(self) -> str:
+        """Generate stylesheet with current theme tokens"""
+        c = self._c
+        ty = self._ty
+        sp = self._sp
+
+        return f"""
+            QDialog {{ 
+                background: {c.BG_MAIN}; 
+                color: {c.TEXT_MAIN}; 
+            }}
+            QTabWidget::pane {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                background: {c.BG_MAIN};
+            }}
+            QTabBar::tab {{
+                background: {c.BG_PANEL};
+                color: {c.TEXT_DIM};
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                font-size: {ty.SIZE_SM}pt;
+            }}
+            QTabBar::tab:selected {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+            }}
+            QGroupBox {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                margin-top: {sp.PAD_MD}px;
+                font-weight: {ty.WEIGHT_BOLD};
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_SM}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {sp.PAD_MD}px;
+                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
+            }}
+            QLabel {{ 
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_SM}pt;
+            }}
+            QLabel#value {{ 
+                color: {c.BLUE}; 
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+            QLabel#warning {{ 
+                color: {c.YELLOW}; 
+            }}
+            QLabel#critical {{ 
+                color: {c.RED}; 
+            }}
+            QLabel#positive {{ 
+                color: {c.GREEN}; 
+            }}
+            QProgressBar {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                text-align: center;
+                color: {c.TEXT_MAIN};
+                min-height: {sp.PROGRESS_SM}px;
+                max-height: {sp.PROGRESS_MD}px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {c.BLUE};
+                border-radius: {sp.RADIUS_SM}px;
+            }}
+        """
+
+    def _get_button_style(self, button_type: str) -> str:
+        """Get styled button for specific types"""
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
+        if button_type == "danger":
+            bg = c.RED
+            bg_hover = c.RED_BRIGHT
+            border = c.RED_BRIGHT
+        else:
+            bg = c.BG_HOVER
+            bg_hover = c.BORDER
+            border = c.BORDER
+
+        return f"""
+            QPushButton {{
+                background: {bg};
+                color: {c.TEXT_INVERSE if button_type == "danger" else c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {border};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-size: {ty.SIZE_SM}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+            QPushButton:hover {{
+                background: {bg_hover};
+            }}
+        """
+
+    def _update_progress_bar_colors(self):
+        """Update progress bar colors based on current values"""
+        try:
+            c = self._c
+
+            # CPU progress bar
+            if self.cpu_progress:
+                cpu_val = self.cpu_progress.value()
+                if cpu_val > 90:
+                    color = c.RED
+                elif cpu_val > 70:
+                    color = c.YELLOW
+                else:
+                    color = c.BLUE
+                self.cpu_progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background-color: {color}; border-radius: {self._sp.RADIUS_SM}px; }}
+                """)
+
+            # Memory progress bar
+            if self.mem_progress:
+                mem_val = self.mem_progress.value()
+                if mem_val > 90:
+                    color = c.RED
+                elif mem_val > 80:
+                    color = c.YELLOW
+                else:
+                    color = c.GREEN
+                self.mem_progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background-color: {color}; border-radius: {self._sp.RADIUS_SM}px; }}
+                """)
+
+            # Disk progress bar
+            if self.disk_progress:
+                color = c.PURPLE
+                self.disk_progress.setStyleSheet(f"""
+                    QProgressBar::chunk {{ background-color: {color}; border-radius: {self._sp.RADIUS_SM}px; }}
+                """)
+
+        except Exception as e:
+            logger.error(f"[SystemMonitorPopup._update_progress_bar_colors] Failed: {e}")
 
     def _init_ui(self):
+        """Initialize the user interface"""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+        layout.setSpacing(self._sp.GAP_MD)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -126,12 +334,12 @@ class SystemMonitorPopup(QDialog):
 
         # Button row
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(self._sp.GAP_MD)
 
         self.refresh_btn = QPushButton("⟳ Refresh Now")
         self.refresh_btn.clicked.connect(self.refresh)
 
         self.gc_btn = QPushButton("🗑️ Run GC")
-        self.gc_btn.setObjectName("dangerBtn")
         self.gc_btn.clicked.connect(self._run_garbage_collection)
 
         close_btn = QPushButton("Close")
@@ -149,19 +357,25 @@ class SystemMonitorPopup(QDialog):
 
     def _create_system_tab(self):
         """Create system resources tab"""
+        sp = self._sp
+
         widget = QGroupBox("System Resources")
         layout = QVBoxLayout(widget)
+        layout.setSpacing(sp.GAP_MD)
 
         # CPU Usage Group
         cpu_group = QGroupBox("CPU Usage")
         cpu_layout = QVBoxLayout()
+        cpu_layout.setSpacing(sp.GAP_SM)
 
         self.cpu_progress = QProgressBar()
-        self.cpu_progress.setObjectName("cpu")
         self.cpu_progress.setRange(0, 100)
         cpu_layout.addWidget(self.cpu_progress)
 
         cpu_info_layout = QGridLayout()
+        cpu_info_layout.setVerticalSpacing(sp.GAP_XS)
+        cpu_info_layout.setHorizontalSpacing(sp.GAP_MD)
+
         cpu_info_layout.addWidget(QLabel("Cores:"), 0, 0)
         self.cpu_cores = QLabel(str(psutil.cpu_count()))
         self.cpu_cores.setObjectName("value")
@@ -184,13 +398,16 @@ class SystemMonitorPopup(QDialog):
         # Memory Usage Group
         mem_group = QGroupBox("Memory Usage")
         mem_layout = QVBoxLayout()
+        mem_layout.setSpacing(sp.GAP_SM)
 
         self.mem_progress = QProgressBar()
-        self.mem_progress.setObjectName("memory")
         self.mem_progress.setRange(0, 100)
         mem_layout.addWidget(self.mem_progress)
 
         mem_info_layout = QGridLayout()
+        mem_info_layout.setVerticalSpacing(sp.GAP_XS)
+        mem_info_layout.setHorizontalSpacing(sp.GAP_MD)
+
         mem_info_layout.addWidget(QLabel("Used:"), 0, 0)
         self.mem_used = QLabel("-")
         self.mem_used.setObjectName("value")
@@ -213,13 +430,16 @@ class SystemMonitorPopup(QDialog):
         # Disk Usage Group
         disk_group = QGroupBox("Disk Usage")
         disk_layout = QVBoxLayout()
+        disk_layout.setSpacing(sp.GAP_SM)
 
         self.disk_progress = QProgressBar()
-        self.disk_progress.setObjectName("disk")
         self.disk_progress.setRange(0, 100)
         disk_layout.addWidget(self.disk_progress)
 
         disk_info_layout = QGridLayout()
+        disk_info_layout.setVerticalSpacing(sp.GAP_XS)
+        disk_info_layout.setHorizontalSpacing(sp.GAP_MD)
+
         disk_info_layout.addWidget(QLabel("Used:"), 0, 0)
         self.disk_used = QLabel("-")
         self.disk_used.setObjectName("value")
@@ -243,12 +463,17 @@ class SystemMonitorPopup(QDialog):
 
     def _create_app_tab(self):
         """Create trading app metrics tab"""
+        sp = self._sp
+
         widget = QGroupBox("Trading Application")
         layout = QVBoxLayout(widget)
+        layout.setSpacing(sp.GAP_MD)
 
         # Process Info
         process_group = QGroupBox("Process Info")
         process_layout = QGridLayout()
+        process_layout.setVerticalSpacing(sp.GAP_XS)
+        process_layout.setHorizontalSpacing(sp.GAP_MD)
 
         process_layout.addWidget(QLabel("PID:"), 0, 0)
         self.process_pid = QLabel(str(os.getpid()))
@@ -286,6 +511,8 @@ class SystemMonitorPopup(QDialog):
         # Trading Stats
         trading_group = QGroupBox("Trading Statistics")
         trading_layout = QGridLayout()
+        trading_layout.setVerticalSpacing(sp.GAP_XS)
+        trading_layout.setHorizontalSpacing(sp.GAP_MD)
 
         # Row 0
         trading_layout.addWidget(QLabel("Messages/sec:"), 0, 0)
@@ -337,6 +564,8 @@ class SystemMonitorPopup(QDialog):
         # FEATURE 1: Risk Metrics
         risk_group = QGroupBox("Risk Metrics")
         risk_layout = QGridLayout()
+        risk_layout.setVerticalSpacing(sp.GAP_XS)
+        risk_layout.setHorizontalSpacing(sp.GAP_MD)
 
         risk_layout.addWidget(QLabel("Trades Today:"), 0, 0)
         self.risk_trades_today = QLabel("0")
@@ -361,12 +590,17 @@ class SystemMonitorPopup(QDialog):
 
     def _create_network_tab(self):
         """Create network statistics tab"""
+        sp = self._sp
+
         widget = QGroupBox("Network Statistics")
         layout = QVBoxLayout(widget)
+        layout.setSpacing(sp.GAP_MD)
 
         # WebSocket Stats
         ws_group = QGroupBox("WebSocket Connection")
         ws_layout = QGridLayout()
+        ws_layout.setVerticalSpacing(sp.GAP_XS)
+        ws_layout.setHorizontalSpacing(sp.GAP_MD)
 
         ws_layout.addWidget(QLabel("Status:"), 0, 0)
         self.ws_status = QLabel("Disconnected")
@@ -399,6 +633,8 @@ class SystemMonitorPopup(QDialog):
         # Network I/O
         io_group = QGroupBox("Network I/O")
         io_layout = QGridLayout()
+        io_layout.setVerticalSpacing(sp.GAP_XS)
+        io_layout.setHorizontalSpacing(sp.GAP_MD)
 
         io_layout.addWidget(QLabel("Bytes Sent:"), 0, 0)
         self.net_bytes_sent = QLabel("0 B")
@@ -429,7 +665,7 @@ class SystemMonitorPopup(QDialog):
 
         self.conn_list = QLabel("No active connections")
         self.conn_list.setWordWrap(True)
-        self.conn_list.setStyleSheet("color: #8b949e; font-size: 9pt;")
+        self.conn_list.setObjectName("value")
         conn_layout.addWidget(self.conn_list)
 
         conn_group.setLayout(conn_layout)
@@ -482,12 +718,48 @@ class SystemMonitorPopup(QDialog):
             self._refresh_app_metrics()
             self._refresh_network_metrics()
 
-            # Update styles
-            self.cpu_progress.style().unpolish(self.cpu_progress)
-            self.cpu_progress.style().polish(self.cpu_progress)
+            # Update progress bar colors based on new values
+            self._update_progress_bar_colors()
+
+            # Update status label colors
+            self._update_status_label_colors()
 
         except Exception as e:
             logger.error(f"[SystemMonitorPopup.refresh] Failed: {e}")
+
+    def _update_status_label_colors(self):
+        """Update status label colors based on current values"""
+        try:
+            c = self._c
+
+            # WebSocket status
+            if self.ws_status:
+                is_connected = "Connected" in self.ws_status.text()
+                if is_connected:
+                    self.ws_status.setProperty("cssClass", "positive")
+                else:
+                    self.ws_status.setProperty("cssClass", "critical")
+                self.ws_status.style().unpolish(self.ws_status)
+                self.ws_status.style().polish(self.ws_status)
+
+            # P&L
+            if self.trading_pnl:
+                pnl_text = self.trading_pnl.text().replace('₹', '').replace(',', '')
+                try:
+                    pnl = float(pnl_text)
+                    if pnl > 0:
+                        self.trading_pnl.setProperty("cssClass", "positive")
+                    elif pnl < 0:
+                        self.trading_pnl.setProperty("cssClass", "critical")
+                    else:
+                        self.trading_pnl.setProperty("cssClass", "value")
+                    self.trading_pnl.style().unpolish(self.trading_pnl)
+                    self.trading_pnl.style().polish(self.trading_pnl)
+                except:
+                    pass
+
+        except Exception as e:
+            logger.error(f"[SystemMonitorPopup._update_status_label_colors] Failed: {e}")
 
     def _refresh_system_metrics(self):
         """Refresh system resource metrics"""
@@ -505,7 +777,7 @@ class SystemMonitorPopup(QDialog):
             try:
                 load_avg = psutil.getloadavg()
                 self.cpu_load.setText(f"{load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}")
-            except:
+            except Exception:
                 self.cpu_load.setText("N/A")
 
             # Memory
@@ -521,14 +793,6 @@ class SystemMonitorPopup(QDialog):
             self.disk_used.setText(self._format_bytes(disk.used))
             self.disk_free.setText(self._format_bytes(disk.free))
             self.disk_total.setText(self._format_bytes(disk.total))
-
-            # Color code CPU based on usage
-            if cpu_percent > 90:
-                self.cpu_progress.setStyleSheet("QProgressBar::chunk { background-color: #f85149; }")
-            elif cpu_percent > 70:
-                self.cpu_progress.setStyleSheet("QProgressBar::chunk { background-color: #d29922; }")
-            else:
-                self.cpu_progress.setStyleSheet("QProgressBar::chunk { background-color: #58a6ff; }")
 
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._refresh_system_metrics] Failed: {e}")
@@ -564,7 +828,7 @@ class SystemMonitorPopup(QDialog):
             # Open file descriptors
             try:
                 self.process_fds.setText(str(len(process.open_files())))
-            except:
+            except Exception:
                 self.process_fds.setText("N/A")
 
             # Trading stats from state_manager
@@ -575,10 +839,14 @@ class SystemMonitorPopup(QDialog):
 
                 # Symbols from snapshot
                 symbols = snapshot.get('all_symbols', [])
+                if symbols is None:
+                    symbols = []
                 self.trading_symbols.setText(str(len(symbols)))
 
                 # Active chain
                 option_chain = snapshot.get('option_chain', {})
+                if option_chain is None:
+                    option_chain = {}
                 active = 0
                 for data in option_chain.values():
                     if data and data.get('ltp') is not None:
@@ -587,6 +855,8 @@ class SystemMonitorPopup(QDialog):
 
                 # Open orders from snapshot
                 orders = snapshot.get('orders', [])
+                if orders is None:
+                    orders = []
                 self.trading_open_orders.setText(str(len(orders)) if orders else "0")
 
                 # Position from position snapshot
@@ -595,15 +865,10 @@ class SystemMonitorPopup(QDialog):
 
                 # P&L from position snapshot
                 pnl = position_snapshot.get('current_pnl', 0)
-                self.trading_pnl.setText(f"₹{pnl:,.2f}" if pnl else "₹0.00")
-
-                # Color based on P&L
-                if pnl and pnl > 0:
-                    self.trading_pnl.setProperty("cssClass", "positive")
-                elif pnl and pnl < 0:
-                    self.trading_pnl.setProperty("cssClass", "critical")
+                if pnl:
+                    self.trading_pnl.setText(f"₹{pnl:,.2f}")
                 else:
-                    self.trading_pnl.setProperty("cssClass", "value")
+                    self.trading_pnl.setText("₹0.00")
 
                 # Signal from position snapshot
                 signal = position_snapshot.get('option_signal', 'WAIT')
@@ -619,16 +884,14 @@ class SystemMonitorPopup(QDialog):
                 self.risk_loss_remaining.setText(f"₹{loss_remaining:,.2f}")
                 self.risk_trades_left.setText(str(max(0, trades_left)))
 
-            # Update styles
-            self.trading_pnl.style().unpolish(self.trading_pnl)
-            self.trading_pnl.style().polish(self.trading_pnl)
-
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._refresh_app_metrics] Failed: {e}")
 
     def _refresh_network_metrics(self):
         """Refresh network metrics"""
         try:
+            c = self._c
+
             # WebSocket stats from app (still from trading_app)
             if self.trading_app and hasattr(self.trading_app, 'ws') and self.trading_app.ws:
                 ws = self.trading_app.ws
@@ -636,10 +899,8 @@ class SystemMonitorPopup(QDialog):
                 # Status
                 if hasattr(ws, 'is_connected') and ws.is_connected():
                     self.ws_status.setText("Connected")
-                    self.ws_status.setProperty("cssClass", "positive")
                 else:
                     self.ws_status.setText("Disconnected")
-                    self.ws_status.setProperty("cssClass", "critical")
 
                 # Statistics
                 if hasattr(ws, 'get_statistics'):
@@ -655,7 +916,6 @@ class SystemMonitorPopup(QDialog):
                     self.ws_last_msg.setText(dt.strftime("%H:%M:%S"))
             else:
                 self.ws_status.setText("No WebSocket")
-                self.ws_status.setProperty("cssClass", "value")
 
             # Network I/O (from psutil)
             net_io = psutil.net_io_counters()
@@ -678,20 +938,27 @@ class SystemMonitorPopup(QDialog):
             except (psutil.AccessDenied, psutil.Error):
                 self.conn_list.setText("Connection info unavailable (need admin rights)")
 
-            # Update styles
-            self.ws_status.style().unpolish(self.ws_status)
-            self.ws_status.style().polish(self.ws_status)
-            self.trading_pnl.style().unpolish(self.trading_pnl)
-            self.trading_pnl.style().polish(self.trading_pnl)
-
         except Exception as e:
             logger.error(f"[SystemMonitorPopup._refresh_network_metrics] Failed: {e}")
 
     def closeEvent(self, event):
-        """Handle close event"""
+        """Handle close event - Rule 7"""
         try:
-            self.timer.stop()
+            if self.timer:
+                self.timer.stop()
+                self.timer = None
             event.accept()
         except Exception as e:
             logger.error(f"[SystemMonitorPopup.closeEvent] Failed: {e}")
             event.accept()
+
+    def cleanup(self):
+        """Clean up resources - Rule 7"""
+        try:
+            if self.timer and self.timer.isActive():
+                self.timer.stop()
+            self.timer = None
+            self.trading_app = None
+            logger.info("[SystemMonitorPopup] Cleanup completed")
+        except Exception as e:
+            logger.error(f"[SystemMonitorPopup.cleanup] Error: {e}", exc_info=True)

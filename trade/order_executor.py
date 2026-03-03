@@ -31,7 +31,7 @@ from db.connector import get_db
 from db.crud import orders as orders_crud
 
 # Import state manager for state access
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 

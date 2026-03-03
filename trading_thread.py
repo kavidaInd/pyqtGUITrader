@@ -7,7 +7,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 from broker.BaseBroker import TokenExpiredError
 
 # Import state manager for cleanup
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

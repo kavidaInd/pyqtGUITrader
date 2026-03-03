@@ -39,7 +39,7 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
 

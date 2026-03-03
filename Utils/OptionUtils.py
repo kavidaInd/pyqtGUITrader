@@ -760,7 +760,6 @@ class OptionUtils:
                 logger.warning("get_all_option called with empty symbol")
                 symbol = "NIFTY50"
 
-            print(strike)
             exchange_symbol = cls.get_exchange_symbol(symbol)
             multiplier = cls.get_multiplier(exchange_symbol)
             atm_strike = cls.get_nearest_strike_price(strike, multiplier)

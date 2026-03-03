@@ -12,7 +12,7 @@ from typing import Dict, Any
 from datetime import datetime
 
 from broker.BrokerFactory import BrokerFactory
-from models.trade_state import TradeState
+from data.trade_state import TradeState
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

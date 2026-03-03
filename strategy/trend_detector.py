@@ -17,7 +17,7 @@ import numpy as np
 from strategy.dynamic_signal_engine import DynamicSignalEngine
 
 # Import state manager for updating state
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

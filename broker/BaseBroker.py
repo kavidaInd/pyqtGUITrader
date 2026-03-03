@@ -593,7 +593,7 @@ class BaseBroker(ABC):
             Current P&L float (positive = profit, negative = loss).
         """
         try:
-            from models.trade_state_manager import state_manager
+            from data.trade_state_manager import state_manager
             snapshot = state_manager.get_position_snapshot()
             # Try common P&L field names in order of preference
             for key in ("pnl", "current_pnl", "unrealized_pnl", "live_pnl"):
@@ -650,7 +650,7 @@ class BaseBroker(ABC):
             Value from state, or default.
         """
         try:
-            from models.trade_state_manager import state_manager
+            from data.trade_state_manager import state_manager
             return state_manager.get_value(key, default)
         except ImportError:
             return default
@@ -670,7 +670,7 @@ class BaseBroker(ABC):
             True on success, False otherwise.
         """
         try:
-            from models.trade_state_manager import state_manager
+            from data.trade_state_manager import state_manager
             return state_manager.set_value(key, value)
         except ImportError:
             return False

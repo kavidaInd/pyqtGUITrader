@@ -7,10 +7,10 @@ This module provides:
 - Colored log display widgets (QTextEdit and QPlainTextEdit based)
 - Thread-safe log emission via Qt signals
 - Rate limiting support
-- Multiple log level colors (GitHub Dark theme)
+- Multiple log level colors (themed)
 - Integration with the application's logging infrastructure
 
-UPDATED: Fixed RuntimeError during shutdown by adding proper cleanup and safety checks.
+UPDATED: Fully integrated with ThemeManager for dynamic theme switching.
 """
 
 import logging
@@ -24,6 +24,9 @@ from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer, Qt
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import QTextEdit, QPlainTextEdit, QApplication
+
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -69,7 +72,7 @@ class QtLogSignaller(QObject):
         """Mark as deleted when garbage collected"""
         try:
             self._deleted = True
-        except:
+        except Exception:
             pass
 
     def safe_emit_log_message(self, msg: str, levelno: int, source: str) -> bool:
@@ -120,23 +123,15 @@ class ColoredLogWidget(QTextEdit):
     A QTextEdit widget specifically designed for colored log display.
 
     Features:
-    - Color-coded log levels (GitHub Dark theme)
+    - Color-coded log levels (themed)
     - Level icons for visual identification
     - Line limit to prevent memory issues
     - Batch updates for performance
     - HTML-safe rendering
+    - Theme-aware colors
     """
 
-    # Define colors for different log levels (GitHub Dark theme)
-    LEVEL_COLORS = {
-        logging.DEBUG: QColor("#8b949e"),  # Gray
-        logging.INFO: QColor("#e6edf3"),  # White
-        logging.WARNING: QColor("#f0883e"),  # Orange
-        logging.ERROR: QColor("#f85149"),  # Red
-        logging.CRITICAL: QColor("#ff7b72"),  # Light Red
-    }
-
-    # Define level icons
+    # Define level icons (static - not theme dependent)
     LEVEL_ICONS = {
         logging.DEBUG: "🔍",
         logging.INFO: "ℹ️",
@@ -169,16 +164,9 @@ class ColoredLogWidget(QTextEdit):
             self.show_icons = show_icons
             self.show_sources = show_sources
 
-            # EXACT stylesheet preservation
-            self.setStyleSheet("""
-                QTextEdit {
-                    background: #0d1117;
-                    color: #e6edf3;
-                    border: 1px solid #30363d;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    font-size: 10pt;
-                }
-            """)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
             # Initialize document
             self._line_count = 0
@@ -187,6 +175,9 @@ class ColoredLogWidget(QTextEdit):
             self._error_count = 0
             self._warning_count = 0
             self._closed = False
+
+            # Apply theme initially
+            self.apply_theme()
 
             # Enable context menu
             self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -213,6 +204,64 @@ class ColoredLogWidget(QTextEdit):
         self._error_count = 0
         self._warning_count = 0
         self._closed = False
+
+    # =========================================================================
+    # Shorthand properties for theme tokens
+    # =========================================================================
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the log widget.
+        Called on theme change, density change, and initial render.
+        """
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Update stylesheet with current theme tokens
+            self.setStyleSheet(f"""
+                QTextEdit {{
+                    background: {c.BG_MAIN};
+                    color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    font-family: '{ty.FONT_MONO}';
+                    font-size: {ty.SIZE_MONO}pt;
+                }}
+            """)
+
+            # Refresh level colors dictionary
+            self._refresh_level_colors()
+
+            # Clear source color cache (will regenerate with new theme)
+            self._source_colors.clear()
+
+            logger.debug("[ColoredLogWidget.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[ColoredLogWidget.apply_theme] Failed: {e}", exc_info=True)
+
+    def _refresh_level_colors(self) -> None:
+        """Refresh level colors based on current theme"""
+        c = self._c
+        self.LEVEL_COLORS = {
+            logging.DEBUG: QColor(c.TEXT_DIM),
+            logging.INFO: QColor(c.TEXT_MAIN),
+            logging.WARNING: QColor(c.YELLOW_BRIGHT),
+            logging.ERROR: QColor(c.RED_BRIGHT),
+            logging.CRITICAL: QColor(c.RED),
+        }
 
     def closeEvent(self, event):
         """Handle widget close event"""
@@ -270,16 +319,24 @@ class ColoredLogWidget(QTextEdit):
             hash_obj = hashlib.md5(source.encode())
             hash_hex = hash_obj.hexdigest()[:6]
 
-            # Ensure color is readable on dark background
+            # Ensure color is readable on current theme background
             r = int(hash_hex[0:2], 16)
             g = int(hash_hex[2:4], 16)
             b = int(hash_hex[4:6], 16)
 
-            # Adjust brightness if too dark
-            if r + g + b < 300:
-                r = min(255, r + 100)
-                g = min(255, g + 100)
-                b = min(255, b + 100)
+            # Adjust brightness if too dark for current theme
+            if theme_manager.is_dark():
+                # For dark theme, ensure colors are bright enough
+                if r + g + b < 300:
+                    r = min(255, r + 100)
+                    g = min(255, g + 100)
+                    b = min(255, b + 100)
+            else:
+                # For light theme, ensure colors are not too bright
+                if r + g + b > 600:
+                    r = max(0, r - 100)
+                    g = max(0, g - 100)
+                    b = max(0, b - 100)
 
             color = QColor(r, g, b)
             self._source_colors[source] = color
@@ -287,7 +344,7 @@ class ColoredLogWidget(QTextEdit):
 
         except Exception as e:
             logger.debug(f"Failed to generate source color: {e}")
-            return QColor("#8b949e")  # Default gray
+            return QColor(self._c.TEXT_DIM)  # Default to text dim color
 
     def _get_source_icon(self, source: str) -> str:
         """Get icon for source"""
@@ -327,6 +384,10 @@ class ColoredLogWidget(QTextEdit):
                 logger.warning(f"append_colored called with non-int level: {level}")
                 level = logging.INFO
 
+            # Ensure level colors are fresh
+            if not hasattr(self, 'LEVEL_COLORS'):
+                self._refresh_level_colors()
+
             # Update counters
             if level == logging.ERROR or level == logging.CRITICAL:
                 self._error_count += 1
@@ -352,7 +413,7 @@ class ColoredLogWidget(QTextEdit):
 
             # Create format for this message
             format = QTextCharFormat()
-            color = self.LEVEL_COLORS.get(level, QColor("#e6edf3"))
+            color = self.LEVEL_COLORS.get(level, QColor(self._c.TEXT_MAIN))
             if color:
                 format.setForeground(color)
 
@@ -414,6 +475,10 @@ class ColoredLogWidget(QTextEdit):
                 logger.warning(f"append_batch called with non-list: {type(messages)}")
                 return
 
+            # Ensure level colors are fresh
+            if not hasattr(self, 'LEVEL_COLORS'):
+                self._refresh_level_colors()
+
             self._batch_update_in_progress = True
 
             cursor = self.textCursor()
@@ -453,7 +518,7 @@ class ColoredLogWidget(QTextEdit):
                             remove_cursor.deleteChar()
 
                     format = QTextCharFormat()
-                    color = self.LEVEL_COLORS.get(level, QColor("#e6edf3"))
+                    color = self.LEVEL_COLORS.get(level, QColor(self._c.TEXT_MAIN))
                     if color:
                         format.setForeground(color)
 
@@ -520,6 +585,14 @@ class ColoredLogWidget(QTextEdit):
             'errors': self._error_count,
             'warnings': self._warning_count,
         }
+
+    def cleanup(self):
+        """Clean up resources - Rule 7"""
+        try:
+            self._closed = True
+            self._source_colors.clear()
+        except Exception as e:
+            logger.error(f"[ColoredLogWidget.cleanup] Error: {e}")
 
 
 class QtLogHandler(logging.Handler):
@@ -715,7 +788,7 @@ class QtLogHandler(logging.Handler):
             self.handleError(record)
 
     def close(self):
-        """Clean up resources"""
+        """Clean up resources - Rule 7"""
         try:
             self._closed = True
 
@@ -735,7 +808,7 @@ class QtLogHandler(logging.Handler):
                     # Disconnect all signals to prevent further emissions
                     self.signaller.log_message.disconnect()
                     self.signaller.log_batch.disconnect()
-                except:
+                except Exception:
                     pass
                 self.signaller = None
 
@@ -838,7 +911,7 @@ class SimpleLogHandler(logging.Handler):
             self.handleError(record)
 
     def close(self):
-        """Clean up resources"""
+        """Clean up resources - Rule 7"""
         try:
             self._closed = True
             self.log_widget = None
@@ -856,16 +929,10 @@ class ColoredPlainTextWidget(QPlainTextEdit):
     - Maximum block count for memory management
     - Level icons and colors
     - Batch updates
+    - Theme-aware colors
     """
 
-    LEVEL_COLORS = {
-        logging.DEBUG: "#8b949e",  # Gray
-        logging.INFO: "#e6edf3",  # White
-        logging.WARNING: "#f0883e",  # Orange
-        logging.ERROR: "#f85149",  # Red
-        logging.CRITICAL: "#ff7b72",  # Light Red
-    }
-
+    # Define level icons (static - not theme dependent)
     LEVEL_ICONS = {
         logging.DEBUG: "🔍",
         logging.INFO: "ℹ️",
@@ -874,6 +941,7 @@ class ColoredPlainTextWidget(QPlainTextEdit):
         logging.CRITICAL: "🔥",
     }
 
+    # Source icons for different parts of the application
     SOURCE_ICONS = {
         "state_manager": "📊",
         "trading_app": "🤖",
@@ -897,21 +965,17 @@ class ColoredPlainTextWidget(QPlainTextEdit):
             self.show_icons = show_icons
             self.show_sources = show_sources
 
-            # EXACT stylesheet preservation
-            self.setStyleSheet("""
-                QPlainTextEdit {
-                    background: #0d1117;
-                    color: #e6edf3;
-                    border: 1px solid #30363d;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    font-size: 10pt;
-                }
-            """)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
             # Statistics
             self._error_count = 0
             self._warning_count = 0
             self._closed = False
+
+            # Apply theme initially
+            self.apply_theme()
 
             # Enable context menu
             self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -934,6 +998,61 @@ class ColoredPlainTextWidget(QPlainTextEdit):
         self._error_count = 0
         self._warning_count = 0
         self._closed = False
+
+    # =========================================================================
+    # Shorthand properties for theme tokens
+    # =========================================================================
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the log widget.
+        Called on theme change, density change, and initial render.
+        """
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Update stylesheet with current theme tokens
+            self.setStyleSheet(f"""
+                QPlainTextEdit {{
+                    background: {c.BG_MAIN};
+                    color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    font-family: '{ty.FONT_MONO}';
+                    font-size: {ty.SIZE_MONO}pt;
+                }}
+            """)
+
+            # Refresh level colors dictionary
+            self._refresh_level_colors()
+
+            logger.debug("[ColoredPlainTextWidget.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[ColoredPlainTextWidget.apply_theme] Failed: {e}", exc_info=True)
+
+    def _refresh_level_colors(self) -> None:
+        """Refresh level colors based on current theme"""
+        c = self._c
+        self.LEVEL_COLORS = {
+            logging.DEBUG: c.TEXT_DIM,
+            logging.INFO: c.TEXT_MAIN,
+            logging.WARNING: c.YELLOW_BRIGHT,
+            logging.ERROR: c.RED_BRIGHT,
+            logging.CRITICAL: c.RED,
+        }
 
     def closeEvent(self, event):
         """Handle widget close event"""
@@ -1009,13 +1128,17 @@ class ColoredPlainTextWidget(QPlainTextEdit):
                 logger.warning(f"append_colored called with non-int level: {level}")
                 level = logging.INFO
 
+            # Ensure level colors are fresh
+            if not hasattr(self, 'LEVEL_COLORS'):
+                self._refresh_level_colors()
+
             # Update counters
             if level == logging.ERROR or level == logging.CRITICAL:
                 self._error_count += 1
             elif level == logging.WARNING:
                 self._warning_count += 1
 
-            color = self.LEVEL_COLORS.get(level, "#e6edf3")
+            color = self.LEVEL_COLORS.get(level, self._c.TEXT_MAIN)
 
             # Build display text
             display_text = ""
@@ -1069,6 +1192,10 @@ class ColoredPlainTextWidget(QPlainTextEdit):
                 logger.warning(f"append_batch called with non-list: {type(messages)}")
                 return
 
+            # Ensure level colors are fresh
+            if not hasattr(self, 'LEVEL_COLORS'):
+                self._refresh_level_colors()
+
             html_parts = []
 
             for item in messages:
@@ -1092,7 +1219,7 @@ class ColoredPlainTextWidget(QPlainTextEdit):
                     elif level == logging.WARNING:
                         self._warning_count += 1
 
-                    color = self.LEVEL_COLORS.get(level, "#e6edf3")
+                    color = self.LEVEL_COLORS.get(level, self._c.TEXT_MAIN)
 
                     # Build display text
                     display_text = ""
@@ -1154,6 +1281,13 @@ class ColoredPlainTextWidget(QPlainTextEdit):
             'errors': self._error_count,
             'warnings': self._warning_count,
         }
+
+    def cleanup(self):
+        """Clean up resources - Rule 7"""
+        try:
+            self._closed = True
+        except Exception as e:
+            logger.error(f"[ColoredPlainTextWidget.cleanup] Error: {e}")
 
 
 # Convenience function to set up logging

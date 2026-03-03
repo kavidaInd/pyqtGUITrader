@@ -18,7 +18,7 @@ from db.connector import get_db
 from db.crud import trading_mode
 
 # Import state manager for live updates
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)

@@ -2,8 +2,7 @@
 logs_popup.py
 =============
 High-performance log viewer popup with filtering, export, and syntax highlighting.
-
-UPDATED: Fixed AttributeError when source_combo is None during log appending.
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
 import logging
@@ -22,83 +21,135 @@ from PyQt5.QtWidgets import (
     QFileDialog
 )
 
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
+
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
-class LogHighlighter(QSyntaxHighlighter):
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+class LogHighlighter(QSyntaxHighlighter, ThemedMixin):
     """
     Syntax highlighter for log messages with level-based coloring.
+    Theme-aware - colors update when theme changes.
     """
 
-    # Define colors for different log levels
-    LEVEL_COLORS = {
-        'DEBUG': QColor('#8b949e'),    # Gray
-        'INFO': QColor('#58a6ff'),     # Blue
-        'WARNING': QColor('#d29922'),  # Yellow
-        'ERROR': QColor('#f85149'),    # Red
-        'CRITICAL': QColor('#ff7b72')  # Bright red
-    }
-
-    # Source colors (for different application components)
-    SOURCE_COLORS = {
-        'state_manager': QColor('#bc8cff'),  # Purple
-        'trading_app': QColor('#3fb950'),    # Green
-        'websocket': QColor('#ffa657'),      # Orange
-        'executor': QColor('#79c0ff'),       # Light blue
-        'signal_engine': QColor('#ff7b72'),  # Light red
-        'risk_manager': QColor('#d29922'),   # Yellow
-        'notifier': QColor('#a5d6ff'),       # Light blue
-        'gui': QColor('#c9d1d9'),            # Light gray
-    }
-
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._init_rules()
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._init_rules()
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[LogHighlighter.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        self.rules = []
+        self.level_colors = {}
+        self.source_colors = {}
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to highlighting rules"""
+        try:
+            c = self._c
+            self.level_colors = {
+                'DEBUG': QColor(c.TEXT_DIM),      # Gray
+                'INFO': QColor(c.BLUE),            # Blue
+                'WARNING': QColor(c.YELLOW),       # Yellow
+                'ERROR': QColor(c.RED),            # Red
+                'CRITICAL': QColor(c.RED_BRIGHT),  # Bright red
+            }
+
+            self.source_colors = {
+                'state_manager': QColor(c.PURPLE),  # Purple
+                'trading_app': QColor(c.GREEN),     # Green
+                'websocket': QColor(c.ORANGE),      # Orange
+                'executor': QColor(c.BLUE),         # Light blue (using BLUE)
+                'signal_engine': QColor(c.RED_BRIGHT),  # Light red
+                'risk_manager': QColor(c.YELLOW),   # Yellow
+                'notifier': QColor(c.BLUE),         # Light blue
+                'gui': QColor(c.TEXT_DIM),          # Light gray (using TEXT_DIM)
+            }
+
+            self._init_rules()
+
+            # Rehighlight the document
+            self.rehighlight()
+
+        except Exception as e:
+            logger.error(f"[LogHighlighter.apply_theme] Failed: {e}", exc_info=True)
 
     def _init_rules(self):
         """Initialize highlighting rules"""
-        self.rules = []
+        try:
+            c = self._c
+            self.rules = []
 
-        # Timestamp pattern (YYYY-MM-DD HH:MM:SS,mmm)
-        timestamp_format = QTextCharFormat()
-        timestamp_format.setForeground(QColor('#6e7681'))
-        timestamp_format.setFontWeight(QFont.Normal)
-        self.rules.append((re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}'), timestamp_format))
+            # Timestamp pattern (YYYY-MM-DD HH:MM:SS,mmm)
+            timestamp_format = QTextCharFormat()
+            timestamp_format.setForeground(QColor(c.TEXT_DISABLED))
+            timestamp_format.setFontWeight(QFont.Normal)
+            self.rules.append((re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}'), timestamp_format))
 
-        # Thread/Process ID pattern
-        thread_format = QTextCharFormat()
-        thread_format.setForeground(QColor('#8b949e'))
-        thread_format.setFontWeight(QFont.Normal)
-        self.rules.append((re.compile(r'\[.*?\]'), thread_format))
+            # Thread/Process ID pattern
+            thread_format = QTextCharFormat()
+            thread_format.setForeground(QColor(c.TEXT_DIM))
+            thread_format.setFontWeight(QFont.Normal)
+            self.rules.append((re.compile(r'\[.*?\]'), thread_format))
 
-        # Level patterns
-        for level, color in self.LEVEL_COLORS.items():
-            level_format = QTextCharFormat()
-            level_format.setForeground(color)
-            level_format.setFontWeight(QFont.Bold)
-            self.rules.append((re.compile(f'\\b{level}\\b'), level_format))
-            self.rules.append((re.compile(f'\\| {level} \\|'), level_format))
+            # Level patterns
+            for level, color in self.level_colors.items():
+                level_format = QTextCharFormat()
+                level_format.setForeground(color)
+                level_format.setFontWeight(QFont.Bold)
+                self.rules.append((re.compile(f'\\b{level}\\b'), level_format))
+                self.rules.append((re.compile(f'\\| {level} \\|'), level_format))
 
-        # Source patterns
-        for source, color in self.SOURCE_COLORS.items():
-            source_format = QTextCharFormat()
-            source_format.setForeground(color)
-            source_format.setFontWeight(QFont.Bold)
-            self.rules.append((re.compile(f'\\b{source}\\b'), source_format))
+            # Source patterns
+            for source, color in self.source_colors.items():
+                source_format = QTextCharFormat()
+                source_format.setForeground(color)
+                source_format.setFontWeight(QFont.Bold)
+                self.rules.append((re.compile(f'\\b{source}\\b'), source_format))
 
-        # Number patterns
-        number_format = QTextCharFormat()
-        number_format.setForeground(QColor('#79c0ff'))
-        self.rules.append((re.compile(r'\b\d+\.?\d*\b'), number_format))
+            # Number patterns
+            number_format = QTextCharFormat()
+            number_format.setForeground(QColor(c.BLUE))
+            self.rules.append((re.compile(r'\b\d+\.?\d*\b'), number_format))
 
-        # Exception patterns
-        exception_format = QTextCharFormat()
-        exception_format.setForeground(QColor('#f85149'))
-        exception_format.setFontWeight(QFont.Bold)
-        self.rules.append((re.compile(r'Traceback \(most recent call last\)'), exception_format))
-        self.rules.append((re.compile(r'  File .*, line \d+, in .*'), exception_format))
-        self.rules.append((re.compile(r'    .*'), exception_format))
+            # Exception patterns
+            exception_format = QTextCharFormat()
+            exception_format.setForeground(QColor(c.RED))
+            exception_format.setFontWeight(QFont.Bold)
+            self.rules.append((re.compile(r'Traceback \(most recent call last\)'), exception_format))
+            self.rules.append((re.compile(r'  File .*, line \d+, in .*'), exception_format))
+            self.rules.append((re.compile(r'    .*'), exception_format))
+
+        except Exception as e:
+            logger.error(f"[LogHighlighter._init_rules] Failed: {e}", exc_info=True)
 
     def highlightBlock(self, text):
         """Apply highlighting to a block of text"""
@@ -109,26 +160,63 @@ class LogHighlighter(QSyntaxHighlighter):
                 self.setFormat(start, length, format)
 
 
-class LogViewerWidget(QPlainTextEdit):
+class LogViewerWidget(QPlainTextEdit, ThemedMixin):
     """High-performance log viewer with virtual scrolling and filtering capabilities"""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setReadOnly(True)
-        self.setMaximumBlockCount(20000)  # Increased from 10000
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
 
-        # Set monospace font for better log readability
-        font = self.document().defaultFont()
-        font.setFamily('Consolas, Courier New, monospace')
-        font.setPointSize(9)
-        self.document().setDefaultFont(font)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
-        # Enable custom context menu
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.setReadOnly(True)
+            self.setMaximumBlockCount(20000)  # Increased from 10000
+            self.setLineWrapMode(QPlainTextEdit.NoWrap)
 
-        # Add syntax highlighter
-        self.highlighter = LogHighlighter(self.document())
+            # Enable custom context menu
+            self.setContextMenuPolicy(Qt.CustomContextMenu)
+
+            # Add syntax highlighter
+            self.highlighter = LogHighlighter(self.document())
+
+            self.apply_theme()
+
+        except Exception as e:
+            logger.error(f"[LogViewerWidget.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        self.highlighter = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the widget"""
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Set monospace font for better log readability
+            font = self.document().defaultFont()
+            font.setFamily(ty.FONT_MONO)
+            font.setPointSize(ty.SIZE_SM)
+            self.document().setDefaultFont(font)
+
+            self.setStyleSheet(f"""
+                QPlainTextEdit {{ 
+                    background: {c.BG_MAIN}; 
+                    color: {c.TEXT_MAIN}; 
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    font-family: '{ty.FONT_MONO}';
+                    font-size: {ty.SIZE_SM}pt;
+                    selection-background-color: {c.BG_SELECTED};
+                }}
+            """)
+        except Exception as e:
+            logger.error(f"[LogViewerWidget.apply_theme] Failed: {e}", exc_info=True)
 
     def append_log_batch(self, messages):
         """Append multiple messages efficiently"""
@@ -145,7 +233,7 @@ class LogViewerWidget(QPlainTextEdit):
         self.ensureCursorVisible()
 
 
-class LogPopup(QDialog):
+class LogPopup(QDialog, ThemedMixin):
     """Popup window for displaying logs with enhanced features"""
 
     # Signal for filtered log messages
@@ -160,6 +248,11 @@ class LogPopup(QDialog):
 
         try:
             super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.setWindowTitle("Log Viewer")
             self.resize(1200, 800)
             self.setMinimumSize(800, 600)
@@ -167,109 +260,12 @@ class LogPopup(QDialog):
             # Set window flags to make it a proper popup
             self.setWindowFlags(Qt.Window)
 
-            # EXACT stylesheet preservation with enhancements
-            self.setStyleSheet("""
-                QDialog { 
-                    background: #0d1117; 
-                    color: #e6edf3; 
-                }
-                QPlainTextEdit { 
-                    background: #0d1117; 
-                    color: #e6edf3; 
-                    border: 1px solid #30363d;
-                    font-family: Consolas, 'Courier New', monospace;
-                    font-size: 10pt;
-                    selection-background-color: #264f78;
-                }
-                QPushButton {
-                    background: #21262d;
-                    color: #e6edf3;
-                    border: 1px solid #30363d;
-                    border-radius: 5px;
-                    padding: 8px 16px;
-                    font-weight: bold;
-                    min-width: 80px;
-                }
-                QPushButton:hover { 
-                    background: #30363d; 
-                }
-                QPushButton:pressed { 
-                    background: #3d444d; 
-                }
-                QPushButton:checked {
-                    background: #1f6feb;
-                    border: 1px solid #388bfd;
-                }
-                QPushButton#dangerBtn {
-                    background: #da3633;
-                }
-                QPushButton#dangerBtn:hover {
-                    background: #f85149;
-                }
-                QLabel#statusLabel {
-                    color: #8b949e;
-                    font-size: 9pt;
-                    padding: 4px;
-                    background: #161b22;
-                    border-radius: 4px;
-                }
-                QGroupBox {
-                    border: 1px solid #30363d;
-                    border-radius: 5px;
-                    margin-top: 10px;
-                    font-weight: bold;
-                    color: #e6edf3;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px 0 5px;
-                }
-                QCheckBox {
-                    color: #e6edf3;
-                    spacing: 5px;
-                }
-                QCheckBox::indicator {
-                    width: 16px;
-                    height: 16px;
-                }
-                QSpinBox, QComboBox, QLineEdit {
-                    background: #21262d;
-                    color: #e6edf3;
-                    border: 1px solid #30363d;
-                    border-radius: 3px;
-                    padding: 4px;
-                    min-width: 60px;
-                }
-                QSpinBox::up-button, QSpinBox::down-button {
-                    background: #30363d;
-                    border: none;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #58a6ff;
-                }
-                QComboBox::drop-down {
-                    border: none;
-                }
-                QComboBox::down-arrow {
-                    image: none;
-                    border-left: 5px solid transparent;
-                    border-right: 5px solid transparent;
-                    border-top: 5px solid #8b949e;
-                    margin-right: 5px;
-                }
-                QComboBox QAbstractItemView {
-                    background: #21262d;
-                    color: #e6edf3;
-                    border: 1px solid #30363d;
-                    selection-background-color: #1f6feb;
-                }
-            """)
-
             # Initialize components
             self._init_ui()
             self._init_timers()
             self._init_filters()
+
+            self.apply_theme()
 
             logger.info("LogPopup initialized successfully")
 
@@ -324,11 +320,157 @@ class LogPopup(QDialog):
         self._batch_timer = None
         self._stats_timer = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the popup"""
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Apply main stylesheet
+            self.setStyleSheet(self._get_stylesheet())
+
+            # Update filter edit style
+            if self.filter_edit:
+                self.filter_edit.setStyleSheet(self._get_lineedit_style())
+
+            # Update status label
+            if self.status_label:
+                self.status_label.setStyleSheet(f"""
+                    QLabel#statusLabel {{
+                        color: {c.TEXT_DIM};
+                        font-size: {ty.SIZE_XS}pt;
+                        padding: {sp.PAD_XS}px;
+                        background: {c.BG_PANEL};
+                        border-radius: {sp.RADIUS_SM}px;
+                    }}
+                """)
+
+            # Update log widget
+            if self.log_widget and hasattr(self.log_widget, 'apply_theme'):
+                self.log_widget.apply_theme()
+
+            logger.debug("[LogPopup.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[LogPopup.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_stylesheet(self) -> str:
+        """Generate stylesheet with current theme tokens"""
+        c = self._c
+        ty = self._ty
+        sp = self._sp
+
+        return f"""
+            QDialog {{ 
+                background: {c.BG_MAIN}; 
+                color: {c.TEXT_MAIN}; 
+            }}
+            QPushButton {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-weight: {ty.WEIGHT_BOLD};
+                min-width: 80px;
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QPushButton:hover {{ 
+                background: {c.BORDER}; 
+            }}
+            QPushButton:pressed {{ 
+                background: {c.BORDER_STRONG}; 
+            }}
+            QPushButton:checked {{
+                background: {c.BLUE_DARK};
+                border: {sp.SEPARATOR}px solid {c.BLUE};
+            }}
+            QPushButton#dangerBtn {{
+                background: {c.RED};
+            }}
+            QPushButton#dangerBtn:hover {{
+                background: {c.RED_BRIGHT};
+            }}
+            QGroupBox {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                margin-top: {sp.PAD_MD}px;
+                font-weight: {ty.WEIGHT_BOLD};
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {sp.PAD_MD}px;
+                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
+            }}
+            QCheckBox {{
+                color: {c.TEXT_MAIN};
+                spacing: {sp.GAP_XS}px;
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QCheckBox::indicator {{
+                width: {sp.ICON_SM}px;
+                height: {sp.ICON_SM}px;
+            }}
+            QSpinBox, QComboBox, QLineEdit {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px;
+                min-width: 60px;
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                background: {c.BORDER};
+                border: none;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: {sp.PAD_XS}px solid transparent;
+                border-right: {sp.PAD_XS}px solid transparent;
+                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
+                margin-right: {sp.PAD_XS}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                selection-background-color: {c.BG_SELECTED};
+            }}
+        """
+
+    def _get_lineedit_style(self) -> str:
+        """Get styled lineedit"""
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
+        return f"""
+            QLineEdit {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_XS}px;
+                font-size: {ty.SIZE_SM}pt;
+                min-width: 250px;
+            }}
+            QLineEdit:focus {{
+                border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS};
+            }}
+        """
+
     def _init_ui(self):
         """Initialize UI components"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+        layout.setSpacing(self._sp.GAP_MD)
 
         # Top toolbar
         toolbar = self._create_toolbar()
@@ -352,25 +494,11 @@ class LogPopup(QDialog):
     def _create_toolbar(self):
         """Create top toolbar with filters and controls"""
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
+        toolbar.setSpacing(self._sp.GAP_MD)
 
         # Filter input
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("🔍 Filter logs...")
-        self.filter_edit.setStyleSheet("""
-            QLineEdit {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 6px;
-                font-size: 10pt;
-                min-width: 250px;
-            }
-            QLineEdit:focus {
-                border: 1px solid #58a6ff;
-            }
-        """)
         self.filter_edit.textChanged.connect(self._on_filter_changed)
         toolbar.addWidget(self.filter_edit)
 
@@ -413,6 +541,7 @@ class LogPopup(QDialog):
     def _create_button_bar(self):
         """Create bottom button bar"""
         button_bar = QHBoxLayout()
+        button_bar.setSpacing(self._sp.GAP_MD)
 
         # Clear button
         self.clear_btn = QPushButton("🗑️ Clear")
@@ -482,25 +611,14 @@ class LogPopup(QDialog):
         self.setMinimumSize(400, 300)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
+
         error_label = QLabel("Failed to initialize log viewer. Please check logs.")
         error_label.setWordWrap(True)
-        error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
+        error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
         layout.addWidget(error_label)
 
         close_btn = QPushButton("Close")
-        close_btn.setStyleSheet("""
-            QPushButton {
-                background: #21262d;
-                color: #e6edf3;
-                border: 1px solid #30363d;
-                border-radius: 5px;
-                padding: 8px 16px;
-                min-width: 100px;
-            }
-            QPushButton:hover {
-                background: #30363d;
-            }
-        """)
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
@@ -618,7 +736,7 @@ class LogPopup(QDialog):
                 try:
                     scrollbar = self.log_widget.verticalScrollBar()
                     scrollbar.setValue(scrollbar.maximum())
-                except:
+                except Exception:
                     pass
 
             # Update message count
@@ -674,7 +792,7 @@ class LogPopup(QDialog):
             elif '| CRITICAL |' in message or '|CRITICAL|' in message or ' CRITICAL ' in message:
                 return 'CRITICAL'
             return 'INFO'
-        except:
+        except Exception:
             return 'INFO'
 
     def _extract_source(self, message: str) -> str:
@@ -697,7 +815,7 @@ class LogPopup(QDialog):
                 return match.group(1)
 
             return ''
-        except:
+        except Exception:
             return ''
 
     def _apply_filters_to_existing(self):
@@ -912,14 +1030,27 @@ class LogPopup(QDialog):
             dialog.setStyleSheet(self.styleSheet())
 
             layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+            layout.setSpacing(self._sp.GAP_MD)
 
             # Level statistics
             layout.addWidget(QLabel("<b>Level Counts:</b>"))
+
+            # Use theme colors for level labels
+            c = self._c
+            level_colors = {
+                'DEBUG': c.TEXT_DIM,
+                'INFO': c.BLUE,
+                'WARNING': c.YELLOW,
+                'ERROR': c.RED,
+                'CRITICAL': c.RED_BRIGHT,
+            }
+
             for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
                 count = self._level_counts.get(level, 0)
-                color = LogHighlighter.LEVEL_COLORS.get(level, QColor('#e6edf3'))
+                color = level_colors.get(level, c.TEXT_MAIN)
                 label = QLabel(f"{level}: {count}")
-                label.setStyleSheet(f"color: {color.name()};")
+                label.setStyleSheet(f"color: {color};")
                 layout.addWidget(label)
 
             # Source statistics
@@ -927,7 +1058,7 @@ class LogPopup(QDialog):
                 layout.addWidget(QLabel("<br><b>Source Counts:</b>"))
                 for source, count in sorted(self._source_counts.items()):
                     label = QLabel(f"{source}: {count}")
-                    label.setStyleSheet("color: #8b949e;")
+                    label.setStyleSheet(f"color: {c.TEXT_DIM};")
                     layout.addWidget(label)
 
             # Total messages

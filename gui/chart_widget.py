@@ -35,6 +35,9 @@ from PyQt5.QtWidgets import (
 # Import CandleStoreManager for centralized data access
 from data.candle_store_manager import candle_store_manager
 
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
+
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,7 @@ class DrawingObject:
     """User-drawn object on chart"""
     type: str  # 'trend_line', 'horizontal_line'
     points: List[Tuple[float, float]]
-    color: str = "#58a6ff"
+    color: str = "#58a6ff"  # Will be replaced with token in rendering
     width: int = 2
     style: str = "solid"  # 'solid', 'dash', 'dot'
     text: Optional[str] = None
@@ -88,11 +91,11 @@ class TradeAnnotation:
     position_type: str = "CALL"  # 'CALL', 'PUT'
     quantity: int = 1
     pnl: Optional[float] = None
-    color: str = "#3fb950"
+    color: str = "#3fb950"  # Will be replaced with token in rendering
 
 
 # =============================================================================
-# MARKET STRUCTURE ANALYZER
+# MARKET STRUCTURE ANALYZER (No theme changes needed)
 # =============================================================================
 
 class MarketStructureAnalyzer:
@@ -286,38 +289,17 @@ class SpotChartWidget(QWebEngineView):
     trade_marked = pyqtSignal(dict)  # trade annotation
     timeframe_changed = pyqtSignal(str)  # new timeframe
 
-    # Color scheme
-    DARK_BG = "#0d1117"
-    CARD_BG = "#161b22"
-    TEXT_COLOR = "#e6edf3"
-    GRID_COLOR = "#30363d"
-    CHART_COLORS = {
-        "candle_up": "#3fb950",
-        "candle_down": "#f85149",
-        "candle_up_wick": "#2ea043",
-        "candle_down_wick": "#da3633",
-        "line": "#58a6ff",
-        "volume_up": "rgba(63, 185, 80, 0.45)",
-        "volume_down": "rgba(248, 81, 73, 0.45)",
-        "pivot_high": "#f0883e",
-        "pivot_low": "#58a6ff",
-        "hh": "#7ee37d",
-        "hl": "#58a6ff",
-        "lh": "#f85149",
-        "ll": "#db6d28",
-        "trend_up": "#3fb950",
-        "trend_down": "#f85149",
-        "support": "#58a6ff",
-        "resistance": "#f0883e",
-    }
-
     def __init__(self, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
-            self.setStyleSheet(f"background: {self.DARK_BG}; border: none;")
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.setMinimumSize(QSize(600, 400))
 
             # Configure WebEngine
@@ -365,12 +347,13 @@ class SpotChartWidget(QWebEngineView):
             self._max_errors = 3
 
             # Drawing tools
-            self._drawing_color = "#58a6ff"
+            self._drawing_color_token = "BLUE"
             self._drawing_width = 2
             self._drawing_style = "solid"
 
             # Initialize
             self._show_placeholder()
+            self.apply_theme()
 
             logger.info("SpotChartWidget initialized")
 
@@ -405,11 +388,69 @@ class SpotChartWidget(QWebEngineView):
         self._max_cache_size = 10
         self._error_count = 0
         self._max_errors = 3
-        self._drawing_color = "#58a6ff"
+        self._drawing_color_token = "BLUE"
         self._drawing_width = 2
         self._drawing_style = "solid"
         self._web_profile = None
         self._web_page = None
+
+    # =========================================================================
+    # Shorthand properties for theme tokens
+    # =========================================================================
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the chart widget.
+        """
+        try:
+            # Update chart colors dictionary based on current theme
+            self._chart_colors = self._get_chart_colors()
+
+            # Refresh chart if data exists
+            if self._data and self._data.get("close"):
+                self._last_data_fingerprint = ""
+                self._pending_data = self._data
+                if self._update_timer:
+                    self._update_timer.start(50)
+
+            logger.debug("[SpotChartWidget.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[SpotChartWidget.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_chart_colors(self) -> Dict[str, str]:
+        """Get chart colors based on current theme"""
+        c = self._c
+        return {
+            "candle_up": c.CHART_CANDLE_UP,
+            "candle_down": c.CHART_CANDLE_DOWN,
+            "candle_up_wick": c.GREEN,
+            "candle_down_wick": c.RED,
+            "line": c.BLUE,
+            "volume_up": f"rgba({int(c.GREEN[1:3], 16)}, {int(c.GREEN[3:5], 16)}, {int(c.GREEN[5:7], 16)}, 0.45)",
+            "volume_down": f"rgba({int(c.RED[1:3], 16)}, {int(c.RED[3:5], 16)}, {int(c.RED[5:7], 16)}, 0.45)",
+            "pivot_high": c.ORANGE,
+            "pivot_low": c.BLUE,
+            "hh": c.GREEN_BRIGHT,
+            "hl": c.BLUE,
+            "lh": c.RED_BRIGHT,
+            "ll": c.ORANGE,
+            "trend_up": c.GREEN_BRIGHT,
+            "trend_down": c.RED_BRIGHT,
+            "support": c.BLUE,
+            "resistance": c.ORANGE,
+        }
 
     def _setup_web_engine(self):
         """Configure WebEngine for better performance"""
@@ -550,11 +591,11 @@ class SpotChartWidget(QWebEngineView):
             epoch_timestamps = [self._to_epoch(ts) for ts in raw_ts]
 
             data = {
-                "open":      trend_data.get("open", []),
-                "high":      trend_data.get("high", []),
-                "low":       trend_data.get("low", []),
-                "close":     trend_data.get("close", []),
-                "volume":    trend_data.get("volume", []),
+                "open": trend_data.get("open", []),
+                "high": trend_data.get("high", []),
+                "low": trend_data.get("low", []),
+                "close": trend_data.get("close", []),
+                "volume": trend_data.get("volume", []),
                 "timestamp": epoch_timestamps,
             }
 
@@ -664,7 +705,7 @@ class SpotChartWidget(QWebEngineView):
             draw_count = len(self._drawings)
             trade_count = len(self._trade_annotations)
 
-            return f"{n}:{last_5}:{draw_count}:{trade_count}:{self._chart_type}:{self._show_pivots}:{self._show_trend_lines}:{self._show_volume}"
+            return f"{n}:{last_5}:{draw_count}:{trade_count}:{self._chart_type}:{self._show_pivots}:{self._show_trend_lines}:{self._show_volume}:{theme_manager.current_theme}"
 
         except Exception as e:
             logger.debug(f"Fingerprint failed: {e}")
@@ -768,6 +809,10 @@ class SpotChartWidget(QWebEngineView):
             return None
 
         try:
+            c = self._c
+            ty = self._ty
+            colors = self._get_chart_colors()
+
             # Prepare data
             close = self._clean_data(data.get("close", []))
             if not close:
@@ -780,7 +825,8 @@ class SpotChartWidget(QWebEngineView):
             # Create x-axis labels
             timestamps = data.get("timestamp", [])
             if timestamps and len(timestamps) == n:
-                x = [datetime.fromtimestamp(self._to_epoch(ts)).strftime("%H:%M") if self._to_epoch(ts) is not None else str(i) for i, ts in enumerate(timestamps)]
+                x = [datetime.fromtimestamp(self._to_epoch(ts)).strftime("%H:%M") if self._to_epoch(
+                    ts) is not None else str(i) for i, ts in enumerate(timestamps)]
             else:
                 x = list(range(n))
 
@@ -799,17 +845,17 @@ class SpotChartWidget(QWebEngineView):
                 )
 
                 # Add price trace (row 1)
-                self._add_price_trace(fig, data, x, 1)
-                self._add_pivots(fig, x, 1)
-                self._add_trend_lines(fig, x, 1)
-                self._add_drawings(fig, x, data, 1)
-                self._add_trade_annotations(fig, x, data, 1)
+                self._add_price_trace(fig, data, x, colors, 1)
+                self._add_pivots(fig, x, colors, 1)
+                self._add_trend_lines(fig, x, colors, 1)
+                self._add_drawings(fig, x, data, colors, 1)
+                self._add_trade_annotations(fig, x, data, colors, 1)
 
                 # Add volume trace as bar chart (row 2)
-                self._add_volume_trace(fig, data, x, 2)
+                self._add_volume_trace(fig, data, x, colors, 2)
 
                 # Apply layout for 2 rows
-                self._apply_layout(fig, 2)
+                self._apply_layout(fig, c, ty, 2)
 
             else:
                 # Single chart - no volume
@@ -820,13 +866,13 @@ class SpotChartWidget(QWebEngineView):
                     subplot_titles=["Price"]
                 )
 
-                self._add_price_trace(fig, data, x, 1)
-                self._add_pivots(fig, x, 1)
-                self._add_trend_lines(fig, x, 1)
-                self._add_drawings(fig, x, data, 1)
-                self._add_trade_annotations(fig, x, data, 1)
+                self._add_price_trace(fig, data, x, colors, 1)
+                self._add_pivots(fig, x, colors, 1)
+                self._add_trend_lines(fig, x, colors, 1)
+                self._add_drawings(fig, x, data, colors, 1)
+                self._add_trade_annotations(fig, x, data, colors, 1)
 
-                self._apply_layout(fig, 1)
+                self._apply_layout(fig, c, ty, 1)
 
             # Convert to HTML
             html = fig.to_html(
@@ -842,7 +888,7 @@ class SpotChartWidget(QWebEngineView):
             )
 
             # Add custom CSS
-            css = self._get_custom_css()
+            css = self._get_custom_css(c)
             html = html.replace("</head>", css + "</head>")
 
             return html
@@ -851,7 +897,7 @@ class SpotChartWidget(QWebEngineView):
             logger.error(f"[SpotChartWidget._generate_chart_html] Failed: {e}", exc_info=True)
             return None
 
-    def _add_price_trace(self, fig: go.Figure, data: Dict, x: List, row: int):
+    def _add_price_trace(self, fig: go.Figure, data: Dict, x: List, colors: Dict, row: int):
         """Add price trace based on chart type"""
         open_p = self._clean_data(data.get("open", []))
         high = self._clean_data(data.get("high", []))
@@ -863,24 +909,24 @@ class SpotChartWidget(QWebEngineView):
                 x=x, open=open_p, high=high, low=low, close=close,
                 name="Spot",
                 increasing=dict(
-                    line=dict(color=self.CHART_COLORS["candle_up"]),
-                    fillcolor=self.CHART_COLORS["candle_up"]
+                    line=dict(color=colors["candle_up"]),
+                    fillcolor=colors["candle_up"]
                 ),
                 decreasing=dict(
-                    line=dict(color=self.CHART_COLORS["candle_down"]),
-                    fillcolor=self.CHART_COLORS["candle_down"]
+                    line=dict(color=colors["candle_down"]),
+                    fillcolor=colors["candle_down"]
                 ),
                 showlegend=False,
             ), row=row, col=1)
         else:  # line chart
             fig.add_trace(go.Scatter(
                 x=x, y=close, name="Spot",
-                line=dict(color=self.CHART_COLORS["line"], width=2),
+                line=dict(color=colors["line"], width=2),
                 mode="lines",
                 showlegend=False,
             ), row=row, col=1)
 
-    def _add_volume_trace(self, fig: go.Figure, data: Dict, x: List, row: int):
+    def _add_volume_trace(self, fig: go.Figure, data: Dict, x: List, colors: Dict, row: int):
         """Add volume trace as simple bar chart"""
         volume = self._clean_data(data.get("volume", []))
         close = self._clean_data(data.get("close", []))
@@ -889,11 +935,11 @@ class SpotChartWidget(QWebEngineView):
         vol_colors = []
         for i, v in enumerate(volume):
             if i == 0 or close[i] is None or close[i - 1] is None:
-                vol_colors.append(self.CHART_COLORS["volume_up"])
+                vol_colors.append(colors["volume_up"])
             elif close[i] >= close[i - 1]:
-                vol_colors.append(self.CHART_COLORS["volume_up"])
+                vol_colors.append(colors["volume_up"])
             else:
-                vol_colors.append(self.CHART_COLORS["volume_down"])
+                vol_colors.append(colors["volume_down"])
 
         fig.add_trace(go.Bar(
             x=x, y=volume, name="Volume",
@@ -902,7 +948,7 @@ class SpotChartWidget(QWebEngineView):
             showlegend=False,
         ), row=row, col=1)
 
-    def _add_pivots(self, fig: go.Figure, x: List, row: int):
+    def _add_pivots(self, fig: go.Figure, x: List, colors: Dict, row: int):
         """Add pivot points to chart"""
         if not self._show_pivots or not self._pivots:
             return
@@ -917,23 +963,23 @@ class SpotChartWidget(QWebEngineView):
 
                 # Color based on structure
                 if p.structure == "HH":
-                    pcol_list.append(self.CHART_COLORS["hh"])
+                    pcol_list.append(colors["hh"])
                     ptext_list.append(f"HH")
                     psize_list.append(10 + p.strength * 3)
                 elif p.structure == "HL":
-                    pcol_list.append(self.CHART_COLORS["hl"])
+                    pcol_list.append(colors["hl"])
                     ptext_list.append(f"HL")
                     psize_list.append(10 + p.strength * 3)
                 elif p.structure == "LH":
-                    pcol_list.append(self.CHART_COLORS["lh"])
+                    pcol_list.append(colors["lh"])
                     ptext_list.append(f"LH")
                     psize_list.append(10 + p.strength * 3)
                 elif p.structure == "LL":
-                    pcol_list.append(self.CHART_COLORS["ll"])
+                    pcol_list.append(colors["ll"])
                     ptext_list.append(f"LL")
                     psize_list.append(10 + p.strength * 3)
                 else:
-                    color = self.CHART_COLORS["pivot_high"] if p.type == 'high' else self.CHART_COLORS["pivot_low"]
+                    color = colors["pivot_high"] if p.type == 'high' else colors["pivot_low"]
                     pcol_list.append(color)
                     ptext_list.append(f"Pivot")
                     psize_list.append(8 + p.strength * 2)
@@ -953,12 +999,12 @@ class SpotChartWidget(QWebEngineView):
                 ),
                 text=ptext_list,
                 textposition="top center",
-                textfont=dict(size=9, color="white"),
+                textfont=dict(size=self._ty.SIZE_XS, color="white"),
                 hovertemplate="%{text}<br>Price: %{y:.2f}<extra></extra>",
                 showlegend=False,
             ), row=row, col=1)
 
-    def _add_trend_lines(self, fig: go.Figure, x: List, row: int):
+    def _add_trend_lines(self, fig: go.Figure, x: List, colors: Dict, row: int):
         """Add trend lines to chart"""
         if not self._show_trend_lines:
             return
@@ -973,7 +1019,7 @@ class SpotChartWidget(QWebEngineView):
                            x[p2[0]] if p2[0] < len(x) else p2[0]],
                         y=[p1[1], p2[1]],
                         mode="lines",
-                        line=dict(color=self.CHART_COLORS["trend_up"], width=2, dash="solid"),
+                        line=dict(color=colors["trend_up"], width=2, dash="solid"),
                         name="Uptrend",
                         showlegend=False,
                     ), row=row, col=1)
@@ -988,7 +1034,7 @@ class SpotChartWidget(QWebEngineView):
                            x[p2[0]] if p2[0] < len(x) else p2[0]],
                         y=[p1[1], p2[1]],
                         mode="lines",
-                        line=dict(color=self.CHART_COLORS["trend_down"], width=2, dash="solid"),
+                        line=dict(color=colors["trend_down"], width=2, dash="solid"),
                         name="Downtrend",
                         showlegend=False,
                     ), row=row, col=1)
@@ -998,7 +1044,7 @@ class SpotChartWidget(QWebEngineView):
             if idx < len(x):
                 fig.add_hline(
                     y=price,
-                    line=dict(color=self.CHART_COLORS["support"], width=1, dash="dash"),
+                    line=dict(color=colors["support"], width=1, dash="dash"),
                     row=row, col=1,
                     annotation_text=f"S {price:.2f}",
                     annotation_position="right"
@@ -1009,13 +1055,13 @@ class SpotChartWidget(QWebEngineView):
             if idx < len(x):
                 fig.add_hline(
                     y=price,
-                    line=dict(color=self.CHART_COLORS["resistance"], width=1, dash="dash"),
+                    line=dict(color=colors["resistance"], width=1, dash="dash"),
                     row=row, col=1,
                     annotation_text=f"R {price:.2f}",
                     annotation_position="right"
                 )
 
-    def _add_drawings(self, fig: go.Figure, x: List, data: Dict, row: int):
+    def _add_drawings(self, fig: go.Figure, x: List, data: Dict, colors: Dict, row: int):
         """Add user drawings to chart"""
         for drawing in self._drawings:
             if not drawing.visible:
@@ -1046,7 +1092,7 @@ class SpotChartWidget(QWebEngineView):
                     showlegend=False,
                 ), row=row, col=1)
 
-    def _add_trade_annotations(self, fig: go.Figure, x: List, data: Dict, row: int):
+    def _add_trade_annotations(self, fig: go.Figure, x: List, data: Dict, colors: Dict, row: int):
         """Add trade annotations to chart"""
         for trade in self._trade_annotations:
             # Entry marker
@@ -1096,36 +1142,36 @@ class SpotChartWidget(QWebEngineView):
 
                 # Add P&L annotation
                 if trade.pnl is not None:
-                    color = self.CHART_COLORS["candle_up"] if trade.pnl > 0 else self.CHART_COLORS["candle_down"]
+                    color = colors["candle_up"] if trade.pnl > 0 else colors["candle_down"]
                     fig.add_annotation(
                         x=exit_x, y=trade.exit_price,
                         text=f"P&L: {trade.pnl:.2f}",
                         showarrow=True,
                         arrowhead=1,
-                        font=dict(size=9, color=color),
+                        font=dict(size=self._ty.SIZE_XS, color=color),
                         row=row, col=1
                     )
 
-    def _apply_layout(self, fig: go.Figure, rows: int):
-        """Apply layout styling"""
+    def _apply_layout(self, fig: go.Figure, c, ty, rows: int):
+        """Apply layout styling with theme tokens"""
         # Title
         title_text = f"{self._symbol} — {self._market_phase.upper()}"
 
         fig.update_layout(
             title=dict(
                 text=title_text,
-                font=dict(color=self.TEXT_COLOR, size=14),
+                font=dict(color=c.TEXT_MAIN, size=ty.SIZE_LG),
                 x=0.5,
             ),
-            paper_bgcolor=self.DARK_BG,
-            plot_bgcolor=self.CARD_BG,
-            font=dict(color=self.TEXT_COLOR, family="Segoe UI, sans-serif", size=11),
+            paper_bgcolor=c.CHART_BG,
+            plot_bgcolor=c.BG_PANEL,
+            font=dict(color=c.TEXT_MAIN, family=ty.FONT_UI, size=ty.SIZE_SM),
             showlegend=self._show_legend,
             legend=dict(
-                bgcolor=self.CARD_BG,
-                bordercolor=self.GRID_COLOR,
+                bgcolor=c.BG_PANEL,
+                bordercolor=c.BORDER,
                 borderwidth=1,
-                font=dict(size=10),
+                font=dict(size=ty.SIZE_XS),
                 orientation="h",
                 yanchor="bottom",
                 y=1.02,
@@ -1135,9 +1181,9 @@ class SpotChartWidget(QWebEngineView):
             margin=dict(l=50, r=80, t=80, b=20),
             hovermode="x unified",
             hoverlabel=dict(
-                bgcolor=self.CARD_BG,
-                font_size=10,
-                font_family="Consolas, monospace"
+                bgcolor=c.BG_PANEL,
+                font_size=ty.SIZE_XS,
+                font_family=ty.FONT_MONO
             ),
         )
 
@@ -1145,10 +1191,10 @@ class SpotChartWidget(QWebEngineView):
         for i in range(1, rows + 1):
             # X-axis
             fig.update_xaxes(
-                gridcolor=self.GRID_COLOR if self._show_grid else None,
+                gridcolor=c.CHART_GRID if self._show_grid else None,
                 zeroline=False,
                 showgrid=self._show_grid,
-                tickfont=dict(size=9),
+                tickfont=dict(size=ty.SIZE_XS, color=c.TEXT_DIM),
                 showticklabels=(i == rows),  # Only show labels on bottom subplot
                 rangeslider=dict(visible=False),  # Disable mini range-selector chart
                 row=i, col=1
@@ -1156,23 +1202,24 @@ class SpotChartWidget(QWebEngineView):
 
             # Y-axis
             fig.update_yaxes(
-                gridcolor=self.GRID_COLOR if self._show_grid else None,
+                gridcolor=c.CHART_GRID if self._show_grid else None,
                 zeroline=False,
                 showgrid=self._show_grid,
-                tickfont=dict(size=9),
+                tickfont=dict(size=ty.SIZE_XS, color=c.TEXT_DIM),
                 row=i, col=1
             )
 
         # Price axis title
-        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_yaxes(title_text="Price", title_font=dict(size=ty.SIZE_SM, color=c.TEXT_DIM), row=1, col=1)
 
         # Volume axis title
         if rows > 1:
-            fig.update_yaxes(title_text="Volume", row=2, col=1)
+            fig.update_yaxes(title_text="Volume", title_font=dict(size=ty.SIZE_SM, color=c.TEXT_DIM), row=2, col=1)
 
-
-    def _get_custom_css(self) -> str:
+    def _get_custom_css(self, c) -> str:
         """Get custom CSS for HTML"""
+        colors = self._get_chart_colors()
+
         return f"""
         <style>
             body, html {{
@@ -1181,7 +1228,7 @@ class SpotChartWidget(QWebEngineView):
                 width: 100%;
                 height: 100%;
                 overflow: hidden;
-                background-color: {self.DARK_BG};
+                background-color: {c.CHART_BG};
             }}
             .plotly-graph-div, .js-plotly-plot {{
                 width: 100%;
@@ -1191,22 +1238,22 @@ class SpotChartWidget(QWebEngineView):
                 contain: strict;
             }}
             .hovertext text {{
-                fill: {self.TEXT_COLOR} !important;
+                fill: {c.TEXT_MAIN} !important;
             }}
             .legend .bg {{
-                fill: {self.CARD_BG} !important;
+                fill: {c.BG_PANEL} !important;
             }}
             .modebar {{
-                background: {self.CARD_BG} !important;
-                border: 1px solid {self.GRID_COLOR} !important;
-                border-radius: 6px !important;
-                padding: 2px !important;
+                background: {c.BG_PANEL} !important;
+                border: {self._sp.SEPARATOR}px solid {c.BORDER} !important;
+                border-radius: {self._sp.RADIUS_MD}px !important;
+                padding: {self._sp.PAD_XS}px !important;
             }}
             .modebar-btn {{
-                color: {self.TEXT_COLOR} !important;
+                color: {c.TEXT_MAIN} !important;
             }}
             .modebar-btn:hover {{
-                color: {self.CHART_COLORS["pivot_low"]} !important;
+                color: {colors["pivot_low"]} !important;
             }}
         </style>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1254,35 +1301,38 @@ class SpotChartWidget(QWebEngineView):
     def _show_placeholder(self, message: str = "Waiting for market data…"):
         """Show placeholder when no data"""
         try:
+            c = self._c
+            colors = self._get_chart_colors()
+
             html = f"""<!DOCTYPE html>
             <html>
             <head>
                 <style>
                     body {{
-                        background: {self.DARK_BG};
+                        background: {c.CHART_BG};
                         display: flex;
                         align-items: center;
                         justify-content: center;
                         height: 100vh;
                         margin: 0;
-                        font-family: 'Segoe UI', sans-serif;
+                        font-family: '{self._ty.FONT_UI}', sans-serif;
                     }}
                     .container {{
                         text-align: center;
                     }}
                     .msg {{
-                        color: #8b949e;
-                        font-size: 16px;
-                        margin: 20px;
+                        color: {c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        margin: {self._sp.PAD_LG}px;
                     }}
                     .spinner {{
-                        border: 3px solid {self.CARD_BG};
-                        border-top: 3px solid {self.CHART_COLORS["pivot_low"]};
+                        border: 3px solid {c.BG_PANEL};
+                        border-top: 3px solid {colors["pivot_low"]};
                         border-radius: 50%;
                         width: 40px;
                         height: 40px;
                         animation: spin 1s linear infinite;
-                        margin: 20px auto;
+                        margin: {self._sp.PAD_LG}px auto;
                     }}
                     @keyframes spin {{
                         0% {{ transform: rotate(0deg); }}
@@ -1304,33 +1354,36 @@ class SpotChartWidget(QWebEngineView):
     def _show_error_placeholder(self, error_msg: str):
         """Show error message"""
         try:
+            c = self._c
+            colors = self._get_chart_colors()
+
             html = f"""<!DOCTYPE html>
             <html>
             <head>
                 <style>
                     body {{
-                        background: {self.DARK_BG};
+                        background: {c.CHART_BG};
                         display: flex;
                         align-items: center;
                         justify-content: center;
                         height: 100vh;
                         margin: 0;
-                        font-family: 'Segoe UI', sans-serif;
+                        font-family: '{self._ty.FONT_UI}', sans-serif;
                     }}
                     .error {{
-                        color: {self.CHART_COLORS["candle_down"]};
-                        font-size: 14px;
+                        color: {c.RED_BRIGHT};
+                        font-size: {self._ty.SIZE_BODY}pt;
                         text-align: center;
-                        padding: 30px;
-                        border: 1px solid {self.CHART_COLORS["candle_down"]};
-                        border-radius: 8px;
-                        background: rgba(248, 81, 73, 0.1);
+                        padding: {self._sp.PAD_XL}px;
+                        border: {self._sp.SEPARATOR}px solid {c.RED_BRIGHT};
+                        border-radius: {self._sp.RADIUS_LG}px;
+                        background: rgba({int(c.RED_BRIGHT[1:3], 16)}, {int(c.RED_BRIGHT[3:5], 16)}, {int(c.RED_BRIGHT[5:7], 16)}, 0.1);
                         max-width: 400px;
                     }}
                     .error-title {{
-                        font-size: 18px;
-                        font-weight: bold;
-                        margin-bottom: 15px;
+                        font-size: {self._ty.SIZE_LG}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        margin-bottom: {self._sp.PAD_MD}px;
                     }}
                 </style>
             </head>
@@ -1372,7 +1425,7 @@ class SpotChartWidget(QWebEngineView):
             super().mousePressEvent(event)
 
     def cleanup(self):
-        """Clean up resources before shutdown"""
+        """Clean up resources before shutdown - Rule 7"""
         try:
             logger.info("[SpotChartWidget] Starting cleanup")
 
@@ -1400,86 +1453,93 @@ class SpotChartWidget(QWebEngineView):
 
 
 # =============================================================================
-# DETAILED SIGNAL DATA TAB (FULLY PRESERVED)
+# DETAILED SIGNAL DATA TAB (FULLY THEMED)
 # =============================================================================
 
-# Shared colour map for all signal states
-_SIG_COLORS: Dict[str, str] = {
-    "BUY_CALL": "#3fb950",
-    "BUY_PUT": "#58a6ff",
-    "EXIT_CALL": "#f85149",
-    "EXIT_PUT": "#f0883e",
-    "HOLD": "#d29922",
-    "WAIT": "#484f58",
-}
-
-_DARK = "#0d1117"
-_CARD = "#161b22"
-_BORDER = "#30363d"
-_MUTED = "#8b949e"
-_TEXT = "#e6edf3"
+def get_signal_colors() -> Dict[str, str]:
+    """Get signal colors based on current theme"""
+    c = theme_manager.palette
+    return {
+        "BUY_CALL": c.GREEN_BRIGHT,
+        "BUY_PUT": c.BLUE,
+        "EXIT_CALL": c.RED_BRIGHT,
+        "EXIT_PUT": c.ORANGE,
+        "HOLD": c.YELLOW_BRIGHT,
+        "WAIT": c.TEXT_DISABLED,
+    }
 
 
-def _mk_table_style() -> str:
+def mk_table_style() -> str:
+    """Generate table stylesheet with current theme tokens"""
+    c = theme_manager.palette
+    ty = theme_manager.typography
+    sp = theme_manager.spacing
+
     return f"""
         QTableWidget {{
-            background: {_DARK};
-            alternate-background-color: {_CARD};
-            color: {_TEXT};
+            background: {c.BG_MAIN};
+            alternate-background-color: {c.BG_PANEL};
+            color: {c.TEXT_MAIN};
             border: none;
-            gridline-color: {_BORDER};
-            font-family: "Consolas", "Courier New", monospace;
-            font-size: 9pt;
-            selection-background-color: #1f3a5f;
-            selection-color: {_TEXT};
+            gridline-color: {c.BORDER};
+            font-family: "{ty.FONT_MONO}";
+            font-size: {ty.SIZE_SM}pt;
+            selection-background-color: {c.BG_SELECTED};
+            selection-color: {c.TEXT_MAIN};
         }}
         QHeaderView::section {{
-            background: {_CARD};
-            color: {_MUTED};
+            background: {c.BG_PANEL};
+            color: {c.TEXT_DIM};
             border: none;
-            border-bottom: 1px solid {_BORDER};
-            padding: 5px 10px;
-            font-size: 8pt;
-            font-weight: bold;
-            letter-spacing: 0.8px;
+            border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+            font-size: {ty.SIZE_XS}pt;
+            font-weight: {ty.WEIGHT_BOLD};
+            letter-spacing: {ty.LETTER_WIDE};
             text-transform: uppercase;
         }}
         QTableWidget::item {{
-            padding: 4px 10px;
-            border-bottom: 1px solid #1c2128;
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+            border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
         }}
         QScrollBar:vertical {{
-            background: {_CARD};
-            width: 6px;
-            border-radius: 3px;
+            background: {c.BG_PANEL};
+            width: {sp.ICON_SM}px;
+            border-radius: {sp.RADIUS_SM}px;
         }}
         QScrollBar::handle:vertical {{
-            background: {_BORDER};
-            border-radius: 3px;
-            min-height: 20px;
+            background: {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            min-height: {sp.BTN_HEIGHT_SM}px;
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     """
 
 
-def _mk_group_style(accent: str = _BORDER) -> str:
+def mk_group_style(accent_token: str = "BORDER") -> str:
+    """Generate group box stylesheet with current theme tokens"""
+    c = theme_manager.palette
+    ty = theme_manager.typography
+    sp = theme_manager.spacing
+    accent = c.get(accent_token, c.BORDER)
+
     return f"""
         QGroupBox {{
-            background: {_CARD};
-            border: 1px solid {accent};
-            border-radius: 6px;
-            margin-top: 8px;
-            padding: 10px 6px 6px 6px;
-            color: {_TEXT};
+            background: {c.BG_PANEL};
+            border: {sp.SEPARATOR}px solid {accent};
+            border-radius: {sp.RADIUS_MD}px;
+            margin-top: {sp.PAD_SM}px;
+            padding: {sp.PAD_MD}px {sp.PAD_XS}px {sp.PAD_XS}px {sp.PAD_XS}px;
+            color: {c.TEXT_MAIN};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 4px;
-            color: {_MUTED};
-            font-size: 8pt;
-            font-weight: normal;
-            letter-spacing: 0.5px;
+            left: {sp.PAD_MD}px;
+            padding: 0 {sp.PAD_XS}px;
+            color: {c.TEXT_DIM};
+            font-size: {ty.SIZE_XS}pt;
+            font-weight: {ty.WEIGHT_NORMAL};
+            letter-spacing: {ty.LETTER_WIDE};
             text-transform: uppercase;
         }}
     """
@@ -1503,124 +1563,193 @@ class SimpleChartWidget(QWidget):
 
     # Available timeframes: label → minutes
     TIMEFRAMES = [
-        ("1m",  1),
-        ("3m",  3),
-        ("5m",  5),
+        ("1m", 1),
+        ("3m", 3),
+        ("5m", 5),
         ("15m", 15),
         ("30m", 30),
-        ("1h",  60),
+        ("1h", 60),
     ]
 
     MAX_BARS = 400
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
 
-        self._symbol = None      # symbol to display
-        self._current_tf  = 5    # default 5-min
-        self._config      = None
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._symbol = None  # symbol to display
+            self._current_tf = 5  # default 5-min
+            self._config = None
+            self._signal_engine = None
+
+            root = QVBoxLayout(self)
+            # Margins and spacing will be set in apply_theme
+
+            # ── Timeframe toolbar ──────────────────────────────────────────────
+            toolbar = self._build_tf_toolbar()
+            root.addWidget(toolbar)
+
+            # ── Tab widget (Spot chart) ────────────────────────────────────────
+            self.tabs = QTabWidget()
+            self.spot_chart = SpotChartWidget()
+            self.spot_chart.set_symbol("Spot Index")
+            self.tabs.addTab(self.spot_chart, "📈 Spot")
+
+            root.addWidget(self.tabs, 1)
+
+            # Apply theme initially
+            self.apply_theme()
+
+            logger.info("SimpleChartWidget initialized with TF selector and CandleStoreManager integration")
+
+        except Exception as e:
+            logger.critical(f"[SimpleChartWidget.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self._symbol = None
+        self._current_tf = 5
+        self._config = None
         self._signal_engine = None
+        self._tf_buttons = {}
+        self._btn_ss_normal = ""
+        self._btn_ss_active = ""
+        self.tabs = None
+        self.spot_chart = None
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+    # =========================================================================
+    # Shorthand properties for theme tokens
+    # =========================================================================
+    @property
+    def _c(self):
+        return theme_manager.palette
 
-        # ── Timeframe toolbar ──────────────────────────────────────────────
-        toolbar = self._build_tf_toolbar()
-        root.addWidget(toolbar)
+    @property
+    def _ty(self):
+        return theme_manager.typography
 
-        # ── Tab widget (Spot chart) ────────────────────────────────────────
-        self.tabs = QTabWidget()
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane {
-                border: 1px solid #30363d;
-                background: #0d1117;
-            }
-            QTabBar::tab {
-                background: #161b22;
-                color: #8b949e;
-                padding: 8px 22px;
-                border: 1px solid #30363d;
-                border-bottom: none;
-                font-size: 10pt;
-                font-weight: bold;
-                min-width: 150px;
-                height: 30px;
-            }
-            QTabBar::tab:selected {
-                background: #1f6feb;
-                color: #ffffff;
-                border-color: #388bfd;
-            }
-            QTabBar::tab:hover:!selected {
-                background: #21262d;
-                color: #e6edf3;
-            }
-        """)
+    @property
+    def _sp(self):
+        return theme_manager.spacing
 
-        self.spot_chart = SpotChartWidget()
-        self.spot_chart.set_symbol("Spot Index")
-        self.tabs.addTab(self.spot_chart, "📈 Spot")
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the widget"""
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
 
-        root.addWidget(self.tabs, 1)
+            # Update root layout margins
+            layout = self.layout()
+            if layout:
+                layout.setContentsMargins(sp.PAD_XS, sp.PAD_XS, sp.PAD_XS, sp.PAD_XS)
+                layout.setSpacing(sp.GAP_XS)
 
-        logger.info("SimpleChartWidget initialized with TF selector and CandleStoreManager integration")
+            # Update tab widget styling
+            self.tabs.setStyleSheet(f"""
+                QTabWidget::pane {{
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    background: {c.BG_MAIN};
+                }}
+                QTabBar::tab {{
+                    background: {c.BG_PANEL};
+                    color: {c.TEXT_DIM};
+                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-bottom: none;
+                    font-size: {ty.SIZE_SM}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: {sp.TAB_H}px;
+                }}
+                QTabBar::tab:selected {{
+                    background: {c.BLUE_DARK};
+                    color: {c.TEXT_INVERSE};
+                    border-color: {c.BLUE};
+                }}
+                QTabBar::tab:hover:!selected {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                }}
+            """)
+
+            # Update button styles for timeframe toolbar
+            self._btn_ss_normal = f"""
+                QPushButton {{
+                    background: {c.BG_HOVER}; 
+                    color: {c.TEXT_DIM};
+                    border: {sp.SEPARATOR}px solid {c.BORDER}; 
+                    border-radius: {sp.RADIUS_SM}px;
+                    padding: {sp.PAD_XS}px {sp.PAD_MD}px; 
+                    font-size: {ty.SIZE_XS}pt; 
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-height: {sp.BTN_HEIGHT_SM - 6}px;
+                }}
+                QPushButton:hover {{ 
+                    background: {c.BORDER}; 
+                    color: {c.TEXT_MAIN}; 
+                }}
+            """
+
+            self._btn_ss_active = f"""
+                QPushButton {{
+                    background: {c.BLUE_DARK}; 
+                    color: {c.TEXT_INVERSE};
+                    border: {sp.SEPARATOR}px solid {c.BLUE}; 
+                    border-radius: {sp.RADIUS_SM}px;
+                    padding: {sp.PAD_XS}px {sp.PAD_MD}px; 
+                    font-size: {ty.SIZE_XS}pt; 
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-height: {sp.BTN_HEIGHT_SM - 6}px;
+                }}
+            """
+
+            # Update all timeframe buttons
+            for minutes, btn in self._tf_buttons.items():
+                if btn:
+                    btn.setStyleSheet(self._btn_ss_active if minutes == self._current_tf else self._btn_ss_normal)
+
+            logger.debug("[SimpleChartWidget.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[SimpleChartWidget.apply_theme] Failed: {e}", exc_info=True)
 
     # ── Toolbar builder ────────────────────────────────────────────────────
 
     def _build_tf_toolbar(self) -> QWidget:
         """Build the timeframe selector row above the chart."""
         bar = QWidget()
-        bar.setFixedHeight(36)
-        bar.setStyleSheet("background: #161b22; border-bottom: 1px solid #30363d;")
+        bar.setObjectName("tfToolbar")
+        # Height will be set in apply_theme
 
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_XS, self._sp.PAD_SM, self._sp.PAD_XS)
+        layout.setSpacing(self._sp.GAP_XS)
 
         lbl = QLabel("Timeframe:")
-        lbl.setStyleSheet("color: #8b949e; font-size: 9pt;")
+        lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
         layout.addWidget(lbl)
 
         self._tf_buttons: Dict[int, QPushButton] = {}
 
-        btn_ss_normal = """
-            QPushButton {
-                background: #21262d; color: #8b949e;
-                border: 1px solid #30363d; border-radius: 4px;
-                padding: 2px 10px; font-size: 9pt; font-weight: bold;
-            }
-            QPushButton:hover { background: #30363d; color: #e6edf3; }
-        """
-        btn_ss_active = """
-            QPushButton {
-                background: #1f6feb; color: #ffffff;
-                border: 1px solid #388bfd; border-radius: 4px;
-                padding: 2px 10px; font-size: 9pt; font-weight: bold;
-            }
-        """
-
         for label, minutes in self.TIMEFRAMES:
             btn = QPushButton(label)
-            btn.setFixedHeight(26)
-            btn.setStyleSheet(btn_ss_active if minutes == self._current_tf else btn_ss_normal)
-            btn.clicked.connect(lambda checked, m=minutes,
-                                       ss_n=btn_ss_normal,
-                                       ss_a=btn_ss_active: self._on_tf_clicked(m, ss_n, ss_a))
+            btn.clicked.connect(lambda checked, m=minutes: self._on_tf_clicked(m))
             layout.addWidget(btn)
             self._tf_buttons[minutes] = btn
 
         layout.addStretch()
 
-        # Store style strings for toggling
-        self._btn_ss_normal = btn_ss_normal
-        self._btn_ss_active  = btn_ss_active
-
         return bar
 
     # ── Timeframe change ───────────────────────────────────────────────────
 
-    def _on_tf_clicked(self, minutes: int, ss_normal: str, ss_active: str):
+    def _on_tf_clicked(self, minutes: int):
         """User clicked a TF button — update highlight and reload data."""
         if minutes == self._current_tf:
             return
@@ -1659,9 +1788,25 @@ class SimpleChartWidget(QWidget):
 
             logger.debug(f"[SimpleChartWidget] Got {len(df)} bars for {self._symbol}")
 
-            # ... rest of method
+            # ... rest of method (trim to MAX_BARS, convert to dict, update chart)
+            if len(df) > self.MAX_BARS:
+                df = df.iloc[-self.MAX_BARS:]
+
+            # Convert to dict format expected by spot_chart
+            data = {
+                "open": df["open"].tolist(),
+                "high": df["high"].tolist(),
+                "low": df["low"].tolist(),
+                "close": df["close"].tolist(),
+                "volume": df["volume"].tolist() if "volume" in df.columns else [],
+                "timestamp": df["time"].tolist() if "time" in df.columns else [],
+            }
+
+            self.spot_chart.update_data(data)
+
         except Exception as e:
             logger.error(f"[SimpleChartWidget._reload_from_store] Failed: {e}", exc_info=True)
+
     # ── Public API ─────────────────────────────────────────────────────────
 
     def set_symbol(self, symbol: str) -> None:
@@ -1727,9 +1872,17 @@ class SimpleChartWidget(QWidget):
         self._reload_from_store()
 
     def cleanup(self):
-        """Clean up resources."""
-        self._symbol = None
-        self.spot_chart.cleanup()
+        """Clean up resources - Rule 7"""
+        try:
+            self._symbol = None
+            if self.spot_chart:
+                self.spot_chart.cleanup()
+            self.spot_chart = None
+            self._config = None
+            self._signal_engine = None
+            self._tf_buttons.clear()
+        except Exception as e:
+            logger.error(f"[SimpleChartWidget.cleanup] Error: {e}")
 
 
 # Backward compatibility aliases

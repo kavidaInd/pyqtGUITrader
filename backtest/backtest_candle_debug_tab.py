@@ -45,43 +45,47 @@ from PyQt5.QtWidgets import (
     QApplication, QMessageBox
 )
 
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
+
 logger = logging.getLogger(__name__)
 
-# ── Palette (matches the rest of the project) ────────────────────────────────
-BG = "#0d1117"
-BG_PANEL = "#161b22"
-BG_ITEM = "#1c2128"
-BG_SEL = "#1f3d5c"
-BORDER = "#30363d"
-TEXT = "#e6edf3"
-DIM = "#8b949e"
-GREEN = "#3fb950"
-RED = "#f85149"
-BLUE = "#58a6ff"
-YELLOW = "#d29922"
-ORANGE = "#ffa657"
-PURPLE = "#bc8cff"
-TEAL = "#39d0d8"
-
-SIGNAL_COLORS: Dict[str, str] = {
-    "BUY_CALL": GREEN,
-    "BUY_PUT": BLUE,
-    "EXIT_CALL": RED,
-    "EXIT_PUT": ORANGE,
-    "HOLD": YELLOW,
-    "WAIT": DIM,
-}
-
-ACTION_COLORS: Dict[str, str] = {
-    "BUY_CALL": GREEN,
-    "BUY_PUT": BLUE,
-    "EXIT_CALL": RED,
-    "EXIT_PUT": ORANGE,
-    "HOLD": YELLOW,
-    "WAIT": DIM,
-}
-
 SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
+
+
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+def get_signal_colors():
+    """Get signal colors from theme manager."""
+    c = theme_manager.palette
+    return {
+        "BUY_CALL": c.GREEN,
+        "BUY_PUT": c.BLUE,
+        "EXIT_CALL": c.RED,
+        "EXIT_PUT": c.ORANGE,
+        "HOLD": c.YELLOW,
+        "WAIT": c.TEXT_DIM,
+    }
+
+
+def get_action_colors():
+    """Get action colors from theme manager."""
+    return get_signal_colors()  # Same mapping
+
 
 # ── Table column definitions ──────────────────────────────────────────────────
 _COLS = ["#", "Time", "Signal", "Conf%", "Action", "Pos", "Spot Close", "Skip", ""]
@@ -96,161 +100,274 @@ _COL_SKIP = 7
 _COL_BTN = 8  # button placeholder (real buttons added via QPersistentModelIndex)
 
 
-# ── Stylesheet ─────────────────────────────────────────────────────────────────
+# ── Stylesheet function ───────────────────────────────────────────────────────
 def _ss() -> str:
+    """Generate stylesheet with current theme tokens."""
+    c = theme_manager.palette
+    ty = theme_manager.typography
+    sp = theme_manager.spacing
+
     return f"""
         QWidget, QDialog {{
-            background: {BG};
-            color: {TEXT};
-            font-size: 10pt;
+            background: {c.BG_MAIN};
+            color: {c.TEXT_MAIN};
+            font-size: {ty.SIZE_BODY}pt;
         }}
         QTableView {{
-            background: {BG_PANEL};
-            alternate-background-color: {BG_ITEM};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            gridline-color: {BORDER};
-            selection-background-color: {BG_SEL};
+            background: {c.BG_PANEL};
+            alternate-background-color: {c.BG_HOVER};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            gridline-color: {c.BORDER};
+            selection-background-color: {c.BG_SELECTED};
         }}
         QTableView::item {{
-            padding: 3px 6px;
+            padding: {sp.PAD_XS}px {sp.PAD_XS}px;
         }}
         QHeaderView::section {{
-            background: {BG_ITEM};
-            color: {DIM};
+            background: {c.BG_HOVER};
+            color: {c.TEXT_DIM};
             border: none;
-            border-right: 1px solid {BORDER};
-            border-bottom: 1px solid {BORDER};
-            padding: 4px 8px;
-            font-size: 9pt;
-            font-weight: bold;
+            border-right: {sp.SEPARATOR}px solid {c.BORDER};
+            border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+            padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+            font-size: {ty.SIZE_XS}pt;
+            font-weight: {ty.WEIGHT_BOLD};
         }}
         QComboBox {{
-            background: {BG_ITEM};
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            padding: 3px 8px;
+            background: {c.BG_HOVER};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            padding: {sp.PAD_XS}px {sp.PAD_SM}px;
             min-width: 100px;
         }}
         QComboBox::drop-down {{ border: none; }}
         QComboBox QAbstractItemView {{
-            background: {BG_PANEL};
-            color: {TEXT};
-            selection-background-color: {BG_SEL};
+            background: {c.BG_PANEL};
+            color: {c.TEXT_MAIN};
+            selection-background-color: {c.BG_SELECTED};
         }}
         QLineEdit {{
-            background: {BG_ITEM};
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            padding: 3px 8px;
+            background: {c.BG_HOVER};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            padding: {sp.PAD_XS}px {sp.PAD_SM}px;
         }}
         QPushButton {{
-            background: {BG_ITEM};
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            padding: 5px 12px;
+            background: {c.BG_HOVER};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px;
         }}
-        QPushButton:hover {{ background: {BG_SEL}; border-color: {BLUE}; }}
-        QPushButton:pressed {{ background: {BG}; }}
+        QPushButton:hover {{ background: {c.BG_SELECTED}; border-color: {c.BLUE}; }}
+        QPushButton:pressed {{ background: {c.BG_MAIN}; }}
         QGroupBox {{
-            background: {BG_PANEL};
-            border: 1px solid {BORDER};
-            border-radius: 6px;
-            margin-top: 10px;
-            font-weight: bold;
-            color: {TEXT};
+            background: {c.BG_PANEL};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_MD}px;
+            margin-top: {sp.PAD_MD}px;
+            font-weight: {ty.WEIGHT_BOLD};
+            color: {c.TEXT_MAIN};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: {BLUE};
+            left: {sp.PAD_MD}px;
+            padding: 0 {sp.PAD_XS}px;
+            color: {c.BLUE};
         }}
-        QLabel {{ color: {TEXT}; }}
-        QScrollArea {{ border: none; background: {BG}; }}
+        QLabel {{ color: {c.TEXT_MAIN}; }}
+        QScrollArea {{ border: none; background: {c.BG_MAIN}; }}
         QTextEdit {{
-            background: {BG_PANEL};
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            font-family: Consolas, monospace;
-            font-size: 9pt;
+            background: {c.BG_PANEL};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            font-family: {ty.FONT_MONO};
+            font-size: {ty.SIZE_XS}pt;
         }}
         QTabWidget::pane {{
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            background: {BG_PANEL};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            background: {c.BG_PANEL};
         }}
         QTabBar::tab {{
-            background: {BG_ITEM};
-            color: {DIM};
-            border: 1px solid {BORDER};
+            background: {c.BG_HOVER};
+            color: {c.TEXT_DIM};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
             border-bottom: none;
-            padding: 5px 12px;
-            border-radius: 4px 4px 0 0;
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+            border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
         }}
         QTabBar::tab:selected {{
-            background: {BG_PANEL};
-            color: {TEXT};
-            border-bottom: 2px solid {BLUE};
+            background: {c.BG_PANEL};
+            color: {c.TEXT_MAIN};
+            border-bottom: {sp.PAD_XS}px solid {c.BLUE};
         }}
     """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _f(v, decimals: int = 2) -> str:
+    """Format a numeric value for display."""
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):,.{decimals}f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _sep_v() -> QFrame:
+    """Vertical separator line."""
+    c = theme_manager.palette
+    sep = QFrame()
+    sep.setFrameShape(QFrame.VLine)
+    sep.setStyleSheet(f"color: {c.BORDER};")
+    return sep
+
+
+def _kv(key: str, val: str, val_color_token: str = "TEXT_MAIN") -> QFrame:
+    """Key-value pair widget for the position/tpsl panels."""
+    c = theme_manager.palette
+    sp = theme_manager.spacing
+    ty = theme_manager.typography
+
+    f = QFrame()
+    f.setStyleSheet(f"background:{c.BG_HOVER}; border:{sp.SEPARATOR}px solid {c.BORDER}; border-radius:{sp.RADIUS_SM}px;")
+    lay = QVBoxLayout(f)
+    lay.setContentsMargins(sp.PAD_SM, sp.PAD_XS, sp.PAD_SM, sp.PAD_XS)
+    lay.setSpacing(sp.GAP_XS)
+
+    k_lb = QLabel(key)
+    k_lb.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+    lay.addWidget(k_lb)
+
+    v_lb = QLabel(val or "—")
+    v_lb.setStyleSheet(f"color:{c.get(val_color_token, c.TEXT_MAIN)}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+    lay.addWidget(v_lb)
+
+    return f
+
+
+def _ohlc_group(title: str, ohlc: Dict, extra_label: str = "") -> QGroupBox:
+    """Compact OHLC display group box."""
+    c = theme_manager.palette
+    sp = theme_manager.spacing
+
+    box = QGroupBox(title)
+    box.setStyleSheet(
+        f"QGroupBox {{ background:{c.BG_HOVER}; border:{sp.SEPARATOR}px solid {c.BORDER}; "
+        f"border-radius:{sp.RADIUS_MD}px; margin-top:{sp.PAD_MD}px; }}"
+        f"QGroupBox::title {{ color:{c.ORANGE}; left:{sp.PAD_MD}px; padding:0 {sp.PAD_XS}px; }}"
+    )
+    grid = QGridLayout(box)
+    grid.setSpacing(sp.GAP_SM)
+
+    fields = [("Open", "open", "TEXT_MAIN"), ("High", "high", "GREEN"),
+              ("Low", "low", "RED"), ("Close", "close", "ORANGE")]
+    for i, (lbl, key, color_token) in enumerate(fields):
+        r, c_pos = divmod(i, 2)
+        grid.addWidget(_kv(lbl, _f(ohlc.get(key), 2), val_color_token=color_token), r, c_pos)
+
+    if extra_label:
+        lb = QLabel(extra_label)
+        lb.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{theme_manager.typography.SIZE_XS}pt; padding:{sp.PAD_XS}px {sp.PAD_XS}px;")
+        grid.addWidget(lb, 2, 0, 1, 2)
+
+    return box
+
+
+def _filter_combo(name: str, options: List[str]) -> QComboBox:
+    cb = QComboBox()
+    cb.addItems(options)
+    cb.setToolTip(f"Filter by {name}")
+    return cb
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CandleDetailPopup — shown when user clicks "🔍 Detail"
 # ─────────────────────────────────────────────────────────────────────────────
-class CandleDetailPopup(QDialog):
+class CandleDetailPopup(QDialog, ThemedMixin):
     """
     Full-detail popup for a single candle record.
     Organised into tabbed sections: Overview, Signals, Indicators, Position, TP/SL.
     """
 
     def __init__(self, entry: Dict[str, Any], parent=None):
-        super().__init__(parent, Qt.Window)
-        self._entry = entry
-        self._build_ui()
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent, Qt.Window)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._entry = entry
+            self._build_ui()
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[CandleDetailPopup.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent, Qt.Window)
+
+    def _safe_defaults_init(self):
+        self._entry = {}
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the popup."""
+        try:
+            self.setStyleSheet(_ss())
+            logger.debug("[CandleDetailPopup.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[CandleDetailPopup.apply_theme] Failed: {e}", exc_info=True)
 
     def _build_ui(self):
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+        signal_colors = get_signal_colors()
+        action_colors = get_action_colors()
+
         bar = self._entry.get("bar_index", "?")
         time = self._entry.get("time", "")
         sig = self._entry.get("resolved_signal", "WAIT")
         act = self._entry.get("action", "WAIT")
 
-        sig_color = SIGNAL_COLORS.get(sig, DIM)
-        act_color = ACTION_COLORS.get(act, DIM)
+        sig_color = signal_colors.get(sig, c.TEXT_DIM)
+        act_color = action_colors.get(act, c.TEXT_DIM)
 
         self.setWindowTitle(f"🔍 Candle #{bar}  —  {time}")
         self.setMinimumSize(820, 640)
-        self.setStyleSheet(_ss())
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        root.setSpacing(sp.GAP_SM)
 
         # ── Header bar ────────────────────────────────────────────────────────
         hdr = QFrame()
-        hdr.setStyleSheet(f"background:{BG_PANEL}; border:1px solid {BORDER}; border-radius:6px;")
+        hdr.setStyleSheet(f"background:{c.BG_PANEL}; border:{sp.SEPARATOR}px solid {c.BORDER}; border-radius:{sp.RADIUS_MD}px;")
         hdr_row = QHBoxLayout(hdr)
-        hdr_row.setContentsMargins(12, 8, 12, 8)
+        hdr_row.setContentsMargins(sp.PAD_MD, sp.PAD_SM, sp.PAD_MD, sp.PAD_SM)
 
-        def _hdr_lbl(text, color=TEXT, bold=False):
+        def _hdr_lbl(text, color_token="TEXT_MAIN", bold=False):
             lb = QLabel(text)
-            lb.setStyleSheet(f"color:{color}; font-size:11pt;" + (" font-weight:bold;" if bold else ""))
+            lb.setStyleSheet(f"color:{c.get(color_token, c.TEXT_MAIN)}; font-size:{ty.SIZE_BODY}pt;" + (" font-weight:bold;" if bold else ""))
             return lb
 
-        hdr_row.addWidget(_hdr_lbl(f"Bar #{bar}", BLUE, bold=True))
+        hdr_row.addWidget(_hdr_lbl(f"Bar #{bar}", "BLUE", bold=True))
         hdr_row.addWidget(_sep_v())
-        hdr_row.addWidget(_hdr_lbl(time, DIM))
+        hdr_row.addWidget(_hdr_lbl(time, "TEXT_DIM"))
         hdr_row.addStretch()
 
         spot = self._entry.get("spot", {})
         hdr_row.addWidget(_hdr_lbl(
             f"SPOT  O:{_f(spot.get('open'))}  H:{_f(spot.get('high'))}  L:{_f(spot.get('low'))}  C:{_f(spot.get('close'))}",
-            ORANGE))
+            "ORANGE"))
         hdr_row.addWidget(_sep_v())
         hdr_row.addWidget(_hdr_lbl(f"Signal: {sig}", sig_color, bold=True))
         hdr_row.addWidget(_sep_v())
@@ -259,7 +376,7 @@ class CandleDetailPopup(QDialog):
         skip = self._entry.get("skip_reason")
         if skip:
             hdr_row.addWidget(_sep_v())
-            hdr_row.addWidget(_hdr_lbl(f"⏭ Skipped: {skip}", YELLOW))
+            hdr_row.addWidget(_hdr_lbl(f"⏭ Skipped: {skip}", "YELLOW"))
 
         root.addWidget(hdr)
 
@@ -284,10 +401,14 @@ class CandleDetailPopup(QDialog):
     # ── Tab builders ──────────────────────────────────────────────────────────
 
     def _build_overview_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         # Explanation
         expl = self._entry.get("explanation", "")
@@ -300,7 +421,7 @@ class CandleDetailPopup(QDialog):
                     continue
                 lb = QLabel(part)
                 lb.setWordWrap(True)
-                lb.setStyleSheet(f"color:{TEXT}; font-size:9pt; padding:2px;")
+                lb.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{ty.SIZE_XS}pt; padding:{sp.PAD_XS}px;")
                 expl_lay.addWidget(lb)
             lay.addWidget(expl_box)
 
@@ -311,7 +432,7 @@ class CandleDetailPopup(QDialog):
             ov_lay = QVBoxLayout(ov_box)
             lb = QLabel(override)
             lb.setWordWrap(True)
-            lb.setStyleSheet(f"color:{YELLOW};")
+            lb.setStyleSheet(f"color:{c.YELLOW};")
             ov_lay.addWidget(lb)
             lay.addWidget(ov_box)
 
@@ -333,17 +454,21 @@ class CandleDetailPopup(QDialog):
         return w
 
     def _build_signals_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        signal_colors = get_signal_colors()
+
         w = QScrollArea()
         w.setWidgetResizable(True)
         inner = QWidget()
         lay = QVBoxLayout(inner)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(12)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         signal_groups = self._entry.get("signal_groups", {})
         if not signal_groups:
             lb = QLabel("No signal group data available for this candle.")
-            lb.setStyleSheet(f"color:{DIM}; padding:20px;")
+            lb.setStyleSheet(f"color:{c.TEXT_DIM}; padding:{sp.PAD_XL}px;")
             lay.addWidget(lb)
         else:
             for grp in SIGNAL_GROUPS:
@@ -357,51 +482,56 @@ class CandleDetailPopup(QDialog):
         return w
 
     def _build_signal_group_box(self, grp: str, data: Dict) -> QGroupBox:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+        signal_colors = get_signal_colors()
+
         conf = data.get("confidence", 0.0)
         thresh = data.get("threshold", 0.6)
         fired = data.get("fired", False)
         rules = data.get("rules", [])
 
-        color = SIGNAL_COLORS.get(grp, DIM)
+        color = signal_colors.get(grp, c.TEXT_DIM)
         pct = int(conf * 100)
 
         if fired:
             status_txt = "✅ FIRED"
-            status_color = GREEN
+            status_color = c.GREEN
         elif conf >= thresh:
             status_txt = "⚠️ SUPPRESSED"
-            status_color = YELLOW
+            status_color = c.YELLOW
         else:
             status_txt = "✗ MISS"
-            status_color = RED
+            status_color = c.RED
 
         box = QGroupBox(f"{grp}  —  {pct}%  {status_txt}")
         box.setStyleSheet(
-            f"QGroupBox {{ border: 1px solid {color}40; border-radius:6px; "
-            f"background:{BG_ITEM}; margin-top:10px; }}"
-            f"QGroupBox::title {{ color:{color}; left:10px; padding:0 5px; }}"
+            f"QGroupBox {{ border: {sp.SEPARATOR}px solid {color}40; border-radius:{sp.RADIUS_MD}px; "
+            f"background:{c.BG_HOVER}; margin-top:{sp.PAD_MD}px; }}"
+            f"QGroupBox::title {{ color:{color}; left:{sp.PAD_MD}px; padding:0 {sp.PAD_XS}px; }}"
         )
         lay = QVBoxLayout(box)
-        lay.setSpacing(4)
+        lay.setSpacing(sp.GAP_XS)
 
         # Confidence bar
         conf_row = QHBoxLayout()
         conf_lbl = QLabel(f"Confidence: {pct}%  (threshold {int(thresh * 100)}%)")
-        conf_lbl.setStyleSheet(f"color:{color}; font-weight:bold;")
+        conf_lbl.setStyleSheet(f"color:{color}; font-weight:{ty.WEIGHT_BOLD};")
         conf_row.addWidget(conf_lbl)
         conf_row.addStretch()
         status_lbl = QLabel(status_txt)
-        status_lbl.setStyleSheet(f"color:{status_color}; font-weight:bold;")
+        status_lbl.setStyleSheet(f"color:{status_color}; font-weight:{ty.WEIGHT_BOLD};")
         conf_row.addWidget(status_lbl)
         lay.addLayout(conf_row)
 
         # Conf bar visual
         bar_frame = QFrame()
-        bar_frame.setFixedHeight(8)
-        bar_frame.setStyleSheet(f"background:{BORDER}; border-radius:4px;")
+        bar_frame.setFixedHeight(sp.PROGRESS_SM)
+        bar_frame.setStyleSheet(f"background:{c.BORDER}; border-radius:{sp.RADIUS_SM}px;")
         bar_inner = QFrame(bar_frame)
-        bar_inner.setFixedHeight(8)
-        bar_inner.setStyleSheet(f"background:{color}; border-radius:4px;")
+        bar_inner.setFixedHeight(sp.PROGRESS_SM)
+        bar_inner.setStyleSheet(f"background:{color}; border-radius:{sp.RADIUS_SM}px;")
         bar_inner.setFixedWidth(max(4, int(pct * 3)))  # ~300px max
         lay.addWidget(bar_frame)
 
@@ -411,7 +541,7 @@ class CandleDetailPopup(QDialog):
             for txt, w_px in [("✓/✗", 30), ("Rule", 220), ("Detail", 220), ("Wt", 40)]:
                 lb = QLabel(txt)
                 lb.setFixedWidth(w_px)
-                lb.setStyleSheet(f"color:{DIM}; font-size:8pt; font-weight:bold;")
+                lb.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
                 hdr_row.addWidget(lb)
             hdr_row.addStretch()
             lay.addLayout(hdr_row)
@@ -424,40 +554,40 @@ class CandleDetailPopup(QDialog):
                 error = r.get("error")
 
                 row = QHBoxLayout()
-                row.setSpacing(6)
+                row.setSpacing(sp.GAP_XS)
 
                 tick = QLabel("✓" if passed else "✗")
                 tick.setFixedWidth(30)
-                tick.setStyleSheet(f"color:{GREEN if passed else RED}; font-weight:bold;")
+                tick.setStyleSheet(f"color:{c.GREEN if passed else c.RED}; font-weight:{ty.WEIGHT_BOLD};")
                 row.addWidget(tick)
 
                 rule_lb = QLabel(rule_s)
                 rule_lb.setFixedWidth(220)
-                rule_lb.setStyleSheet(f"color:{TEXT}; font-size:9pt;")
+                rule_lb.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{ty.SIZE_XS}pt;")
                 row.addWidget(rule_lb)
 
                 det_lb = QLabel(detail if detail else "—")
                 det_lb.setFixedWidth(220)
-                det_lb.setStyleSheet(f"color:{TEAL if passed else DIM}; font-size:9pt;")
+                det_lb.setStyleSheet(f"color:{c.TEAL if passed else c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
                 row.addWidget(det_lb)
 
                 wt_lb = QLabel(f"{weight:.1f}")
                 wt_lb.setFixedWidth(40)
-                wt_lb.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+                wt_lb.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
                 row.addWidget(wt_lb)
 
                 if error:
                     err_lb = QLabel(f"⚠ {error}")
-                    err_lb.setStyleSheet(f"color:{RED}; font-size:8pt;")
+                    err_lb.setStyleSheet(f"color:{c.RED}; font-size:{ty.SIZE_XS}pt;")
                     row.addWidget(err_lb)
 
                 row.addStretch()
 
                 rule_frame = QFrame()
                 rule_frame.setStyleSheet(
-                    f"background:{'#1a2d1a' if passed else '#2d1a1a'}; "
-                    f"border:1px solid {'#2a4a2a' if passed else '#4a2a2a'}; "
-                    f"border-radius:4px; margin:1px;"
+                    f"background:{c.BG_ROW_B if passed else c.BG_ROW_A}; "
+                    f"border:{sp.SEPARATOR}px solid {c.GREEN if passed else c.RED}; "
+                    f"border-radius:{sp.RADIUS_SM}px; margin:{sp.PAD_XS}px;"
                 )
                 rule_frame.setLayout(row)
                 lay.addWidget(rule_frame)
@@ -465,71 +595,75 @@ class CandleDetailPopup(QDialog):
         return box
 
     def _build_indicators_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         w = QScrollArea()
         w.setWidgetResizable(True)
         inner = QWidget()
         lay = QVBoxLayout(inner)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(4)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_XS)
 
         indicators = self._entry.get("indicators", {})
         if not indicators:
             lb = QLabel("No indicator data for this candle.")
-            lb.setStyleSheet(f"color:{DIM}; padding:20px;")
+            lb.setStyleSheet(f"color:{c.TEXT_DIM}; padding:{sp.PAD_XL}px;")
             lay.addWidget(lb)
         else:
             # Header
             hdr = QFrame()
-            hdr.setStyleSheet(f"background:{BG_ITEM}; border-radius:4px;")
+            hdr.setStyleSheet(f"background:{c.BG_HOVER}; border-radius:{sp.RADIUS_SM}px;")
             hdr_row = QHBoxLayout(hdr)
-            hdr_row.setContentsMargins(8, 4, 8, 4)
+            hdr_row.setContentsMargins(sp.PAD_SM, sp.PAD_XS, sp.PAD_SM, sp.PAD_XS)
             for txt, stretch in [("Indicator", 3), ("Last", 1), ("Prev", 1), ("Δ", 1)]:
                 lb = QLabel(txt)
-                lb.setStyleSheet(f"color:{DIM}; font-size:9pt; font-weight:bold;")
+                lb.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
                 hdr_row.addWidget(lb, stretch)
             lay.addWidget(hdr)
 
             for key, val in sorted(indicators.items()):
                 row_frame = QFrame()
                 row_frame.setStyleSheet(
-                    f"background:{BG_PANEL}; border-bottom:1px solid {BORDER};"
+                    f"background:{c.BG_PANEL}; border-bottom:{sp.SEPARATOR}px solid {c.BORDER};"
                 )
                 row_lay = QHBoxLayout(row_frame)
-                row_lay.setContentsMargins(8, 3, 8, 3)
+                row_lay.setContentsMargins(sp.PAD_SM, sp.PAD_XS, sp.PAD_SM, sp.PAD_XS)
 
                 key_lb = QLabel(str(key))
-                key_lb.setStyleSheet(f"color:{BLUE}; font-size:9pt; font-family:Consolas,monospace;")
+                key_lb.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_XS}pt; font-family:{ty.FONT_MONO};")
                 row_lay.addWidget(key_lb, 3)
 
                 if isinstance(val, dict):
                     last = val.get("last")
                     prev = val.get("prev")
-                    last_str = _f(last)
-                    prev_str = _f(prev)
+                    last_str = _f(last, 4)
+                    prev_str = _f(prev, 4)
                     if last is not None and prev is not None:
                         delta = last - prev
                         arrow = "↑" if delta > 0 else "↓" if delta < 0 else "→"
-                        delta_color = GREEN if delta > 0 else RED if delta < 0 else DIM
+                        delta_color = c.GREEN if delta > 0 else c.RED if delta < 0 else c.TEXT_DIM
                         delta_str = f"{arrow} {abs(delta):.4f}"
                     else:
                         delta_str = "—"
-                        delta_color = DIM
+                        delta_color = c.TEXT_DIM
                 else:
-                    last_str = _f(val)
+                    last_str = _f(val, 4)
                     prev_str = "—"
                     delta_str = "—"
-                    delta_color = DIM
+                    delta_color = c.TEXT_DIM
 
                 last_lb = QLabel(last_str)
-                last_lb.setStyleSheet(f"color:{TEXT}; font-size:9pt;")
+                last_lb.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{ty.SIZE_XS}pt;")
                 row_lay.addWidget(last_lb, 1)
 
                 prev_lb = QLabel(prev_str)
-                prev_lb.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+                prev_lb.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
                 row_lay.addWidget(prev_lb, 1)
 
                 delta_lb = QLabel(delta_str)
-                delta_lb.setStyleSheet(f"color:{delta_color}; font-size:9pt;")
+                delta_lb.setStyleSheet(f"color:{delta_color}; font-size:{ty.SIZE_XS}pt;")
                 row_lay.addWidget(delta_lb, 1)
 
                 lay.addWidget(row_frame)
@@ -539,10 +673,14 @@ class CandleDetailPopup(QDialog):
         return w
 
     def _build_position_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         pos = self._entry.get("position", {})
         tpsl = self._entry.get("tp_sl", {})
@@ -550,33 +688,33 @@ class CandleDetailPopup(QDialog):
         # Position group
         pos_box = QGroupBox("💼 Position")
         pos_grid = QGridLayout(pos_box)
-        pos_grid.setSpacing(8)
+        pos_grid.setSpacing(sp.GAP_SM)
 
         cur = pos.get("current")
         pos_fields = [
-            ("Current", cur or "FLAT", GREEN if cur else DIM),
-            ("Entry Time", pos.get("entry_time") or "—", TEXT),
-            ("Entry Spot", _f(pos.get("entry_spot")), ORANGE),
-            ("Entry Option", _f(pos.get("entry_option")), ORANGE),
-            ("Strike", str(pos.get("strike") or "—"), TEXT),
-            ("Bars In Trade", str(pos.get("bars_in_trade", 0)), BLUE),
-            ("Buy Price", _f(pos.get("buy_price")), TEXT),
-            ("Trailing High", _f(pos.get("trailing_high")), TEAL),
+            ("Current", cur or "FLAT", "GREEN" if cur else "TEXT_DIM"),
+            ("Entry Time", pos.get("entry_time") or "—", "TEXT_MAIN"),
+            ("Entry Spot", _f(pos.get("entry_spot")), "ORANGE"),
+            ("Entry Option", _f(pos.get("entry_option")), "ORANGE"),
+            ("Strike", str(pos.get("strike") or "—"), "TEXT_MAIN"),
+            ("Bars In Trade", str(pos.get("bars_in_trade", 0)), "BLUE"),
+            ("Buy Price", _f(pos.get("buy_price")), "TEXT_MAIN"),
+            ("Trailing High", _f(pos.get("trailing_high")), "TEAL"),
         ]
-        for i, (lbl, val, col) in enumerate(pos_fields):
-            r, c = divmod(i, 2)
-            pos_grid.addWidget(_kv(lbl, val, val_color=col), r, c)
+        for i, (lbl, val, color_token) in enumerate(pos_fields):
+            r, c_pos = divmod(i, 2)
+            pos_grid.addWidget(_kv(lbl, val, val_color_token=color_token), r, c_pos)
 
         lay.addWidget(pos_box)
 
         # TP/SL group
         tpsl_box = QGroupBox("🎯 TP / SL")
         tpsl_grid = QGridLayout(tpsl_box)
-        tpsl_grid.setSpacing(8)
+        tpsl_grid.setSpacing(sp.GAP_SM)
 
         def _hit_lbl(hit: bool, label: str) -> QLabel:
             lb = QLabel(f"{'✅ HIT' if hit else '—'}")
-            lb.setStyleSheet(f"color:{RED if hit else DIM}; font-weight:{'bold' if hit else 'normal'};")
+            lb.setStyleSheet(f"color:{c.RED if hit else c.TEXT_DIM}; font-weight:{ty.WEIGHT_BOLD if hit else ty.WEIGHT_NORMAL};")
             return lb
 
         tpsl_fields = [
@@ -587,8 +725,8 @@ class CandleDetailPopup(QDialog):
             ("Current Option Px", _f(tpsl.get("current_option_price"))),
         ]
         for i, (lbl, val) in enumerate(tpsl_fields):
-            r, c = divmod(i, 2)
-            tpsl_grid.addWidget(_kv(lbl, val), r, c)
+            r, c_pos = divmod(i, 2)
+            tpsl_grid.addWidget(_kv(lbl, val), r, c_pos)
 
         # Hit indicators
         hits_row = QHBoxLayout()
@@ -599,14 +737,7 @@ class CandleDetailPopup(QDialog):
             ("index_sl_hit", "Index SL Hit"),
         ]:
             hit = bool(tpsl.get(flag_key, False))
-            pill = QLabel(f"  {'✅' if hit else '○'} {label}  ")
-            pill.setStyleSheet(
-                f"background:{'#1a3a1a' if hit else BG_ITEM}; "
-                f"color:{GREEN if hit else DIM}; "
-                f"border:1px solid {'#3fb950' if hit else BORDER}; "
-                f"border-radius:10px; padding:2px 6px; font-size:9pt;"
-            )
-            hits_row.addWidget(pill)
+            hits_row.addWidget(_hit_lbl(hit, label))
         hits_row.addStretch()
 
         tpsl_grid.addLayout(hits_row, 3, 0, 1, 2)
@@ -617,13 +748,17 @@ class CandleDetailPopup(QDialog):
     def _build_raw_tab(self) -> QWidget:
         """Show the raw entry dict as formatted JSON."""
         import json
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
 
         te = QTextEdit()
         te.setReadOnly(True)
-        te.setFont(QFont("Consolas", 9))
+        te.setFont(QFont(ty.FONT_MONO, ty.SIZE_XS))
         try:
             te.setPlainText(json.dumps(self._entry, indent=2, default=str))
         except Exception as e:
@@ -644,7 +779,7 @@ class CandleDetailPopup(QDialog):
 # ─────────────────────────────────────────────────────────────────────────────
 # CandleDebugTab — the main tab widget
 # ─────────────────────────────────────────────────────────────────────────────
-class CandleDebugTab(QWidget):
+class CandleDebugTab(QWidget, ThemedMixin):
     """
     Tab widget that displays candle debug records from CandleDebugger.get_entries().
 
@@ -657,12 +792,73 @@ class CandleDebugTab(QWidget):
     """
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._entries: List[Dict] = []
-        self._filtered: List[Dict] = []
-        self._popup: Optional[CandleDetailPopup] = None
-        self.setStyleSheet(_ss())
-        self._build_ui()
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._entries: List[Dict] = []
+            self._filtered: List[Dict] = []
+            self._popup: Optional[CandleDetailPopup] = None
+            self._build_ui()
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[CandleDebugTab.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self._entries = []
+        self._filtered = []
+        self._popup = None
+        self._count_lbl = None
+        self._search = None
+        self._sig_filter = None
+        self._act_filter = None
+        self._skip_filter = None
+        self._pos_filter = None
+        self._result_lbl = None
+        self._status_lbl = None
+        self._table_model = None
+        self._table = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the tab."""
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            self.setStyleSheet(_ss())
+
+            # Update title
+            title = self.findChild(QLabel, "title")
+            if title:
+                title.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            # Update count label
+            if self._count_lbl:
+                self._count_lbl.setStyleSheet(
+                    f"background:{c.BG_HOVER}; color:{c.TEXT_DIM}; border:{sp.SEPARATOR}px solid {c.BORDER}; "
+                    f"border-radius:{sp.RADIUS_PILL}px; padding:{sp.PAD_XS}px {sp.PAD_SM}px; font-size:{ty.SIZE_XS}pt;"
+                )
+
+            # Update result label
+            if self._result_lbl:
+                self._result_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+
+            # Update status label
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+
+            # Refresh table colors
+            self._populate_table(self._filtered)
+
+            logger.debug("[CandleDebugTab.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[CandleDebugTab.apply_theme] Failed: {e}", exc_info=True)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -689,28 +885,29 @@ class CandleDebugTab(QWidget):
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        root.setSpacing(sp.GAP_XS)
 
         # ── Toolbar row 1: title + count + search ─────────────────────────────
         tb1 = QHBoxLayout()
-        tb1.setSpacing(8)
+        tb1.setSpacing(sp.GAP_SM)
 
         title = QLabel("🔍 Candle Debugger")
-        title.setStyleSheet(f"color:{BLUE}; font-size:12pt; font-weight:bold;")
+        title.setObjectName("title")
+        title.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
         tb1.addWidget(title)
 
         self._count_lbl = QLabel("  0 candles  ")
-        self._count_lbl.setStyleSheet(
-            f"background:{BG_ITEM}; color:{DIM}; border:1px solid {BORDER}; "
-            f"border-radius:10px; padding:2px 8px; font-size:9pt;"
-        )
         tb1.addWidget(self._count_lbl)
         tb1.addStretch()
 
         srch_lbl = QLabel("🔎 Search:")
-        srch_lbl.setStyleSheet(f"color:{DIM};")
+        srch_lbl.setStyleSheet(f"color:{c.TEXT_DIM};")
         tb1.addWidget(srch_lbl)
 
         self._search = QLineEdit()
@@ -729,14 +926,15 @@ class CandleDebugTab(QWidget):
 
         # ── Toolbar row 2: filters ────────────────────────────────────────────
         tb2 = QHBoxLayout()
-        tb2.setSpacing(8)
+        tb2.setSpacing(sp.GAP_SM)
 
-        self._sig_filter = _filter_combo("Signal", ["ALL"] + list(SIGNAL_COLORS.keys()))
+        signal_options = ["ALL"] + list(get_signal_colors().keys())
+        self._sig_filter = _filter_combo("Signal", signal_options)
         self._sig_filter.currentTextChanged.connect(self._refresh_filter)
         tb2.addWidget(QLabel("Signal:"))
         tb2.addWidget(self._sig_filter)
 
-        self._act_filter = _filter_combo("Action", ["ALL"] + list(SIGNAL_COLORS.keys()))
+        self._act_filter = _filter_combo("Action", signal_options)
         self._act_filter.currentTextChanged.connect(self._refresh_filter)
         tb2.addWidget(QLabel("Action:"))
         tb2.addWidget(self._act_filter)
@@ -754,7 +952,7 @@ class CandleDebugTab(QWidget):
         tb2.addStretch()
 
         self._result_lbl = QLabel("")
-        self._result_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+        self._result_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         tb2.addWidget(self._result_lbl)
 
         root.addLayout(tb2)
@@ -775,7 +973,7 @@ class CandleDebugTab(QWidget):
         self._table.setSortingEnabled(True)
         self._table.doubleClicked.connect(self._on_double_click)
 
-        # Column widths
+        # Column widths (design requirement, can stay as integers)
         hdr = self._table.horizontalHeader()
         hdr.resizeSection(_COL_IDX, 45)
         hdr.resizeSection(_COL_TIME, 145)
@@ -792,12 +990,12 @@ class CandleDebugTab(QWidget):
         # ── Status bar ────────────────────────────────────────────────────────
         status_row = QHBoxLayout()
         self._status_lbl = QLabel("No data loaded. Run a backtest to populate.")
-        self._status_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+        self._status_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         status_row.addWidget(self._status_lbl)
         status_row.addStretch()
 
         hint = QLabel("Double-click or click 🔍 Detail to inspect a candle")
-        hint.setStyleSheet(f"color:{DIM}; font-size:8pt;")
+        hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         status_row.addWidget(hint)
 
         root.addLayout(status_row)
@@ -851,11 +1049,23 @@ class CandleDebugTab(QWidget):
         )
 
     def _populate_table(self, entries: List[Dict]):
+        c = self._c
+        signal_colors = get_signal_colors()
+        action_colors = get_action_colors()
+
         model = self._table_model
         model.setRowCount(0)
 
         # Disable sorting while populating for performance
         self._table.setSortingEnabled(False)
+
+        def _item(text, color=None, align=Qt.AlignLeft | Qt.AlignVCenter) -> QStandardItem:
+            it = QStandardItem(str(text))
+            it.setTextAlignment(align)
+            it.setEditable(False)
+            if color:
+                it.setForeground(color)
+            return it
 
         for e in entries:
             sig = e.get("resolved_signal", "WAIT")
@@ -874,16 +1084,10 @@ class CandleDebugTab(QWidget):
                     best_conf = max(best_conf, gd.get("confidence", 0.0))
             conf_str = f"{int(best_conf * 100)}%" if best_conf else "—"
 
-            sig_color = QColor(SIGNAL_COLORS.get(sig, DIM))
-            act_color = QColor(ACTION_COLORS.get(act, DIM))
-
-            def _item(text, color=None, align=Qt.AlignLeft | Qt.AlignVCenter) -> QStandardItem:
-                it = QStandardItem(str(text))
-                it.setTextAlignment(align)
-                it.setEditable(False)
-                if color:
-                    it.setForeground(color)
-                return it
+            sig_color = QColor(signal_colors.get(sig, c.TEXT_DIM))
+            act_color = QColor(action_colors.get(act, c.TEXT_DIM))
+            pos_color = QColor(c.GREEN if pos == "CALL" else c.BLUE if pos == "PUT" else c.TEXT_DIM)
+            skip_color = QColor(c.YELLOW) if skip else None
 
             row = [
                 _item(str(bar), align=Qt.AlignRight | Qt.AlignVCenter),
@@ -891,9 +1095,9 @@ class CandleDebugTab(QWidget):
                 _item(sig, color=sig_color),
                 _item(conf_str, align=Qt.AlignCenter),
                 _item(act, color=act_color),
-                _item(pos, color=QColor(GREEN if pos == "CALL" else BLUE if pos == "PUT" else DIM)),
+                _item(pos, color=pos_color),
                 _item(_f(spot_c), align=Qt.AlignRight | Qt.AlignVCenter),
-                _item(skip, color=QColor(YELLOW) if skip else None),
+                _item(skip, color=skip_color),
                 _item("🔍 Detail"),  # placeholder text; real click handled below
             ]
 
@@ -940,75 +1144,21 @@ class CandleDebugTab(QWidget):
         self._popup.raise_()
         self._popup.activateWindow()
 
+    # ── Cleanup ───────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper widgets and functions
-# ─────────────────────────────────────────────────────────────────────────────
+    def cleanup(self):
+        """Clean up resources."""
+        try:
+            if self._popup and self._popup.isVisible():
+                self._popup.close()
+            self._popup = None
+            self._entries = []
+            self._filtered = []
+            self._table_model.clear()
+        except Exception as e:
+            logger.error(f"[CandleDebugTab.cleanup] Failed: {e}", exc_info=True)
 
-def _f(v, decimals: int = 2) -> str:
-    """Format a numeric value for display."""
-    if v is None:
-        return "—"
-    try:
-        return f"{float(v):,.{decimals}f}"
-    except (TypeError, ValueError):
-        return str(v)
-
-
-def _sep_v() -> QFrame:
-    """Vertical separator line."""
-    sep = QFrame()
-    sep.setFrameShape(QFrame.VLine)
-    sep.setStyleSheet(f"color:{BORDER};")
-    return sep
-
-
-def _kv(key: str, val: str, val_color: str = TEXT) -> QFrame:
-    """Key-value pair widget for the position/tpsl panels."""
-    f = QFrame()
-    f.setStyleSheet(f"background:{BG_ITEM}; border:1px solid {BORDER}; border-radius:4px;")
-    lay = QVBoxLayout(f)
-    lay.setContentsMargins(8, 4, 8, 4)
-    lay.setSpacing(2)
-
-    k_lb = QLabel(key)
-    k_lb.setStyleSheet(f"color:{DIM}; font-size:8pt;")
-    lay.addWidget(k_lb)
-
-    v_lb = QLabel(val or "—")
-    v_lb.setStyleSheet(f"color:{val_color}; font-size:10pt; font-weight:bold;")
-    lay.addWidget(v_lb)
-
-    return f
-
-
-def _ohlc_group(title: str, ohlc: Dict, extra_label: str = "") -> QGroupBox:
-    """Compact OHLC display group box."""
-    box = QGroupBox(title)
-    box.setStyleSheet(
-        f"QGroupBox {{ background:{BG_ITEM}; border:1px solid {BORDER}; "
-        f"border-radius:6px; margin-top:10px; }}"
-        f"QGroupBox::title {{ color:{ORANGE}; left:10px; padding:0 5px; }}"
-    )
-    grid = QGridLayout(box)
-    grid.setSpacing(8)
-
-    fields = [("Open", "open", TEXT), ("High", "high", GREEN),
-              ("Low", "low", RED), ("Close", "close", ORANGE)]
-    for i, (lbl, key, col) in enumerate(fields):
-        r, c = divmod(i, 2)
-        grid.addWidget(_kv(lbl, _f(ohlc.get(key), 2), val_color=col), r, c)
-
-    if extra_label:
-        lb = QLabel(extra_label)
-        lb.setStyleSheet(f"color:{DIM}; font-size:8pt; padding:2px 4px;")
-        grid.addWidget(lb, 2, 0, 1, 2)
-
-    return box
-
-
-def _filter_combo(name: str, options: List[str]) -> QComboBox:
-    cb = QComboBox()
-    cb.addItems(options)
-    cb.setToolTip(f"Filter by {name}")
-    return cb
+    def closeEvent(self, event):
+        """Handle close event with cleanup."""
+        self.cleanup()
+        super().closeEvent(event)

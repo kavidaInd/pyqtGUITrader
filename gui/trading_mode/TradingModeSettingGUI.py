@@ -2,6 +2,7 @@
 TradingModeSettingGUI.py
 ========================
 PyQt5 GUI for trading mode settings with support for new features.
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
 import logging
@@ -18,17 +19,41 @@ from PyQt5.QtGui import QFont
 
 from gui.trading_mode.TradingModeSetting import TradingMode, TradingModeSetting
 
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
+
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
-class TradingModeSettingGUI(QDialog):
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+class TradingModeSettingGUI(QDialog, ThemedMixin):
     def __init__(self, parent=None, trading_mode_setting=None, app=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.trading_mode_setting = trading_mode_setting or TradingModeSetting()
             self.app = app
 
@@ -41,98 +66,13 @@ class TradingModeSettingGUI(QDialog):
             self.setMinimumSize(750, 700)  # Increased size for new tabs
             self.resize(750, 700)
 
-            # Match the exact style from DailyTradeSettingGUI
-            self.setStyleSheet("""
-                QDialog { background:#161b22; color:#e6edf3; }
-                QLabel  { color:#8b949e; }
-                QTabWidget::pane {
-                    border: 1px solid #30363d;
-                    border-radius: 6px;
-                    background: #161b22;
-                }
-                QTabBar::tab {
-                    background: #21262d;
-                    color: #8b949e;
-                    padding: 8px 20px;
-                    min-width: 130px;
-                    border: 1px solid #30363d;
-                    border-bottom: none;
-                    border-radius: 4px 4px 0 0;
-                    font-size: 10pt;
-                }
-                QTabBar::tab:selected {
-                    background: #161b22;
-                    color: #e6edf3;
-                    border-bottom: 2px solid #58a6ff;
-                    font-weight: bold;
-                }
-                QTabBar::tab:hover:!selected { background:#30363d; color:#e6edf3; }
-                QGroupBox {
-                    background:#21262d;
-                    color:#e6edf3;
-                    border:1px solid #30363d;
-                    border-radius:6px;
-                    margin-top:12px;
-                    font-weight:bold;
-                    font-size:10pt;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px 0 5px;
-                }
-                QComboBox, QDoubleSpinBox, QSpinBox, QLineEdit {
-                    background:#21262d; color:#e6edf3; border:1px solid #30363d;
-                    border-radius:4px; padding:8px; font-size:10pt;
-                    min-height:20px;
-                }
-                QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus { 
-                    border:2px solid #58a6ff; 
-                }
-                QComboBox::drop-down { border:none; }
-                QComboBox::down-arrow { 
-                    image: none; 
-                    border-left: 5px solid transparent;
-                    border-right: 5px solid transparent;
-                    border-top: 5px solid #8b949e;
-                    margin-right: 5px;
-                }
-                QCheckBox { color:#e6edf3; spacing:8px; }
-                QCheckBox::indicator { width:18px; height:18px; }
-                QCheckBox::indicator:unchecked { 
-                    border:2px solid #30363d; 
-                    background:#21262d; 
-                    border-radius:3px; 
-                }
-                QCheckBox::indicator:checked { 
-                    background:#238636; 
-                    border:2px solid #2ea043; 
-                    border-radius:3px; 
-                }
-                QPushButton {
-                    background:#238636; color:#fff; border-radius:4px; padding:12px;
-                    font-weight:bold; font-size:10pt; min-width:100px;
-                }
-                QPushButton:hover    { background:#2ea043; }
-                QPushButton:pressed  { background:#1e7a2f; }
-                QPushButton:disabled { background:#21262d; color:#484f58; }
-                QScrollArea { border:none; background:transparent; }
-                QFrame#infoCard {
-                    background:#21262d;
-                    border:1px solid #30363d;
-                    border-radius:6px;
-                }
-            """)
-
             # Root layout
             root = QVBoxLayout(self)
-            root.setContentsMargins(16, 16, 16, 16)
-            root.setSpacing(12)
+            # Margins and spacing will be set in apply_theme
 
             # Header
             header = QLabel("⚙️ Trading Mode Settings")
-            header.setFont(QFont("Segoe UI", 14, QFont.Bold))
-            header.setStyleSheet("color:#e6edf3; padding:4px;")
+            header.setObjectName("header")
             header.setAlignment(Qt.AlignCenter)
             root.addWidget(header)
 
@@ -149,11 +89,11 @@ class TradingModeSettingGUI(QDialog):
 
             # Status + Buttons layout
             bottom_layout = QVBoxLayout()
-            bottom_layout.setSpacing(8)
+            bottom_layout.setSpacing(self._sp.GAP_SM)
 
             self.status_label = QLabel("")
             self.status_label.setAlignment(Qt.AlignCenter)
-            self.status_label.setStyleSheet("color:#3fb950; font-size:9pt; font-weight:bold;")
+            self.status_label.setObjectName("status")
             bottom_layout.addWidget(self.status_label)
 
             # Buttons
@@ -173,6 +113,9 @@ class TradingModeSettingGUI(QDialog):
 
             bottom_layout.addLayout(button_layout)
             root.addLayout(bottom_layout)
+
+            # Apply theme initially
+            self.apply_theme()
 
             self._load_settings()
             logger.info("TradingModeSettingGUI initialized")
@@ -218,17 +161,187 @@ class TradingModeSettingGUI(QDialog):
         self.status_label = None
         self._save_in_progress = False
 
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the dialog.
+        Called on theme change, density change, and initial render.
+        """
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Update root layout margins and spacing
+            layout = self.layout()
+            if layout:
+                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+                layout.setSpacing(sp.GAP_MD)
+
+            # Apply main stylesheet
+            self.setStyleSheet(self._get_stylesheet())
+
+            # Update header
+            header = self.findChild(QLabel, "header")
+            if header:
+                header.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;")
+
+            # Update status label
+            if self.status_label:
+                self.status_label.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+
+            # Update button styles
+            self._update_button_styles()
+
+            # Update safety warning if visible
+            self._update_safety_warning()
+
+            # Update all hint labels will be handled in individual tabs
+            # when they are recreated, but we need to refresh the UI
+            self._update_ui_state()
+
+            logger.debug("[TradingModeSettingGUI.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[TradingModeSettingGUI.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_stylesheet(self) -> str:
+        """Generate stylesheet with current theme tokens"""
+        c = self._c
+        ty = self._ty
+        sp = self._sp
+
+        return f"""
+            QDialog {{ background:{c.BG_PANEL}; color:{c.TEXT_MAIN}; }}
+            QLabel  {{ color:{c.TEXT_DIM}; font-size:{ty.SIZE_SM}pt; }}
+            QTabWidget::pane {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                background: {c.BG_PANEL};
+            }}
+            QTabBar::tab {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DIM};
+                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                min-width: 130px;
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-bottom: none;
+                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
+                font-size: {ty.SIZE_BODY}pt;
+            }}
+            QTabBar::tab:selected {{
+                background: {c.BG_PANEL};
+                color: {c.TEXT_MAIN};
+                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{ background:{c.BORDER}; color:{c.TEXT_MAIN}; }}
+            QGroupBox {{
+                background:{c.BG_HOVER};
+                color:{c.TEXT_MAIN};
+                border:{sp.SEPARATOR}px solid {c.BORDER};
+                border-radius:{sp.RADIUS_MD}px;
+                margin-top:{sp.PAD_MD}px;
+                font-weight:{ty.WEIGHT_BOLD};
+                font-size:{ty.SIZE_BODY}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {sp.PAD_MD}px;
+                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
+            }}
+            QComboBox, QDoubleSpinBox, QSpinBox, QLineEdit {{
+                background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER};
+                border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px; font-size:{ty.SIZE_BODY}pt;
+                min-height:{sp.BTN_HEIGHT_SM}px;
+            }}
+            QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus {{ 
+                border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS}; 
+            }}
+            QComboBox::drop-down {{ border:none; }}
+            QComboBox::down-arrow {{ 
+                image: none; 
+                border-left: {sp.PAD_XS}px solid transparent;
+                border-right: {sp.PAD_XS}px solid transparent;
+                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
+                margin-right: {sp.PAD_XS}px;
+            }}
+            QCheckBox {{ color:{c.TEXT_MAIN}; spacing:{sp.GAP_SM}px; font-size:{ty.SIZE_BODY}pt; }}
+            QCheckBox::indicator {{ width:{sp.ICON_MD}px; height:{sp.ICON_MD}px; }}
+            QCheckBox::indicator:unchecked {{ 
+                border:{sp.SEPARATOR}px solid {c.BORDER}; 
+                background:{c.BG_HOVER}; 
+                border-radius:{sp.RADIUS_SM}px; 
+            }}
+            QCheckBox::indicator:checked {{ 
+                background:{c.GREEN}; 
+                border:{sp.SEPARATOR}px solid {c.GREEN_BRIGHT}; 
+                border-radius:{sp.RADIUS_SM}px; 
+            }}
+            QScrollArea {{ border:none; background:transparent; }}
+            QFrame#infoCard {{
+                background:{c.BG_HOVER};
+                border:{sp.SEPARATOR}px solid {c.BORDER};
+                border-radius:{sp.RADIUS_MD}px;
+            }}
+        """
+
+    def _update_button_styles(self):
+        """Update button styles with theme tokens"""
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
+        # Save button
+        if self.save_btn:
+            self.save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background:{c.GREEN}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
+                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt; min-width:100px;
+                }}
+                QPushButton:hover    {{ background:{c.GREEN_BRIGHT}; }}
+                QPushButton:pressed  {{ background:{c.GREEN}; }}
+                QPushButton:disabled {{ background:{c.BG_HOVER}; color:{c.TEXT_DISABLED}; }}
+            """)
+
+        # Apply button
+        if self.apply_btn:
+            self.apply_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background:{c.BLUE_DARK}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
+                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt; min-width:100px;
+                }}
+                QPushButton:hover    {{ background:{c.BLUE}; }}
+                QPushButton:pressed  {{ background:{c.BLUE_DARK}; }}
+                QPushButton:disabled {{ background:{c.BG_HOVER}; color:{c.TEXT_DISABLED}; }}
+            """)
+
+        # Cancel button
+        if self.cancel_btn:
+            self.cancel_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background:{c.RED}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
+                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt; min-width:100px;
+                }}
+                QPushButton:hover {{ background:{c.RED_BRIGHT}; }}
+            """)
+
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             super().__init__(parent)
             self.setWindowTitle("Trading Mode Settings - ERROR")
             self.setMinimumSize(400, 200)
 
             layout = QVBoxLayout(self)
+            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+
             error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px; font-size: 12pt;")
+            error_label.setStyleSheet(f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;")
             layout.addWidget(error_label)
 
             close_btn = QPushButton("Close")
@@ -242,6 +355,10 @@ class TradingModeSettingGUI(QDialog):
     def _build_mode_tab(self):
         """Build the mode selection tab"""
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
@@ -249,17 +366,17 @@ class TradingModeSettingGUI(QDialog):
             container = QWidget()
             container.setStyleSheet("background:transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(18, 18, 18, 12)
-            layout.setSpacing(12)
+            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_MD)
+            layout.setSpacing(sp.GAP_MD)
 
             # Mode Selection Group with description
             mode_group = QGroupBox("Trading Mode")
             mode_layout = QVBoxLayout(mode_group)
-            mode_layout.setSpacing(8)
+            mode_layout.setSpacing(sp.GAP_SM)
 
             # Mode combo with form layout for better alignment
             mode_form = QFormLayout()
-            mode_form.setSpacing(6)
+            mode_form.setSpacing(sp.GAP_XS)
             mode_form.setLabelAlignment(Qt.AlignRight)
 
             self.mode_combo = QComboBox()
@@ -277,14 +394,12 @@ class TradingModeSettingGUI(QDialog):
                 "• Live: Real trading with actual funds (requires safety checks)\n"
                 "• Backtest: Run strategy on historical data"
             )
-            mode_desc.setStyleSheet("color:#8b949e; font-size:9pt; padding:8px; background:#161b22; border-radius:4px;")
+            mode_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding:{sp.PAD_SM}px; background:{c.BG_PANEL}; border-radius:{sp.RADIUS_SM}px;")
             mode_desc.setWordWrap(True)
             mode_layout.addWidget(mode_desc)
 
             # Safety warning
             self.safety_warning = QLabel("⚠️ LIVE MODE - Real money will be used!")
-            self.safety_warning.setStyleSheet(
-                "color: #f85149; font-weight: bold; padding: 8px; background:#2d1a1a; border-radius:4px;")
             self.safety_warning.setVisible(False)
             self.safety_warning.setWordWrap(True)
             mode_layout.addWidget(self.safety_warning)
@@ -294,7 +409,7 @@ class TradingModeSettingGUI(QDialog):
             # Safety Settings Group with descriptions
             safety_group = QGroupBox("Safety Settings")
             safety_layout = QVBoxLayout(safety_group)
-            safety_layout.setSpacing(8)
+            safety_layout.setSpacing(sp.GAP_SM)
 
             self.allow_live_check = QCheckBox("✅ Enable live trading (off by default for safety)")
             self.allow_live_check.setToolTip("Must be checked to allow any live trades")
@@ -305,7 +420,7 @@ class TradingModeSettingGUI(QDialog):
                 "Safety switch for live trading. Must be explicitly enabled "
                 "to prevent accidental real-money trades."
             )
-            allow_desc.setStyleSheet("color:#8b949e; font-size:8pt; padding-left:26px;")
+            allow_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             allow_desc.setWordWrap(True)
             safety_layout.addWidget(allow_desc)
 
@@ -317,7 +432,7 @@ class TradingModeSettingGUI(QDialog):
                 "When enabled, you'll be prompted to approve each trade before it's sent to the exchange. "
                 "Recommended for beginners and when testing new strategies."
             )
-            confirm_desc.setStyleSheet("color:#8b949e; font-size:8pt; padding-left:26px;")
+            confirm_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             confirm_desc.setWordWrap(True)
             safety_layout.addWidget(confirm_desc)
 
@@ -326,11 +441,11 @@ class TradingModeSettingGUI(QDialog):
             # Simulation Settings Group with descriptions
             self.sim_group = QGroupBox("Simulation Settings")
             sim_layout = QVBoxLayout(self.sim_group)
-            sim_layout.setSpacing(8)
+            sim_layout.setSpacing(sp.GAP_SM)
 
             # Paper balance
             balance_form = QFormLayout()
-            balance_form.setSpacing(4)
+            balance_form.setSpacing(sp.GAP_XS)
             balance_form.setLabelAlignment(Qt.AlignRight)
 
             self.paper_balance_spin = QDoubleSpinBox()
@@ -345,7 +460,7 @@ class TradingModeSettingGUI(QDialog):
                 "Starting virtual capital for paper trading. Used to simulate position sizing "
                 "and track performance metrics."
             )
-            balance_desc.setStyleSheet("color:#8b949e; font-size:8pt;")
+            balance_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             balance_desc.setWordWrap(True)
             sim_layout.addWidget(balance_desc)
 
@@ -354,7 +469,7 @@ class TradingModeSettingGUI(QDialog):
             sim_layout.addWidget(self.slippage_check)
 
             slippage_form = QFormLayout()
-            slippage_form.setSpacing(4)
+            slippage_form.setSpacing(sp.GAP_XS)
             slippage_form.setLabelAlignment(Qt.AlignRight)
 
             self.slippage_spin = QDoubleSpinBox()
@@ -369,7 +484,7 @@ class TradingModeSettingGUI(QDialog):
                 "Simulates the difference between expected and actual fill price. "
                 "0.05% = 5 paise per ₹100. Helps make backtests more realistic."
             )
-            slippage_desc.setStyleSheet("color:#8b949e; font-size:8pt; padding-left:26px;")
+            slippage_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             slippage_desc.setWordWrap(True)
             sim_layout.addWidget(slippage_desc)
 
@@ -378,7 +493,7 @@ class TradingModeSettingGUI(QDialog):
             sim_layout.addWidget(self.delay_check)
 
             delay_form = QFormLayout()
-            delay_form.setSpacing(4)
+            delay_form.setSpacing(sp.GAP_XS)
             delay_form.setLabelAlignment(Qt.AlignRight)
 
             self.delay_spin = QSpinBox()
@@ -393,7 +508,7 @@ class TradingModeSettingGUI(QDialog):
                 "Simulates network latency and exchange processing time. "
                 "Higher values = more realistic but slower execution."
             )
-            delay_desc.setStyleSheet("color:#8b949e; font-size:8pt; padding-left:26px;")
+            delay_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             delay_desc.setWordWrap(True)
             sim_layout.addWidget(delay_desc)
 
@@ -407,23 +522,40 @@ class TradingModeSettingGUI(QDialog):
             logger.error(f"[TradingModeSettingGUI._build_mode_tab] Failed: {e}", exc_info=True)
             return self._create_error_scroll(f"Error building mode tab: {e}")
 
+    def _update_safety_warning(self):
+        """Update safety warning styles based on current state"""
+        if not self.safety_warning:
+            return
+
+        c = self._c
+        sp = self._sp
+
+        if self.safety_warning.isVisible():
+            self.safety_warning.setStyleSheet(
+                f"color: {c.RED}; font-weight: {self._ty.WEIGHT_BOLD}; padding: {sp.PAD_SM}px; background:{c.BG_ROW_B}; border-radius:{sp.RADIUS_SM}px;"
+            )
+
     # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
     def _build_risk_tab(self):
         """Build risk management tab"""
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
 
             container = QWidget()
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(18, 18, 18, 18)
-            layout.setSpacing(15)
+            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            layout.setSpacing(sp.GAP_LG)
 
             # Risk Limits Group
             limits_group = QGroupBox("Daily Risk Limits")
             limits_layout = QFormLayout(limits_group)
-            limits_layout.setSpacing(8)
+            limits_layout.setSpacing(sp.GAP_SM)
             limits_layout.setLabelAlignment(Qt.AlignRight)
 
             # Max Daily Loss
@@ -436,7 +568,7 @@ class TradingModeSettingGUI(QDialog):
             limits_layout.addRow("Max Daily Loss:", self.max_loss_spin)
 
             loss_hint = QLabel("Trading stops when daily P&L reaches this level (negative number)")
-            loss_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            loss_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             limits_layout.addRow("", loss_hint)
 
             # Max Trades Per Day
@@ -448,7 +580,7 @@ class TradingModeSettingGUI(QDialog):
             limits_layout.addRow("Max Trades/Day:", self.max_trades_spin)
 
             trades_hint = QLabel("Hard limit on number of entries per day")
-            trades_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            trades_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             limits_layout.addRow("", trades_hint)
 
             # Daily Profit Target
@@ -461,7 +593,7 @@ class TradingModeSettingGUI(QDialog):
             limits_layout.addRow("Daily Target:", self.daily_target_spin)
 
             target_hint = QLabel("Profit target for the day (for display purposes only)")
-            target_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            target_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             limits_layout.addRow("", target_hint)
 
             layout.addWidget(limits_group)
@@ -489,14 +621,18 @@ class TradingModeSettingGUI(QDialog):
     def _build_mtf_tab(self):
         """Build Multi-Timeframe Filter settings tab"""
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
 
             container = QWidget()
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(18, 18, 18, 18)
-            layout.setSpacing(15)
+            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            layout.setSpacing(sp.GAP_LG)
 
             # Enable/Disable Group
             enable_group = QGroupBox("MTF Filter Status")
@@ -507,7 +643,7 @@ class TradingModeSettingGUI(QDialog):
             enable_layout.addWidget(self.mtf_check)
 
             enable_hint = QLabel("Requires at least 2 of 3 timeframes to agree with trade direction")
-            enable_hint.setStyleSheet("color:#484f58; font-size:8pt; padding-left:26px;")
+            enable_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             enable_layout.addWidget(enable_hint)
 
             layout.addWidget(enable_group)
@@ -515,7 +651,7 @@ class TradingModeSettingGUI(QDialog):
             # Timeframe Configuration Group
             tf_group = QGroupBox("Timeframe Configuration")
             tf_layout = QFormLayout(tf_group)
-            tf_layout.setSpacing(8)
+            tf_layout.setSpacing(sp.GAP_SM)
             tf_layout.setLabelAlignment(Qt.AlignRight)
 
             # Timeframes
@@ -525,7 +661,7 @@ class TradingModeSettingGUI(QDialog):
             tf_layout.addRow("Timeframes:", self.mtf_timeframes_edit)
 
             tf_hint = QLabel("Example: 1,5,15 for 1min, 5min, and 15min")
-            tf_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            tf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             tf_layout.addRow("", tf_hint)
 
             # Fast EMA
@@ -550,7 +686,7 @@ class TradingModeSettingGUI(QDialog):
             tf_layout.addRow("Agreement Required:", self.mtf_agreement_spin)
 
             agree_hint = QLabel("How many timeframes must agree before allowing entry")
-            agree_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            agree_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             tf_layout.addRow("", agree_hint)
 
             layout.addWidget(tf_group)
@@ -578,19 +714,23 @@ class TradingModeSettingGUI(QDialog):
     def _build_signal_tab(self):
         """Build signal confidence settings tab"""
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
 
             container = QWidget()
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(18, 18, 18, 18)
-            layout.setSpacing(15)
+            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            layout.setSpacing(sp.GAP_LG)
 
             # Confidence Group
             conf_group = QGroupBox("Signal Confidence Settings")
             conf_layout = QFormLayout(conf_group)
-            conf_layout.setSpacing(8)
+            conf_layout.setSpacing(sp.GAP_SM)
             conf_layout.setLabelAlignment(Qt.AlignRight)
 
             # Min Confidence
@@ -602,7 +742,7 @@ class TradingModeSettingGUI(QDialog):
             conf_layout.addRow("Min Confidence:", self.min_confidence_spin)
 
             conf_hint = QLabel("Signals below this confidence are suppressed (0.0-1.0)")
-            conf_hint.setStyleSheet("color:#484f58; font-size:8pt;")
+            conf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             conf_layout.addRow("", conf_hint)
 
             layout.addWidget(conf_group)
@@ -630,13 +770,17 @@ class TradingModeSettingGUI(QDialog):
     def _build_info_tab(self):
         """Build the information tab with help content"""
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
 
             container = QWidget()
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(18, 18, 18, 18)
-            layout.setSpacing(12)
+            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            layout.setSpacing(sp.GAP_MD)
 
             infos = [
                 (
@@ -730,20 +874,24 @@ class TradingModeSettingGUI(QDialog):
             return self._create_error_scroll(f"Error building information tab: {e}")
 
     def _create_info_card(self, title: str, body: str) -> QFrame:
-        """Create an information card"""
+        """Create an information card with themed styling"""
+        c = self._c
+        ty = self._ty
+        sp = self._sp
+
         card = QFrame()
         card.setObjectName("infoCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(14, 12, 14, 12)
-        card_layout.setSpacing(6)
+        card_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        card_layout.setSpacing(sp.GAP_XS)
 
         title_lbl = QLabel(title)
-        title_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        title_lbl.setStyleSheet("color:#e6edf3;")
+        title_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
+        title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN};")
 
         body_lbl = QLabel(body)
         body_lbl.setWordWrap(True)
-        body_lbl.setStyleSheet("color:#8b949e; font-size:9pt;")
+        body_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
 
         card_layout.addWidget(title_lbl)
         card_layout.addWidget(body_lbl)
@@ -751,11 +899,16 @@ class TradingModeSettingGUI(QDialog):
 
     def _create_error_scroll(self, error_msg):
         """Create a scroll area with error message"""
+        c = self._c
+        sp = self._sp
+
         scroll = QScrollArea()
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+
         error_label = QLabel(f"❌ {error_msg}")
-        error_label.setStyleSheet("color: #f85149; padding: 20px;")
+        error_label.setStyleSheet(f"color: {c.RED}; padding: {sp.PAD_XL}px;")
         error_label.setWordWrap(True)
         layout.addWidget(error_label)
         scroll.setWidget(container)
@@ -843,6 +996,7 @@ class TradingModeSettingGUI(QDialog):
 
             if self.safety_warning is not None:
                 self.safety_warning.setVisible(is_live)
+                self._update_safety_warning()
 
             if self.sim_group is not None:
                 self.sim_group.setEnabled(not is_live)
@@ -855,13 +1009,9 @@ class TradingModeSettingGUI(QDialog):
                     buttons_enabled = False
                     if self.safety_warning is not None:
                         self.safety_warning.setText("⚠️ Check 'Enable live trading' to save LIVE mode")
-                        self.safety_warning.setStyleSheet(
-                            "color: #f85149; font-weight: bold; padding: 8px; background:#2d1a1a; border-radius:4px;")
                 else:
                     if self.safety_warning is not None:
                         self.safety_warning.setText("⚠️ LIVE MODE - Real money will be used!")
-                        self.safety_warning.setStyleSheet(
-                            "color: #f85149; font-weight: bold; padding: 8px; background:#2d1a1a; border-radius:4px;")
 
             # Apply button states
             if self.save_btn is not None:
@@ -882,20 +1032,20 @@ class TradingModeSettingGUI(QDialog):
 
             self._save_in_progress = True
             self.status_label.setText("⏳ Applying settings...")
-            self.status_label.setStyleSheet("color:#58a6ff; font-size:9pt; font-weight:bold;")
+            self.status_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
 
             if self._validate_and_save():
                 self.status_label.setText("✓ Settings applied successfully!")
-                self.status_label.setStyleSheet("color:#3fb950; font-size:9pt; font-weight:bold;")
+                self.status_label.setStyleSheet(f"color:{self._c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
                 logger.info("Settings applied successfully")
             else:
                 self.status_label.setText("✗ Failed to apply settings")
-                self.status_label.setStyleSheet("color:#f85149; font-size:9pt; font-weight:bold;")
+                self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
 
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._apply_settings] Failed: {e}", exc_info=True)
             self.status_label.setText(f"✗ Error: {e}")
-            self.status_label.setStyleSheet("color:#f85149; font-size:9pt; font-weight:bold;")
+            self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
         finally:
             self._save_in_progress = False
 
@@ -908,22 +1058,22 @@ class TradingModeSettingGUI(QDialog):
 
             self._save_in_progress = True
             self.status_label.setText("⏳ Saving settings...")
-            self.status_label.setStyleSheet("color:#58a6ff; font-size:9pt; font-weight:bold;")
+            self.status_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
 
             if self._validate_and_save():
                 self.status_label.setText("✓ Settings saved successfully!")
-                self.status_label.setStyleSheet("color:#3fb950; font-size:9pt; font-weight:bold;")
+                self.status_label.setStyleSheet(f"color:{self._c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
                 logger.info("Settings saved successfully, closing dialog")
                 QTimer.singleShot(1000, self.accept)
             else:
                 self.status_label.setText("✗ Failed to save settings")
-                self.status_label.setStyleSheet("color:#f85149; font-size:9pt; font-weight:bold;")
+                self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
                 self._save_in_progress = False
 
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._save_settings] Failed: {e}", exc_info=True)
             self.status_label.setText(f"✗ Error: {e}")
-            self.status_label.setStyleSheet("color:#f85149; font-size:9pt; font-weight:bold;")
+            self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
             self._save_in_progress = False
 
     def _validate_and_save(self) -> bool:

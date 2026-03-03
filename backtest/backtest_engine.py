@@ -24,7 +24,7 @@ from Utils.OptionUtils import OptionUtils
 from backtest.backtest_option_pricer import OptionPricer, PriceSource, atm_strike
 from backtest.backtest_candle_debugger import CandleDebugger
 from data.candle_store import CandleStore, resample_df
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 from data.candle_store_manager import candle_store_manager
 from Utils.Utils import Utils
 from Utils.common import (MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,

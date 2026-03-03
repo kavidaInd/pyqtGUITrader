@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 if TYPE_CHECKING:
     from backtest.backtest_engine import BacktestConfig, BacktestResult

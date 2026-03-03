@@ -15,6 +15,7 @@ Shows:
 Embed in TradingGUI as a pinned sidebar OR show as a floating popup.
 
 UPDATED: Now uses state_manager instead of direct trading_app.state access.
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 
 Usage (as floating popup from TradingGUI):
     # __init__:
@@ -50,7 +51,10 @@ from PyQt5.QtWidgets import (
 from strategy.strategy_manager import strategy_manager
 
 # Import state manager
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
+
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
 
 # Import SIGNAL_GROUPS as strings from the right place
 # These are the string values used in the engine config
@@ -59,29 +63,6 @@ SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
-# ── Palette ──────────────────────────────────────────────────────────────────
-BG = "#0d1117"
-BG_PANEL = "#161b22"
-BG_ITEM = "#1c2128"
-BG_SEL = "#1f3d5c"
-BORDER = "#30363d"
-TEXT = "#e6edf3"
-DIM = "#8b949e"
-GREEN = "#3fb950"
-RED = "#f85149"
-BLUE = "#58a6ff"
-YELLOW = "#d29922"
-ORANGE = "#ffa657"
-PURPLE = "#bc8cff"
-
-SIGNAL_COLORS = {
-    "BUY_CALL": GREEN,
-    "BUY_PUT": BLUE,
-    "EXIT_CALL": RED,
-    "EXIT_PUT": ORANGE,
-    "HOLD": YELLOW,
-    "WAIT": "#484f58",
-}
 SIGNAL_LABELS = {
     "BUY_CALL": "📈 Buy Call",
     "BUY_PUT": "📉 Buy Put",
@@ -92,118 +73,185 @@ SIGNAL_LABELS = {
 }
 
 
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+def get_signal_colors():
+    """Get signal colors from theme manager."""
+    c = theme_manager.palette
+    return {
+        "BUY_CALL": c.GREEN,
+        "BUY_PUT": c.BLUE,
+        "EXIT_CALL": c.RED,
+        "EXIT_PUT": c.ORANGE,
+        "HOLD": c.YELLOW,
+        "WAIT": c.TEXT_DISABLED,
+    }
+
+
 def _ss() -> str:
+    """Generate stylesheet with current theme tokens."""
+    c = theme_manager.palette
+    ty = theme_manager.typography
+    sp = theme_manager.spacing
+
     return f"""
         QDialog, QWidget {{
-            background: {BG}; color: {TEXT}; font-size: 10pt;
+            background: {c.BG_MAIN}; color: {c.TEXT_MAIN}; font-size: {ty.SIZE_BODY}pt;
         }}
-        QLabel {{ color: {TEXT}; }}
+        QLabel {{ color: {c.TEXT_MAIN}; }}
         QGroupBox {{
-            background: {BG_PANEL};
-            border: 1px solid {BORDER};
-            border-radius: 6px;
-            margin-top: 10px;
-            font-weight: bold;
-            color: {TEXT};
+            background: {c.BG_PANEL};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_MD}px;
+            margin-top: {sp.PAD_MD}px;
+            font-weight: {ty.WEIGHT_BOLD};
+            color: {c.TEXT_MAIN};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: {BLUE};
+            left: {sp.PAD_MD}px;
+            padding: 0 {sp.PAD_XS}px;
+            color: {c.BLUE};
         }}
         QProgressBar {{
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            background: {BG_PANEL};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            background: {c.BG_PANEL};
             text-align: center;
-            color: {TEXT};
-            font-size: 8pt;
-            min-height: 12px;
+            color: {c.TEXT_MAIN};
+            font-size: {ty.SIZE_XS}pt;
+            min-height: {sp.PROGRESS_SM}px;
+            max-height: {sp.PROGRESS_MD}px;
         }}
         QProgressBar::chunk {{
-            background: {BLUE};
-            border-radius: 4px;
+            background: {c.BLUE};
+            border-radius: {sp.RADIUS_SM}px;
         }}
         QPushButton {{
-            background: #21262d; color: {TEXT};
-            border: 1px solid {BORDER}; border-radius: 5px;
-            padding: 7px 14px; font-size: 10pt; font-weight: bold;
+            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px;
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt; font-weight: {ty.WEIGHT_BOLD};
         }}
-        QPushButton:hover {{ background: #2d333b; }}
-        QPushButton:disabled {{ background: #161b22; color: #484f58; }}
+        QPushButton:hover {{ background: {c.BORDER}; }}
+        QPushButton:disabled {{ background: {c.BG_PANEL}; color: {c.TEXT_DISABLED}; }}
         QListWidget {{
-            background: {BG_PANEL}; color: {TEXT};
-            border: 1px solid {BORDER}; border-radius: 4px;
-            font-size: 10pt; outline: none;
+            background: {c.BG_PANEL}; color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px;
+            font-size: {ty.SIZE_BODY}pt; outline: none;
         }}
         QListWidget::item {{
-            padding: 10px 14px;
-            border-bottom: 1px solid {BORDER};
+            padding: {sp.PAD_MD}px {sp.PAD_MD}px;
+            border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
         }}
         QListWidget::item:selected {{
-            background: {BG_SEL}; color: {BLUE};
-            border-left: 3px solid {BLUE};
+            background: {c.BG_SELECTED}; color: {c.BLUE};
+            border-left: {sp.PAD_XS}px solid {c.BLUE};
         }}
-        QListWidget::item:hover {{ background: #1f2937; }}
+        QListWidget::item:hover {{ background: {c.BG_HOVER}; }}
         QScrollArea {{ border: none; background: transparent; }}
         QFrame {{ background: transparent; }}
     """
 
 
-class _ConfidenceBar(QWidget):
+class _ConfidenceBar(QWidget, ThemedMixin):
     """FEATURE 3: Confidence bar for signal groups"""
 
     def __init__(self, signal: str, parent=None):
-        super().__init__(parent)
-        self.signal = signal
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
-        self.label = QLabel(SIGNAL_LABELS.get(signal, signal))
-        self.label.setFixedWidth(80)
-        self.label.setStyleSheet(f"color: {DIM}; font-size: 8pt;")
-        layout.addWidget(self.label)
+            self.signal = signal
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setFixedHeight(12)
-        self.progress.setTextVisible(False)
-        layout.addWidget(self.progress, 1)
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_XS)
 
-        self.value = QLabel("0%")
-        self.value.setFixedWidth(40)
-        self.value.setStyleSheet(f"color: {TEXT}; font-size: 8pt; font-weight: bold;")
-        layout.addWidget(self.value)
+            self.label = QLabel(SIGNAL_LABELS.get(signal, signal))
+            self.label.setFixedWidth(80)
+            layout.addWidget(self.label)
+
+            self.progress = QProgressBar()
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.progress.setFixedHeight(self._sp.PROGRESS_MD)
+            self.progress.setTextVisible(False)
+            layout.addWidget(self.progress, 1)
+
+            self.value = QLabel("0%")
+            self.value.setFixedWidth(40)
+            layout.addWidget(self.value)
+
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[_ConfidenceBar.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self.signal = ""
+        self.label = None
+        self.progress = None
+        self.value = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the confidence bar."""
+        try:
+            c = self._c
+            ty = self._ty
+
+            if self.label:
+                self.label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
+
+            if self.value:
+                self.value.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+        except Exception as e:
+            logger.error(f"[_ConfidenceBar.apply_theme] Failed: {e}", exc_info=True)
 
     def set_confidence(self, confidence: float, threshold: float = 0.6):
         """Set confidence value"""
         try:
+            c = self._c
+            sp = self._sp
+
             percent = int(confidence * 100)
             self.progress.setValue(percent)
             self.value.setText(f"{percent}%")
 
             # Color based on threshold
             if confidence >= threshold:
-                self.progress.setStyleSheet(f"""
-                    QProgressBar::chunk {{ background: {GREEN}; }}
-                """)
+                color = c.GREEN
             elif confidence >= threshold * 0.7:
-                self.progress.setStyleSheet(f"""
-                    QProgressBar::chunk {{ background: {YELLOW}; }}
-                """)
+                color = c.YELLOW
             else:
-                self.progress.setStyleSheet(f"""
-                    QProgressBar::chunk {{ background: {RED}; }}
-                """)
+                color = c.RED
+
+            self.progress.setStyleSheet(f"""
+                QProgressBar::chunk {{ background: {color}; border-radius: {sp.RADIUS_SM}px; }}
+                QProgressBar {{ border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; background: {c.BG_PANEL}; }}
+            """)
         except Exception as e:
             logger.error(f"[_ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
 
 
-class _StrategyCard(QFrame):
+class _StrategyCard(QFrame, ThemedMixin):
     """Expanded card showing active strategy details."""
 
     def __init__(self, parent=None):
@@ -212,39 +260,31 @@ class _StrategyCard(QFrame):
 
         try:
             super().__init__(parent)
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background: {BG_PANEL};
-                    border: 1px solid {BORDER};
-                    border-radius: 6px;
-                }}
-            """)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             layout = QVBoxLayout(self)
-            layout.setContentsMargins(12, 10, 12, 10)
-            layout.setSpacing(5)
+            # Margins and spacing will be set in apply_theme
 
             header = QHBoxLayout()
-            badge = QLabel("⚡ ACTIVE")
-            badge.setStyleSheet(f"color:{BLUE}; font-size:8pt; font-weight:bold;")
-            header.addWidget(badge)
+            self._badge = QLabel("⚡ ACTIVE")
+            header.addWidget(self._badge)
             header.addStretch()
             self._signal_lbl = QLabel()
-            self._signal_lbl.setStyleSheet(f"color:#484f58; font-size:9pt; font-weight:bold;")
             header.addWidget(self._signal_lbl)
             layout.addLayout(header)
 
             self._name_lbl = QLabel("—")
-            self._name_lbl.setStyleSheet(f"color:{TEXT}; font-size:12pt; font-weight:bold;")
             layout.addWidget(self._name_lbl)
 
             self._desc_lbl = QLabel()
-            self._desc_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
             self._desc_lbl.setWordWrap(True)
             layout.addWidget(self._desc_lbl)
 
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(f"QFrame{{background:{BORDER};max-height:1px;border:none;}}")
             layout.addWidget(sep)
 
             # Stats row
@@ -258,8 +298,9 @@ class _StrategyCard(QFrame):
 
             # FEATURE 3: Confidence threshold display
             self._threshold_lbl = QLabel("Threshold: 60%")
-            self._threshold_lbl.setStyleSheet(f"color:{YELLOW}; font-size:8pt; font-weight:bold;")
             layout.addWidget(self._threshold_lbl)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[_StrategyCard.__init__] Failed: {e}", exc_info=True)
@@ -267,6 +308,7 @@ class _StrategyCard(QFrame):
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
+        self._badge = None
         self._signal_lbl = None
         self._name_lbl = None
         self._desc_lbl = None
@@ -274,10 +316,53 @@ class _StrategyCard(QFrame):
         self._updated_lbl = None
         self._threshold_lbl = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the card."""
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            # Update card style
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background: {c.BG_PANEL};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                }}
+            """)
+
+            layout = self.layout()
+            if layout:
+                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+                layout.setSpacing(sp.GAP_XS)
+
+            if self._badge:
+                self._badge.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            # Signal label will be updated in update() method
+
+            if self._name_lbl:
+                self._name_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            if self._desc_lbl:
+                self._desc_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+
+            if sep := self.findChild(QFrame, "separator"):
+                sep.setStyleSheet(f"QFrame{{background:{c.BORDER};max-height:{sp.SEPARATOR}px;border:none;}}")
+
+            if self._threshold_lbl:
+                self._threshold_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+        except Exception as e:
+            logger.error(f"[_StrategyCard.apply_theme] Failed: {e}", exc_info=True)
+
     def _stat_lbl(self, text: str) -> QLabel:
         try:
+            c = self._c
+            ty = self._ty
             lbl = QLabel(text)
-            lbl.setStyleSheet(f"color:{DIM}; font-size:8pt;")
+            lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             return lbl
         except Exception as e:
             logger.error(f"[_StrategyCard._stat_lbl] Failed: {e}", exc_info=True)
@@ -286,6 +371,9 @@ class _StrategyCard(QFrame):
     def update(self, strategy: Dict, current_signal: str = "WAIT", threshold: float = 0.6):
         """Update card with strategy data and current signal"""
         try:
+            c = self._c
+            signal_colors = get_signal_colors()
+
             if strategy is None:
                 logger.warning("update called with None strategy")
                 return
@@ -322,26 +410,27 @@ class _StrategyCard(QFrame):
                 self._threshold_lbl.setText(f"Min Confidence: {threshold_pct}%")
 
             # Signal
-            color = SIGNAL_COLORS.get(current_signal, "#484f58")
+            color = signal_colors.get(current_signal, c.TEXT_DISABLED)
             label = SIGNAL_LABELS.get(current_signal, current_signal)
             if self._signal_lbl:
                 self._signal_lbl.setText(label)
                 self._signal_lbl.setStyleSheet(
-                    f"color:{color}; font-size:9pt; font-weight:bold;"
-                    f" background:{color}22; border:1px solid {color}55;"
-                    f" border-radius:4px; padding:2px 7px;"
+                    f"color:{color}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};"
+                    f" background:{color}22; border:{self._sp.SEPARATOR}px solid {color}55;"
+                    f" border-radius:{self._sp.RADIUS_SM}px; padding:{self._sp.PAD_XS}px {self._sp.PAD_SM}px;"
                 )
         except Exception as e:
             logger.error(f"[_StrategyCard.update] Failed: {e}", exc_info=True)
 
 
-class StrategyPickerSidebar(QDialog):
+class StrategyPickerSidebar(QDialog, ThemedMixin):
     """
     Compact floating sidebar for switching active strategy.
     Non-modal — can stay open while trading. Uses database-backed strategy manager.
 
     FEATURE 3: Displays confidence scores for signal groups.
     UPDATED: Now uses state_manager for signal data.
+    FULLY INTEGRATED with ThemeManager for dynamic theming.
     """
     strategy_activated = pyqtSignal(str)  # emitted with slug
     open_editor_requested = pyqtSignal()  # user wants full editor
@@ -352,6 +441,11 @@ class StrategyPickerSidebar(QDialog):
 
         try:
             super().__init__(parent, Qt.Window | Qt.Tool)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.trading_app = trading_app
             self._current_signal = "WAIT"
             self._current_threshold = 0.6
@@ -366,10 +460,10 @@ class StrategyPickerSidebar(QDialog):
             self.setFixedWidth(400)  # Slightly wider for confidence bars
             self.setMinimumHeight(600)
             self.setMaximumHeight(900)
-            self.setStyleSheet(_ss())
 
             self._build_ui()
             self.refresh()
+            self.apply_theme()
 
             # Auto-refresh signal display every 2s
             self._timer = QTimer(self)
@@ -385,9 +479,11 @@ class StrategyPickerSidebar(QDialog):
             self.setMinimumWidth(300)
 
             layout = QVBoxLayout(self)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
+
             error_label = QLabel(f"Failed to initialize strategy picker:\n{e}")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px;")
             layout.addWidget(error_label)
 
             close_btn = QPushButton("Close")
@@ -410,6 +506,69 @@ class StrategyPickerSidebar(QDialog):
         self._last_snapshot_time = None
         self._snapshot_cache_duration = 0.1
 
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the sidebar.
+        Called on theme change, density change, and initial render.
+        """
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            # Apply main stylesheet
+            self.setStyleSheet(_ss())
+
+            # Update activate button
+            if self._activate_btn:
+                self._activate_btn.setStyleSheet(
+                    f"QPushButton{{background:{c.BLUE_DARK};color:{c.TEXT_INVERSE};border:{sp.SEPARATOR}px solid {c.BLUE};"
+                    f"border-radius:{sp.RADIUS_MD}px;padding:{sp.PAD_SM}px;font-weight:{ty.WEIGHT_BOLD};font-size:{ty.SIZE_BODY}pt;}}"
+                    f"QPushButton:hover{{background:{c.BLUE};}}"
+                )
+
+            # Update status label
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_XS}pt;")
+
+            # Update card
+            if self._card and hasattr(self._card, 'apply_theme'):
+                self._card.apply_theme()
+
+            # Update confidence bars
+            for bar in self._confidence_bars.values():
+                if hasattr(bar, 'apply_theme'):
+                    bar.apply_theme()
+
+            # Refresh list items to update colors
+            self._refresh_list_colors()
+
+            logger.debug("[StrategyPickerSidebar.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar.apply_theme] Failed: {e}", exc_info=True)
+
+    def _refresh_list_colors(self):
+        """Refresh colors in the strategy list"""
+        try:
+            c = self._c
+            active_slug = strategy_manager.get_active_slug()
+
+            for i in range(self._list.count()):
+                item = self._list.item(i)
+                slug = item.data(Qt.UserRole)
+                if slug == active_slug:
+                    item.setForeground(QColor(c.BLUE))
+                    font = QFont()
+                    font.setBold(True)
+                    item.setFont(font)
+                else:
+                    item.setForeground(QColor(c.TEXT_MAIN))
+                    font = QFont()
+                    font.setBold(False)
+                    item.setFont(font)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._refresh_list_colors] Failed: {e}", exc_info=True)
+
     def _get_cached_snapshot(self) -> Dict[str, Any]:
         """Get cached snapshot to avoid excessive state_manager calls"""
         from datetime import datetime
@@ -423,9 +582,13 @@ class StrategyPickerSidebar(QDialog):
     def _build_ui(self):
         """Build the UI components"""
         try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
             root = QVBoxLayout(self)
-            root.setContentsMargins(10, 10, 10, 10)
-            root.setSpacing(8)
+            root.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+            root.setSpacing(sp.GAP_SM)
 
             # Active strategy card
             self._card = _StrategyCard()
@@ -434,7 +597,7 @@ class StrategyPickerSidebar(QDialog):
             # FEATURE 3: Confidence scores group
             self._confidence_group = QGroupBox("Signal Confidence")
             confidence_layout = QVBoxLayout(self._confidence_group)
-            confidence_layout.setSpacing(4)
+            confidence_layout.setSpacing(sp.GAP_XS)
 
             # Create confidence bars for each signal group
             signal_groups = ['BUY_CALL', 'BUY_PUT', 'EXIT_CALL', 'EXIT_PUT', 'HOLD']
@@ -447,7 +610,7 @@ class StrategyPickerSidebar(QDialog):
 
             # ── Separator ─────────────────────────────────────────────────────────
             sep = QLabel("  ALL STRATEGIES")
-            sep.setStyleSheet(f"color:{DIM}; font-size:8pt; font-weight:bold; padding:4px 0 2px 0;")
+            sep.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD}; padding:{sp.PAD_XS}px 0 {sp.PAD_XS}px 0;")
             root.addWidget(sep)
 
             # Strategy list
@@ -458,17 +621,12 @@ class StrategyPickerSidebar(QDialog):
 
             # ── Activate button ───────────────────────────────────────────────────
             self._activate_btn = QPushButton("⚡ Activate Selected")
-            self._activate_btn.setStyleSheet(
-                f"QPushButton{{background:#1f6feb;color:#fff;border:1px solid #388bfd;"
-                f"border-radius:5px;padding:9px;font-weight:bold;font-size:11pt;}}"
-                f"QPushButton:hover{{background:#388bfd;}}"
-            )
             self._activate_btn.clicked.connect(self._on_activate)
             root.addWidget(self._activate_btn)
 
             # ── Footer ────────────────────────────────────────────────────────────
             foot = QHBoxLayout()
-            foot.setSpacing(8)
+            foot.setSpacing(sp.GAP_SM)
 
             open_editor_btn = QPushButton("📋 Open Editor")
             open_editor_btn.clicked.connect(self._on_open_editor)
@@ -484,7 +642,6 @@ class StrategyPickerSidebar(QDialog):
 
             self._status_lbl = QLabel()
             self._status_lbl.setAlignment(Qt.AlignCenter)
-            self._status_lbl.setStyleSheet(f"color:{GREEN}; font-size:9pt;")
             root.addWidget(self._status_lbl)
 
         except Exception as e:
@@ -502,6 +659,7 @@ class StrategyPickerSidebar(QDialog):
             self._list.blockSignals(True)
             self._list.clear()
 
+            c = self._c
             strategies = strategy_manager.list_strategies()
             active_slug = strategy_manager.get_active_slug()
 
@@ -540,7 +698,7 @@ class StrategyPickerSidebar(QDialog):
                     item.setToolTip(tooltip)
 
                     if is_active:
-                        item.setForeground(QColor(BLUE))
+                        item.setForeground(QColor(c.BLUE))
                         font = QFont()
                         font.setBold(True)
                         item.setFont(font)
@@ -574,6 +732,8 @@ class StrategyPickerSidebar(QDialog):
     def _update_active_display(self):
         """Update active strategy card and confidence bars using state_manager"""
         try:
+            c = self._c
+
             # Get snapshots from state manager
             snapshot = self._get_cached_snapshot()
             position_snapshot = state_manager.get_position_snapshot()
@@ -632,6 +792,7 @@ class StrategyPickerSidebar(QDialog):
     def _activate(self, slug: str):
         """Activate a strategy by slug"""
         try:
+            c = self._c
             if not slug:
                 logger.warning("Cannot activate: empty slug")
                 return
@@ -645,6 +806,7 @@ class StrategyPickerSidebar(QDialog):
                 name = strategy_data.get("name", slug)
 
                 if self._status_lbl:
+                    self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt;")
                     self._status_lbl.setText(f"✓ Activated: {name}")
                     QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
 

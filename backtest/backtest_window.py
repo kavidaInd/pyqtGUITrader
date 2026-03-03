@@ -16,6 +16,7 @@ Layout (mirrors main TradingGUI):
 
 Uses state_manager to access and restore trade state, ensuring consistency
 between live trading and backtesting.
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
 from __future__ import annotations
@@ -41,215 +42,76 @@ from backtest.backtest_candle_debug_tab import CandleDebugTab
 from backtest.backtest_engine import BacktestConfig, BacktestResult
 from backtest.backtest_help_tab import BacktestHelpTab
 from backtest.backtest_thread import BacktestThread
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 from strategy.strategy_manager import StrategyManager
+
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
 
 logger = logging.getLogger(__name__)
 
-# ── Palette (matches TradingGUI / StatusPanel) ─────────────────────────────────
-BG        = "#0d1117"
-SURFACE   = "#161b22"
-SURFACE2  = "#1c2128"
-BORDER    = "#30363d"
-TEXT      = "#e6edf3"
-SUBTEXT   = "#8b949e"
-ACCENT    = "#2ea043"
-ACCENT_H  = "#3fb950"
-WARN      = "#d29922"
-ERROR_C   = "#f85149"
-INFO      = "#58a6ff"
-CALL_CLR  = "#3fb950"
-PUT_CLR   = "#f85149"
-SYNTH_BG  = "#2d2a1a"
-REAL_BG   = BG
-ORANGE    = "#ffa657"
-PURPLE    = "#bc8cff"
-
-SIGNAL_COLORS = {
-    "BUY_CALL":  CALL_CLR,
-    "BUY_PUT":   PUT_CLR,
-    "EXIT_CALL": ERROR_C,
-    "EXIT_PUT":  ORANGE,
-    "HOLD":      WARN,
-    "WAIT":      SUBTEXT,
-}
-
 ANALYSIS_TIMEFRAMES = ["1m", "2m", "3m", "5m", "10m", "15m", "30m", "60m", "120m", "240m"]
 
-# ── Global stylesheet ──────────────────────────────────────────────────────────
-_CSS = f"""
-QMainWindow, QWidget {{
-    background: {BG};
-    color: {TEXT};
-    font-family: 'Segoe UI', 'SF Pro Display', 'Ubuntu', sans-serif;
-    font-size: 14px;
-}}
-QGroupBox {{
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    margin-top: 10px;
-    padding-top: 14px;
-    font-weight: bold;
-    color: {SUBTEXT};
-}}
-QGroupBox::title {{
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 4px;
-    color: {INFO};
-}}
-QLabel {{ color: {TEXT}; }}
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {{
-    background: {SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-    padding: 5px 10px;
-    color: {TEXT};
-    min-height: 28px;
-}}
-QComboBox::drop-down {{ border: none; }}
-QComboBox QAbstractItemView {{
-    background: {SURFACE2};
-    border: 1px solid {BORDER};
-    color: {TEXT};
-    selection-background-color: {ACCENT};
-}}
-QPushButton {{
-    background: {SURFACE2};
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-    padding: 6px 16px;
-    color: {TEXT};
-    font-weight: 600;
-}}
-QPushButton:hover  {{ background: {BORDER}; }}
-QPushButton:disabled {{ color: {SUBTEXT}; background: {SURFACE}; }}
-QPushButton#runBtn {{
-    background: {ACCENT};
-    border-color: {ACCENT};
-    color: #fff;
-    font-size: 15px;
-    padding: 8px 28px;
-    border-radius: 5px;
-}}
-QPushButton#runBtn:hover {{ background: {ACCENT_H}; }}
-QPushButton#stopBtn {{
-    background: {ERROR_C};
-    border-color: {ERROR_C};
-    color: #fff;
-    border-radius: 5px;
-}}
-QTableWidget {{
-    background: {BG};
-    alternate-background-color: {SURFACE};
-    gridline-color: {BORDER};
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-}}
-QHeaderView::section {{
-    background: {SURFACE2};
-    color: {SUBTEXT};
-    border: none;
-    border-right: 1px solid {BORDER};
-    border-bottom: 1px solid {BORDER};
-    padding: 6px 10px;
-    font-weight: bold;
-    font-size: 13px;
-}}
-QTabWidget::pane {{
-    border: 1px solid {BORDER};
-    background: {BG};
-    border-radius: 0 4px 4px 4px;
-}}
-QTabBar::tab {{
-    background: {SURFACE};
-    color: {SUBTEXT};
-    padding: 7px 18px;
-    border: 1px solid {BORDER};
-    border-bottom: none;
-    border-radius: 4px 4px 0 0;
-    font-size: 13px;
-    font-weight: bold;
-}}
-QTabBar::tab:selected {{
-    background: {BG};
-    color: {TEXT};
-    border-bottom: 2px solid {INFO};
-}}
-QTabBar::tab:hover:!selected {{ background: {SURFACE2}; }}
-QProgressBar {{
-    background: {SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-    text-align: center;
-    color: {TEXT};
-    height: 8px;
-}}
-QProgressBar::chunk {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 {ACCENT}, stop:1 {ACCENT_H});
-    border-radius: 3px;
-}}
-QScrollBar:vertical {{
-    background: {SURFACE}; width: 8px; border-radius: 4px;
-}}
-QScrollBar::handle:vertical {{
-    background: {BORDER}; border-radius: 4px; min-height: 20px;
-}}
-QCheckBox {{ color: {TEXT}; spacing: 6px; }}
-QCheckBox::indicator {{
-    width: 14px; height: 14px;
-    border: 1px solid {BORDER};
-    border-radius: 3px;
-    background: {SURFACE};
-}}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
-QSplitter::handle {{ background: {BORDER}; width: 2px; height: 2px; }}
-QTreeWidget {{
-    background: {BG};
-    alternate-background-color: {SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-}}
-QTreeWidget::item {{
-    padding: 4px 8px;
-    border-bottom: 1px solid {BORDER};
-}}
-QTreeWidget::item:selected {{
-    background: {SURFACE2};
-    color: {ACCENT};
-}}
-QTextEdit {{
-    background: {SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-    color: {TEXT};
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-}}
-"""
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
 
-def _label(text, bold=False, color=TEXT, size=14):
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+def get_signal_colors():
+    """Get signal colors from theme manager."""
+    c = theme_manager.palette
+    return {
+        "BUY_CALL":  c.GREEN,
+        "BUY_PUT":   c.RED,
+        "EXIT_CALL": c.RED_BRIGHT,
+        "EXIT_PUT":  c.ORANGE,
+        "HOLD":      c.YELLOW,
+        "WAIT":      c.TEXT_DIM,
+    }
+
+
+def _label(text, bold=False, color_token="TEXT_MAIN", size_token="SIZE_BODY"):
+    """Create a themed label."""
+    c = theme_manager.palette
+    ty = theme_manager.typography
+    size = ty.get(size_token, ty.SIZE_BODY)
+    color = c.get(color_token, c.TEXT_MAIN)
+
     lbl = QLabel(text)
     lbl.setStyleSheet(
-        f"color: {color}; font-size: {size}px;"
+        f"color: {color}; font-size: {size}pt;"
         + (" font-weight: bold;" if bold else "")
     )
     return lbl
 
 
 def _sep():
+    """Create a themed separator."""
+    c = theme_manager.palette
+    sp = theme_manager.spacing
     f = QFrame()
     f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet(f"color: {BORDER};")
+    f.setStyleSheet(f"color: {c.BORDER};")
     return f
 
 
-def _card(title: str, title_color: str = INFO) -> QGroupBox:
+def _card(title: str, title_color_token: str = "BLUE") -> QGroupBox:
+    """Create a themed group box card."""
+    c = theme_manager.palette
     g = QGroupBox(title)
-    g.setStyleSheet(f"QGroupBox::title {{ color: {title_color}; }}")
+    g.setStyleSheet(f"QGroupBox::title {{ color: {c.get(title_color_token, c.BLUE)}; }}")
     return g
 
 
@@ -304,17 +166,58 @@ class BarAnalysis:
 
 # ── Multi-Timeframe Analysis Tab ───────────────────────────────────────────────
 
-class MultiTimeframeAnalysisTab(QWidget):
+class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.analysis_data: Dict[str, List[BarAnalysis]] = {}
-        self._build_ui()
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self.analysis_data: Dict[str, List[BarAnalysis]] = {}
+            self._build_ui()
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[MultiTimeframeAnalysisTab.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self.analysis_data = {}
+        self.timeframe_combo = None
+        self.export_btn = None
+        self.export_all_btn = None
+        self.stats_lbl = None
+        self.tree = None
+        self.details_text = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the tab."""
+        try:
+            c = self._c
+            ty = self._ty
+
+            # Update stats label
+            if self.stats_lbl:
+                self.stats_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_BODY}pt;")
+
+            # Update tree widget (will be refreshed in _show_timeframe)
+            self._show_timeframe(self.timeframe_combo.currentText())
+
+            logger.debug("[MultiTimeframeAnalysisTab.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[MultiTimeframeAnalysisTab.apply_theme] Failed: {e}", exc_info=True)
 
     def _build_ui(self):
+        sp = self._sp
+        c = self._c
+        ty = self._ty
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        layout.setSpacing(sp.GAP_SM)
 
         # Toolbar
         toolbar = QHBoxLayout()
@@ -322,9 +225,9 @@ class MultiTimeframeAnalysisTab(QWidget):
         self.timeframe_combo.addItems(ANALYSIS_TIMEFRAMES)
         self.timeframe_combo.setCurrentText("5m")
         self.timeframe_combo.currentTextChanged.connect(self._show_timeframe)
-        toolbar.addWidget(_label("Timeframe:"))
+        toolbar.addWidget(_label("Timeframe:", size_token="SIZE_XS"))
         toolbar.addWidget(self.timeframe_combo)
-        toolbar.addSpacing(12)
+        toolbar.addSpacing(sp.PAD_MD)
 
         self.export_btn = QPushButton("📥 Export Timeframe")
         self.export_btn.clicked.connect(self._export_current)
@@ -337,12 +240,13 @@ class MultiTimeframeAnalysisTab(QWidget):
         toolbar.addWidget(self.export_all_btn)
 
         toolbar.addStretch()
-        self.stats_lbl = _label("No analysis data", color=SUBTEXT, size=13)
+        self.stats_lbl = _label("No analysis data", color_token="TEXT_DIM", size_token="SIZE_BODY")
         toolbar.addWidget(self.stats_lbl)
         layout.addLayout(toolbar)
 
         # Splitter: tree on top, details below
         splitter = QSplitter(Qt.Vertical)
+        splitter.setHandleWidth(sp.SPLITTER)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(
@@ -372,6 +276,9 @@ class MultiTimeframeAnalysisTab(QWidget):
         self._show_timeframe(self.timeframe_combo.currentText())
 
     def _show_timeframe(self, tf: str):
+        c = self._c
+        signal_colors = get_signal_colors()
+
         self.tree.clear()
         for bar in self.analysis_data.get(tf, []):
             item = QTreeWidgetItem()
@@ -379,14 +286,19 @@ class MultiTimeframeAnalysisTab(QWidget):
             item.setData(0, Qt.UserRole, bar.timestamp)
             item.setText(1, f"{bar.spot_price:.2f}")
             item.setText(2, bar.signal)
-            item.setForeground(2, QColor(SIGNAL_COLORS.get(bar.signal, TEXT)))
+            item.setForeground(2, QColor(signal_colors.get(bar.signal, c.TEXT_MAIN)))
             overall = (sum(bar.confidence.values()) / len(bar.confidence)
                        if bar.confidence else 0.0)
             item.setText(3, f"{overall:.1%}")
             for i, sig in enumerate(["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"], 4):
                 conf = bar.confidence.get(sig, 0)
                 item.setText(i, f"{conf:.1%}")
-                clr = ACCENT if conf >= 0.6 else (WARN if conf >= 0.3 else SUBTEXT)
+                if conf >= 0.6:
+                    clr = c.GREEN
+                elif conf >= 0.3:
+                    clr = c.YELLOW
+                else:
+                    clr = c.TEXT_DIM
                 item.setForeground(i, QColor(clr))
             self.tree.addTopLevelItem(item)
 
@@ -399,6 +311,9 @@ class MultiTimeframeAnalysisTab(QWidget):
                 break
 
     def _show_details(self, bar: BarAnalysis):
+        c = self._c
+        signal_colors = get_signal_colors()
+
         lines = [
             f"📊  {bar.timeframe}  —  {bar.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
             f"Spot: ₹{bar.spot_price:.2f}   Signal: {bar.signal}",
@@ -462,7 +377,7 @@ class MultiTimeframeAnalysisTab(QWidget):
 
 # ── Settings Sidebar (RIGHT side, tabbed like StatusPanel) ─────────────────────
 
-class SettingsSidebar(QTabWidget):
+class SettingsSidebar(QTabWidget, ThemedMixin):
     """
     Right-side settings sidebar with horizontal tabs at the top,
     styled identically to the StatusPanel QTabWidget.
@@ -479,51 +394,105 @@ class SettingsSidebar(QTabWidget):
     ]
 
     def __init__(self, window_ref, parent=None):
-        super().__init__(parent)
-        self._win = window_ref      # BacktestWindow reference
-        self.setTabPosition(QTabWidget.North)
-        self.setDocumentMode(True)
-        self.setStyleSheet(f"""
-            QTabWidget::pane {{
-                border: 1px solid {BORDER};
-                background: {SURFACE};
-                border-radius: 0 4px 4px 4px;
-            }}
-            QTabBar::tab {{
-                background: #21262d;
-                color: {SUBTEXT};
-                border: 1px solid {BORDER};
-                border-bottom: none;
-                border-radius: 4px 4px 0 0;
-                padding: 7px 10px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-            QTabBar::tab:selected {{
-                background: {SURFACE};
-                color: {TEXT};
-                border-bottom: 2px solid {INFO};
-            }}
-            QTabBar::tab:hover:!selected {{
-                background: {SURFACE2};
-            }}
-        """)
-        for label, method in self._TABS:
-            self.addTab(getattr(self, method)(), label)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._win = window_ref      # BacktestWindow reference
+            self.setTabPosition(QTabWidget.North)
+            self.setDocumentMode(True)
+
+            for label, method in self._TABS:
+                self.addTab(getattr(self, method)(), label)
+
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[SettingsSidebar.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self._win = None
+        self.strategy_combo = None
+        self.strategy_info = None
+        self.rule_count_lbl = None
+        self.min_conf_lbl = None
+        self.enabled_grp_lbl = None
+        self.timeframe_checkboxes = {}
+        self.derivative = None
+        self.expiry_type = None
+        self.lot_size = None
+        self.num_lots = None
+        self.date_from = None
+        self.date_to = None
+        self.use_tp = None
+        self.tp_pct = None
+        self.use_sl = None
+        self.sl_pct = None
+        self.skip_sideway = None
+        self.slippage = None
+        self.brokerage = None
+        self.capital = None
+        self.execution_interval = None
+        self.auto_export = None
+        self.use_vix = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the sidebar."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"""
+                QTabWidget::pane {{
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    background: {c.BG_PANEL};
+                    border-radius: 0 {sp.RADIUS_SM}px {sp.RADIUS_SM}px {sp.RADIUS_SM}px;
+                }}
+                QTabBar::tab {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_DIM};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-bottom: none;
+                    border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
+                    padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                    font-size: {ty.SIZE_SM}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+                QTabBar::tab:selected {{
+                    background: {c.BG_PANEL};
+                    color: {c.TEXT_MAIN};
+                    border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+                }}
+                QTabBar::tab:hover:!selected {{
+                    background: {c.BORDER};
+                }}
+            """)
+            logger.debug("[SettingsSidebar.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[SettingsSidebar.apply_theme] Failed: {e}", exc_info=True)
 
     # ── Tab builders ───────────────────────────────────────────────────────
 
     def _build_strategy_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         tab = QWidget()
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         g = _card("Active Strategy")
         gl = QVBoxLayout(g)
 
         self.strategy_combo = QComboBox()
-        self.strategy_combo.setMinimumHeight(28)
+        self.strategy_combo.setMinimumHeight(sp.BTN_HEIGHT_SM)
         gl.addWidget(self.strategy_combo)
 
         refresh_btn = QPushButton("🔄  Refresh List")
@@ -531,17 +500,17 @@ class SettingsSidebar(QTabWidget):
         gl.addWidget(refresh_btn)
 
         self.strategy_info = QLabel("")
-        self.strategy_info.setStyleSheet(f"color:{SUBTEXT}; font-size:13px; padding:4px;")
+        self.strategy_info.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding:{sp.PAD_XS}px;")
         self.strategy_info.setWordWrap(True)
         gl.addWidget(self.strategy_info)
         lay.addWidget(g)
 
-        g2 = _card("Strategy Stats", SUBTEXT)
+        g2 = _card("Strategy Stats", "TEXT_DIM")
         g2l = QFormLayout(g2)
-        g2l.setSpacing(6)
-        self.rule_count_lbl = _label("Rules: 0", color=SUBTEXT, size=13)
-        self.min_conf_lbl   = _label("Min Confidence: —", color=SUBTEXT, size=13)
-        self.enabled_grp_lbl= _label("Enabled Groups: —", color=SUBTEXT, size=13)
+        g2l.setSpacing(sp.GAP_XS)
+        self.rule_count_lbl = _label("Rules: 0", color_token="TEXT_DIM", size_token="SIZE_XS")
+        self.min_conf_lbl   = _label("Min Confidence: —", color_token="TEXT_DIM", size_token="SIZE_XS")
+        self.enabled_grp_lbl= _label("Enabled Groups: —", color_token="TEXT_DIM", size_token="SIZE_XS")
         g2l.addRow(self.rule_count_lbl)
         g2l.addRow(self.min_conf_lbl)
         g2l.addRow(self.enabled_grp_lbl)
@@ -551,17 +520,21 @@ class SettingsSidebar(QTabWidget):
         return tab
 
     def _build_timeframe_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         tab = QWidget()
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         # Note: candle data is always fetched at 1-minute resolution from the
         # broker and resampled in-process — there is no "base interval" to select.
 
-        g_tf = _card("Analysis Timeframes", PURPLE)
+        g_tf = _card("Analysis Timeframes", "PURPLE")
         gl_tf = QVBoxLayout(g_tf)
-        gl_tf.addWidget(_label("Select timeframes to analyse:", size=13))
+        gl_tf.addWidget(_label("Select timeframes to analyse:", size_token="SIZE_XS"))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -569,7 +542,7 @@ class SettingsSidebar(QTabWidget):
         tf_w = QWidget()
         tf_lay = QVBoxLayout(tf_w)
         tf_lay.setContentsMargins(0, 0, 0, 0)
-        tf_lay.setSpacing(5)
+        tf_lay.setSpacing(sp.GAP_XS)
 
         self.timeframe_checkboxes: Dict[str, QCheckBox] = {}
         categories = [
@@ -578,14 +551,14 @@ class SettingsSidebar(QTabWidget):
             ("Long Term (60–240m)",  ["60m", "120m", "240m"]),
         ]
         for cat, tfs in categories:
-            lbl = _label(cat, color=INFO, size=13)
+            lbl = _label(cat, color_token="BLUE", size_token="SIZE_XS")
             tf_lay.addWidget(lbl)
             for tf in tfs:
                 cb = QCheckBox(tf)
                 cb.setChecked(tf == "5m")
                 self.timeframe_checkboxes[tf] = cb
                 tf_lay.addWidget(cb)
-            tf_lay.addSpacing(4)
+            tf_lay.addSpacing(sp.PAD_XS)
 
         scroll.setWidget(tf_w)
         gl_tf.addWidget(scroll, 1)
@@ -602,14 +575,18 @@ class SettingsSidebar(QTabWidget):
         return tab
 
     def _build_instrument_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         tab = QWidget()
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
-        g = _card("Instrument", ORANGE)
+        g = _card("Instrument", "ORANGE")
         gl = QFormLayout(g)
-        gl.setSpacing(8)
+        gl.setSpacing(sp.GAP_SM)
         gl.setLabelAlignment(Qt.AlignRight)
 
         self.derivative = QComboBox()
@@ -633,7 +610,7 @@ class SettingsSidebar(QTabWidget):
 
         g2 = _card("Date Range")
         g2l = QFormLayout(g2)
-        g2l.setSpacing(8)
+        g2l.setSpacing(sp.GAP_SM)
         g2l.setLabelAlignment(Qt.AlignRight)
 
         self.date_from = QDateEdit()
@@ -653,14 +630,18 @@ class SettingsSidebar(QTabWidget):
         return tab
 
     def _build_risk_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         tab = QWidget()
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
-        g = _card("Take Profit / Stop Loss", WARN)
+        g = _card("Take Profit / Stop Loss", "YELLOW")
         gl = QFormLayout(g)
-        gl.setSpacing(8)
+        gl.setSpacing(sp.GAP_SM)
         gl.setLabelAlignment(Qt.AlignRight)
 
         self.use_tp = QCheckBox("Enable Take Profit")
@@ -697,14 +678,18 @@ class SettingsSidebar(QTabWidget):
         return tab
 
     def _build_cost_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         tab = QWidget()
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
-        g = _card("Execution Costs", "#f97583")
+        g = _card("Execution Costs", "RED_BRIGHT")
         gl = QFormLayout(g)
-        gl.setSpacing(8)
+        gl.setSpacing(sp.GAP_SM)
         gl.setLabelAlignment(Qt.AlignRight)
 
         self.slippage = QDoubleSpinBox()
@@ -724,7 +709,7 @@ class SettingsSidebar(QTabWidget):
 
         g2 = _card("Capital")
         g2l = QFormLayout(g2)
-        g2l.setSpacing(8)
+        g2l.setSpacing(sp.GAP_SM)
         g2l.setLabelAlignment(Qt.AlignRight)
         self.capital = QDoubleSpinBox()
         self.capital.setRange(10_000, 100_000_000)
@@ -739,15 +724,19 @@ class SettingsSidebar(QTabWidget):
         return tab
 
     def _build_execution_tab(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         tab = QWidget()
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
-        g = _card("Execution Options", ACCENT)
+        g = _card("Execution Options", "GREEN")
         gl = QVBoxLayout(g)
 
-        gl.addWidget(_label("Execution interval (minutes):", size=13))
+        gl.addWidget(_label("Execution interval (minutes):", size_token="SIZE_XS"))
         self.execution_interval = QComboBox()
         self.execution_interval.addItems(["1", "2", "3", "5", "10", "15", "30"])
         self.execution_interval.setCurrentText("5")
@@ -763,7 +752,7 @@ class SettingsSidebar(QTabWidget):
         gl.addWidget(self.auto_export)
         lay.addWidget(g)
 
-        g3 = _card("Volatility Source", INFO)
+        g3 = _card("Volatility Source", "BLUE")
         g3l = QVBoxLayout(g3)
         self.use_vix = QCheckBox("Use India VIX for option pricing")
         self.use_vix.setChecked(True)
@@ -778,12 +767,12 @@ class SettingsSidebar(QTabWidget):
             "from the spot candles — no VIX download required.\n"
             "HV updates every bar using the last 20 closes."
         )
-        hv_note.setStyleSheet(f"color:{SUBTEXT}; font-size:12px;")
+        hv_note.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         hv_note.setWordWrap(True)
         g3l.addWidget(hv_note)
         lay.addWidget(g3)
 
-        g2 = _card("Notes", SUBTEXT)
+        g2 = _card("Notes", "TEXT_DIM")
         g2l = QVBoxLayout(g2)
         info = QLabel(
             "• Spot data is always fetched at 1-min resolution\n"
@@ -793,7 +782,7 @@ class SettingsSidebar(QTabWidget):
             "  (marked ⚗ in Trade Log)\n"
             "• HV mode: no network calls, fully offline capable"
         )
-        info.setStyleSheet(f"color:{SUBTEXT}; font-size:13px;")
+        info.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         info.setWordWrap(True)
         g2l.addWidget(info)
         lay.addWidget(g2)
@@ -829,47 +818,119 @@ class SettingsSidebar(QTabWidget):
 
 # ── Stat Card ──────────────────────────────────────────────────────────────────
 
-class _StatCard(QFrame):
-    def __init__(self, label: str, value: str = "—", value_color: str = TEXT):
-        super().__init__()
-        self.setStyleSheet(
-            f"QFrame {{ background:{SURFACE}; border:1px solid {BORDER};"
-            f" border-radius:6px; padding:4px; }}"
-        )
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
-        lay.setSpacing(2)
-        self._lbl = QLabel(label)
-        self._lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:12px; border:none;")
-        self._val = QLabel(value)
-        self._val.setStyleSheet(f"color:{value_color}; font-size:18px; font-weight:bold; border:none;")
-        lay.addWidget(self._lbl)
-        lay.addWidget(self._val)
+class _StatCard(QFrame, ThemedMixin):
+    def __init__(self, label: str, value: str = "—", value_color_token: str = "TEXT_MAIN"):
+        self._safe_defaults_init()
+        try:
+            super().__init__()
 
-    def update_value(self, value: str, color: str = TEXT):
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            c = self._c
+            sp = self._sp
+
+            self.setStyleSheet(
+                f"QFrame {{ background:{c.BG_PANEL}; border:{sp.SEPARATOR}px solid {c.BORDER};"
+                f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px; }}"
+            )
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(sp.PAD_MD, sp.PAD_XS, sp.PAD_MD, sp.PAD_XS)
+            lay.setSpacing(sp.GAP_XS)
+            self._lbl = QLabel(label)
+            self._lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; border:none;")
+            self._val = QLabel(value)
+            self._val_color_token = value_color_token
+            self._val.setStyleSheet(f"color:{c.get(value_color_token, c.TEXT_MAIN)}; font-size:{self._ty.SIZE_LG}pt; font-weight:bold; border:none;")
+            lay.addWidget(self._lbl)
+            lay.addWidget(self._val)
+
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[_StatCard.__init__] Failed: {e}", exc_info=True)
+            super().__init__()
+
+    def _safe_defaults_init(self):
+        self._lbl = None
+        self._val = None
+        self._val_color_token = "TEXT_MAIN"
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the stat card."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(
+                f"QFrame {{ background:{c.BG_PANEL}; border:{sp.SEPARATOR}px solid {c.BORDER};"
+                f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px; }}"
+            )
+            self._lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; border:none;")
+            self._val.setStyleSheet(f"color:{c.get(self._val_color_token, c.TEXT_MAIN)}; font-size:{ty.SIZE_LG}pt; font-weight:bold; border:none;")
+        except Exception as e:
+            logger.error(f"[_StatCard.apply_theme] Failed: {e}", exc_info=True)
+
+    def update_value(self, value: str, color_token: str = "TEXT_MAIN"):
+        self._val_color_token = color_token
         self._val.setText(value)
-        self._val.setStyleSheet(f"color:{color}; font-size:18px; font-weight:bold; border:none;")
+        c = self._c
+        self._val.setStyleSheet(f"color:{c.get(color_token, c.TEXT_MAIN)}; font-size:{self._ty.SIZE_LG}pt; font-weight:bold; border:none;")
 
 
 # ── Equity Chart ───────────────────────────────────────────────────────────────
 
-class EquityChart(QWidget):
+class EquityChart(QWidget, ThemedMixin):
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._equity_data = []
+            self._use_pg = False
+            self._setup()
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[EquityChart.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
         self._equity_data = []
         self._use_pg = False
-        self._setup()
+        self._pg_widget = None
+        self._fallback = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the chart."""
+        try:
+            c = self._c
+
+            if self._use_pg and self._pg_widget:
+                import pyqtgraph as pg
+                pg.setConfigOptions(antialias=True, background=c.BG_MAIN, foreground=c.TEXT_MAIN)
+                self._pg_widget.setBackground(c.BG_MAIN)
+                self._pg_widget.getAxis("left").setPen(pg.mkPen(color=c.TEXT_DIM))
+                self._pg_widget.getAxis("bottom").setPen(pg.mkPen(color=c.TEXT_DIM))
+        except Exception as e:
+            logger.error(f"[EquityChart.apply_theme] Failed: {e}", exc_info=True)
 
     def _setup(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         try:
             import pyqtgraph as pg
-            pg.setConfigOptions(antialias=True, background=BG, foreground=TEXT)
+            c = self._c
+
+            pg.setConfigOptions(antialias=True, background=c.BG_MAIN, foreground=c.TEXT_MAIN)
             self._pg_widget = pg.PlotWidget()
-            self._pg_widget.setLabel("left", "Equity (₹)", color=SUBTEXT)
-            self._pg_widget.setLabel("bottom", "Trade #", color=SUBTEXT)
+            self._pg_widget.setLabel("left", "Equity (₹)", color=c.TEXT_DIM)
+            self._pg_widget.setLabel("bottom", "Trade #", color=c.TEXT_DIM)
             self._pg_widget.showGrid(x=True, y=True, alpha=0.15)
             layout.addWidget(self._pg_widget)
             self._use_pg = True
@@ -900,13 +961,16 @@ class EquityChart(QWidget):
 
     def _draw_pg(self, equity_curve, trades, synth_indices):
         import pyqtgraph as pg
+        c = self._c
+        sp = self._sp
+
         pw = self._pg_widget
         pw.clear()
         if not equity_curve:
             return
         equities = [e["equity"] for e in equity_curve]
         xs = list(range(len(equities)))
-        pen_clr = ACCENT if equities[-1] >= equities[0] else ERROR_C
+        pen_clr = c.GREEN if equities[-1] >= equities[0] else c.RED
         pen = pg.mkPen(color=pen_clr, width=2)
         curve = pw.plot(xs, equities, pen=pen, name="Equity")
         base  = pw.plot(xs, [equities[0]] * len(xs), pen=pg.mkPen(None))
@@ -926,7 +990,7 @@ class EquityChart(QWidget):
                     start_idx = end_idx = idx
             regions.append((start_idx, end_idx))
 
-            synth_color = QColor(WARN)
+            synth_color = QColor(c.YELLOW)
             synth_color.setAlpha(35)
             synth_brush = QBrush(synth_color)
 
@@ -939,9 +1003,10 @@ class EquityChart(QWidget):
                     r.setMovable(False)
                     pw.addItem(r)
 
+        signal_colors = get_signal_colors()
         for i, trade in enumerate(trades):
             y = equities[min(i, len(equities) - 1)]
-            clr = CALL_CLR if getattr(trade, "direction", "") in ("CE", "CALL") else PUT_CLR
+            clr = signal_colors.get("BUY_CALL") if getattr(trade, "direction", "") in ("CE", "CALL") else signal_colors.get("BUY_PUT")
             pw.addItem(pg.ScatterPlotItem(
                 [i], [y],
                 symbol="t1" if getattr(trade, "net_pnl", 0) > 0 else "t",
@@ -955,11 +1020,30 @@ class EquityChart(QWidget):
             self._fallback.set_data([], [])
 
 
-class _EquityPainter(QWidget):
+class _EquityPainter(QWidget, ThemedMixin):
     def __init__(self, parent=None):
-        super().__init__(parent)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._equity = []
+            self.setMinimumHeight(200)
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[_EquityPainter.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
         self._equity = []
-        self.setMinimumHeight(200)
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the painter."""
+        # Colors will be used in paintEvent
+        self.update()
 
     def set_data(self, equity_curve, _trades):
         self._equity = [e["equity"] for e in equity_curve]
@@ -967,32 +1051,36 @@ class _EquityPainter(QWidget):
 
     def paintEvent(self, event):
         from PyQt5.QtGui import QPainter, QPen
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h, pad = self.width(), self.height(), 40
-        p.fillRect(0, 0, w, h, QColor(BG))
+        p.fillRect(0, 0, w, h, QColor(c.BG_MAIN))
         if not self._equity or len(self._equity) < 2:
-            p.setPen(QColor(SUBTEXT))
+            p.setPen(QColor(c.TEXT_DIM))
             p.drawText(0, 0, w, h, Qt.AlignCenter, "No equity data")
             return
         mn, mx = min(self._equity), max(self._equity)
         rng = mx - mn or 1
         tx = lambda i: pad + int((i / (len(self._equity) - 1)) * (w - 2 * pad))
         ty = lambda v: h - pad - int(((v - mn) / rng) * (h - 2 * pad))
-        p.setPen(QPen(QColor(BORDER), 1, Qt.DashLine))
+        p.setPen(QPen(QColor(c.BORDER), 1, Qt.DashLine))
         p.drawLine(pad, ty(self._equity[0]), w - pad, ty(self._equity[0]))
-        clr = QColor(ACCENT if self._equity[-1] >= self._equity[0] else ERROR_C)
+        clr = QColor(c.GREEN if self._equity[-1] >= self._equity[0] else c.RED)
         p.setPen(QPen(clr, 2))
         for i in range(1, len(self._equity)):
             p.drawLine(tx(i - 1), ty(self._equity[i - 1]), tx(i), ty(self._equity[i]))
-        p.setPen(QColor(SUBTEXT))
+        p.setPen(QColor(c.TEXT_DIM))
         p.drawText(2, ty(mx) + 4, f"₹{mx:,.0f}")
         p.drawText(2, ty(mn) + 4, f"₹{mn:,.0f}")
 
 
 # ── Main Backtest Window ───────────────────────────────────────────────────────
 
-class BacktestWindow(QMainWindow):
+class BacktestWindow(QMainWindow, ThemedMixin):
     """
     Standalone QMainWindow for running and reviewing backtests.
     Uses state_manager to access and restore trade state.
@@ -1004,28 +1092,265 @@ class BacktestWindow(QMainWindow):
     """
 
     def __init__(self, trading_app=None, strategy_manager=None, parent=None):
-        super().__init__(parent)
-        self._trading_app      = trading_app
-        self._strategy_manager = strategy_manager or StrategyManager()
-        self._thread: Optional[BacktestThread] = None
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._trading_app      = trading_app
+            self._strategy_manager = strategy_manager or StrategyManager()
+            self._thread: Optional[BacktestThread] = None
+            self._result = None
+            self._analysis_data: Dict[str, List[BarAnalysis]] = {}
+
+            # Get current state snapshot for reference and restoration
+            self._pre_backtest_state = state_manager.save_state()
+            logger.info(f"[BacktestWindow] Saved pre-backtest state: {len(self._pre_backtest_state)} fields")
+
+            self.setWindowTitle("📊  Strategy Backtester")
+            self.setMinimumSize(1500, 900)
+
+            self._build()
+            self._load_defaults()
+            self._load_strategies()
+
+            self.apply_theme()
+
+        except Exception as e:
+            logger.critical(f"[BacktestWindow.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self._trading_app = None
+        self._strategy_manager = None
+        self._thread = None
         self._result = None
-        self._analysis_data: Dict[str, List[BarAnalysis]] = {}
+        self._analysis_data = {}
+        self._pre_backtest_state = {}
+        self._selected_analysis_tfs = []
+        self._synth_banner = None
+        self._synth_banner_lbl = None
+        self._tabs = None
+        self.settings_sidebar = None
+        self._cards = {}
+        self._timeframe_info = None
+        self._cfg_summary = None
+        self._trade_table = None
+        self._equity_chart = None
+        self._debug_tab = None
+        self._help_tab = None
+        self._analysis_tab = None
+        self._status_lbl = None
+        self._progress = None
+        self.run_btn = None
+        self.stop_btn = None
 
-        # Get current state snapshot for reference and restoration
-        self._pre_backtest_state = state_manager.save_state()
-        logger.info(f"[BacktestWindow] Saved pre-backtest state: {len(self._pre_backtest_state)} fields")
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the window."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
 
-        self.setWindowTitle("📊  Strategy Backtester")
-        self.setMinimumSize(1500, 900)
-        self.setStyleSheet(_CSS)
+            # Apply main stylesheet
+            self.setStyleSheet(self._get_stylesheet())
 
-        self._build()
-        self._load_defaults()
-        self._load_strategies()
+            # Update splitter
+            splitter = self.findChild(QSplitter)
+            if splitter:
+                splitter.setStyleSheet(f"QSplitter::handle {{ background: {c.BORDER}; }}")
+
+            # Update synth banner
+            if self._synth_banner and self._synth_banner_lbl:
+                self._synth_banner.setStyleSheet(
+                    f"background:{c.BG_ROW_B}; border-bottom:{sp.SEPARATOR}px solid {c.YELLOW}; padding:{sp.PAD_XS}px {sp.PAD_MD}px;"
+                )
+                self._synth_banner_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_XS}pt;")
+
+            # Update status label
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+
+            # Update timeframe info
+            if self._timeframe_info:
+                self._timeframe_info.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_BODY}pt;")
+
+            # Update progress bar
+            if self._progress:
+                self._progress.setStyleSheet(f"""
+                    QProgressBar {{
+                        background: {c.BG_HOVER};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_SM}px;
+                        text-align: center;
+                        color: {c.TEXT_MAIN};
+                        min-height: {sp.PROGRESS_MD}px;
+                        max-height: {sp.PROGRESS_MD}px;
+                    }}
+                    QProgressBar::chunk {{
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                            stop:0 {c.GREEN}, stop:1 {c.GREEN_BRIGHT});
+                        border-radius: {sp.RADIUS_SM}px;
+                    }}
+                """)
+
+            logger.debug("[BacktestWindow.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[BacktestWindow.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_stylesheet(self) -> str:
+        """Generate stylesheet with current theme tokens."""
+        c = self._c
+        ty = self._ty
+        sp = self._sp
+
+        return f"""
+            QMainWindow, QWidget {{
+                background: {c.BG_MAIN};
+                color: {c.TEXT_MAIN};
+                font-family: '{ty.FONT_UI}', 'SF Pro Display', 'Ubuntu', sans-serif;
+                font-size: {ty.SIZE_BODY}pt;
+            }}
+            QGroupBox {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                margin-top: {sp.PAD_MD}px;
+                padding-top: {sp.PAD_MD}px;
+                font-weight: {ty.WEIGHT_BOLD};
+                color: {c.TEXT_DIM};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {sp.PAD_MD}px;
+                padding: 0 {sp.PAD_XS}px;
+                color: {c.BLUE};
+            }}
+            QLabel {{ color: {c.TEXT_MAIN}; }}
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {{
+                background: {c.BG_HOVER};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                color: {c.TEXT_MAIN};
+                min-height: {sp.BTN_HEIGHT_SM}px;
+            }}
+            QComboBox::drop-down {{ border: none; }}
+            QComboBox QAbstractItemView {{
+                background: {c.BG_HOVER};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                color: {c.TEXT_MAIN};
+                selection-background-color: {c.BG_SELECTED};
+            }}
+            QPushButton {{
+                background: {c.BG_HOVER};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                color: {c.TEXT_MAIN};
+                font-weight: 600;
+            }}
+            QPushButton:hover  {{ background: {c.BORDER}; }}
+            QPushButton:disabled {{ color: {c.TEXT_DISABLED}; background: {c.BG_PANEL}; }}
+            QPushButton#runBtn {{
+                background: {c.GREEN};
+                border-color: {c.GREEN_BRIGHT};
+                color: {c.TEXT_INVERSE};
+                font-size: {ty.SIZE_BODY}pt;
+                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                border-radius: {sp.RADIUS_MD}px;
+            }}
+            QPushButton#runBtn:hover {{ background: {c.GREEN_BRIGHT}; }}
+            QPushButton#stopBtn {{
+                background: {c.RED};
+                border-color: {c.RED_BRIGHT};
+                color: {c.TEXT_INVERSE};
+                border-radius: {sp.RADIUS_MD}px;
+            }}
+            QTableWidget {{
+                background: {c.BG_MAIN};
+                alternate-background-color: {c.BG_PANEL};
+                gridline-color: {c.BORDER};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+            }}
+            QHeaderView::section {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DIM};
+                border: none;
+                border-right: {sp.SEPARATOR}px solid {c.BORDER};
+                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                font-weight: {ty.WEIGHT_BOLD};
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QTabWidget::pane {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                background: {c.BG_MAIN};
+                border-radius: 0 {sp.RADIUS_SM}px {sp.RADIUS_SM}px {sp.RADIUS_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {c.BG_PANEL};
+                color: {c.TEXT_DIM};
+                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-bottom: none;
+                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:selected {{
+                background: {c.BG_MAIN};
+                color: {c.TEXT_MAIN};
+                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+            }}
+            QTabBar::tab:hover:!selected {{ background: {c.BG_HOVER}; }}
+            QScrollBar:vertical {{
+                background: {c.BG_PANEL}; width: {sp.ICON_SM}px; border-radius: {sp.RADIUS_SM}px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {c.BORDER}; border-radius: {sp.RADIUS_SM}px; min-height: {sp.BTN_HEIGHT_SM}px;
+            }}
+            QCheckBox {{ color: {c.TEXT_MAIN}; spacing: {sp.GAP_XS}px; }}
+            QCheckBox::indicator {{
+                width: {sp.ICON_SM}px; height: {sp.ICON_SM}px;
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                background: {c.BG_HOVER};
+            }}
+            QCheckBox::indicator:checked {{ background: {c.GREEN}; border-color: {c.GREEN_BRIGHT}; }}
+            QSplitter::handle {{ background: {c.BORDER}; width: {sp.SPLITTER}px; height: {sp.SPLITTER}px; }}
+            QTreeWidget {{
+                background: {c.BG_MAIN};
+                alternate-background-color: {c.BG_PANEL};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+            }}
+            QTreeWidget::item {{
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+            }}
+            QTreeWidget::item:selected {{
+                background: {c.BG_HOVER};
+                color: {c.BLUE};
+            }}
+            QTextEdit {{
+                background: {c.BG_PANEL};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                color: {c.TEXT_MAIN};
+                font-family: '{ty.FONT_MONO}';
+                font-size: {ty.SIZE_XS}pt;
+            }}
+        """
 
     # ── Build UI ───────────────────────────────────────────────────────────────
 
     def _build(self):
+        sp = self._sp
+
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
@@ -1034,22 +1359,17 @@ class BacktestWindow(QMainWindow):
 
         # ── Synthetic-price disclaimer banner ──────────────────────────
         self._synth_banner = QFrame()
-        self._synth_banner.setStyleSheet(
-            f"background:#2d2500; border-bottom:1px solid {WARN}; padding:6px 16px;"
-        )
+        self._synth_banner.hide()
         sb_lay = QHBoxLayout(self._synth_banner)
         sb_lay.setContentsMargins(0, 0, 0, 0)
         self._synth_banner_lbl = QLabel()
-        self._synth_banner_lbl.setStyleSheet(f"color:{WARN}; font-size:13px;")
         self._synth_banner_lbl.setWordWrap(True)
         sb_lay.addWidget(self._synth_banner_lbl)
-        self._synth_banner.hide()
         root.addWidget(self._synth_banner)
 
         # ── Main horizontal split: Results | Sidebar ───────────────────
         splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(2)
-        splitter.setStyleSheet(f"QSplitter::handle {{ background: {BORDER}; }}")
+        splitter.setHandleWidth(sp.SPLITTER)
 
         # Left: Results panel
         results_panel = self._build_results_panel()
@@ -1095,30 +1415,32 @@ class BacktestWindow(QMainWindow):
         return panel
 
     def _build_overview_tab(self) -> QWidget:
+        sp = self._sp
+
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(14)
+        lay.setContentsMargins(sp.PAD_XL, sp.PAD_MD, sp.PAD_XL, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         # Stat cards grid (4 columns)
         cards_w = QWidget()
         cards_lay = QGridLayout(cards_w)
-        cards_lay.setSpacing(10)
+        cards_lay.setSpacing(sp.GAP_MD)
 
         self._cards = {}
         card_defs = [
-            ("net_pnl",      "Net P&L",           "—", TEXT),
-            ("total_trades", "Total Trades",       "—", TEXT),
-            ("win_rate",     "Win Rate",           "—", TEXT),
-            ("profit_factor","Profit Factor",      "—", TEXT),
-            ("best_trade",   "Best Trade",         "—", ACCENT),
-            ("worst_trade",  "Worst Trade",        "—", ERROR_C),
-            ("avg_pnl",      "Avg Net P&L/Trade",  "—", TEXT),
-            ("max_dd",       "Max Drawdown",       "—", WARN),
-            ("sharpe",       "Sharpe Ratio",       "—", INFO),
-            ("winners",      "Winners",            "—", ACCENT),
-            ("losers",       "Losers",             "—", ERROR_C),
-            ("data_quality", "Data Source",        "—", TEXT),
+            ("net_pnl",      "Net P&L",           "—", "TEXT_MAIN"),
+            ("total_trades", "Total Trades",       "—", "TEXT_MAIN"),
+            ("win_rate",     "Win Rate",           "—", "TEXT_MAIN"),
+            ("profit_factor","Profit Factor",      "—", "TEXT_MAIN"),
+            ("best_trade",   "Best Trade",         "—", "GREEN"),
+            ("worst_trade",  "Worst Trade",        "—", "RED"),
+            ("avg_pnl",      "Avg Net P&L/Trade",  "—", "TEXT_MAIN"),
+            ("max_dd",       "Max Drawdown",       "—", "YELLOW"),
+            ("sharpe",       "Sharpe Ratio",       "—", "BLUE"),
+            ("winners",      "Winners",            "—", "GREEN"),
+            ("losers",       "Losers",             "—", "RED"),
+            ("data_quality", "Data Source",        "—", "TEXT_MAIN"),
         ]
         for n, (key, lbl, val, clr) in enumerate(card_defs):
             card = _StatCard(lbl, val, clr)
@@ -1127,12 +1449,12 @@ class BacktestWindow(QMainWindow):
 
         lay.addWidget(cards_w)
 
-        self._timeframe_info = _label("", color=INFO, size=14)
+        self._timeframe_info = _label("", color_token="BLUE", size_token="SIZE_BODY")
         lay.addWidget(self._timeframe_info)
 
         self._cfg_summary = _label(
             "No results yet — configure settings on the right and press ▶ Run.",
-            color=SUBTEXT, size=13
+            color_token="TEXT_DIM", size_token="SIZE_XS"
         )
         self._cfg_summary.setWordWrap(True)
         lay.addWidget(self._cfg_summary)
@@ -1141,17 +1463,20 @@ class BacktestWindow(QMainWindow):
         return w
 
     def _build_trade_log_tab(self) -> QWidget:
+        sp = self._sp
+        c = self._c
+
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        lay.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        lay.setSpacing(sp.GAP_XS)
 
         legend = QHBoxLayout()
         for sym, lbl, clr in [
-            ("⚗", "Synthetic (Black-Scholes) price", WARN),
-            ("✓", "Real broker data",                 ACCENT),
+            ("⚗", "Synthetic (Black-Scholes) price", c.YELLOW),
+            ("✓", "Real broker data",                 c.GREEN),
         ]:
-            legend.addWidget(_label(f"{sym}  {lbl}", color=clr, size=13))
+            legend.addWidget(_label(f"{sym}  {lbl}", color_token=clr if isinstance(clr, str) else "YELLOW", size_token="SIZE_XS"))
         legend.addStretch()
         lay.addLayout(legend)
 
@@ -1174,38 +1499,45 @@ class BacktestWindow(QMainWindow):
         return w
 
     def _build_chart_tab(self) -> QWidget:
+        sp = self._sp
+        c = self._c
+
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
         self._equity_chart = EquityChart()
         self._equity_chart.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         lay.addWidget(self._equity_chart, 1)
         note = _label(
             "⚗ Amber-shaded bars = Black-Scholes synthetic pricing (real option data unavailable).",
-            color=WARN, size=13
+            color_token="YELLOW", size_token="SIZE_XS"
         )
         lay.addWidget(note)
         return w
 
     def _build_bottom_bar(self) -> QWidget:
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
         bar = QWidget()
-        bar.setFixedHeight(64)
-        bar.setStyleSheet(f"background:{SURFACE}; border-top:1px solid {BORDER};")
+        bar.setFixedHeight(sp.BUTTON_PANEL_H)
+        bar.setStyleSheet(f"background:{c.BG_PANEL}; border-top:{sp.SEPARATOR}px solid {c.BORDER};")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(16, 10, 16, 10)
-        lay.setSpacing(12)
+        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setSpacing(sp.GAP_MD)
 
         # Progress section
         prog_col = QVBoxLayout()
-        prog_col.setSpacing(2)
+        prog_col.setSpacing(sp.GAP_XS)
 
-        self._status_lbl = _label("Ready", color=SUBTEXT, size=13)
+        self._status_lbl = _label("Ready", color_token="TEXT_DIM", size_token="SIZE_XS")
         prog_col.addWidget(self._status_lbl)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
-        self._progress.setFixedHeight(6)
+        self._progress.setFixedHeight(sp.PROGRESS_MD)
         self._progress.setTextVisible(False)
         prog_col.addWidget(self._progress)
 
@@ -1214,14 +1546,14 @@ class BacktestWindow(QMainWindow):
         # Buttons
         self.run_btn = QPushButton("▶  Run Backtest")
         self.run_btn.setObjectName("runBtn")
-        self.run_btn.setFixedHeight(42)
+        self.run_btn.setFixedHeight(sp.BTN_HEIGHT_LG)
         self.run_btn.setMinimumWidth(160)
         self.run_btn.clicked.connect(self._on_run)
         lay.addWidget(self.run_btn)
 
         self.stop_btn = QPushButton("■  Stop")
         self.stop_btn.setObjectName("stopBtn")
-        self.stop_btn.setFixedHeight(42)
+        self.stop_btn.setFixedHeight(sp.BTN_HEIGHT_LG)
         self.stop_btn.setMinimumWidth(100)
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop)
@@ -1503,6 +1835,9 @@ class BacktestWindow(QMainWindow):
         self._analysis_tab.set_analysis_data({})
 
     def _populate_results(self, result: BacktestResult):
+        c = self._c
+        signal_colors = get_signal_colors()
+
         # Synthetic banner
         total_src = result.synthetic_bars + result.real_bars
         if result.synthetic_bars > 0 and total_src:
@@ -1517,32 +1852,32 @@ class BacktestWindow(QMainWindow):
             self._synth_banner.show()
 
         # Overview cards
-        pnl_clr = ACCENT if result.total_net_pnl >= 0 else ERROR_C
+        pnl_clr = "GREEN" if result.total_net_pnl >= 0 else "RED"
         self._cards["net_pnl"].update_value(f"₹{result.total_net_pnl:+,.0f}", pnl_clr)
         self._cards["total_trades"].update_value(str(result.total_trades))
-        wr_clr = ACCENT if result.win_rate >= 50 else WARN
+        wr_clr = "GREEN" if result.win_rate >= 50 else "YELLOW"
         self._cards["win_rate"].update_value(f"{result.win_rate:.1f}%", wr_clr)
-        pf_clr = ACCENT if result.profit_factor >= 1 else ERROR_C
+        pf_clr = "GREEN" if result.profit_factor >= 1 else "RED"
         pf_txt = (f"{result.profit_factor:.2f}"
                   if result.profit_factor != float("inf") else "∞")
         self._cards["profit_factor"].update_value(pf_txt, pf_clr)
-        self._cards["best_trade"].update_value(f"₹{result.best_trade:+,.0f}", ACCENT)
-        self._cards["worst_trade"].update_value(f"₹{result.worst_trade:+,.0f}", ERROR_C)
-        avg_clr = ACCENT if result.avg_net_pnl >= 0 else ERROR_C
+        self._cards["best_trade"].update_value(f"₹{result.best_trade:+,.0f}", "GREEN")
+        self._cards["worst_trade"].update_value(f"₹{result.worst_trade:+,.0f}", "RED")
+        avg_clr = "GREEN" if result.avg_net_pnl >= 0 else "RED"
         self._cards["avg_pnl"].update_value(f"₹{result.avg_net_pnl:+,.0f}", avg_clr)
-        self._cards["max_dd"].update_value(f"₹{result.max_drawdown:,.0f}", WARN)
-        sh_clr = ACCENT if result.sharpe >= 1 else (WARN if result.sharpe >= 0 else ERROR_C)
+        self._cards["max_dd"].update_value(f"₹{result.max_drawdown:,.0f}", "YELLOW")
+        sh_clr = "GREEN" if result.sharpe >= 1 else ("YELLOW" if result.sharpe >= 0 else "RED")
         self._cards["sharpe"].update_value(f"{result.sharpe:.2f}", sh_clr)
-        self._cards["winners"].update_value(str(result.winners), ACCENT)
-        self._cards["losers"].update_value(str(result.losers), ERROR_C)
+        self._cards["winners"].update_value(str(result.winners), "GREEN")
+        self._cards["losers"].update_value(str(result.losers), "RED")
         if total_src:
             real_pct = result.real_bars / total_src * 100
-            dq_clr = ACCENT if real_pct >= 80 else (WARN if real_pct >= 40 else ERROR_C)
+            dq_clr = "GREEN" if real_pct >= 80 else ("YELLOW" if real_pct >= 40 else "RED")
             dq_lbl = (f"{result.real_bars}R / {result.synthetic_bars}S"
                       if total_src < 30
                       else f"{real_pct:.0f}% real data")
         else:
-            dq_lbl, dq_clr = "N/A", SUBTEXT
+            dq_lbl, dq_clr = "N/A", "TEXT_DIM"
         self._cards["data_quality"].update_value(dq_lbl, dq_clr)
 
         cfg = result.config
@@ -1562,25 +1897,25 @@ class BacktestWindow(QMainWindow):
         for row, t in enumerate(result.trades):
             is_synth = self._equity_chart._is_synthetic(t)
             src_badge = "⚗" if is_synth else "✓"
-            bg_color  = QColor(SYNTH_BG) if is_synth else QColor(REAL_BG)
-            dir_clr   = CALL_CLR if getattr(t, "direction", "") in ("CE", "CALL") else PUT_CLR
-            pnl_clr   = ACCENT   if t.net_pnl >= 0 else ERROR_C
+            bg_color  = QColor(c.BG_ROW_B) if is_synth else QColor(c.BG_MAIN)
+            dir_clr   = signal_colors.get("BUY_CALL") if getattr(t, "direction", "") in ("CE", "CALL") else signal_colors.get("BUY_PUT")
+            pnl_clr   = c.GREEN if t.net_pnl >= 0 else c.RED
             cells = [
-                (str(t.trade_no),                                         TEXT),
+                (str(t.trade_no),                                         c.TEXT_MAIN),
                 (f"{'📈 CE' if t.direction in ('CE','CALL') else '📉 PE'}", dir_clr),
-                (t.entry_time.strftime("%d-%b %H:%M"),                    TEXT),
-                (t.exit_time.strftime("%d-%b %H:%M"),                     TEXT),
-                (f"{t.spot_entry:,.0f}",                                  TEXT),
-                (f"{t.spot_exit:,.0f}",                                   TEXT),
-                (f"{t.strike:,}",                                         TEXT),
-                (f"₹{t.option_entry:.2f}",                               TEXT),
-                (f"₹{t.option_exit:.2f}",                                TEXT),
-                (str(t.lots),                                             TEXT),
+                (t.entry_time.strftime("%d-%b %H:%M"),                    c.TEXT_MAIN),
+                (t.exit_time.strftime("%d-%b %H:%M"),                     c.TEXT_MAIN),
+                (f"{t.spot_entry:,.0f}",                                  c.TEXT_MAIN),
+                (f"{t.spot_exit:,.0f}",                                   c.TEXT_MAIN),
+                (f"{t.strike:,}",                                         c.TEXT_MAIN),
+                (f"₹{t.option_entry:.2f}",                               c.TEXT_MAIN),
+                (f"₹{t.option_exit:.2f}",                                c.TEXT_MAIN),
+                (str(t.lots),                                             c.TEXT_MAIN),
                 (f"₹{t.gross_pnl:+,.0f}",                               pnl_clr),
                 (f"₹{t.net_pnl:+,.0f}",                                 pnl_clr),
-                (t.exit_reason,          WARN if t.exit_reason == "SL" else TEXT),
-                ((t.signal_name or "—")[:20],                            SUBTEXT),
-                (src_badge,              WARN if is_synth else ACCENT),
+                (t.exit_reason,          c.YELLOW if t.exit_reason == "SL" else c.TEXT_MAIN),
+                ((t.signal_name or "—")[:20],                            c.TEXT_DIM),
+                (src_badge,              c.YELLOW if is_synth else c.GREEN),
             ]
             for col, (val, clr) in enumerate(cells):
                 item = QTableWidgetItem(val)

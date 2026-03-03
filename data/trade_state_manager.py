@@ -9,7 +9,7 @@ it easy to access and update state from anywhere in the application, including
 the backtest engine.
 
 Usage:
-    from models.trade_state_manager import state_manager
+    from data.trade_state_manager import state_manager
 
     # Get the current state
     state = state_manager.get_state()
@@ -27,7 +27,7 @@ Usage:
 import threading
 import logging
 from typing import Optional, Dict, Any, List
-from models.trade_state import TradeState
+from data.trade_state import TradeState
 
 logger = logging.getLogger(__name__)
 

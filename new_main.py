@@ -25,7 +25,7 @@ from data.candle_store_manager import candle_store_manager
 from data.websocket_manager import WebSocketManager
 from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
 from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 from strategy.dynamic_signal_engine import DynamicSignalEngine
 from strategy.multi_tf_filter import MultiTimeframeFilter
 from strategy.strategy_manager import StrategyManager

@@ -8,6 +8,7 @@ Uses database-backed strategy manager.
 FEATURE 3: Added rule weight support for confidence scoring
 FEATURE: Shift controls for all indicators and columns
 FEATURE: Help & Documentation tab with interactive examples
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
 from __future__ import annotations
@@ -37,35 +38,15 @@ from strategy.indicator_registry import (
 from strategy.strategy_help_tab import StrategyHelpTab
 from strategy.strategy_manager import strategy_manager
 
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
+
 # Import SIGNAL_GROUPS as strings - these are the string values used in the engine config
 SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 from strategy.strategy_presets import get_preset_names, get_preset_rules
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
-
-# ── Palette ──────────────────────────────────────────────────────────────────
-BG = "#0d1117"
-BG_PANEL = "#161b22"
-BG_ITEM = "#1c2128"
-BG_SEL = "#1f3d5c"
-BORDER = "#30363d"
-TEXT = "#e6edf3"
-DIM = "#8b949e"
-GREEN = "#3fb950"
-RED = "#f85149"
-BLUE = "#58a6ff"
-YELLOW = "#d29922"
-ORANGE = "#ffa657"
-PURPLE = "#bc8cff"
-
-SIGNAL_META = {
-    "BUY_CALL": ("📈", GREEN, "BUY CALL"),
-    "BUY_PUT": ("📉", BLUE, "BUY PUT"),
-    "EXIT_CALL": ("🔴", RED, "EXIT CALL"),
-    "EXIT_PUT": ("🟠", ORANGE, "EXIT PUT"),
-    "HOLD": ("⏸", YELLOW, "HOLD"),
-}
 
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "between"]
 SIDE_TYPES = ["indicator", "scalar", "column"]
@@ -84,139 +65,179 @@ COLUMN_META = {
 }
 
 
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+def get_signal_meta():
+    """Get signal metadata with theme colors."""
+    c = theme_manager.palette
+    return {
+        "BUY_CALL": ("📈", c.GREEN, "BUY CALL"),
+        "BUY_PUT": ("📉", c.BLUE, "BUY PUT"),
+        "EXIT_CALL": ("🔴", c.RED, "EXIT CALL"),
+        "EXIT_PUT": ("🟠", c.ORANGE, "EXIT PUT"),
+        "HOLD": ("⏸", c.YELLOW, "HOLD"),
+    }
+
+
 def _ss() -> str:
-    """Global stylesheet."""
+    """Global stylesheet with theme tokens."""
+    c = theme_manager.palette
+    ty = theme_manager.typography
+    sp = theme_manager.spacing
+
     return f"""
-        QWidget, QDialog {{ background: {BG}; color: {TEXT}; font-size: 10pt; }}
-        QLabel {{ color: {TEXT}; }}
+        QWidget, QDialog {{ background: {c.BG_MAIN}; color: {c.TEXT_MAIN}; font-size: {ty.SIZE_BODY}pt; }}
+        QLabel {{ color: {c.TEXT_MAIN}; }}
         QGroupBox {{
-            background: {BG_PANEL};
-            border: 1px solid {BORDER};
-            border-radius: 6px;
-            margin-top: 14px;
-            padding: 8px 6px 6px 6px;
-            font-weight: bold; font-size: 9pt;
+            background: {c.BG_PANEL};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_MD}px;
+            margin-top: {sp.PAD_MD}px;
+            padding: {sp.PAD_SM}px {sp.PAD_XS}px {sp.PAD_XS}px {sp.PAD_XS}px;
+            font-weight: {ty.WEIGHT_BOLD}; font-size: {ty.SIZE_XS}pt;
         }}
         QGroupBox::title {{
-            subcontrol-origin: margin; left: 10px;
-            padding: 0 4px; color: {TEXT};
+            subcontrol-origin: margin; left: {sp.PAD_MD}px;
+            padding: 0 {sp.PAD_XS}px; color: {c.TEXT_MAIN};
         }}
         QLineEdit, QTextEdit, QComboBox {{
-            background: #21262d; color: {TEXT};
-            border: 1px solid {BORDER}; border-radius: 4px;
-            padding: 6px 8px; font-size: 10pt;
+            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px;
+            padding: {sp.PAD_XS}px {sp.PAD_SM}px; font-size: {ty.SIZE_BODY}pt;
         }}
-        QLineEdit:focus, QTextEdit:focus {{ border: 2px solid {BLUE}; }}
+        QLineEdit:focus, QTextEdit:focus {{ border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
         QComboBox::drop-down {{ border: none; }}
         QComboBox QAbstractItemView {{ 
-            background: #21262d; 
-            color: {TEXT}; 
-            selection-background-color: {BG_SEL};
+            background: {c.BG_HOVER}; 
+            color: {c.TEXT_MAIN}; 
+            selection-background-color: {c.BG_SELECTED};
             min-width: 250px;
         }}
-        QCheckBox {{ color: {TEXT}; spacing: 6px; font-size: 10pt; }}
-        QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 3px; }}
-        QCheckBox::indicator:unchecked {{ background: #21262d; border: 2px solid {BORDER}; }}
-        QCheckBox::indicator:checked  {{ background: {GREEN};  border: 2px solid {GREEN}; }}
+        QCheckBox {{ color: {c.TEXT_MAIN}; spacing: {sp.GAP_XS}px; font-size: {ty.SIZE_BODY}pt; }}
+        QCheckBox::indicator {{ width: {sp.ICON_MD}px; height: {sp.ICON_MD}px; border-radius: {sp.RADIUS_SM}px; }}
+        QCheckBox::indicator:unchecked {{ background: {c.BG_HOVER}; border: {sp.SEPARATOR}px solid {c.BORDER}; }}
+        QCheckBox::indicator:checked  {{ background: {c.GREEN};  border: {sp.SEPARATOR}px solid {c.GREEN}; }}
         QDoubleSpinBox, QSpinBox {{
-            background: #21262d;
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            padding: 4px 6px;
-            font-size: 9pt;
+            background: {c.BG_HOVER};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            padding: {sp.PAD_XS}px {sp.PAD_XS}px;
+            font-size: {ty.SIZE_XS}pt;
             min-width: 70px;
         }}
-        QDoubleSpinBox:focus, QSpinBox:focus {{ border: 2px solid {BLUE}; }}
+        QDoubleSpinBox:focus, QSpinBox:focus {{ border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
         QPushButton {{
-            background: #21262d; color: {TEXT};
-            border: 1px solid {BORDER}; border-radius: 5px;
-            padding: 7px 16px; font-size: 10pt; font-weight: bold;
+            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px;
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt; font-weight: {ty.WEIGHT_BOLD};
         }}
-        QPushButton:hover {{ background: #2d333b; }}
-        QPushButton:disabled {{ background: #161b22; color: #484f58; }}
+        QPushButton:hover {{ background: {c.BORDER}; }}
+        QPushButton:disabled {{ background: {c.BG_PANEL}; color: {c.TEXT_DISABLED}; }}
         QToolButton {{
-            background: #21262d; color: {TEXT};
-            border: 1px solid {BORDER}; border-radius: 5px;
-            padding: 7px 16px; font-size: 10pt; font-weight: bold;
+            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px;
+            padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt; font-weight: {ty.WEIGHT_BOLD};
         }}
-        QToolButton:hover {{ background: #2d333b; }}
+        QToolButton:hover {{ background: {c.BORDER}; }}
         QToolButton::menu-indicator {{ image: none; }}
         QMenu {{
-            background-color: #21262d;
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            font-size: 10pt;
+            background-color: {c.BG_HOVER};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
+            font-size: {ty.SIZE_BODY}pt;
         }}
         QMenu::item {{
-            padding: 8px 20px;
-            border-bottom: 1px solid {BORDER}40;
+            padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+            border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
         }}
         QMenu::item:selected {{
-            background-color: {BG_SEL};
-            color: {BLUE};
+            background-color: {c.BG_SELECTED};
+            color: {c.BLUE};
         }}
         QListWidget {{
-            background: {BG_PANEL}; color: {TEXT};
-            border: 1px solid {BORDER}; border-radius: 4px;
-            font-size: 10pt; outline: none;
+            background: {c.BG_PANEL}; color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px;
+            font-size: {ty.SIZE_BODY}pt; outline: none;
         }}
-        QListWidget::item {{ padding: 10px 12px; border-bottom: 1px solid {BORDER}; }}
-        QListWidget::item:selected {{ background: {BG_SEL}; color: {BLUE}; border-left: 3px solid {BLUE}; }}
-        QListWidget::item:hover {{ background: #1f2937; }}
-        QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 4px; background: {BG_PANEL}; }}
+        QListWidget::item {{ padding: {sp.PAD_MD}px {sp.PAD_MD}px; border-bottom: {sp.SEPARATOR}px solid {c.BORDER}; }}
+        QListWidget::item:selected {{ background: {c.BG_SELECTED}; color: {c.BLUE}; border-left: {sp.PAD_XS}px solid {c.BLUE}; }}
+        QListWidget::item:hover {{ background: {c.BG_HOVER}; }}
+        QTabWidget::pane {{ border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; background: {c.BG_PANEL}; }}
         QTabBar::tab {{
-            background: #21262d; color: {DIM};
-            border: 1px solid {BORDER}; border-bottom: none;
-            border-radius: 4px 4px 0 0; padding: 7px 18px; font-size: 10pt;
+            background: {c.BG_HOVER}; color: {c.TEXT_DIM};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-bottom: none;
+            border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0; padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt;
         }}
-        QTabBar::tab:selected {{ background: {BG_PANEL}; color: {TEXT}; border-bottom: 2px solid {BLUE}; }}
+        QTabBar::tab:selected {{ background: {c.BG_PANEL}; color: {c.TEXT_MAIN}; border-bottom: {sp.PAD_XS}px solid {c.BLUE}; }}
         QTableWidget {{
-            background: {BG_PANEL}; gridline-color: {BORDER};
-            border: 1px solid {BORDER}; border-radius: 4px; color: {TEXT}; font-size: 9pt;
+            background: {c.BG_PANEL}; gridline-color: {c.BORDER};
+            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XS}pt;
         }}
-        QTableWidget::item {{ padding: 4px 8px; }}
+        QTableWidget::item {{ padding: {sp.PAD_XS}px {sp.PAD_SM}px; }}
         QHeaderView::section {{
-            background: #21262d; color: {DIM};
-            border: none; border-bottom: 1px solid {BORDER};
-            padding: 5px 8px; font-size: 8pt; font-weight: bold;
+            background: {c.BG_HOVER}; color: {c.TEXT_DIM};
+            border: none; border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+            padding: {sp.PAD_XS}px {sp.PAD_SM}px; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};
         }}
         QScrollArea {{ border: none; background: transparent; }}
-        QSplitter::handle {{ background: {BORDER}; }}
+        QSplitter::handle {{ background: {c.BORDER}; }}
         QStackedWidget {{ background: transparent; }}
         QTreeWidget {{
-            background: {BG_PANEL};
-            color: {TEXT};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
+            background: {c.BG_PANEL};
+            color: {c.TEXT_MAIN};
+            border: {sp.SEPARATOR}px solid {c.BORDER};
+            border-radius: {sp.RADIUS_SM}px;
             outline: none;
         }}
         QTreeWidget::item {{
-            padding: 6px;
-            border-bottom: 1px solid {BORDER}40;
+            padding: {sp.PAD_XS}px;
+            border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
         }}
         QTreeWidget::item:selected {{
-            background: {BG_SEL};
-            color: {BLUE};
+            background: {c.BG_SELECTED};
+            color: {c.BLUE};
         }}
         QTreeWidget::item:hover {{
-            background: #2d333b;
+            background: {c.BORDER};
         }}
     """
 
 
-def _btn(text: str, color: str = "#21262d", hover: str = "#2d333b",
-         text_color: str = TEXT, min_w: int = 0) -> QPushButton:
-    """Create a styled button with error handling"""
+def _btn(text: str, color_token: str = "BG_HOVER", hover_token: str = "BORDER",
+         text_color_token: str = "TEXT_MAIN", min_w: int = 0) -> QPushButton:
+    """Create a styled button with theme tokens"""
     try:
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        color = c.get(color_token, c.BG_HOVER)
+        hover = c.get(hover_token, c.BORDER)
+        text_color = c.get(text_color_token, c.TEXT_MAIN)
+
         b = QPushButton(text)
         style = (
-            f"QPushButton {{ background:{color}; color:{text_color}; border:1px solid {BORDER};"
-            f" border-radius:5px; padding:7px 14px; font-weight:bold; font-size:10pt;"
+            f"QPushButton {{ background:{color}; color:{text_color}; border:{sp.SEPARATOR}px solid {c.BORDER};"
+            f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px {sp.PAD_MD}px; font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;"
             f"{'min-width:' + str(min_w) + 'px;' if min_w else ''} }}"
             f"QPushButton:hover {{ background:{hover}; }}"
-            f"QPushButton:disabled {{ background:#161b22; color:#484f58; }}"
+            f"QPushButton:disabled {{ background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; }}"
         )
         b.setStyleSheet(style)
         return b
@@ -227,7 +248,7 @@ def _btn(text: str, color: str = "#21262d", hover: str = "#2d333b",
 
 # ── Import/Export Dialog ─────────────────────────────────────────────────────
 
-class ImportExportDialog(QDialog):
+class ImportExportDialog(QDialog, ThemedMixin):
     """Dialog for importing/exporting strategies as JSON"""
 
     def __init__(self, mode: str, strategy_data: Dict = None, parent=None):
@@ -236,33 +257,27 @@ class ImportExportDialog(QDialog):
 
         try:
             super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.mode = mode  # 'import' or 'export'
             self.strategy_data = strategy_data
             self.setWindowTitle("📦 Import/Export Strategy")
             self.setFixedSize(600, 400)
-            self.setStyleSheet(_ss())
 
             layout = QVBoxLayout(self)
-            layout.setSpacing(12)
+            layout.setSpacing(self._sp.GAP_MD)
 
             # Header
             header = QLabel("📋 Strategy JSON" if mode == 'export' else "📥 Import Strategy")
-            header.setStyleSheet(f"color:{BLUE}; font-size:14pt; font-weight:bold; padding:8px;")
+            header.setObjectName("header")
             layout.addWidget(header)
 
             # JSON Text Edit
             self.json_edit = QTextEdit()
-            self.json_edit.setFont(QFont("Courier New", 10))
-            self.json_edit.setStyleSheet(f"""
-                QTextEdit {{
-                    background: #1c2128;
-                    color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    font-family: 'Courier New';
-                    font-size: 10pt;
-                }}
-            """)
+            self.json_edit.setFont(QFont(self._ty.FONT_MONO, self._ty.SIZE_SM))
 
             if mode == 'export' and strategy_data:
                 # Format JSON nicely
@@ -306,10 +321,11 @@ class ImportExportDialog(QDialog):
 
             # OK/Cancel
             self.ok_btn = QPushButton("OK" if mode == 'export' else "Import")
-            self.ok_btn.setStyleSheet(f"background:{GREEN}; color:{BG}; font-weight:bold;")
+            self.ok_btn.setObjectName("primaryBtn")
             self.ok_btn.clicked.connect(self.accept if mode == 'export' else self._on_import)
 
             cancel_btn = QPushButton("Cancel")
+            cancel_btn.setObjectName("cancelBtn")
             cancel_btn.clicked.connect(self.reject)
 
             btn_layout.addWidget(self.ok_btn)
@@ -320,6 +336,7 @@ class ImportExportDialog(QDialog):
             if mode == 'import':
                 self.ok_btn.setEnabled(False)
 
+            self.apply_theme()
             logger.debug(f"ImportExportDialog initialized in {mode} mode")
 
         except Exception as e:
@@ -331,9 +348,11 @@ class ImportExportDialog(QDialog):
             self.resize(400, 300)
 
             layout = QVBoxLayout(self)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
+
             error_label = QLabel(f"Failed to initialize dialog:\n{e}")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px;")
             layout.addWidget(error_label)
 
             close_btn = QPushButton("Close")
@@ -346,6 +365,64 @@ class ImportExportDialog(QDialog):
         self.strategy_data = None
         self.json_edit = None
         self.ok_btn = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the dialog."""
+        try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
+            self.setStyleSheet(_ss())
+
+            header = self.findChild(QLabel, "header")
+            if header:
+                header.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_LG}pt; font-weight:bold; padding:{sp.PAD_SM}px;")
+
+            if self.json_edit:
+                self.json_edit.setStyleSheet(f"""
+                    QTextEdit {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_MAIN};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_SM}px;
+                        font-family: '{ty.FONT_MONO}';
+                        font-size: {ty.SIZE_SM}pt;
+                    }}
+                """)
+
+            primary_btn = self.findChild(QPushButton, "primaryBtn")
+            if primary_btn:
+                primary_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.GREEN};
+                        color: {c.TEXT_INVERSE};
+                        border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        font-size: {ty.SIZE_BODY}pt;
+                    }}
+                    QPushButton:hover {{ background: {c.GREEN_BRIGHT}; }}
+                """)
+
+            cancel_btn = self.findChild(QPushButton, "cancelBtn")
+            if cancel_btn:
+                cancel_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_MAIN};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                    }}
+                    QPushButton:hover {{ background: {c.BORDER}; }}
+                """)
+
+            logger.debug("[ImportExportDialog.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[ImportExportDialog.apply_theme] Failed: {e}", exc_info=True)
 
     def _copy_to_clipboard(self):
         """Copy JSON to clipboard"""
@@ -445,7 +522,7 @@ class ImportExportDialog(QDialog):
 
 # ── Enhanced Indicator ComboBox ──────────────────────────────────────────────
 
-class IndicatorComboBox(QComboBox):
+class IndicatorComboBox(QComboBox, ThemedMixin):
     """Comprehensive indicator dropdown with categories and autocomplete"""
 
     def __init__(self, parent=None):
@@ -459,66 +536,14 @@ class IndicatorComboBox(QComboBox):
             self.setMinimumWidth(180)
             self.setMaxVisibleItems(30)
 
-            # Style - EXACT preservation
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: #21262d;
-                    color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    padding: 6px 8px;
-                    padding-right: 20px;
-                    font-size: 9pt;
-                    min-width: 170px;
-                }}
-                QComboBox:hover {{
-                    border: 1px solid {BLUE};
-                }}
-                QComboBox::drop-down {{
-                    subcontrol-origin: padding;
-                    subcontrol-position: center right;
-                    width: 16px;
-                    border-left: 1px solid {BORDER};
-                    background: transparent;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    width: 0px;
-                    height: 0px;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid {DIM};
-                    margin-right: 4px;
-                }}
-                QComboBox::down-arrow:hover {{
-                    border-top-color: {TEXT};
-                }}
-                QComboBox QAbstractItemView {{
-                    background: #21262d;
-                    color: {TEXT};
-                    selection-background-color: {BG_SEL};
-                    selection-color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    outline: none;
-                    min-width: 280px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: 8px 12px;
-                    min-height: 24px;
-                    border-bottom: 1px solid {BORDER}40;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {BG_SEL};
-                    color: {BLUE};
-                }}
-                QComboBox QAbstractItemView::item:hover {{
-                    background: #2d333b;
-                }}
-            """)
+            self.setStyleSheet(self._get_stylesheet())
 
             self._populate_indicators()
             self._setup_completer()
+
+            # Apply theme
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
         except Exception as e:
             logger.error(f"[IndicatorComboBox.__init__] Failed: {e}", exc_info=True)
@@ -528,9 +553,80 @@ class IndicatorComboBox(QComboBox):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._category_indices = {}
 
+    def _get_stylesheet(self) -> str:
+        """Get themed stylesheet for combobox."""
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
+        return f"""
+            QComboBox {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                padding-right: {sp.PAD_XL}px;
+                font-size: {ty.SIZE_XS}pt;
+                min-width: 170px;
+            }}
+            QComboBox:hover {{
+                border: {sp.SEPARATOR}px solid {c.BLUE};
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: {sp.ICON_SM}px;
+                border-left: {sp.SEPARATOR}px solid {c.BORDER};
+                background: transparent;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                width: 0px;
+                height: 0px;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {c.TEXT_DIM};
+                margin-right: 4px;
+            }}
+            QComboBox::down-arrow:hover {{
+                border-top-color: {c.TEXT_MAIN};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                selection-background-color: {c.BG_SELECTED};
+                selection-color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                outline: none;
+                min-width: 280px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                min-height: 24px;
+                border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {c.BG_SELECTED};
+                color: {c.BLUE};
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: {c.BORDER};
+            }}
+        """
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the combobox."""
+        try:
+            self.setStyleSheet(self._get_stylesheet())
+        except Exception as e:
+            logger.error(f"[IndicatorComboBox.apply_theme] Failed: {e}", exc_info=True)
+
     def _populate_indicators(self):
         """Add indicators grouped by category"""
         try:
+            c = self._c
             self._category_indices = {}
 
             # Add a "Select indicator..." placeholder at the top
@@ -540,7 +636,7 @@ class IndicatorComboBox(QComboBox):
             font = QFont()
             font.setItalic(True)
             self.model().item(idx).setFont(font)
-            self.model().item(idx).setForeground(QColor(DIM))
+            self.model().item(idx).setForeground(QColor(c.TEXT_DIM))
 
             for category, indicators in get_indicators_by_category().items():
                 if indicators:
@@ -551,7 +647,7 @@ class IndicatorComboBox(QComboBox):
                     font = QFont()
                     font.setBold(True)
                     self.model().item(idx).setFont(font)
-                    self.model().item(idx).setForeground(QColor(BLUE))
+                    self.model().item(idx).setForeground(QColor(c.BLUE))
 
                     self._category_indices[category] = idx
 
@@ -572,24 +668,25 @@ class IndicatorComboBox(QComboBox):
     def _setup_completer(self):
         """Setup autocomplete with all indicators"""
         try:
+            c = self._c
             completer = QCompleter([ind.upper() for ind in ALL_INDICATORS], self)
             completer.setCaseSensitivity(Qt.CaseInsensitive)
             completer.setFilterMode(Qt.MatchContains)
             completer.setCompletionMode(QCompleter.PopupCompletion)
             completer.popup().setStyleSheet(f"""
                 QListView {{
-                    background: #21262d;
-                    color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    font-size: 9pt;
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    font-size: {self._ty.SIZE_XS}pt;
                 }}
                 QListView::item {{
-                    padding: 6px 10px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
                 }}
                 QListView::item:selected {{
-                    background: {BG_SEL};
-                    color: {BLUE};
+                    background: {c.BG_SELECTED};
+                    color: {c.BLUE};
                 }}
             """)
             self.setCompleter(completer)
@@ -630,7 +727,7 @@ class IndicatorComboBox(QComboBox):
 
 # ── Column ComboBox ──────────────────────────────────────────────────────────
 
-class ColumnComboBox(QComboBox):
+class ColumnComboBox(QComboBox, ThemedMixin):
     """Dropdown for selecting a DataFrame column with descriptions"""
 
     def __init__(self, parent=None):
@@ -640,52 +737,26 @@ class ColumnComboBox(QComboBox):
         try:
             super().__init__(parent)
             self.setFixedWidth(200)
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: #21262d;
-                    color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    padding: 6px 8px;
-                    padding-right: 20px;
-                    font-size: 9pt;
-                }}
-                QComboBox:hover {{ border: 1px solid {BLUE}; }}
-                QComboBox::drop-down {{
-                    subcontrol-origin: padding;
-                    subcontrol-position: center right;
-                    width: 16px;
-                    border-left: 1px solid {BORDER};
-                    background: transparent;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    width: 0px; height: 0px;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid {DIM};
-                    margin-right: 4px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: #21262d;
-                    color: {TEXT};
-                    selection-background-color: {BG_SEL};
-                    selection-color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    outline: none;
-                    min-width: 250px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: 8px 12px;
-                    min-height: 20px;
-                    border-bottom: 1px solid {BORDER}40;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {BG_SEL};
-                    color: {BLUE};
-                }}
-            """)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._populate()
+            self.apply_theme()
+
+        except Exception as e:
+            logger.error(f"[ColumnComboBox.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        """Rule 2: Initialize all attributes with safe defaults"""
+        pass
+
+    def _populate(self):
+        """Populate the combobox with columns."""
+        try:
+            c = self._c
 
             # Add separator and items with descriptions
             ohlcv = ["close", "open", "high", "low", "volume"]
@@ -693,7 +764,7 @@ class ColumnComboBox(QComboBox):
 
             self.addItem("─── OHLCV ───")
             self.model().item(0).setEnabled(False)
-            self.model().item(0).setForeground(QColor(DIM))
+            self.model().item(0).setForeground(QColor(c.TEXT_DIM))
             self.model().item(0).setFont(QFont("", -1, QFont.Bold))
 
             for col in ohlcv:
@@ -709,7 +780,7 @@ class ColumnComboBox(QComboBox):
             self.addItem("─── Derived ───")
             sep_idx = self.count() - 1
             self.model().item(sep_idx).setEnabled(False)
-            self.model().item(sep_idx).setForeground(QColor(DIM))
+            self.model().item(sep_idx).setForeground(QColor(c.TEXT_DIM))
             self.model().item(sep_idx).setFont(QFont("", -1, QFont.Bold))
 
             for col in derived:
@@ -725,12 +796,63 @@ class ColumnComboBox(QComboBox):
             self.setCurrentIndex(1)
 
         except Exception as e:
-            logger.error(f"[ColumnComboBox.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
+            logger.error(f"[ColumnComboBox._populate] Failed: {e}", exc_info=True)
 
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        pass
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the combobox."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"""
+                QComboBox {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    padding-right: {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_XS}pt;
+                }}
+                QComboBox:hover {{ border: {sp.SEPARATOR}px solid {c.BLUE}; }}
+                QComboBox::drop-down {{
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    width: {sp.ICON_SM}px;
+                    border-left: {sp.SEPARATOR}px solid {c.BORDER};
+                    background: transparent;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    width: 0px; height: 0px;
+                    border-left: 4px solid transparent;
+                    border-right: 4px solid transparent;
+                    border-top: 5px solid {c.TEXT_DIM};
+                    margin-right: 4px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    selection-background-color: {c.BG_SELECTED};
+                    selection-color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    outline: none;
+                    min-width: 250px;
+                }}
+                QComboBox QAbstractItemView::item {{
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    min-height: 20px;
+                    border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
+                }}
+                QComboBox QAbstractItemView::item:selected {{
+                    background: {c.BG_SELECTED};
+                    color: {c.BLUE};
+                }}
+            """)
+        except Exception as e:
+            logger.error(f"[ColumnComboBox.apply_theme] Failed: {e}", exc_info=True)
 
     def get_column(self) -> str:
         """Return lowercase column name."""
@@ -763,7 +885,7 @@ class ColumnComboBox(QComboBox):
 
 # ── Sub-Column ComboBox ───────────────────────────────────────────────────────
 
-class SubColumnComboBox(QComboBox):
+class SubColumnComboBox(QComboBox, ThemedMixin):
     """
     Dropdown that shows the available output columns for a multi-output
     indicator (e.g. MACD Line / Signal Line / Histogram for 'macd').
@@ -778,53 +900,12 @@ class SubColumnComboBox(QComboBox):
             super().__init__(parent)
             self.setMinimumWidth(155)
             self.setMaximumWidth(220)
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: #21262d;
-                    color: {TEXT};
-                    border: 1px solid {PURPLE};
-                    border-radius: 4px;
-                    padding: 5px 8px;
-                    padding-right: 20px;
-                    font-size: 9pt;
-                    font-weight: bold;
-                }}
-                QComboBox:hover {{ border: 1px solid {BLUE}; }}
-                QComboBox::drop-down {{
-                    subcontrol-origin: padding;
-                    subcontrol-position: center right;
-                    width: 16px;
-                    border-left: 1px solid {BORDER};
-                    background: transparent;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    width: 0px; height: 0px;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid {DIM};
-                    margin-right: 4px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: #21262d;
-                    color: {TEXT};
-                    selection-background-color: {BG_SEL};
-                    selection-color: {TEXT};
-                    border: 1px solid {PURPLE};
-                    border-radius: 4px;
-                    outline: none;
-                    min-width: 260px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: 8px 12px;
-                    min-height: 22px;
-                    border-bottom: 1px solid {BORDER}40;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {BG_SEL};
-                    color: {BLUE};
-                }}
-            """)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self.apply_theme()
             self.setVisible(False)  # Hidden until an indicator is chosen
         except Exception as e:
             logger.error(f"[SubColumnComboBox.__init__] Failed: {e}", exc_info=True)
@@ -832,6 +913,63 @@ class SubColumnComboBox(QComboBox):
 
     def _safe_defaults_init(self):
         self._current_indicator = ""
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the combobox."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"""
+                QComboBox {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.PURPLE};
+                    border-radius: {sp.RADIUS_SM}px;
+                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    padding-right: {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_XS}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+                QComboBox:hover {{ border: {sp.SEPARATOR}px solid {c.BLUE}; }}
+                QComboBox::drop-down {{
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    width: {sp.ICON_SM}px;
+                    border-left: {sp.SEPARATOR}px solid {c.BORDER};
+                    background: transparent;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    width: 0px; height: 0px;
+                    border-left: 4px solid transparent;
+                    border-right: 4px solid transparent;
+                    border-top: 5px solid {c.TEXT_DIM};
+                    margin-right: 4px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    selection-background-color: {c.BG_SELECTED};
+                    selection-color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.PURPLE};
+                    border-radius: {sp.RADIUS_SM}px;
+                    outline: none;
+                    min-width: 260px;
+                }}
+                QComboBox QAbstractItemView::item {{
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    min-height: 22px;
+                    border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
+                }}
+                QComboBox QAbstractItemView::item:selected {{
+                    background: {c.BG_SELECTED};
+                    color: {c.BLUE};
+                }}
+            """)
+        except Exception as e:
+            logger.error(f"[SubColumnComboBox.apply_theme] Failed: {e}", exc_info=True)
 
     def set_indicator(self, indicator: str):
         """
@@ -886,7 +1024,7 @@ class SubColumnComboBox(QComboBox):
 
 # ── Parameter Editor ─────────────────────────────────────────────────────────
 
-class ParameterEditor(QWidget):
+class ParameterEditor(QWidget, ThemedMixin):
     """Inline editor for indicator parameters - Enhanced with better layout"""
 
     params_changed = pyqtSignal(dict)
@@ -897,35 +1035,19 @@ class ParameterEditor(QWidget):
 
         try:
             super().__init__(parent)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self._indicator = indicator
             self._params = params or {}
             self._param_widgets = {}
 
             self.setVisible(False)
             self.setFixedHeight(50)  # Slightly taller for better visibility
-            self.setStyleSheet(f"""
-                QWidget {{
-                    background: #1c2128;
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                }}
-                QLabel {{
-                    color: {DIM};
-                    font-size: 8pt;
-                    font-weight: bold;
-                    padding: 0px 4px;
-                }}
-                QLineEdit, QCheckBox {{
-                    font-size: 8pt;
-                    padding: 2px 4px;
-                    border: 1px solid {BORDER};
-                    border-radius: 3px;
-                    background: #21262d;
-                }}
-                QLineEdit:focus {{
-                    border: 1px solid {BLUE};
-                }}
-            """)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[ParameterEditor.__init__] Failed: {e}", exc_info=True)
@@ -936,6 +1058,38 @@ class ParameterEditor(QWidget):
         self._indicator = None
         self._params = {}
         self._param_widgets = {}
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the parameter editor."""
+        try:
+            c = self._c
+            sp = self._sp
+
+            self.setStyleSheet(f"""
+                QWidget {{
+                    background: {c.BG_HOVER};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                }}
+                QLabel {{
+                    color: {c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: 0px 4px;
+                }}
+                QLineEdit, QCheckBox {{
+                    font-size: {self._ty.SIZE_XS}pt;
+                    padding: {sp.PAD_XS}px {sp.PAD_XS}px;
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    background: {c.BG_HOVER};
+                }}
+                QLineEdit:focus {{
+                    border: {sp.SEPARATOR}px solid {c.BLUE};
+                }}
+            """)
+        except Exception as e:
+            logger.error(f"[ParameterEditor.apply_theme] Failed: {e}", exc_info=True)
 
     def set_indicator(self, indicator: str):
         """Update editor for new indicator"""
@@ -961,15 +1115,15 @@ class ParameterEditor(QWidget):
                 return
 
             layout = QHBoxLayout(self)
-            layout.setContentsMargins(8, 4, 8, 4)
-            layout.setSpacing(12)
+            layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_XS, self._sp.PAD_SM, self._sp.PAD_XS)
+            layout.setSpacing(self._sp.PAD_MD)
             layout.setAlignment(Qt.AlignLeft)
 
             self._param_widgets.clear()
 
             # Add a small indicator icon/label
             icon_label = QLabel("⚙️")
-            icon_label.setStyleSheet(f"color:{BLUE}; font-size:10pt;")
+            icon_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_BODY}pt;")
             layout.addWidget(icon_label)
 
             for param_name, default_value in default_params.items():
@@ -981,7 +1135,7 @@ class ParameterEditor(QWidget):
                     param_container = QWidget()
                     param_container_layout = QHBoxLayout(param_container)
                     param_container_layout.setContentsMargins(0, 0, 0, 0)
-                    param_container_layout.setSpacing(4)
+                    param_container_layout.setSpacing(self._sp.GAP_XS)
 
                     # Label
                     label = QLabel(f"{param_name}:")
@@ -1024,18 +1178,18 @@ class ParameterEditor(QWidget):
             info_btn.setFixedSize(22, 22)
             info_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #21262d;
-                    color: {DIM};
-                    border: 1px solid {BORDER};
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DIM};
+                    border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
                     border-radius: 11px;
-                    font-size: 8pt;
-                    font-weight: bold;
+                    font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                     padding: 0px;
                 }}
                 QPushButton:hover {{
-                    background: {BLUE}40;
-                    color: {BLUE};
-                    border-color: {BLUE};
+                    background: {self._c.BLUE}40;
+                    color: {self._c.BLUE};
+                    border-color: {self._c.BLUE};
                 }}
             """)
             info_btn.setToolTip(f"Default parameters for {self._indicator.upper()}")
@@ -1096,7 +1250,7 @@ class ParameterEditor(QWidget):
 
 # ── Rule Editor Row (with weight and shift controls) ────────────────────────────
 
-class _RuleRow(QWidget):
+class _RuleRow(QWidget, ThemedMixin):
     """One editable rule row with clear labels, expanded layout, weight control, and shift controls"""
 
     deleted = pyqtSignal(object)
@@ -1107,41 +1261,44 @@ class _RuleRow(QWidget):
 
         try:
             super().__init__(parent)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self._param_editors = {}
 
-            self.setStyleSheet(f"background:{BG_ITEM}; border-radius:6px; border:1px solid {BORDER};")
             self.setMinimumHeight(320)
             self.setMaximumHeight(560)  # extra room for sub_col row
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Main vertical layout
             main_layout = QVBoxLayout(self)
-            main_layout.setContentsMargins(12, 8, 12, 8)
-            main_layout.setSpacing(6)
+            main_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_SM)
+            main_layout.setSpacing(self._sp.GAP_XS)
 
             # Main content row - flexible stretch layout
             content_layout = QHBoxLayout()
-            content_layout.setSpacing(10)
+            content_layout.setSpacing(self._sp.GAP_MD)
 
             # ── LEFT SIDE ─────────────────────────────────────────────────────
             lhs_container = QWidget()
             lhs_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             lhs_layout = QVBoxLayout(lhs_container)
             lhs_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_layout.setSpacing(4)
+            lhs_layout.setSpacing(self._sp.GAP_XS)
 
             lhs_header = QLabel("🔹 LEFT SIDE (Condition)")
-            lhs_header.setStyleSheet(f"color:{BLUE}; font-size:8pt; font-weight:bold;")
+            lhs_header.setObjectName("lhs_header")
             lhs_layout.addWidget(lhs_header)
 
             # LHS type and shift row
             lhs_type_row = QHBoxLayout()
-            lhs_type_row.setSpacing(6)
+            lhs_type_row.setSpacing(self._sp.GAP_XS)
 
             self.lhs_type = QComboBox()
             self.lhs_type.addItems(SIDE_TYPES)
             self.lhs_type.setFixedWidth(100)
-            self.lhs_type.setStyleSheet("font-size: 9pt; font-weight:bold;")
             lhs_type_row.addWidget(self.lhs_type)
 
             # LHS shift control
@@ -1151,7 +1308,6 @@ class _RuleRow(QWidget):
             self.lhs_shift.setPrefix("shift: ")
             self.lhs_shift.setFixedWidth(80)
             self.lhs_shift.setToolTip("Number of bars to shift back (0 = current bar)")
-            self.lhs_shift.setStyleSheet("font-size: 8pt;")
             self.lhs_shift.valueChanged.connect(self._update_description)
             lhs_type_row.addWidget(self.lhs_shift)
 
@@ -1163,7 +1319,7 @@ class _RuleRow(QWidget):
             lhs_indicator_widget = QWidget()
             lhs_indicator_layout = QHBoxLayout(lhs_indicator_widget)
             lhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_indicator_layout.setSpacing(4)
+            lhs_indicator_layout.setSpacing(self._sp.GAP_XS)
             ind_label = QLabel("📊")
             ind_label.setFixedWidth(30)
             lhs_indicator_layout.addWidget(ind_label)
@@ -1175,7 +1331,7 @@ class _RuleRow(QWidget):
             lhs_column_widget = QWidget()
             lhs_column_layout = QHBoxLayout(lhs_column_widget)
             lhs_column_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_column_layout.setSpacing(4)
+            lhs_column_layout.setSpacing(self._sp.GAP_XS)
             col_label = QLabel("📈")
             col_label.setFixedWidth(30)
             lhs_column_layout.addWidget(col_label)
@@ -1186,7 +1342,7 @@ class _RuleRow(QWidget):
             lhs_scalar_widget = QWidget()
             lhs_scalar_layout = QHBoxLayout(lhs_scalar_widget)
             lhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_scalar_layout.setSpacing(4)
+            lhs_scalar_layout.setSpacing(self._sp.GAP_XS)
             scalar_label = QLabel("#️⃣")
             scalar_label.setFixedWidth(30)
             lhs_scalar_layout.addWidget(scalar_label)
@@ -1212,9 +1368,9 @@ class _RuleRow(QWidget):
             # is never clipped or hidden by the stack's own page management.
             # Only visible when the indicator produces multiple output columns.
             lhs_sub_row = QHBoxLayout()
-            lhs_sub_row.setSpacing(6)
+            lhs_sub_row.setSpacing(self._sp.GAP_XS)
             lhs_sub_arrow = QLabel("↳ Output column:")
-            lhs_sub_arrow.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold; padding-left:34px;")
+            lhs_sub_arrow.setObjectName("sub_arrow")
             lhs_sub_row.addWidget(lhs_sub_arrow)
             self.lhs_sub_col = SubColumnComboBox()
             lhs_sub_row.addWidget(self.lhs_sub_col)
@@ -1233,17 +1389,16 @@ class _RuleRow(QWidget):
             op_layout = QVBoxLayout(op_container)
             op_layout.setContentsMargins(0, 0, 0, 0)
             op_layout.setAlignment(Qt.AlignTop)
-            op_layout.setSpacing(4)
+            op_layout.setSpacing(self._sp.GAP_XS)
 
             op_header = QLabel("⚖️ COMPARATOR")
-            op_header.setStyleSheet(f"color:{YELLOW}; font-size:8pt; font-weight:bold;")
+            op_header.setObjectName("op_header")
             op_header.setAlignment(Qt.AlignCenter)
             op_layout.addWidget(op_header)
 
             self.op = QComboBox()
             self.op.addItems(OPERATORS)
             self.op.setFixedWidth(150)
-            self.op.setStyleSheet("font-size: 10pt; font-weight:bold; padding:6px;")
             op_layout.addWidget(self.op)
 
             content_layout.addWidget(op_container)
@@ -1253,20 +1408,19 @@ class _RuleRow(QWidget):
             rhs_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             rhs_layout = QVBoxLayout(rhs_container)
             rhs_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_layout.setSpacing(4)
+            rhs_layout.setSpacing(self._sp.GAP_XS)
 
             rhs_header = QLabel("🔸 RIGHT SIDE (Target)")
-            rhs_header.setStyleSheet(f"color:{ORANGE}; font-size:8pt; font-weight:bold;")
+            rhs_header.setObjectName("rhs_header")
             rhs_layout.addWidget(rhs_header)
 
             # RHS type and shift row
             rhs_type_row = QHBoxLayout()
-            rhs_type_row.setSpacing(6)
+            rhs_type_row.setSpacing(self._sp.GAP_XS)
 
             self.rhs_type = QComboBox()
             self.rhs_type.addItems(SIDE_TYPES)
             self.rhs_type.setFixedWidth(100)
-            self.rhs_type.setStyleSheet("font-size: 9pt; font-weight:bold;")
             rhs_type_row.addWidget(self.rhs_type)
 
             # RHS shift control
@@ -1276,7 +1430,6 @@ class _RuleRow(QWidget):
             self.rhs_shift.setPrefix("shift: ")
             self.rhs_shift.setFixedWidth(80)
             self.rhs_shift.setToolTip("Number of bars to shift back (0 = current bar)")
-            self.rhs_shift.setStyleSheet("font-size: 8pt;")
             self.rhs_shift.valueChanged.connect(self._update_description)
             rhs_type_row.addWidget(self.rhs_shift)
 
@@ -1288,7 +1441,7 @@ class _RuleRow(QWidget):
             rhs_indicator_widget = QWidget()
             rhs_indicator_layout = QHBoxLayout(rhs_indicator_widget)
             rhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_indicator_layout.setSpacing(4)
+            rhs_indicator_layout.setSpacing(self._sp.GAP_XS)
             rhs_ind_label = QLabel("📊")
             rhs_ind_label.setFixedWidth(30)
             rhs_indicator_layout.addWidget(rhs_ind_label)
@@ -1300,7 +1453,7 @@ class _RuleRow(QWidget):
             rhs_column_widget = QWidget()
             rhs_column_layout = QHBoxLayout(rhs_column_widget)
             rhs_column_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_column_layout.setSpacing(4)
+            rhs_column_layout.setSpacing(self._sp.GAP_XS)
             rhs_col_label = QLabel("📈")
             rhs_col_label.setFixedWidth(30)
             rhs_column_layout.addWidget(rhs_col_label)
@@ -1311,7 +1464,7 @@ class _RuleRow(QWidget):
             rhs_scalar_widget = QWidget()
             rhs_scalar_layout = QHBoxLayout(rhs_scalar_widget)
             rhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_scalar_layout.setSpacing(4)
+            rhs_scalar_layout.setSpacing(self._sp.GAP_XS)
             rhs_scalar_label = QLabel("#️⃣")
             rhs_scalar_label.setFixedWidth(30)
             rhs_scalar_layout.addWidget(rhs_scalar_label)
@@ -1335,9 +1488,9 @@ class _RuleRow(QWidget):
 
             # Sub-column selector row — outside QStackedWidget, same pattern as LHS.
             rhs_sub_row = QHBoxLayout()
-            rhs_sub_row.setSpacing(6)
+            rhs_sub_row.setSpacing(self._sp.GAP_XS)
             rhs_sub_arrow = QLabel("↳ Output column:")
-            rhs_sub_arrow.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold; padding-left:34px;")
+            rhs_sub_arrow.setObjectName("sub_arrow")
             rhs_sub_row.addWidget(rhs_sub_arrow)
             self.rhs_sub_col = SubColumnComboBox()
             rhs_sub_row.addWidget(self.rhs_sub_col)
@@ -1355,10 +1508,10 @@ class _RuleRow(QWidget):
             weight_layout = QVBoxLayout(weight_container)
             weight_layout.setContentsMargins(0, 0, 0, 0)
             weight_layout.setAlignment(Qt.AlignTop)
-            weight_layout.setSpacing(4)
+            weight_layout.setSpacing(self._sp.GAP_XS)
 
             weight_header = QLabel("⚖️ WEIGHT")
-            weight_header.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold;")
+            weight_header.setObjectName("weight_header")
             weight_header.setAlignment(Qt.AlignCenter)
             weight_layout.addWidget(weight_header)
 
@@ -1375,8 +1528,7 @@ class _RuleRow(QWidget):
 
             # Suggested weight indicator
             self.suggested_weight_lbl = QLabel("")
-            self.suggested_weight_lbl.setAlignment(Qt.AlignCenter)
-            self.suggested_weight_lbl.setStyleSheet(f"color:{DIM}; font-size:7pt;")
+            self.suggested_weight_lbl.setObjectName("suggested_weight")
             weight_layout.addWidget(self.suggested_weight_lbl)
 
             content_layout.addWidget(weight_container)
@@ -1391,10 +1543,7 @@ class _RuleRow(QWidget):
             del_vlay.addSpacing(18)
             del_btn = QPushButton("✕")
             del_btn.setFixedSize(28, 32)
-            del_btn.setStyleSheet(
-                f"QPushButton{{background:{RED}33;color:{RED};border:1px solid {RED};border-radius:4px;font-weight:bold;padding:0;}}"
-                f"QPushButton:hover{{background:{RED}66;}}"
-            )
+            del_btn.setObjectName("deleteBtn")
             del_btn.clicked.connect(lambda: self.deleted.emit(self))
             del_vlay.addWidget(del_btn)
             del_vlay.addStretch()
@@ -1405,7 +1554,7 @@ class _RuleRow(QWidget):
             # Bottom description row
             desc_layout = QHBoxLayout()
             self.desc_label = QLabel("ⓘ This rule will be evaluated on each bar")
-            self.desc_label.setStyleSheet(f"color:{DIM}; font-size:8pt; font-style:italic;")
+            self.desc_label.setObjectName("desc")
             desc_layout.addWidget(self.desc_label)
             desc_layout.addStretch()
             main_layout.addLayout(desc_layout)
@@ -1416,6 +1565,8 @@ class _RuleRow(QWidget):
 
             self.lhs_params.params_changed.connect(lambda p: self._on_params_updated("lhs", p))
             self.rhs_params.params_changed.connect(lambda p: self._on_params_updated("rhs", p))
+
+            self.apply_theme()
 
             # Load rule if provided
             if rule:
@@ -1437,7 +1588,7 @@ class _RuleRow(QWidget):
         self.lhs_shift = None
         self.lhs_input_container = None
         self.lhs_indicator = None
-        self.lhs_sub_col = None       # NEW: sub-column selector for LHS
+        self.lhs_sub_col = None
         self._lhs_sub_row_widget = None
         self.lhs_column = None
         self.lhs_scalar = None
@@ -1447,7 +1598,7 @@ class _RuleRow(QWidget):
         self.rhs_shift = None
         self.rhs_input_container = None
         self.rhs_indicator = None
-        self.rhs_sub_col = None       # NEW: sub-column selector for RHS
+        self.rhs_sub_col = None
         self._rhs_sub_row_widget = None
         self.rhs_column = None
         self.rhs_scalar = None
@@ -1456,9 +1607,60 @@ class _RuleRow(QWidget):
         self.suggested_weight_lbl = None
         self.desc_label = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the rule row."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"background:{c.BG_HOVER}; border-radius:{sp.RADIUS_MD}px; border:{sp.SEPARATOR}px solid {c.BORDER};")
+
+            # Update headers
+            lhs_header = self.findChild(QLabel, "lhs_header")
+            if lhs_header:
+                lhs_header.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            rhs_header = self.findChild(QLabel, "rhs_header")
+            if rhs_header:
+                rhs_header.setStyleSheet(f"color:{c.ORANGE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            op_header = self.findChild(QLabel, "op_header")
+            if op_header:
+                op_header.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            weight_header = self.findChild(QLabel, "weight_header")
+            if weight_header:
+                weight_header.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            sub_arrows = self.findChildren(QLabel, "sub_arrow")
+            for arrow in sub_arrows:
+                arrow.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD}; padding-left:34px;")
+
+            suggested = self.findChild(QLabel, "suggested_weight")
+            if suggested:
+                suggested.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+
+            desc = self.findChild(QLabel, "desc")
+            if desc:
+                desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; font-style:italic;")
+
+            delete_btn = self.findChild(QPushButton, "deleteBtn")
+            if delete_btn:
+                delete_btn.setStyleSheet(
+                    f"QPushButton{{background:{c.RED}33;color:{c.RED};border:{sp.SEPARATOR}px solid {c.RED};border-radius:{sp.RADIUS_SM}px;font-weight:{ty.WEIGHT_BOLD};padding:0;}}"
+                    f"QPushButton:hover{{background:{c.RED}66;}}"
+                )
+
+            # Update description
+            self._update_description()
+        except Exception as e:
+            logger.error(f"[_RuleRow.apply_theme] Failed: {e}", exc_info=True)
+
     def _update_description(self):
         """Update the description based on current rule"""
         try:
+            c = self._c
             lhs_desc = self.lhs_type.currentText() if self.lhs_type else "?"
             rhs_desc = self.rhs_type.currentText() if self.rhs_type else "?"
             op_desc = self.op.currentText() if self.op else "?"
@@ -1506,6 +1708,7 @@ class _RuleRow(QWidget):
     def _update_side_visibility(self, side: str, type_text: str):
         """Update visibility of input widgets based on type"""
         try:
+            c = self._c
             if side == "lhs":
                 stack = self.lhs_input_container
                 params = self.lhs_params
@@ -1550,6 +1753,7 @@ class _RuleRow(QWidget):
     def _on_indicator_changed(self, side: str, indicator_text: str):
         """Handle indicator selection change"""
         try:
+            c = self._c
             if side == "lhs":
                 params_w = self.lhs_params
                 type_w = self.lhs_type
@@ -1604,6 +1808,7 @@ class _RuleRow(QWidget):
     def _load(self, rule: Dict):
         """Load rule data into widgets"""
         try:
+            c = self._c
             if not rule:
                 return
 
@@ -1734,6 +1939,7 @@ class _RuleRow(QWidget):
     def collect(self) -> Dict:
         """Collect rule data as dictionary"""
         try:
+            c = self._c
             # Collect LHS
             lhs_type = self.lhs_type.currentText() if self.lhs_type else "indicator"
             lhs_shift = self.lhs_shift.value() if self.lhs_shift else 0
@@ -1814,7 +2020,7 @@ class _RuleRow(QWidget):
 
 # ── Signal Group Panel ───────────────────────────────────────────────────────
 
-class _SignalGroupPanel(QWidget):
+class _SignalGroupPanel(QWidget, ThemedMixin):
     """Panel for editing rules of a single signal group"""
 
     rules_changed = pyqtSignal()
@@ -1826,13 +2032,18 @@ class _SignalGroupPanel(QWidget):
         try:
             super().__init__(parent)
             self.signal = signal
-            emoji, color, label = SIGNAL_META.get(signal, ("⬤", DIM, signal))
+            signal_meta = get_signal_meta()
+            emoji, color, label = signal_meta.get(signal, ("⬤", self._c.TEXT_DIM, signal))
             self._color = color
             self._rule_rows: List[_RuleRow] = []
 
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             layout = QVBoxLayout(self)
-            layout.setContentsMargins(16, 16, 16, 16)
-            layout.setSpacing(16)
+            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+            layout.setSpacing(self._sp.PAD_MD)
 
             # Header with controls
             header = self._build_header(color)
@@ -1846,6 +2057,8 @@ class _SignalGroupPanel(QWidget):
             actions = self._build_actions_bar(color)
             layout.addWidget(actions)
 
+            self.apply_theme()
+
         except Exception as e:
             logger.error(f"[_SignalGroupPanel.__init__] Failed for {signal}: {e}", exc_info=True)
             super().__init__(parent)
@@ -1853,7 +2066,7 @@ class _SignalGroupPanel(QWidget):
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.signal = ""
-        self._color = DIM
+        self._color = None
         self._rule_rows = []
         self.logic_combo = None
         self.enabled_chk = None
@@ -1864,18 +2077,45 @@ class _SignalGroupPanel(QWidget):
         self._empty_lbl = None
         self._presets_combo = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the panel."""
+        try:
+            c = self._c
+            sp = self._sp
+
+            # Update badge if exists
+            if self._rule_count_badge and self._color:
+                self._rule_count_badge.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._color};
+                        background: {self._color}22;
+                        border: {sp.SEPARATOR}px solid {self._color}55;
+                        border-radius: {sp.RADIUS_PILL}px;
+                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        font-size: {self._ty.SIZE_XS}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                    }}
+                """)
+
+            # Update empty label
+            if self._empty_lbl:
+                self._empty_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; padding:{sp.PAD_XL}px;")
+        except Exception as e:
+            logger.error(f"[_SignalGroupPanel.apply_theme] Failed: {e}", exc_info=True)
+
     def _build_header(self, color: str) -> QHBoxLayout:
         """Build header with logic selector and enabled toggle"""
         try:
+            c = self._c
             header = QHBoxLayout()
-            header.setSpacing(16)
+            header.setSpacing(self._sp.PAD_MD)
 
             # Logic selector
             logic_group = QHBoxLayout()
-            logic_group.setSpacing(6)
+            logic_group.setSpacing(self._sp.GAP_XS)
 
             lbl_logic = QLabel("🔀 Logic:")
-            lbl_logic.setStyleSheet(f"color:{DIM}; font-size:10pt; font-weight:bold;")
+            lbl_logic.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
             logic_group.addWidget(lbl_logic)
 
             self.logic_combo = QComboBox()
@@ -1883,16 +2123,16 @@ class _SignalGroupPanel(QWidget):
             self.logic_combo.setFixedWidth(90)
             self.logic_combo.setStyleSheet(f"""
                 QComboBox {{
-                    background: #21262d;
-                    color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    padding: 6px 10px;
-                    font-size: 10pt;
-                    font-weight:bold;
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 }}
                 QComboBox:hover {{
-                    border: 1px solid {color};
+                    border: {self._sp.SEPARATOR}px solid {color};
                 }}
             """)
             logic_group.addWidget(self.logic_combo)
@@ -1904,23 +2144,23 @@ class _SignalGroupPanel(QWidget):
             self.enabled_chk.setChecked(True)
             self.enabled_chk.setStyleSheet(f"""
                 QCheckBox {{
-                    color: {TEXT};
-                    font-size: 10pt;
-                    font-weight: bold;
-                    spacing: 8px;
+                    color: {c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    spacing: {self._sp.GAP_SM}px;
                 }}
                 QCheckBox::indicator {{
-                    width: 20px;
-                    height: 20px;
-                    border-radius: 4px;
+                    width: {self._sp.ICON_MD}px;
+                    height: {self._sp.ICON_MD}px;
+                    border-radius: {self._sp.RADIUS_SM}px;
                 }}
                 QCheckBox::indicator:unchecked {{
-                    background: #21262d;
-                    border: 2px solid {BORDER};
+                    background: {c.BG_HOVER};
+                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
                 }}
                 QCheckBox::indicator:checked {{
                     background: {color};
-                    border: 2px solid {color};
+                    border: {self._sp.SEPARATOR}px solid {color};
                 }}
             """)
             header.addWidget(self.enabled_chk)
@@ -1929,17 +2169,6 @@ class _SignalGroupPanel(QWidget):
 
             # Rule count badge
             self._rule_count_badge = QLabel("0 rules")
-            self._rule_count_badge.setStyleSheet(f"""
-                QLabel {{
-                    color: {color};
-                    background: {color}22;
-                    border: 1px solid {color}55;
-                    border-radius: 12px;
-                    padding: 4px 12px;
-                    font-size: 9pt;
-                    font-weight: bold;
-                }}
-            """)
             header.addWidget(self._rule_count_badge)
 
             return header
@@ -1950,6 +2179,7 @@ class _SignalGroupPanel(QWidget):
     def _build_rules_area(self):
         """Build scrollable area for rules"""
         try:
+            c = self._c
             self._rules_scroll = QScrollArea()
             self._rules_scroll.setWidgetResizable(True)
             self._rules_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1960,12 +2190,11 @@ class _SignalGroupPanel(QWidget):
 
             self._rules_layout = QVBoxLayout(self._rules_container)
             self._rules_layout.setContentsMargins(0, 0, 0, 0)
-            self._rules_layout.setSpacing(12)
+            self._rules_layout.setSpacing(self._sp.PAD_MD)
             self._rules_layout.setAlignment(Qt.AlignTop)
 
             # Empty state
             self._empty_lbl = QLabel("  ✨ No rules yet — click '+ Add Rule' to begin")
-            self._empty_lbl.setStyleSheet(f"color:{DIM}; font-size:11pt; padding:30px;")
             self._empty_lbl.setAlignment(Qt.AlignCenter)
             self._rules_layout.addWidget(self._empty_lbl)
 
@@ -1976,6 +2205,7 @@ class _SignalGroupPanel(QWidget):
     def _build_actions_bar(self, color: str) -> QWidget:
         """Build actions bar with add rule button and presets"""
         try:
+            c = self._c
             bar = QFrame()
             bar.setFixedHeight(50)
             bar.setStyleSheet(f"background: transparent;")
@@ -1988,13 +2218,13 @@ class _SignalGroupPanel(QWidget):
             add_btn.setFixedHeight(36)
             add_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #21262d;
+                    background: {c.BG_HOVER};
                     color: {color};
-                    border: 2px solid {color};
-                    border-radius: 6px;
-                    padding: 8px 20px;
-                    font-size: 11pt;
-                    font-weight: bold;
+                    border: {self._sp.SEPARATOR}px solid {color};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 }}
                 QPushButton:hover {{
                     background: {color}22;
@@ -2011,26 +2241,26 @@ class _SignalGroupPanel(QWidget):
             self._presets_combo.setFixedWidth(200)
             self._presets_combo.setStyleSheet(f"""
                 QComboBox {{
-                    background: #21262d;
-                    color: {DIM};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    padding: 8px 12px;
-                    font-size: 10pt;
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_DIM};
+                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
                 }}
                 QComboBox::drop-down {{
                     border: none;
                     width: 24px;
                 }}
                 QComboBox:hover {{
-                    border: 1px solid {color};
+                    border: {self._sp.SEPARATOR}px solid {color};
                 }}
                 QComboBox QAbstractItemView {{
-                    background: #21262d;
-                    color: {TEXT};
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
                     selection-background-color: {color}40;
-                    selection-color: {TEXT};
-                    border: 1px solid {color};
+                    selection-color: {c.TEXT_MAIN};
+                    border: {self._sp.SEPARATOR}px solid {color};
                     min-width: 250px;
                 }}
             """)
@@ -2045,14 +2275,14 @@ class _SignalGroupPanel(QWidget):
             clear_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent;
-                    color: {RED};
-                    border: 1px solid {RED}55;
-                    border-radius: 4px;
-                    padding: 6px 16px;
-                    font-size: 10pt;
+                    color: {c.RED};
+                    border: {self._sp.SEPARATOR}px solid {c.RED}55;
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
                 }}
                 QPushButton:hover {{
-                    background: {RED}22;
+                    background: {c.RED}22;
                 }}
             """)
             clear_btn.clicked.connect(self._clear_all_rules)
@@ -2170,7 +2400,7 @@ class _SignalGroupPanel(QWidget):
 
 # ── Signal Rules Tab ─────────────────────────────────────────────────────────
 
-class _SignalRulesTab(QWidget):
+class _SignalRulesTab(QWidget, ThemedMixin):
     """Signal rules editor with tabs for each signal type"""
 
     def __init__(self, parent=None):
@@ -2179,6 +2409,10 @@ class _SignalRulesTab(QWidget):
 
         try:
             super().__init__(parent)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
             main_layout = QVBoxLayout(self)
             main_layout.setContentsMargins(0, 0, 0, 0)
@@ -2192,46 +2426,18 @@ class _SignalRulesTab(QWidget):
             self._tab_widget = QTabWidget()
             self._tab_widget.setDocumentMode(True)
             self._tab_widget.tabBar().setExpanding(True)
-            self._tab_widget.setStyleSheet(f"""
-                QTabWidget::pane {{
-                    border: none;
-                    background: {BG_PANEL};
-                    border-top: 1px solid {BORDER};
-                }}
-                QTabBar::tab {{
-                    background: #21262d;
-                    color: {DIM};
-                    border: 1px solid {BORDER};
-                    border-bottom: none;
-                    border-radius: 6px 6px 0 0;
-                    padding: 10px 20px;
-                    margin-right: 2px;
-                    font-size: 11pt;
-                    font-weight: bold;
-                    min-width: 120px;
-                }}
-                QTabBar::tab:selected {{
-                    background: {BG_PANEL};
-                    color: {TEXT};
-                    border-bottom: 3px solid {BLUE};
-                }}
-                QTabBar::tab:hover:!selected {{
-                    background: #2d333b;
-                    color: {TEXT};
-                }}
-            """)
 
             self._panels: Dict[str, _SignalGroupPanel] = {}
 
             signal_tabs = [
-                ("BUY_CALL", "📈 BUY CALL", GREEN),
-                ("BUY_PUT", "📉 BUY PUT", BLUE),
-                ("EXIT_CALL", "🔴 EXIT CALL", RED),
-                ("EXIT_PUT", "🟠 EXIT PUT", ORANGE),
-                ("HOLD", "⏸ HOLD", YELLOW),
+                ("BUY_CALL", "📈 BUY CALL"),
+                ("BUY_PUT", "📉 BUY PUT"),
+                ("EXIT_CALL", "🔴 EXIT CALL"),
+                ("EXIT_PUT", "🟠 EXIT PUT"),
+                ("HOLD", "⏸ HOLD"),
             ]
 
-            for signal, label, color in signal_tabs:
+            for signal, label in signal_tabs:
                 panel = _SignalGroupPanel(signal)
                 panel.rules_changed.connect(self._update_stats)
                 self._panels[signal] = panel
@@ -2242,6 +2448,8 @@ class _SignalRulesTab(QWidget):
             # Stats bar
             stats_bar = self._build_stats_bar()
             main_layout.addWidget(stats_bar)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[_SignalRulesTab.__init__] Failed: {e}", exc_info=True)
@@ -2256,18 +2464,57 @@ class _SignalRulesTab(QWidget):
         self._disable_all_btn = None
         self._tab_widget = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the tab."""
+        try:
+            c = self._c
+            sp = self._sp
+
+            if self._tab_widget:
+                self._tab_widget.setStyleSheet(f"""
+                    QTabWidget::pane {{
+                        border: none;
+                        background: {c.BG_PANEL};
+                        border-top: {sp.SEPARATOR}px solid {c.BORDER};
+                    }}
+                    QTabBar::tab {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_DIM};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-bottom: none;
+                        border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
+                        padding: {sp.PAD_MD}px {sp.PAD_XL}px;
+                        margin-right: {sp.GAP_XS}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        min-width: 120px;
+                    }}
+                    QTabBar::tab:selected {{
+                        background: {c.BG_PANEL};
+                        color: {c.TEXT_MAIN};
+                        border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+                    }}
+                    QTabBar::tab:hover:!selected {{
+                        background: {c.BORDER};
+                        color: {c.TEXT_MAIN};
+                    }}
+                """)
+        except Exception as e:
+            logger.error(f"[_SignalRulesTab.apply_theme] Failed: {e}", exc_info=True)
+
     def _build_header(self) -> QWidget:
         """Build header with conflict resolution selector"""
         try:
+            c = self._c
             header = QWidget()
-            header.setStyleSheet(f"background:{BG_PANEL}; border-bottom:1px solid {BORDER};")
+            header.setStyleSheet(f"background:{c.BG_PANEL}; border-bottom:{self._sp.SEPARATOR}px solid {c.BORDER};")
             header.setFixedHeight(60)
 
             layout = QHBoxLayout(header)
-            layout.setContentsMargins(20, 0, 20, 0)
+            layout.setContentsMargins(self._sp.PAD_XL, 0, self._sp.PAD_XL, 0)
 
             cr_lbl = QLabel("⚖️ Conflict Resolution:")
-            cr_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt; font-weight:bold;")
+            cr_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
             layout.addWidget(cr_lbl)
 
             self.conflict_combo = QComboBox()
@@ -2275,21 +2522,21 @@ class _SignalRulesTab(QWidget):
             self.conflict_combo.setFixedWidth(130)
             self.conflict_combo.setStyleSheet(f"""
                 QComboBox {{
-                    background: #21262d;
-                    color: {TEXT};
-                    border: 1px solid {BORDER};
-                    border-radius: 4px;
-                    padding: 6px 12px;
-                    font-size: 10pt;
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
                 }}
                 QComboBox:hover {{
-                    border: 1px solid {BLUE};
+                    border: {self._sp.SEPARATOR}px solid {c.BLUE};
                 }}
             """)
             layout.addWidget(self.conflict_combo)
 
             help_lbl = QLabel("(when both BUY_CALL and BUY_PUT fire)")
-            help_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt; font-style:italic;")
+            help_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; font-style:italic;")
             layout.addWidget(help_lbl)
             layout.addStretch()
 
@@ -2301,20 +2548,21 @@ class _SignalRulesTab(QWidget):
     def _build_stats_bar(self) -> QWidget:
         """Build a stats bar showing total rules"""
         try:
+            c = self._c
             bar = QFrame()
             bar.setFixedHeight(45)
             bar.setStyleSheet(f"""
                 QFrame {{
-                    background: {BG_PANEL};
-                    border-top: 1px solid {BORDER};
+                    background: {c.BG_PANEL};
+                    border-top: {self._sp.SEPARATOR}px solid {c.BORDER};
                 }}
             """)
 
             layout = QHBoxLayout(bar)
-            layout.setContentsMargins(20, 4, 20, 4)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XS, self._sp.PAD_XL, self._sp.PAD_XS)
 
             self._total_rules_lbl = QLabel("📊 Total Rules: 0")
-            self._total_rules_lbl.setStyleSheet(f"color:{DIM}; font-size:11pt; font-weight:bold;")
+            self._total_rules_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
             layout.addWidget(self._total_rules_lbl)
 
             layout.addStretch()
@@ -2324,15 +2572,15 @@ class _SignalRulesTab(QWidget):
             self._enable_all_btn.setFixedHeight(28)
             self._enable_all_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #21262d;
-                    color: {GREEN};
-                    border: 1px solid {GREEN}55;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                    font-size: 9pt;
+                    background: {c.BG_HOVER};
+                    color: {c.GREEN};
+                    border: {self._sp.SEPARATOR}px solid {c.GREEN}55;
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_XS}pt;
                 }}
                 QPushButton:hover {{
-                    background: {GREEN}22;
+                    background: {c.GREEN}22;
                 }}
             """)
             self._enable_all_btn.clicked.connect(self._toggle_all_enabled)
@@ -2342,15 +2590,15 @@ class _SignalRulesTab(QWidget):
             self._disable_all_btn.setFixedHeight(28)
             self._disable_all_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #21262d;
-                    color: {RED};
-                    border: 1px solid {RED}55;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                    font-size: 9pt;
+                    background: {c.BG_HOVER};
+                    color: {c.RED};
+                    border: {self._sp.SEPARATOR}px solid {c.RED}55;
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_XS}pt;
                 }}
                 QPushButton:hover {{
-                    background: {RED}22;
+                    background: {c.RED}22;
                 }}
             """)
             self._disable_all_btn.clicked.connect(self._toggle_all_disabled)
@@ -2418,20 +2666,25 @@ class _SignalRulesTab(QWidget):
 
 # ── Info Tab ─────────────────────────────────────────────────────────────────
 
-class _InfoTab(QWidget):
+class _InfoTab(QWidget, ThemedMixin):
     def __init__(self, parent=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
             super().__init__(parent)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             layout = QFormLayout(self)
-            layout.setContentsMargins(20, 20, 20, 20)
-            layout.setSpacing(16)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
+            layout.setSpacing(self._sp.PAD_MD)
             layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
             lbl = QLabel("Strategy name and description.")
-            lbl.setStyleSheet(f"color:{DIM}; font-size:10pt; font-style:italic;")
+            lbl.setObjectName("info_lbl")
             layout.addRow("", lbl)
 
             self.name_edit = QLineEdit()
@@ -2448,32 +2701,34 @@ class _InfoTab(QWidget):
 
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(f"QFrame{{background:{BORDER};max-height:1px;margin:15px 0;}}")
+            sep.setObjectName("sep")
             layout.addRow("", sep)
 
             stats_lbl = QLabel("📊 Strategy Statistics")
-            stats_lbl.setStyleSheet(f"color:{BLUE}; font-size:13pt; font-weight:bold;")
+            stats_lbl.setObjectName("stats_header")
             layout.addRow("", stats_lbl)
 
             self.total_rules_lbl = QLabel("0")
-            self.total_rules_lbl.setStyleSheet(f"color:{GREEN}; font-weight:bold; font-size:11pt;")
+            self.total_rules_lbl.setObjectName("stat_value")
             layout.addRow("Total Rules:", self.total_rules_lbl)
 
             self.unique_indicators_lbl = QLabel("0")
-            self.unique_indicators_lbl.setStyleSheet(f"color:{GREEN}; font-weight:bold; font-size:11pt;")
+            self.unique_indicators_lbl.setObjectName("stat_value")
             layout.addRow("Unique Indicators:", self.unique_indicators_lbl)
 
             self.enabled_groups_lbl = QLabel("0/5")
-            self.enabled_groups_lbl.setStyleSheet(f"color:{GREEN}; font-weight:bold; font-size:11pt;")
+            self.enabled_groups_lbl.setObjectName("stat_value")
             layout.addRow("Enabled Groups:", self.enabled_groups_lbl)
 
             self.created_lbl = QLabel("—")
-            self.created_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt;")
+            self.created_lbl.setObjectName("meta_value")
             layout.addRow("Created:", self.created_lbl)
 
             self.updated_lbl = QLabel("—")
-            self.updated_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt;")
+            self.updated_lbl.setObjectName("meta_value")
             layout.addRow("Last saved:", self.updated_lbl)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[_InfoTab.__init__] Failed: {e}", exc_info=True)
@@ -2488,6 +2743,35 @@ class _InfoTab(QWidget):
         self.enabled_groups_lbl = None
         self.created_lbl = None
         self.updated_lbl = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the info tab."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            info_lbl = self.findChild(QLabel, "info_lbl")
+            if info_lbl:
+                info_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; font-style:italic;")
+
+            sep = self.findChild(QFrame, "sep")
+            if sep:
+                sep.setStyleSheet(f"QFrame{{background:{c.BORDER};max-height:{sp.SEPARATOR}px;margin:{sp.PAD_LG}px 0;}}")
+
+            stats_header = self.findChild(QLabel, "stats_header")
+            if stats_header:
+                stats_header.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_LG}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            stat_values = self.findChildren(QLabel, "stat_value")
+            for lbl in stat_values:
+                lbl.setStyleSheet(f"color:{c.GREEN}; font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;")
+
+            meta_values = self.findChildren(QLabel, "meta_value")
+            for lbl in meta_values:
+                lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt;")
+        except Exception as e:
+            logger.error(f"[_InfoTab.apply_theme] Failed: {e}", exc_info=True)
 
     def load(self, strategy: Dict):
         """Load strategy metadata into tab"""
@@ -2559,7 +2843,7 @@ class _InfoTab(QWidget):
 
 # ── Indicators Tab ───────────────────────────────────────────────────────────
 
-class _IndicatorsTab(QScrollArea):
+class _IndicatorsTab(QScrollArea, ThemedMixin):
     """Dynamic Indicators Tab - Shows all indicators organized by category"""
 
     def __init__(self, parent=None):
@@ -2568,26 +2852,24 @@ class _IndicatorsTab(QScrollArea):
 
         try:
             super().__init__(parent)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.setWidgetResizable(True)
             self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
             container = QWidget()
             self._layout = QVBoxLayout(container)
-            self._layout.setContentsMargins(20, 20, 20, 20)
-            self._layout.setSpacing(20)
-
-            info_lbl = QLabel(
-                "📊 AVAILABLE INDICATORS (pandas_ta)\n"
-                "The following indicators are available for your strategy rules."
-            )
-            info_lbl.setStyleSheet(
-                f"color:{DIM}; font-size:11pt; padding:12px; background:{BG_ITEM}; border-radius:6px;")
-            info_lbl.setWordWrap(True)
-            self._layout.addWidget(info_lbl)
+            self._layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
+            self._layout.setSpacing(self._sp.PAD_XL)
 
             self._build()
             self._layout.addStretch()
             self.setWidget(container)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[_IndicatorsTab.__init__] Failed: {e}", exc_info=True)
@@ -2599,13 +2881,30 @@ class _IndicatorsTab(QScrollArea):
         self._category_widgets = {}
         self._layout = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the indicators tab."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            info_lbl = self.findChild(QLabel, "info_lbl")
+            if info_lbl:
+                info_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; padding:{sp.PAD_MD}px; background:{c.BG_HOVER}; border-radius:{sp.RADIUS_MD}px;")
+        except Exception as e:
+            logger.error(f"[_IndicatorsTab.apply_theme] Failed: {e}", exc_info=True)
+
     def _build(self):
         """Build indicator cards organized by category"""
         try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
             # Search/filter box
             search_layout = QHBoxLayout()
             search_lbl = QLabel("🔍 Filter:")
-            search_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt;")
+            search_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt;")
             self.search_edit = QLineEdit()
             self.search_edit.setPlaceholderText("Type to filter indicators...")
             self.search_edit.setFixedHeight(32)
@@ -2613,6 +2912,15 @@ class _IndicatorsTab(QScrollArea):
             search_layout.addWidget(search_lbl)
             search_layout.addWidget(self.search_edit)
             self._layout.addLayout(search_layout)
+
+            # Info label
+            info_lbl = QLabel(
+                "📊 AVAILABLE INDICATORS (pandas_ta)\n"
+                "The following indicators are available for your strategy rules."
+            )
+            info_lbl.setObjectName("info_lbl")
+            info_lbl.setWordWrap(True)
+            self._layout.addWidget(info_lbl)
 
             # Category sections
             self._category_widgets = {}
@@ -2623,16 +2931,16 @@ class _IndicatorsTab(QScrollArea):
 
                 cat_header = QLabel(f"📁 {category.upper()}")
                 cat_header.setStyleSheet(f"""
-                    color:{BLUE}; 
-                    font-size:12pt; 
-                    font-weight:bold; 
-                    padding:12px 0 8px 0;
-                    border-bottom:2px solid {BORDER};
+                    color:{c.BLUE}; 
+                    font-size:{ty.SIZE_BODY}pt; 
+                    font-weight:{ty.WEIGHT_BOLD}; 
+                    padding:{sp.PAD_MD}px 0 {sp.PAD_SM}px 0;
+                    border-bottom:{sp.SEPARATOR}px solid {c.BORDER};
                 """)
                 self._layout.addWidget(cat_header)
 
                 grid = QGridLayout()
-                grid.setSpacing(12)
+                grid.setSpacing(sp.PAD_MD)
 
                 row, col = 0, 0
                 for indicator in sorted(indicators):
@@ -2654,17 +2962,21 @@ class _IndicatorsTab(QScrollArea):
     def _create_indicator_card(self, indicator_name: str) -> QWidget:
         """Create an expanded card showing indicator info"""
         try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
             card = QFrame()
             card.setStyleSheet(f"""
                 QFrame {{
-                    background: {BG_PANEL};
-                    border: 1px solid {BORDER};
-                    border-radius: 8px;
-                    padding: 12px;
+                    background: {c.BG_PANEL};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_LG}px;
+                    padding: {sp.PAD_MD}px;
                 }}
                 QFrame:hover {{
-                    border: 2px solid {BLUE};
-                    background: {BG_ITEM};
+                    border: {sp.SEPARATOR}px solid {c.BLUE};
+                    background: {c.BG_HOVER};
                 }}
             """)
 
@@ -2674,12 +2986,12 @@ class _IndicatorsTab(QScrollArea):
             card.setFixedSize(260, card_height)
 
             layout = QVBoxLayout(card)
-            layout.setContentsMargins(12, 10, 12, 10)
-            layout.setSpacing(5)
+            layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+            layout.setSpacing(sp.GAP_XS)
 
             # Indicator name
             name_lbl = QLabel(indicator_name.upper())
-            name_lbl.setStyleSheet(f"color:{GREEN}; font-size:11pt; font-weight:bold;")
+            name_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
             layout.addWidget(name_lbl)
 
             # Default params
@@ -2693,32 +3005,32 @@ class _IndicatorsTab(QScrollArea):
                 param_lbl = QLabel(param_text)
             else:
                 param_lbl = QLabel("• No parameters")
-            param_lbl.setStyleSheet(f"color:{DIM}; font-size:9pt;")
+            param_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             param_lbl.setWordWrap(True)
             layout.addWidget(param_lbl)
 
             # Sub-columns (for multi-output indicators like MACD, BBands etc.)
             if sub_cols:
                 sub_header = QLabel("📤 Output columns:")
-                sub_header.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold;")
+                sub_header.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
                 layout.addWidget(sub_header)
                 sub_text = "  ".join(f"[{key}]" for key, _, _ in sub_cols)
                 sub_lbl = QLabel(sub_text)
-                sub_lbl.setStyleSheet(f"color:{PURPLE}CC; font-size:8pt;")
+                sub_lbl.setStyleSheet(f"color:{c.PURPLE}CC; font-size:{ty.SIZE_XS}pt;")
                 sub_lbl.setWordWrap(True)
                 layout.addWidget(sub_lbl)
 
             # FEATURE 3: Suggested weight
             weight = get_suggested_weight(indicator_name)
             weight_lbl = QLabel(f"⚖️ Suggested weight: {weight:.1f}")
-            weight_lbl.setStyleSheet(f"color:{PURPLE}; font-size:8pt; font-weight:bold;")
+            weight_lbl.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
             layout.addWidget(weight_lbl)
 
             # Category tag
             cat = get_indicator_category(indicator_name)
             cat_lbl = QLabel(f"📌 {cat}")
             cat_lbl.setStyleSheet(
-                f"color:{BLUE}CC; font-size:8pt; border:none; background:{BLUE}11; padding:2px 6px; border-radius:3px;")
+                f"color:{c.BLUE}CC; font-size:{ty.SIZE_XS}pt; border:none; background:{c.BLUE}11; padding:{sp.PAD_XS}px {sp.PAD_XS}px; border-radius:{sp.RADIUS_SM}px;")
             layout.addWidget(cat_lbl)
 
             layout.addStretch()
@@ -2762,7 +3074,7 @@ class _IndicatorsTab(QScrollArea):
 
 # ── Strategy List Panel ──────────────────────────────────────────────────────
 
-class _StrategyListPanel(QWidget):
+class _StrategyListPanel(QWidget, ThemedMixin):
     strategy_selected = pyqtSignal(str)
     strategy_activated = pyqtSignal(str)
 
@@ -2772,9 +3084,13 @@ class _StrategyListPanel(QWidget):
 
         try:
             super().__init__(parent)
+
+            # Connect to theme signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self._current_slug: Optional[str] = None
             self.setFixedWidth(260)
-            self.setStyleSheet(f"background:{BG_PANEL}; border-right:2px solid {BORDER};")
 
             root = QVBoxLayout(self)
             root.setContentsMargins(0, 0, 0, 0)
@@ -2782,17 +3098,16 @@ class _StrategyListPanel(QWidget):
 
             # Header
             hdr = QLabel("  📋 STRATEGIES")
-            hdr.setStyleSheet(
-                f"color:{BLUE}; font-size:10pt; font-weight:bold; padding:14px 16px; background:{BG_PANEL};")
+            hdr.setObjectName("header")
             root.addWidget(hdr)
 
             # Action buttons
             btn_row = QHBoxLayout()
-            btn_row.setContentsMargins(12, 8, 12, 8)
-            btn_row.setSpacing(8)
-            self.new_btn = _btn("＋ New", "#238636", "#2ea043", min_w=80)
+            btn_row.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_SM)
+            btn_row.setSpacing(self._sp.GAP_SM)
+            self.new_btn = _btn("＋ New", "GREEN", "GREEN_BRIGHT", min_w=80)
             self.new_btn.setFixedHeight(34)
-            self.dup_btn = _btn("⧉ Duplicate", "#21262d", "#2d333b", min_w=90)
+            self.dup_btn = _btn("⧉ Duplicate", "BG_HOVER", "BORDER", min_w=90)
             self.dup_btn.setFixedHeight(34)
             self.new_btn.clicked.connect(self._on_new)
             self.dup_btn.clicked.connect(self._on_dup)
@@ -2802,7 +3117,7 @@ class _StrategyListPanel(QWidget):
 
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(f"QFrame{{border:none;background:{BORDER};max-height:1px;}}")
+            sep.setObjectName("sep")
             root.addWidget(sep)
 
             # List
@@ -2814,23 +3129,24 @@ class _StrategyListPanel(QWidget):
 
             sep2 = QFrame()
             sep2.setFrameShape(QFrame.HLine)
-            sep2.setStyleSheet(f"QFrame{{border:none;background:{BORDER};max-height:1px;}}")
+            sep2.setObjectName("sep")
             root.addWidget(sep2)
 
             # Bottom buttons
             foot = QVBoxLayout()
-            foot.setContentsMargins(12, 8, 12, 12)
-            foot.setSpacing(8)
-            self.activate_btn = _btn("⚡ Activate Strategy", "#1f6feb", "#388bfd")
+            foot.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_MD)
+            foot.setSpacing(self._sp.GAP_SM)
+            self.activate_btn = _btn("⚡ Activate Strategy", "BLUE_DARK", "BLUE")
             self.activate_btn.setFixedHeight(38)
             self.activate_btn.clicked.connect(self._on_activate)
-            self.delete_btn = _btn("🗑 Delete", RED + "44", RED + "66", RED)
+            self.delete_btn = _btn("🗑 Delete", "RED", "RED_BRIGHT", "RED")
             self.delete_btn.setFixedHeight(34)
             self.delete_btn.clicked.connect(self._on_delete)
             foot.addWidget(self.activate_btn)
             foot.addWidget(self.delete_btn)
             root.addLayout(foot)
 
+            self.apply_theme()
             self.refresh()
 
         except Exception as e:
@@ -2846,12 +3162,56 @@ class _StrategyListPanel(QWidget):
         self.activate_btn = None
         self.delete_btn = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the list panel."""
+        try:
+            c = self._c
+            sp = self._sp
+
+            self.setStyleSheet(f"background:{c.BG_PANEL}; border-right:{sp.SEPARATOR}px solid {c.BORDER};")
+
+            header = self.findChild(QLabel, "header")
+            if header:
+                header.setStyleSheet(f"color:{c.BLUE}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{sp.PAD_MD}px {sp.PAD_MD}px; background:{c.BG_PANEL};")
+
+            seps = self.findChildren(QFrame, "sep")
+            for sep in seps:
+                sep.setStyleSheet(f"QFrame{{border:none;background:{c.BORDER};max-height:{sp.SEPARATOR}px;}}")
+
+            # Refresh list colors
+            self._refresh_list_colors()
+        except Exception as e:
+            logger.error(f"[_StrategyListPanel.apply_theme] Failed: {e}", exc_info=True)
+
+    def _refresh_list_colors(self):
+        """Refresh colors in the strategy list"""
+        try:
+            c = self._c
+            active = strategy_manager.get_active_slug()
+
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                slug = item.data(Qt.UserRole)
+                if slug == active:
+                    item.setForeground(QColor(c.BLUE))
+                    font = QFont()
+                    font.setBold(True)
+                    item.setFont(font)
+                else:
+                    item.setForeground(QColor(c.TEXT_MAIN))
+                    font = QFont()
+                    font.setBold(False)
+                    item.setFont(font)
+        except Exception as e:
+            logger.error(f"[_StrategyListPanel._refresh_list_colors] Failed: {e}", exc_info=True)
+
     def refresh(self):
         """Refresh the list of strategies"""
         try:
             if self.list_widget is None:
                 return
 
+            c = self._c
             self.list_widget.blockSignals(True)
             self.list_widget.clear()
             active = strategy_manager.get_active_slug()
@@ -2865,7 +3225,7 @@ class _StrategyListPanel(QWidget):
                     item.setText(("⚡ " if is_active else "   ") + name)
                     item.setData(Qt.UserRole, slug)
                     if is_active:
-                        item.setForeground(QColor(BLUE))
+                        item.setForeground(QColor(c.BLUE))
                         font = QFont()
                         font.setBold(True)
                         item.setFont(font)
@@ -2980,7 +3340,7 @@ class _StrategyListPanel(QWidget):
 
 # ── Main Editor Window ───────────────────────────────────────────────────────
 
-class StrategyEditorWindow(QDialog):
+class StrategyEditorWindow(QDialog, ThemedMixin):
     """
     Full-page strategy editor with import/export functionality.
     Uses database-backed strategy manager.
@@ -2997,15 +3357,21 @@ class StrategyEditorWindow(QDialog):
 
         try:
             super().__init__(parent, Qt.Window)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self._current_slug: Optional[str] = None
             self._dirty = False
 
             self.setWindowTitle("📋 Strategy Editor")
             self.resize(1500, 900)
             self.setMinimumSize(1300, 700)
-            self.setStyleSheet(_ss())
 
             self._build_ui()
+            self.apply_theme()
+
             active = strategy_manager.get_active_slug()
             if active:
                 self._load_strategy(active)
@@ -3019,12 +3385,15 @@ class StrategyEditorWindow(QDialog):
             self.resize(800, 600)
 
             layout = QVBoxLayout(self)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
+
             error_label = QLabel(f"Failed to initialize strategy editor:\n{e}")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px;")
             layout.addWidget(error_label)
 
             close_btn = QPushButton("Close")
+            close_btn.setObjectName("closeBtn")
             close_btn.clicked.connect(self.reject)
             layout.addWidget(close_btn)
 
@@ -3050,9 +3419,138 @@ class StrategyEditorWindow(QDialog):
         self.status_lbl = None
         self.confidence_threshold_spin = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the editor window."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            # Apply main stylesheet
+            self.setStyleSheet(_ss())
+
+            # Update title bar elements
+            if self._title_lbl:
+                self._title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{ty.SIZE_LG}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            # Update import/export buttons
+            if self._import_btn:
+                self._import_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.BG_HOVER};
+                        color: {c.BLUE};
+                        border: {sp.SEPARATOR}px solid {c.BLUE};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                    }}
+                    QPushButton:hover {{
+                        background: {c.BLUE}22;
+                    }}
+                """)
+
+            if self._export_btn:
+                self._export_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.BG_HOVER};
+                        color: {c.GREEN};
+                        border: {sp.SEPARATOR}px solid {c.GREEN};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                    }}
+                    QPushButton:hover {{
+                        background: {c.GREEN}22;
+                    }}
+                """)
+
+            if self._dirty_lbl:
+                self._dirty_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            # Update footer buttons
+            if self.activate_btn:
+                self.activate_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.BLUE_DARK};
+                        color: {c.TEXT_INVERSE};
+                        border: {sp.SEPARATOR}px solid {c.BLUE};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        min-width: 220px;
+                    }}
+                    QPushButton:hover {{
+                        background: {c.BLUE};
+                    }}
+                """)
+
+            if self.revert_btn:
+                self.revert_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_MAIN};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        min-width: 100px;
+                    }}
+                    QPushButton:hover {{
+                        background: {c.BORDER};
+                    }}
+                """)
+
+            if self.save_btn:
+                self.save_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.GREEN};
+                        color: {c.TEXT_INVERSE};
+                        border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        min-width: 120px;
+                    }}
+                    QPushButton:hover {{
+                        background: {c.GREEN_BRIGHT};
+                    }}
+                """)
+
+            if self.status_lbl:
+                self.status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+
+            close_btn = self.findChild(QPushButton, "closeBtn")
+            if close_btn:
+                close_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.RED};
+                        color: {c.TEXT_INVERSE};
+                        border: {sp.SEPARATOR}px solid {c.RED_BRIGHT};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                    }}
+                    QPushButton:hover {{
+                        background: {c.RED_BRIGHT};
+                    }}
+                """)
+
+            logger.debug("[StrategyEditorWindow.apply_theme] Applied theme")
+        except Exception as e:
+            logger.error(f"[StrategyEditorWindow.apply_theme] Failed: {e}", exc_info=True)
+
     def _build_ui(self):
         """Build the main UI"""
         try:
+            c = self._c
+            sp = self._sp
+
             root = QHBoxLayout(self)
             root.setContentsMargins(0, 0, 0, 0)
             root.setSpacing(0)
@@ -3097,15 +3595,18 @@ class StrategyEditorWindow(QDialog):
     def _build_title_bar(self) -> QWidget:
         """Build the title bar with import/export buttons and confidence threshold"""
         try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
             bar = QFrame()
-            bar.setStyleSheet(f"QFrame{{background:{BG_PANEL}; border-bottom:2px solid {BORDER};}}")
+            bar.setStyleSheet(f"QFrame{{background:{c.BG_PANEL}; border-bottom:{sp.SEPARATOR}px solid {c.BORDER};}}")
             bar.setFixedHeight(60)
             h = QHBoxLayout(bar)
-            h.setContentsMargins(20, 0, 20, 0)
-            h.setSpacing(16)
+            h.setContentsMargins(sp.PAD_XL, 0, sp.PAD_XL, 0)
+            h.setSpacing(sp.PAD_MD)
 
             self._title_lbl = QLabel("Select a strategy →")
-            self._title_lbl.setStyleSheet(f"color:{TEXT}; font-size:14pt; font-weight:bold;")
             h.addWidget(self._title_lbl)
 
             self._active_badge = QLabel()
@@ -3117,9 +3618,9 @@ class StrategyEditorWindow(QDialog):
 
             # FEATURE 3: Confidence threshold control
             conf_group = QHBoxLayout()
-            conf_group.setSpacing(8)
+            conf_group.setSpacing(sp.GAP_SM)
             conf_lbl = QLabel("🎯 Min Confidence:")
-            conf_lbl.setStyleSheet(f"color:{DIM}; font-size:10pt; font-weight:bold;")
+            conf_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
             conf_group.addWidget(conf_lbl)
 
             self.confidence_threshold_spin = QDoubleSpinBox()
@@ -3135,43 +3636,14 @@ class StrategyEditorWindow(QDialog):
 
             # Import/Export buttons
             self._import_btn = QPushButton("📥 Import")
-            self._import_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: #21262d;
-                    color: {BLUE};
-                    border: 1px solid {BLUE};
-                    border-radius: 5px;
-                    padding: 6px 14px;
-                    font-size: 10pt;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background: {BLUE}22;
-                }}
-            """)
-            self._import_btn.clicked.connect(self._on_import)
             h.addWidget(self._import_btn)
+            self._import_btn.clicked.connect(self._on_import)
 
             self._export_btn = QPushButton("📤 Export")
-            self._export_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: #21262d;
-                    color: {GREEN};
-                    border: 1px solid {GREEN};
-                    border-radius: 5px;
-                    padding: 6px 14px;
-                    font-size: 10pt;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background: {GREEN}22;
-                }}
-            """)
-            self._export_btn.clicked.connect(self._on_export)
             h.addWidget(self._export_btn)
+            self._export_btn.clicked.connect(self._on_export)
 
             self._dirty_lbl = QLabel("● Unsaved changes")
-            self._dirty_lbl.setStyleSheet(f"color:{YELLOW}; font-size:10pt; font-weight:bold;")
             self._dirty_lbl.hide()
             h.addWidget(self._dirty_lbl)
 
@@ -3183,32 +3655,34 @@ class StrategyEditorWindow(QDialog):
     def _build_footer(self) -> QWidget:
         """Build the footer with action buttons"""
         try:
+            c = self._c
+            sp = self._sp
+
             bar = QFrame()
             bar.setFixedHeight(70)
-            bar.setStyleSheet(f"QFrame{{background:{BG_PANEL}; border-top:2px solid {BORDER};}}")
+            bar.setStyleSheet(f"QFrame{{background:{c.BG_PANEL}; border-top:{sp.SEPARATOR}px solid {c.BORDER};}}")
             h = QHBoxLayout(bar)
-            h.setContentsMargins(20, 8, 20, 8)
-            h.setSpacing(12)
+            h.setContentsMargins(sp.PAD_XL, sp.PAD_SM, sp.PAD_XL, sp.PAD_SM)
+            h.setSpacing(sp.PAD_MD)
 
-            self.activate_btn = _btn("⚡ Activate This Strategy", "#1f6feb", "#388bfd", min_w=220)
+            self.activate_btn = QPushButton("⚡ Activate This Strategy")
             self.activate_btn.setFixedHeight(42)
             self.activate_btn.clicked.connect(self._on_activate)
             h.addWidget(self.activate_btn)
 
             h.addStretch()
 
-            self.revert_btn = _btn("↺ Revert", min_w=100)
+            self.revert_btn = QPushButton("↺ Revert")
             self.revert_btn.setFixedHeight(38)
             self.revert_btn.clicked.connect(self._on_revert)
             h.addWidget(self.revert_btn)
 
-            self.save_btn = _btn("💾 Save", "#238636", "#2ea043", min_w=120)
+            self.save_btn = QPushButton("💾 Save")
             self.save_btn.setFixedHeight(42)
             self.save_btn.clicked.connect(self._on_save)
             h.addWidget(self.save_btn)
 
             self.status_lbl = QLabel()
-            self.status_lbl.setStyleSheet(f"color:{GREEN}; font-size:10pt; font-weight:bold;")
             h.addWidget(self.status_lbl)
 
             return bar
@@ -3228,6 +3702,7 @@ class StrategyEditorWindow(QDialog):
     def _load_strategy(self, slug: str):
         """Load a strategy by slug"""
         try:
+            c = self._c
             if self._dirty:
                 ans = QMessageBox.question(
                     self, "Unsaved Changes",
@@ -3268,8 +3743,8 @@ class StrategyEditorWindow(QDialog):
             if is_active and self._active_badge:
                 self._active_badge.setText("  ⚡ ACTIVE  ")
                 self._active_badge.setStyleSheet(
-                    f"color:{BLUE}; background:{BLUE}22; border:2px solid {BLUE};"
-                    f" border-radius:6px; font-size:10pt; font-weight:bold; padding:4px 10px;"
+                    f"color:{c.BLUE}; background:{c.BLUE}22; border:{self._sp.SEPARATOR}px solid {c.BLUE};"
+                    f" border-radius:{self._sp.RADIUS_MD}px; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{self._sp.PAD_XS}px {self._sp.PAD_MD}px;"
                 )
                 self._active_badge.show()
             elif self._active_badge:
@@ -3314,6 +3789,7 @@ class StrategyEditorWindow(QDialog):
     def _on_activate(self):
         """Activate current strategy"""
         try:
+            c = self._c
             if not self._current_slug:
                 return
 
@@ -3337,8 +3813,8 @@ class StrategyEditorWindow(QDialog):
             if self._active_badge:
                 self._active_badge.setText("  ⚡ ACTIVE  ")
                 self._active_badge.setStyleSheet(
-                    f"color:{BLUE}; background:{BLUE}22; border:2px solid {BLUE};"
-                    f" border-radius:6px; font-size:10pt; font-weight:bold; padding:4px 10px;"
+                    f"color:{c.BLUE}; background:{c.BLUE}22; border:{self._sp.SEPARATOR}px solid {c.BLUE};"
+                    f" border-radius:{self._sp.RADIUS_MD}px; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{self._sp.PAD_XS}px {self._sp.PAD_MD}px;"
                 )
                 self._active_badge.show()
 
@@ -3368,6 +3844,7 @@ class StrategyEditorWindow(QDialog):
     def _do_save(self) -> bool:
         """Perform save operation"""
         try:
+            c = self._c
             if not self._current_slug:
                 return False
 
@@ -3402,13 +3879,11 @@ class StrategyEditorWindow(QDialog):
                     self._list_panel.refresh()
                 if self.status_lbl:
                     self.status_lbl.setText("✓ Saved")
-                    self.status_lbl.setStyleSheet(f"color:{GREEN}; font-size:10pt; font-weight:bold;")
                     QTimer.singleShot(2500, lambda: self.status_lbl.clear() if self.status_lbl else None)
                 return True
             else:
                 if self.status_lbl:
                     self.status_lbl.setText("✗ Save failed")
-                    self.status_lbl.setStyleSheet(f"color:{RED}; font-size:10pt; font-weight:bold;")
                 return False
         except Exception as e:
             logger.error(f"[StrategyEditorWindow._do_save] Failed: {e}", exc_info=True)

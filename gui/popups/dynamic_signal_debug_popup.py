@@ -7,6 +7,7 @@ status, conflict detection, confidence scores, and the final resolved signal.
 Works with database-backed signal engine.
 
 UPDATED: Now uses state_manager instead of direct state access.
+FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
 from __future__ import annotations
@@ -25,128 +26,59 @@ from PyQt5.QtWidgets import (
 )
 
 # Import state manager
-from models.trade_state_manager import state_manager
+from data.trade_state_manager import state_manager
 
 from strategy.dynamic_signal_engine import SIGNAL_COLORS, SIGNAL_LABELS, SIGNAL_GROUPS
+
+# Rule 13.1: Import theme manager
+from gui.theme_manager import theme_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
-# ── Colours matching the dark theme ─────────────────────────────────────────
-BG_MAIN = "#0d1117"
-BG_PANEL = "#161b22"
-BG_ROW_A = "#1c2128"
-BG_ROW_B = "#22272e"
-BORDER = "#30363d"
-TEXT_DIM = "#8b949e"
-TEXT_MAIN = "#e6edf3"
-GREEN = "#3fb950"
-RED = "#f85149"
-YELLOW = "#d29922"
-BLUE = "#58a6ff"
-PURPLE = "#bc8cff"
-ORANGE = "#ffa657"
-GREY_OFF = "#484f58"
 
-
-def _style_sheet() -> str:
-    return f"""
-        QDialog, QWidget {{
-            background: {BG_MAIN};
-            color: {TEXT_MAIN};
-            font-family: 'Consolas', 'Menlo', monospace;
-        }}
-        QLabel {{ color: {TEXT_MAIN}; }}
-        QGroupBox {{
-            background: {BG_PANEL};
-            border: 1px solid {BORDER};
-            border-radius: 6px;
-            margin-top: 12px;
-            padding: 6px;
-            font-weight: bold;
-        }}
-        QGroupBox::title {{
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 4px;
-            color: {TEXT_MAIN};
-            font-size: 9pt;
-        }}
-        QTableWidget {{
-            background: {BG_PANEL};
-            gridline-color: {BORDER};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            color: {TEXT_MAIN};
-            font-size: 9pt;
-        }}
-        QTableWidget::item {{ padding: 4px 8px; }}
-        QHeaderView::section {{
-            background: #21262d;
-            color: {TEXT_DIM};
-            border: none;
-            border-bottom: 1px solid {BORDER};
-            padding: 4px 8px;
-            font-size: 8pt;
-            font-weight: bold;
-        }}
-        QPushButton {{
-            background: #21262d;
-            color: {TEXT_MAIN};
-            border: 1px solid {BORDER};
-            border-radius: 5px;
-            padding: 6px 16px;
-            font-size: 9pt;
-        }}
-        QPushButton:hover {{ background: #2d333b; }}
-        QTabWidget::pane {{
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            background: {BG_PANEL};
-        }}
-        QTabBar::tab {{
-            background: #21262d;
-            color: {TEXT_DIM};
-            border: 1px solid {BORDER};
-            border-bottom: none;
-            border-radius: 4px 4px 0 0;
-            padding: 5px 14px;
-            font-size: 9pt;
-        }}
-        QTabBar::tab:selected {{
-            background: {BG_PANEL};
-            color: {TEXT_MAIN};
-            border-bottom: 2px solid {BLUE};
-        }}
-        QScrollArea {{ border: none; background: transparent; }}
-        QCheckBox {{ color: {TEXT_DIM}; font-size: 9pt; spacing: 5px; }}
-        QTextEdit {{
-            background: {BG_PANEL};
-            color: {TEXT_MAIN};
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            font-family: 'Consolas', 'Menlo', monospace;
-            font-size: 9pt;
-        }}
-        QProgressBar {{
-            border: 1px solid {BORDER};
-            border-radius: 4px;
-            background: {BG_PANEL};
-            text-align: center;
-            color: {TEXT_MAIN};
-        }}
-        QProgressBar::chunk {{
-            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
-                                        stop: 0 #58a6ff, stop: 1 #bc8cff);
-            border-radius: 4px;
-        }}
-    """
-
-
-def _header_label(text: str, color: str = TEXT_DIM, size: int = 8) -> QLabel:
+def _get_signal_colors():
+    """Get signal colors from theme manager, falling back to imported ones if needed"""
     try:
+        c = theme_manager.palette
+        return {
+            "BUY_CALL": c.GREEN,
+            "BUY_PUT": c.BLUE,
+            "EXIT_CALL": c.RED,
+            "EXIT_PUT": c.ORANGE,
+            "HOLD": c.YELLOW,
+            "WAIT": c.TEXT_DISABLED
+        }
+    except Exception:
+        # Fallback to imported colors if theme_manager not available
+        return SIGNAL_COLORS
+
+
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+def _header_label(text: str, color_token: str = "TEXT_DIM", size_token: str = "SIZE_XS") -> QLabel:
+    try:
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        color = c.get(color_token, c.TEXT_DIM)
+        size = ty.get(size_token, ty.SIZE_XS)
+
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"color: {color}; font-size: {size}pt; font-weight: bold;")
+        lbl.setStyleSheet(f"color: {color}; font-size: {size}pt; font-weight: {ty.WEIGHT_BOLD};")
         return lbl
     except Exception as e:
         logger.error(f"[_header_label] Failed: {e}", exc_info=True)
@@ -154,10 +86,15 @@ def _header_label(text: str, color: str = TEXT_DIM, size: int = 8) -> QLabel:
         return lbl
 
 
-def _value_label(text: str, color: str = TEXT_MAIN, size: int = 9) -> QLabel:
+def _value_label(text: str, color_token: str = "TEXT_MAIN", size_token: str = "SIZE_SM") -> QLabel:
     try:
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        color = c.get(color_token, c.TEXT_MAIN)
+        size = ty.get(size_token, ty.SIZE_SM)
+
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"color: {color}; font-size: {size}pt; font-weight: bold;")
+        lbl.setStyleSheet(f"color: {color}; font-size: {size}pt; font-weight: {ty.WEIGHT_BOLD};")
         return lbl
     except Exception as e:
         logger.error(f"[_value_label] Failed: {e}", exc_info=True)
@@ -165,7 +102,7 @@ def _value_label(text: str, color: str = TEXT_MAIN, size: int = 9) -> QLabel:
         return lbl
 
 
-class _SignalBadge(QLabel):
+class _SignalBadge(QLabel, ThemedMixin):
     """Pill-shaped label showing a signal value."""
 
     def __init__(self, parent=None):
@@ -174,10 +111,16 @@ class _SignalBadge(QLabel):
 
         try:
             super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.setAlignment(Qt.AlignCenter)
             self.setMinimumWidth(130)
             self.setFixedHeight(36)
             self._set("WAIT")
+            self.apply_theme()
         except Exception as e:
             logger.error(f"[_SignalBadge.__init__] Failed: {e}", exc_info=True)
             super().__init__(parent)
@@ -187,21 +130,31 @@ class _SignalBadge(QLabel):
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._last_signal = "WAIT"
+        self._signal_colors = _get_signal_colors()
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the badge"""
+        try:
+            self._signal_colors = _get_signal_colors()
+            self._set(self._last_signal)
+        except Exception as e:
+            logger.error(f"[_SignalBadge.apply_theme] Failed: {e}", exc_info=True)
 
     def _set(self, signal_value: str):
         try:
-            color = SIGNAL_COLORS.get(signal_value, SIGNAL_COLORS["WAIT"])
+            c = self._c
+            color = self._signal_colors.get(signal_value, self._signal_colors["WAIT"])
             label = SIGNAL_LABELS.get(signal_value, signal_value)
             self.setText(label)
             self.setStyleSheet(f"""
                 QLabel {{
                     background: {color}22;
                     color: {color};
-                    border: 2px solid {color};
-                    border-radius: 6px;
-                    font-size: 13pt;
-                    font-weight: bold;
-                    padding: 2px 12px;
+                    border: {self._sp.SEPARATOR}px solid {color};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    font-size: {self._ty.SIZE_LG}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
                 }}
             """)
             self._last_signal = signal_value
@@ -232,6 +185,10 @@ class _RuleRow:
         FEATURE 3: Added weight parameter to display rule weights.
         """
         try:
+            c = theme_manager.palette
+            ty = theme_manager.typography
+            sp = theme_manager.spacing
+
             # Annotate the rule expression with a BLOCKER tag when it is the
             # first False rule in an AND chain that prevents the group firing.
             display_rule = f"⚠ {rule_str}  [► BLOCKER]" if is_blocker else rule_str
@@ -241,14 +198,14 @@ class _RuleRow:
                 display_rule += f"  (w={weight:.1f})"
 
             items = [
-                (display_rule, YELLOW if is_blocker else TEXT_MAIN),
-                (lhs_val, BLUE),
-                (op, YELLOW),
-                (rhs_val, ORANGE),
-                (f"✅  TRUE (w={weight:.1f})" if result else f"❌  FALSE (w={weight:.1f})", GREEN if result else RED),
+                (display_rule, c.YELLOW if is_blocker else c.TEXT_MAIN),
+                (lhs_val, c.BLUE),
+                (op, c.YELLOW),
+                (rhs_val, c.ORANGE),
+                (f"✅  TRUE (w={weight:.1f})" if result else f"❌  FALSE (w={weight:.1f})", c.GREEN if result else c.RED),
             ]
             if error:
-                items[-1] = (f"⚠ {error[:40]}", YELLOW)
+                items[-1] = (f"⚠ {error[:40]}", c.YELLOW)
 
             for col, (text, color) in enumerate(items):
                 item = QTableWidgetItem(str(text) if text is not None else "")
@@ -259,47 +216,73 @@ class _RuleRow:
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
-                    item.setBackground(QColor(RED + "18"))
+                    item.setBackground(QColor(c.RED + "18"))
                 self.table.setItem(self.row, col, item)
 
         except Exception as e:
             logger.error(f"[_RuleRow.set] Failed: {e}", exc_info=True)
 
 
-class _ConfidenceBar(QLabel):
+class _ConfidenceBar(QLabel, ThemedMixin):
     """
     FEATURE 3: Progress bar showing confidence percentage.
     """
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(16)
-        self.setMinimumWidth(80)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self.setFixedHeight(16)
+            self.setMinimumWidth(80)
+            self.apply_theme()
+        except Exception as e:
+            logger.error(f"[_ConfidenceBar.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        pass
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors"""
+        try:
+            # Will be updated when set_confidence is called
+            pass
+        except Exception as e:
+            logger.error(f"[_ConfidenceBar.apply_theme] Failed: {e}", exc_info=True)
 
     def set_confidence(self, confidence: float, threshold: float = 0.6):
         """
         Set confidence value (0.0 to 1.0) and threshold.
         """
         try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
             percent = int(confidence * 100)
             threshold_pct = int(threshold * 100)
 
             # Color based on confidence relative to threshold
             if confidence >= threshold:
-                color = GREEN
+                color = c.GREEN
             elif confidence >= threshold * 0.7:
-                color = YELLOW
+                color = c.YELLOW
             else:
-                color = RED
+                color = c.RED
 
             self.setStyleSheet(f"""
                 QLabel {{
-                    background: {BG_PANEL};
-                    border: 1px solid {BORDER};
-                    border-radius: 3px;
-                    color: {TEXT_MAIN};
-                    font-size: 8pt;
-                    font-weight: bold;
-                    padding: 1px 4px;
+                    background: {c.BG_PANEL};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    color: {c.TEXT_MAIN};
+                    font-size: {ty.SIZE_XS}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    padding: {sp.PAD_XS}px {sp.PAD_XS}px;
                 }}
             """)
 
@@ -314,7 +297,7 @@ class _ConfidenceBar(QLabel):
             logger.error(f"[_ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
 
 
-class _GroupPanel(QGroupBox):
+class _GroupPanel(QGroupBox, ThemedMixin):
     """
     Panel for one signal group (BUY_CALL, BUY_PUT, etc.).
     Shows logic mode, fired status, confidence score, and a per-rule table.
@@ -327,21 +310,27 @@ class _GroupPanel(QGroupBox):
 
         try:
             label = SIGNAL_LABELS.get(signal, signal)
-            color = SIGNAL_COLORS.get(signal, GREY_OFF)
             super().__init__(f" {label} ", parent)
             self.signal = signal
-            self._color = color
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            self._signal_colors = _get_signal_colors()
+            self._color = self._signal_colors.get(signal, self._c.TEXT_DISABLED)
             self._setup_ui()
+            self.apply_theme()
         except Exception as e:
             logger.error(f"[_GroupPanel.__init__] Failed: {e}", exc_info=True)
             super().__init__(f" {signal} ", parent)
             self.signal = signal
-            self._color = GREY_OFF
+            self._color = self._c.TEXT_DISABLED
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.signal = ""
-        self._color = GREY_OFF
+        self._color = None
         self._logic_lbl = None
         self._fired_lbl = None
         self._enabled_lbl = None
@@ -350,23 +339,49 @@ class _GroupPanel(QGroupBox):
         self._table = None
         self._no_rules_lbl = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the group panel"""
+        try:
+            c = self._c
+            sp = self._sp
+
+            self._signal_colors = _get_signal_colors()
+            self._color = self._signal_colors.get(self.signal, c.TEXT_DISABLED)
+
+            # Update table style
+            if self._table:
+                self._table.setStyleSheet(f"""
+                    QTableWidget {{ alternate-background-color: {c.BG_ROW_B}; background: {c.BG_ROW_A}; }}
+                """)
+
+            # Update no rules label
+            if self._no_rules_lbl:
+                self._no_rules_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {self._ty.SIZE_XS}pt; padding: {sp.PAD_SM}px;")
+
+        except Exception as e:
+            logger.error(f"[_GroupPanel.apply_theme] Failed: {e}", exc_info=True)
+
     def _setup_ui(self):
         try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
             root = QVBoxLayout(self)
-            root.setContentsMargins(8, 12, 8, 8)
-            root.setSpacing(6)
+            root.setContentsMargins(sp.PAD_SM, sp.PAD_MD, sp.PAD_SM, sp.PAD_SM)
+            root.setSpacing(sp.GAP_XS)
 
             # Top row: logic + fired indicator + confidence
             top = QHBoxLayout()
-            top.setSpacing(10)
+            top.setSpacing(sp.GAP_MD)
 
-            self._logic_lbl = _header_label("Logic: AND", TEXT_DIM)
+            self._logic_lbl = _header_label("Logic: AND", "TEXT_DIM")
             top.addWidget(self._logic_lbl)
             top.addStretch()
 
             # FEATURE 3: Confidence display
             confidence_container = QHBoxLayout()
-            self._confidence_lbl = _header_label("Confidence:", TEXT_DIM, 8)
+            self._confidence_lbl = _header_label("Confidence:", "TEXT_DIM", "SIZE_XS")
             self._confidence_bar = _ConfidenceBar()
             confidence_container.addWidget(self._confidence_lbl)
             confidence_container.addWidget(self._confidence_bar)
@@ -375,11 +390,11 @@ class _GroupPanel(QGroupBox):
             top.addStretch()
 
             self._fired_lbl = QLabel("⬤  NOT FIRED")
-            self._fired_lbl.setStyleSheet(f"color: {GREY_OFF}; font-size: 9pt; font-weight: bold;")
+            self._fired_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
             top.addWidget(self._fired_lbl)
 
             self._enabled_lbl = QLabel("enabled")
-            self._enabled_lbl.setStyleSheet(f"color: {GREY_OFF}; font-size: 8pt;")
+            self._enabled_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt;")
             top.addWidget(self._enabled_lbl)
 
             root.addLayout(top)
@@ -394,17 +409,13 @@ class _GroupPanel(QGroupBox):
             self._table.setEditTriggers(QTableWidget.NoEditTriggers)
             self._table.setSelectionBehavior(QTableWidget.SelectRows)
             self._table.setAlternatingRowColors(True)
-            self._table.setStyleSheet(f"""
-                QTableWidget {{ alternate-background-color: {BG_ROW_B}; background: {BG_ROW_A}; }}
-            """)
             self._table.setMinimumHeight(80)
             self._table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             root.addWidget(self._table)
 
             self._no_rules_lbl = QLabel("  ⚪ No rules configured for this signal.")
-            self._no_rules_lbl.setStyleSheet(f"color: {GREY_OFF}; font-size: 9pt; padding: 8px;")
-            root.addWidget(self._no_rules_lbl)
             self._no_rules_lbl.hide()
+            root.addWidget(self._no_rules_lbl)
 
         except Exception as e:
             logger.error(f"[_GroupPanel._setup_ui] Failed: {e}", exc_info=True)
@@ -415,6 +426,10 @@ class _GroupPanel(QGroupBox):
         FEATURE 3: Added confidence and threshold parameters.
         """
         try:
+            c = self._c
+            ty = self._ty
+            sp = self._sp
+
             # Logic label
             if self._logic_lbl is not None:
                 self._logic_lbl.setText(f"Logic: {logic}")
@@ -423,19 +438,19 @@ class _GroupPanel(QGroupBox):
             if self._enabled_lbl is not None:
                 if enabled:
                     self._enabled_lbl.setText("✓ enabled")
-                    self._enabled_lbl.setStyleSheet(f"color: {GREEN}; font-size: 8pt;")
+                    self._enabled_lbl.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt;")
                 else:
                     self._enabled_lbl.setText("✗ disabled")
-                    self._enabled_lbl.setStyleSheet(f"color: {RED}; font-size: 8pt;")
+                    self._enabled_lbl.setStyleSheet(f"color: {c.RED}; font-size: {ty.SIZE_XS}pt;")
 
             # Fired
             if self._fired_lbl is not None:
                 if fired:
                     self._fired_lbl.setText("⬤  FIRED")
-                    self._fired_lbl.setStyleSheet(f"color: {self._color}; font-size: 9pt; font-weight: bold;")
+                    self._fired_lbl.setStyleSheet(f"color: {self._color}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
                 else:
                     self._fired_lbl.setText("⬤  NOT FIRED")
-                    self._fired_lbl.setStyleSheet(f"color: {GREY_OFF}; font-size: 9pt; font-weight: bold;")
+                    self._fired_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
 
             # FEATURE 3: Update confidence bar
             if self._confidence_bar is not None:
@@ -616,7 +631,7 @@ def _lookup_cache(name: str, cache: Dict = None) -> str:
         return name
 
 
-class _IndicatorCachePanel(QWidget):
+class _IndicatorCachePanel(QWidget, ThemedMixin):
     """Tab showing raw computed indicator values from the engine cache."""
 
     def __init__(self, parent=None):
@@ -625,10 +640,15 @@ class _IndicatorCachePanel(QWidget):
 
         try:
             super().__init__(parent)
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(4, 4, 4, 4)
 
-            lbl = _header_label("All computed indicator values during last evaluation:", TEXT_DIM)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS)
+
+            lbl = _header_label("All computed indicator values during last evaluation:", "TEXT_DIM")
             layout.addWidget(lbl)
 
             self._table = QTableWidget(0, 3)
@@ -639,10 +659,9 @@ class _IndicatorCachePanel(QWidget):
             self._table.verticalHeader().setVisible(False)
             self._table.setEditTriggers(QTableWidget.NoEditTriggers)
             self._table.setAlternatingRowColors(True)
-            self._table.setStyleSheet(f"""
-                QTableWidget {{ alternate-background-color: {BG_ROW_B}; background: {BG_ROW_A}; }}
-            """)
             layout.addWidget(self._table)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[_IndicatorCachePanel.__init__] Failed: {e}", exc_info=True)
@@ -651,6 +670,17 @@ class _IndicatorCachePanel(QWidget):
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._table = None
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the panel"""
+        try:
+            c = self._c
+            if self._table:
+                self._table.setStyleSheet(f"""
+                    QTableWidget {{ alternate-background-color: {c.BG_ROW_B}; background: {c.BG_ROW_A}; }}
+                """)
+        except Exception as e:
+            logger.error(f"[_IndicatorCachePanel.apply_theme] Failed: {e}", exc_info=True)
 
     def update_cache(self, cache: Dict):
         """Legacy path: cache is {key: pd.Series}."""
@@ -680,6 +710,7 @@ class _IndicatorCachePanel(QWidget):
         No pandas needed — values are already plain floats.
         """
         try:
+            c = self._c
             rows = []
             for key, val in indicator_values.items():
                 try:
@@ -697,6 +728,7 @@ class _IndicatorCachePanel(QWidget):
     def _render_rows(self, rows):
         """Shared table-population helper."""
         try:
+            c = self._c
             if self._table is None:
                 logger.warning("_render_rows called with None table")
                 return
@@ -704,7 +736,7 @@ class _IndicatorCachePanel(QWidget):
             self._table.setRowCount(len(rows))
             for i, (key, latest, prev) in enumerate(rows):
                 try:
-                    for j, (text, color) in enumerate([(key, TEXT_DIM), (latest, BLUE), (prev, TEXT_DIM)]):
+                    for j, (text, color) in enumerate([(key, c.TEXT_DIM), (latest, c.BLUE), (prev, c.TEXT_DIM)]):
                         item = QTableWidgetItem(str(text) if text is not None else "N/A")
                         item.setForeground(QColor(color))
                         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -716,59 +748,99 @@ class _IndicatorCachePanel(QWidget):
             logger.error(f"[_IndicatorCachePanel._render_rows] Failed: {e}", exc_info=True)
 
 
-class _ConfidencePanel(QWidget):
+class _ConfidencePanel(QWidget, ThemedMixin):
     """
     FEATURE 3: Tab showing confidence scores for all signal groups.
     """
     def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        self._safe_defaults_init()
+        try:
+            super().__init__(parent)
 
-        # Header
-        header = _header_label("Signal Group Confidence Scores", BLUE, 10)
-        layout.addWidget(header)
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
 
-        # Explanation label
-        self._explanation_lbl = QLabel("No signal evaluation yet")
-        self._explanation_lbl.setWordWrap(True)
-        self._explanation_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9pt; padding: 8px; background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 4px;")
-        layout.addWidget(self._explanation_lbl)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+            layout.setSpacing(self._sp.GAP_LG)
 
-        # Confidence bars for each group
+            # Header
+            header = _header_label("Signal Group Confidence Scores", "BLUE", "SIZE_MD")
+            layout.addWidget(header)
+
+            # Explanation label
+            self._explanation_lbl = QLabel("No signal evaluation yet")
+            self._explanation_lbl.setWordWrap(True)
+            layout.addWidget(self._explanation_lbl)
+
+            # Confidence bars for each group
+            self._confidence_bars = {}
+            for sig in SIGNAL_GROUPS:
+                group_box = QGroupBox(SIGNAL_LABELS.get(sig, sig))
+                group_layout = QVBoxLayout(group_box)
+
+                # Confidence bar
+                bar_layout = QHBoxLayout()
+                bar_layout.addWidget(QLabel("Confidence:"))
+                bar = _ConfidenceBar()
+                bar.set_confidence(0.0)
+                bar_layout.addWidget(bar)
+                group_layout.addLayout(bar_layout)
+
+                # Threshold line
+                threshold_layout = QHBoxLayout()
+                threshold_layout.addWidget(QLabel("Threshold:"))
+                self._threshold_lbl = QLabel("0.60")
+                threshold_layout.addWidget(self._threshold_lbl)
+                threshold_layout.addStretch()
+                group_layout.addLayout(threshold_layout)
+
+                layout.addWidget(group_box)
+                self._confidence_bars[sig] = bar
+
+            layout.addStretch()
+            self.apply_theme()
+
+        except Exception as e:
+            logger.error(f"[_ConfidencePanel.__init__] Failed: {e}", exc_info=True)
+            super().__init__(parent)
+
+    def _safe_defaults_init(self):
+        self._explanation_lbl = None
+        self._threshold_lbl = None
         self._confidence_bars = {}
-        for sig in SIGNAL_GROUPS:
-            group_box = QGroupBox(SIGNAL_LABELS.get(sig, sig))
-            group_layout = QVBoxLayout(group_box)
 
-            # Confidence bar
-            bar_layout = QHBoxLayout()
-            bar_layout.addWidget(QLabel("Confidence:"))
-            bar = _ConfidenceBar()
-            bar.set_confidence(0.0)
-            bar_layout.addWidget(bar)
-            group_layout.addLayout(bar_layout)
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the panel"""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
 
-            # Threshold line
-            threshold_layout = QHBoxLayout()
-            threshold_layout.addWidget(QLabel("Threshold:"))
-            self._threshold_lbl = QLabel("0.60")
-            self._threshold_lbl.setStyleSheet(f"color: {YELLOW}; font-weight: bold;")
-            threshold_layout.addWidget(self._threshold_lbl)
-            threshold_layout.addStretch()
-            group_layout.addLayout(threshold_layout)
+            if self._explanation_lbl:
+                self._explanation_lbl.setStyleSheet(f"""
+                    color: {c.TEXT_DIM};
+                    font-size: {ty.SIZE_XS}pt;
+                    padding: {sp.PAD_SM}px;
+                    background: {c.BG_PANEL};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                """)
 
-            layout.addWidget(group_box)
-            self._confidence_bars[sig] = bar
+            if self._threshold_lbl:
+                self._threshold_lbl.setStyleSheet(f"color: {c.YELLOW}; font-weight: {ty.WEIGHT_BOLD};")
 
-        layout.addStretch()
+        except Exception as e:
+            logger.error(f"[_ConfidencePanel.apply_theme] Failed: {e}", exc_info=True)
 
     def update_confidence(self, confidence_dict: Dict[str, float], threshold: float = 0.6, explanation: str = ""):
         """
         Update confidence scores for all groups.
         """
         try:
+            c = self._c
+
             # Update explanation
             if explanation:
                 self._explanation_lbl.setText(explanation)
@@ -788,16 +860,42 @@ class _ConfidencePanel(QWidget):
             logger.error(f"[_ConfidencePanel.update_confidence] Failed: {e}", exc_info=True)
 
 
-class _RawJsonPanel(QTextEdit):
+class _RawJsonPanel(QTextEdit, ThemedMixin):
     """Tab showing the raw evaluate() result dict as JSON."""
 
     def __init__(self, parent=None):
         try:
             super().__init__(parent)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.setReadOnly(True)
+            self.apply_theme()
         except Exception as e:
             logger.error(f"[_RawJsonPanel.__init__] Failed: {e}", exc_info=True)
             super().__init__(parent)
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the panel"""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"""
+                QTextEdit {{
+                    background: {c.BG_PANEL};
+                    color: {c.TEXT_MAIN};
+                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    font-family: '{ty.FONT_MONO}';
+                    font-size: {ty.SIZE_XS}pt;
+                }}
+            """)
+        except Exception as e:
+            logger.error(f"[_RawJsonPanel.apply_theme] Failed: {e}", exc_info=True)
 
     def update_result(self, result: Dict):
         try:
@@ -821,13 +919,14 @@ class _RawJsonPanel(QTextEdit):
             self.setPlainText(f"Error updating: {e}")
 
 
-class DynamicSignalDebugPopup(QDialog):
+class DynamicSignalDebugPopup(QDialog, ThemedMixin):
     """
     Non-modal popup that lives alongside the main TradingGUI window.
     Call refresh() every second (or from _tick_fast) to keep it live.
     Works with database-backed signal engine.
     FEATURE 3: Added confidence display tab.
     UPDATED: Now uses state_manager for state access.
+    FULLY INTEGRATED with ThemeManager for dynamic theming.
     """
 
     def __init__(self, trading_app, parent=None):
@@ -836,11 +935,15 @@ class DynamicSignalDebugPopup(QDialog):
 
         try:
             super().__init__(parent, Qt.Window)
+
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
             self.trading_app = trading_app
             self.setWindowTitle("🔬 Dynamic Signal Engine — Live Debug")
             self.resize(980, 750)
             self.setMinimumSize(700, 500)
-            self.setStyleSheet(_style_sheet())
 
             # Internal state
             self._last_signal_value: str = ""
@@ -851,6 +954,7 @@ class DynamicSignalDebugPopup(QDialog):
             self._last_threshold: float = 0.6
 
             self._build_ui()
+            self.apply_theme()
 
             # Auto-refresh every second when visible
             self._timer = QTimer(self)
@@ -870,7 +974,6 @@ class DynamicSignalDebugPopup(QDialog):
             layout = QVBoxLayout(self)
             error_label = QLabel(f"Failed to initialize debug popup:\n{e}")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet("color: #f85149; padding: 20px;")
             layout.addWidget(error_label)
 
             close_btn = QPushButton("Close")
@@ -905,13 +1008,132 @@ class DynamicSignalDebugPopup(QDialog):
         self._status_lbl = None
         self._auto_chk = None
 
+    def apply_theme(self, _: str = None) -> None:
+        """
+        Rule 13.2: Apply theme colors to the dialog.
+        Called on theme change, density change, and initial render.
+        """
+        try:
+            c = self._c
+            sp = self._sp
+
+            # Apply main stylesheet
+            self.setStyleSheet(self._get_stylesheet())
+
+            # Update all child widgets that have apply_theme methods
+            if self._signal_badge and hasattr(self._signal_badge, 'apply_theme'):
+                self._signal_badge.apply_theme()
+
+            if self._cache_panel and hasattr(self._cache_panel, 'apply_theme'):
+                self._cache_panel.apply_theme()
+
+            if self._confidence_panel and hasattr(self._confidence_panel, 'apply_theme'):
+                self._confidence_panel.apply_theme()
+
+            if self._json_panel and hasattr(self._json_panel, 'apply_theme'):
+                self._json_panel.apply_theme()
+
+            for panel in self._group_panels.values():
+                if hasattr(panel, 'apply_theme'):
+                    panel.apply_theme()
+
+            # Update status label style
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+
+            logger.debug("[DynamicSignalDebugPopup.apply_theme] Applied theme")
+
+        except Exception as e:
+            logger.error(f"[DynamicSignalDebugPopup.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_stylesheet(self) -> str:
+        """Generate stylesheet with current theme tokens"""
+        c = self._c
+        ty = self._ty
+        sp = self._sp
+
+        return f"""
+            QDialog, QWidget {{
+                background: {c.BG_MAIN};
+                color: {c.TEXT_MAIN};
+                font-family: '{ty.FONT_MONO}';
+            }}
+            QLabel {{ color: {c.TEXT_MAIN}; }}
+            QGroupBox {{
+                background: {c.BG_PANEL};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                margin-top: {sp.PAD_MD}px;
+                padding: {sp.PAD_XS}px;
+                font-weight: {ty.WEIGHT_BOLD};
+                font-size: {ty.SIZE_SM}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {sp.PAD_MD}px;
+                padding: 0 {sp.PAD_XS}px;
+                color: {c.TEXT_MAIN};
+            }}
+            QTableWidget {{
+                background: {c.BG_PANEL};
+                gridline-color: {c.BORDER};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QTableWidget::item {{ padding: {sp.PAD_XS}px {sp.PAD_SM}px; }}
+            QHeaderView::section {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DIM};
+                border: none;
+                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+            QPushButton {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QPushButton:hover {{ background: {c.BORDER}; }}
+            QTabWidget::pane {{
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                background: {c.BG_PANEL};
+            }}
+            QTabBar::tab {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DIM};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-bottom: none;
+                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
+                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QTabBar::tab:selected {{
+                background: {c.BG_PANEL};
+                color: {c.TEXT_MAIN};
+                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+            }}
+            QScrollArea {{ border: none; background: transparent; }}
+            QCheckBox {{ color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; spacing: {sp.GAP_XS}px; }}
+        """
+
     # ── UI Construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
         try:
+            c = self._c
+            sp = self._sp
+
             root = QVBoxLayout(self)
-            root.setContentsMargins(10, 10, 10, 10)
-            root.setSpacing(8)
+            root.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+            root.setSpacing(sp.GAP_SM)
 
             # ── Header ────────────────────────────────────────────────────────────
             header = self._build_header()
@@ -947,28 +1169,31 @@ class DynamicSignalDebugPopup(QDialog):
 
     def _build_header(self) -> QWidget:
         try:
+            c = self._c
+            sp = self._sp
+
             frame = QFrame()
-            frame.setStyleSheet(f"QFrame {{ background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}")
+            frame.setStyleSheet(f"QFrame {{ background: {c.BG_PANEL}; border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px; }}")
             layout = QHBoxLayout(frame)
-            layout.setContentsMargins(16, 10, 16, 10)
-            layout.setSpacing(20)
+            layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+            layout.setSpacing(sp.GAP_XL)
 
             # Signal badge (large)
             sig_col = QVBoxLayout()
-            sig_col.addWidget(_header_label("FINAL SIGNAL", TEXT_DIM, 8))
+            sig_col.addWidget(_header_label("FINAL SIGNAL", "TEXT_DIM", "SIZE_XS"))
             self._signal_badge = _SignalBadge()
             sig_col.addWidget(self._signal_badge)
             layout.addLayout(sig_col)
 
             sep = QFrame()
             sep.setFrameShape(QFrame.VLine)
-            sep.setStyleSheet(f"QFrame {{ border: 1px solid {BORDER}; }}")
+            sep.setStyleSheet(f"QFrame {{ border: {sp.SEPARATOR}px solid {c.BORDER}; }}")
             layout.addWidget(sep)
 
             # Grid of quick-status labels
             grid = QGridLayout()
-            grid.setHorizontalSpacing(24)
-            grid.setVerticalSpacing(4)
+            grid.setHorizontalSpacing(sp.PAD_XL)
+            grid.setVerticalSpacing(sp.GAP_XS)
 
             self._lbl_conflict = self._make_status_pair(grid, 0, 0, "CONFLICT")
             self._lbl_available = self._make_status_pair(grid, 0, 2, "RULES AVAILABLE")
@@ -983,23 +1208,13 @@ class DynamicSignalDebugPopup(QDialog):
 
             # Fired group indicators (5 small pills)
             fired_col = QVBoxLayout()
-            fired_col.addWidget(_header_label("GROUP FIRED", TEXT_DIM, 8))
+            fired_col.addWidget(_header_label("GROUP FIRED", "TEXT_DIM", "SIZE_XS"))
             fired_inner = QHBoxLayout()
             self._fired_pills = {}
             for sig in SIGNAL_GROUPS:
                 lbl = QLabel(sig.replace("_", "\n"))
                 lbl.setAlignment(Qt.AlignCenter)
                 lbl.setFixedSize(64, 42)
-                lbl.setStyleSheet(f"""
-                    QLabel {{
-                        background: {GREY_OFF}33;
-                        color: {GREY_OFF};
-                        border: 1px solid {GREY_OFF};
-                        border-radius: 5px;
-                        font-size: 7pt;
-                        font-weight: bold;
-                    }}
-                """)
                 self._fired_pills[sig] = lbl
                 fired_inner.addWidget(lbl)
             fired_col.addLayout(fired_inner)
@@ -1013,8 +1228,8 @@ class DynamicSignalDebugPopup(QDialog):
 
     def _make_status_pair(self, grid: QGridLayout, row: int, col: int, title: str) -> QLabel:
         try:
-            grid.addWidget(_header_label(title, TEXT_DIM, 7), row, col)
-            val_lbl = _value_label("—", TEXT_MAIN, 9)
+            grid.addWidget(_header_label(title, "TEXT_DIM", "SIZE_XS"), row, col)
+            val_lbl = _value_label("—", "TEXT_MAIN", "SIZE_XS")
             grid.addWidget(val_lbl, row, col + 1)
             return val_lbl
         except Exception as e:
@@ -1030,8 +1245,8 @@ class DynamicSignalDebugPopup(QDialog):
 
             container = QWidget()
             self._groups_layout = QVBoxLayout(container)
-            self._groups_layout.setContentsMargins(4, 4, 4, 4)
-            self._groups_layout.setSpacing(8)
+            self._groups_layout.setContentsMargins(self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS)
+            self._groups_layout.setSpacing(self._sp.GAP_SM)
 
             self._group_panels = {}
             for sig in SIGNAL_GROUPS:
@@ -1049,18 +1264,20 @@ class DynamicSignalDebugPopup(QDialog):
             container = QWidget()
             layout = QVBoxLayout(container)
             error_lbl = QLabel(f"Error building groups tab: {e}")
-            error_lbl.setStyleSheet(f"color: {RED};")
             layout.addWidget(error_lbl)
             scroll.setWidget(container)
             return scroll
 
     def _build_footer(self) -> QWidget:
         try:
+            c = self._c
+            sp = self._sp
+
             frame = QFrame()
-            frame.setStyleSheet(f"QFrame {{ background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 4px; }}")
+            frame.setStyleSheet(f"QFrame {{ background: {c.BG_PANEL}; border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; }}")
             layout = QHBoxLayout(frame)
-            layout.setContentsMargins(10, 6, 10, 6)
-            layout.setSpacing(10)
+            layout.setContentsMargins(sp.PAD_MD, sp.PAD_XS, sp.PAD_MD, sp.PAD_XS)
+            layout.setSpacing(sp.GAP_MD)
 
             self._auto_chk = QCheckBox("Auto-refresh (1 s)")
             self._auto_chk.setChecked(True)
@@ -1070,7 +1287,7 @@ class DynamicSignalDebugPopup(QDialog):
             layout.addStretch()
 
             self._status_lbl = QLabel("Waiting for data…")
-            self._status_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8pt;")
+            self._status_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
             layout.addWidget(self._status_lbl)
 
             layout.addStretch()
@@ -1109,6 +1326,9 @@ class DynamicSignalDebugPopup(QDialog):
     def refresh(self):
         """Pull the latest signal data from state_manager and update UI."""
         try:
+            c = self._c
+            ty = self._ty
+
             if self.trading_app is None:
                 if self._status_lbl is not None:
                     self._status_lbl.setText("⚠  trading_app is None")
@@ -1147,11 +1367,11 @@ class DynamicSignalDebugPopup(QDialog):
             conflict = option_signal.get("conflict", False)
             if self._lbl_conflict is not None:
                 self._lbl_conflict.setText("⚠ YES" if conflict else "No")
-                self._lbl_conflict.setStyleSheet(f"color: {RED if conflict else GREEN}; font-weight: bold; font-size: 9pt;")
+                self._lbl_conflict.setStyleSheet(f"color: {c.RED if conflict else c.GREEN}; font-weight: {ty.WEIGHT_BOLD}; font-size: {ty.SIZE_XS}pt;")
 
             if self._lbl_available is not None:
                 self._lbl_available.setText("Yes")
-                self._lbl_available.setStyleSheet(f"color: {GREEN}; font-weight: bold; font-size: 9pt;")
+                self._lbl_available.setStyleSheet(f"color: {c.GREEN}; font-weight: {ty.WEIGHT_BOLD}; font-size: {ty.SIZE_XS}pt;")
 
             # Symbol & price from trend_data
             symbol = trend_data.get("name", "—")
@@ -1192,18 +1412,19 @@ class DynamicSignalDebugPopup(QDialog):
 
             # ── Fired pills ──────────────────────────────────────────────────
             fired_map = option_signal.get("fired", {})
+            signal_colors = _get_signal_colors()
             for sig, pill in self._fired_pills.items():
                 try:
                     is_fired = fired_map.get(sig, False)
-                    color = SIGNAL_COLORS.get(sig, GREY_OFF) if is_fired else GREY_OFF
+                    color = signal_colors.get(sig, c.TEXT_DISABLED) if is_fired else c.TEXT_DISABLED
                     pill.setStyleSheet(f"""
                         QLabel {{
                             background: {color}33;
                             color: {color};
-                            border: 2px solid {color};
-                            border-radius: 5px;
-                            font-size: 7pt;
-                            font-weight: bold;
+                            border: {self._sp.SEPARATOR}px solid {color};
+                            border-radius: {self._sp.RADIUS_SM}px;
+                            font-size: {ty.SIZE_XS}pt;
+                            font-weight: {ty.WEIGHT_BOLD};
                         }}
                     """)
                 except Exception as e:
@@ -1299,11 +1520,23 @@ class DynamicSignalDebugPopup(QDialog):
                 self._status_lbl.setText(f"⚠  Refresh error: {e}")
 
     def closeEvent(self, event):
-        """Handle close event with cleanup"""
+        """Handle close event with cleanup - Rule 7"""
         try:
             if self._timer is not None:
                 self._timer.stop()
+                self._timer = None
             super().closeEvent(event)
         except Exception as e:
             logger.error(f"[DynamicSignalDebugPopup.closeEvent] Failed: {e}", exc_info=True)
             super().closeEvent(event)
+
+    def cleanup(self):
+        """Clean up resources - Rule 7"""
+        try:
+            if self._timer and self._timer.isActive():
+                self._timer.stop()
+            self._timer = None
+            self.trading_app = None
+            logger.info("[DynamicSignalDebugPopup] Cleanup completed")
+        except Exception as e:
+            logger.error(f"[DynamicSignalDebugPopup.cleanup] Error: {e}", exc_info=True)
