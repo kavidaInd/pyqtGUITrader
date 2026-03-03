@@ -471,38 +471,55 @@ class BaseBroker(ABC):
         context: str = "",
         max_retries: int = 3,
         base_delay: float = 1.0,
+        respect_market_hours: bool = True,
     ) -> Any:
         """
         Generic retry wrapper with exponential back-off + jitter.
-
-        Subclasses with broker-specific error handling (Fyers, Zerodha, etc.)
-        should override this method to handle their SDK exceptions while
-        optionally calling super().retry_on_failure() for common cases.
+        Enhanced to respect market hours and avoid unnecessary retries.
 
         Args:
             func        : Zero-argument callable to retry.
             context     : Label used in log messages.
             max_retries : Maximum number of attempts.
             base_delay  : Base sleep time in seconds (doubles each retry).
+            respect_market_hours: If True, don't retry when market is closed.
 
         Returns:
             The return value of func(), or None on exhausted retries.
         """
         from requests.exceptions import Timeout, ConnectionError as ReqConnError
 
+        # Skip retries if market is closed and we should respect market hours
+        if respect_market_hours and not self.is_market_open():
+            logger.info(f"[{context or self.broker_type}] Market closed - skipping retry")
+            return None
+
         for attempt in range(max_retries):
             try:
+                # Check market status before each attempt
+                if respect_market_hours and not self.is_market_open():
+                    logger.info(f"[{context or self.broker_type}] Market closed during retry {attempt + 1}")
+                    return None
+
                 self._check_rate_limit()
                 return func()
+
             except TokenExpiredError:
                 raise
+
             except (Timeout, ReqConnError) as e:
+                # Only retry network errors during market hours
+                if respect_market_hours and not self.is_market_open():
+                    logger.info(f"[{context or self.broker_type}] Market closed - stopping retry")
+                    return None
+
                 delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
                 logger.warning(
                     f"[{context or self.broker_type}] Network error (attempt {attempt + 1}): "
                     f"{e!r}. Retry in {delay:.1f}s"
                 )
                 time.sleep(delay)
+
             except Exception as e:
                 logger.error(
                     f"[{context or self.broker_type}] Unexpected error: {e!r}",

@@ -516,14 +516,17 @@ class StatusPanel(QWidget):
     def _get_cached_snapshot(self) -> Dict[str, Any]:
         """Get cached snapshot to avoid excessive state_manager calls"""
         now = datetime.now()
-        if (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration:
+        if self._last_snapshot_time is None or (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration:
             self._last_snapshot = state_manager.get_snapshot()
+            self._last_position_snapshot = state_manager.get_position_snapshot()
             self._last_snapshot_time = now
         return self._last_snapshot
 
     def _get_cached_position_snapshot(self) -> Dict[str, Any]:
-        """Get cached position snapshot"""
-        return state_manager.get_position_snapshot()
+        """Get cached position snapshot (always in sync with _get_cached_snapshot)"""
+        # Ensure the cache is populated first
+        self._get_cached_snapshot()
+        return getattr(self, '_last_position_snapshot', {})
 
     def _update_market_status(self):
         """Update market status using Utils"""
@@ -985,13 +988,9 @@ class StatusPanel(QWidget):
             # Update timestamp
             self.timestamp.setText(datetime.now().strftime("%H:%M:%S"))
 
-            # Update market status periodically
-            self._update_market_status()
-
             # Get snapshots
             full_snap = self._get_cached_snapshot()
             pos_snap = self._get_cached_position_snapshot()
-            print(full_snap)
             # Get signal snapshot safely
             try:
                 signal_snap = state_manager.get_state().get_option_signal_snapshot()

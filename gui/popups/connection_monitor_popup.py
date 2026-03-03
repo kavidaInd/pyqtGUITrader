@@ -2,6 +2,7 @@
 Connection Monitor Popup - Displays WebSocket and broker connection status
 
 UPDATED: Now uses state_manager instead of direct state access.
+FIXED: Removed P&L and MTF tabs as they're not required.
 """
 import logging
 from datetime import datetime
@@ -23,8 +24,8 @@ class ConnectionMonitorPopup(QDialog):
         super().__init__(parent)
         self.trading_app = trading_app
         self.setWindowTitle("Connection Monitor")
-        self.resize(600, 500)
-        self.setMinimumSize(550, 450)
+        self.resize(700, 500)
+        self.setMinimumSize(650, 450)
 
         # Set window flags
         self.setWindowFlags(Qt.Window)
@@ -96,14 +97,6 @@ class ConnectionMonitorPopup(QDialog):
         # Tab 2: Statistics
         stats_tab = self._create_statistics_tab()
         tabs.addTab(stats_tab, "📊 Statistics")
-
-        # Tab 3: Risk Status (FEATURE 1)
-        risk_tab = self._create_risk_tab()
-        tabs.addTab(risk_tab, "⚠️ Risk")
-
-        # Tab 4: MTF Filter (FEATURE 6)
-        mtf_tab = self._create_mtf_tab()
-        tabs.addTab(mtf_tab, "📈 MTF Filter")
 
         layout.addWidget(tabs)
 
@@ -311,131 +304,6 @@ class ConnectionMonitorPopup(QDialog):
 
         return widget
 
-    def _create_risk_tab(self) -> QGroupBox:
-        """
-        FEATURE 1: Create risk status tab
-        """
-        widget = QGroupBox("Risk Status")
-        layout = QGridLayout(widget)
-
-        row = 0
-
-        # Daily P&L
-        layout.addWidget(QLabel("Daily P&L:"), row, 0)
-        self.daily_pnl = QLabel("₹0.00")
-        self.daily_pnl.setObjectName("value")
-        layout.addWidget(self.daily_pnl, row, 1)
-        row += 1
-
-        # Trades today
-        layout.addWidget(QLabel("Trades Today:"), row, 0)
-        self.trades_today = QLabel("0")
-        self.trades_today.setObjectName("value")
-        layout.addWidget(self.trades_today, row, 1)
-        row += 1
-
-        # Max loss limit
-        layout.addWidget(QLabel("Max Loss Limit:"), row, 0)
-        self.max_loss = QLabel("₹-5000")
-        self.max_loss.setObjectName("value")
-        layout.addWidget(self.max_loss, row, 1)
-        row += 1
-
-        # Loss remaining
-        layout.addWidget(QLabel("Loss Remaining:"), row, 0)
-        self.loss_remaining = QLabel("₹5000")
-        self.loss_remaining.setObjectName("value")
-        layout.addWidget(self.loss_remaining, row, 1)
-        row += 1
-
-        # Trades remaining
-        layout.addWidget(QLabel("Trades Remaining:"), row, 0)
-        self.trades_remaining = QLabel("10")
-        self.trades_remaining.setObjectName("value")
-        layout.addWidget(self.trades_remaining, row, 1)
-        row += 1
-
-        # Risk blocked status
-        layout.addWidget(QLabel("Risk Blocked:"), row, 0)
-        self.risk_blocked = QLabel("No")
-        self.risk_blocked.setObjectName("success")
-        layout.addWidget(self.risk_blocked, row, 1)
-        row += 1
-
-        # Block reason (if any)
-        layout.addWidget(QLabel("Block Reason:"), row, 0)
-        self.block_reason = QLabel("-")
-        self.block_reason.setObjectName("value")
-        layout.addWidget(self.block_reason, row, 1)
-
-        return widget
-
-    def _create_mtf_tab(self) -> QGroupBox:
-        """
-        FEATURE 6: Create Multi-Timeframe Filter status tab
-        """
-        widget = QGroupBox("Multi-Timeframe Filter")
-        layout = QGridLayout(widget)
-
-        row = 0
-
-        # Enabled status
-        layout.addWidget(QLabel("Enabled:"), row, 0)
-        self.mtf_enabled = QLabel("No")
-        self.mtf_enabled.setObjectName("value")
-        layout.addWidget(self.mtf_enabled, row, 1)
-        row += 1
-
-        # Current signal direction
-        layout.addWidget(QLabel("Current Signal:"), row, 0)
-        self.mtf_signal = QLabel("WAIT")
-        self.mtf_signal.setObjectName("value")
-        layout.addWidget(self.mtf_signal, row, 1)
-        row += 1
-
-        # 1m direction
-        layout.addWidget(QLabel("1m Direction:"), row, 0)
-        self.mtf_1m = QLabel("NEUTRAL")
-        self.mtf_1m.setObjectName("value")
-        layout.addWidget(self.mtf_1m, row, 1)
-        row += 1
-
-        # 5m direction
-        layout.addWidget(QLabel("5m Direction:"), row, 0)
-        self.mtf_5m = QLabel("NEUTRAL")
-        self.mtf_5m.setObjectName("value")
-        layout.addWidget(self.mtf_5m, row, 1)
-        row += 1
-
-        # 15m direction
-        layout.addWidget(QLabel("15m Direction:"), row, 0)
-        self.mtf_15m = QLabel("NEUTRAL")
-        self.mtf_15m.setObjectName("value")
-        layout.addWidget(self.mtf_15m, row, 1)
-        row += 1
-
-        # Agreement count
-        layout.addWidget(QLabel("Agreement:"), row, 0)
-        self.mtf_agreement = QLabel("0/3")
-        self.mtf_agreement.setObjectName("value")
-        layout.addWidget(self.mtf_agreement, row, 1)
-        row += 1
-
-        # Last decision
-        layout.addWidget(QLabel("Last Decision:"), row, 0)
-        self.mtf_decision = QLabel("BLOCKED")
-        self.mtf_decision.setObjectName("value")
-        layout.addWidget(self.mtf_decision, row, 1)
-        row += 1
-
-        # Cache status
-        layout.addWidget(QLabel("Cache Status:"), row, 0)
-        self.mtf_cache = QLabel("Fresh")
-        self.mtf_cache.setObjectName("value")
-        layout.addWidget(self.mtf_cache, row, 1)
-
-        return widget
-
     def _init_timer(self):
         """Initialize refresh timer"""
         self.timer = QTimer(self)
@@ -448,14 +316,8 @@ class ConnectionMonitorPopup(QDialog):
             if not self.trading_app:
                 return
 
-            # Get snapshots from state manager
-            snapshot = state_manager.get_snapshot()
-            position_snapshot = state_manager.get_position_snapshot()
-
             self._refresh_connection_tab()
             self._refresh_statistics_tab()
-            self._refresh_risk_tab(snapshot, position_snapshot)  # FEATURE 1
-            self._refresh_mtf_tab(snapshot, position_snapshot)   # FEATURE 6
 
             # Update styles
             self.ws_status_label.style().unpolish(self.ws_status_label)
@@ -516,18 +378,23 @@ class ConnectionMonitorPopup(QDialog):
                 if hasattr(broker, 'token_expiry') and broker.token_expiry:
                     self.token_expiry_label.setText(broker.token_expiry.strftime("%Y-%m-%d %H:%M"))
 
-            # UPDATED: Get symbol counts from state manager
+            # Get symbol counts from state manager
             snapshot = state_manager.get_snapshot()
 
             # Update symbol counts
             symbols = snapshot.get('all_symbols', [])
+            if symbols is None:
+                symbols = []
             self.symbols_subscribed.setText(str(len(symbols)))
 
             # Count active symbols (with recent data)
             option_chain = snapshot.get('option_chain', {})
+            if option_chain is None:
+                option_chain = {}
+
             active = 0
             for sym, data in option_chain.items():
-                if data and data.get('ltp') is not None:
+                if data and isinstance(data, dict) and data.get('ltp') is not None:
                     active += 1
             self.active_symbols.setText(str(active))
 
@@ -577,126 +444,6 @@ class ConnectionMonitorPopup(QDialog):
 
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup._refresh_statistics_tab] Failed: {e}")
-
-    def _refresh_risk_tab(self, snapshot: dict, position_snapshot: dict):
-        """
-        FEATURE 1: Refresh risk tab data using state manager snapshots
-        """
-        try:
-            # Get P&L from position snapshot
-            pnl = position_snapshot.get('current_pnl', 0)
-
-            # Format P&L
-            pnl_color = "#3fb950" if pnl and pnl >= 0 else "#f85149"
-            self.daily_pnl.setText(f"₹{pnl:,.2f}")
-            self.daily_pnl.setStyleSheet(f"color: {pnl_color}; font-weight: bold;")
-
-            # Trades today (estimate - 1 if position active)
-            trades_today = 1 if position_snapshot.get('current_position') else 0
-            self.trades_today.setText(str(trades_today))
-
-            # Get risk limits from snapshot
-            max_loss = snapshot.get('max_daily_loss', -5000)
-            self.max_loss.setText(f"₹{max_loss:,.0f}")
-
-            # Calculate loss remaining
-            loss_remaining = abs(max_loss) - abs(pnl) if pnl and pnl < 0 else abs(max_loss)
-            self.loss_remaining.setText(f"₹{loss_remaining:,.2f}")
-
-            # Trades remaining
-            max_trades = snapshot.get('max_trades_per_day', 10)
-            trades_remaining = max_trades - trades_today
-            self.trades_remaining.setText(str(max(0, trades_remaining)))
-
-            # Risk blocked status (if loss limit hit)
-            is_blocked = pnl and pnl <= max_loss if max_loss < 0 else False
-            if is_blocked:
-                self.risk_blocked.setText("Yes")
-                self.risk_blocked.setObjectName("error")
-                self.block_reason.setText("Daily loss limit exceeded")
-            else:
-                self.risk_blocked.setText("No")
-                self.risk_blocked.setObjectName("success")
-                self.block_reason.setText("-")
-
-            # Update styles
-            self.risk_blocked.style().unpolish(self.risk_blocked)
-            self.risk_blocked.style().polish(self.risk_blocked)
-
-        except Exception as e:
-            logger.error(f"[ConnectionMonitorPopup._refresh_risk_tab] Failed: {e}")
-
-    def _refresh_mtf_tab(self, snapshot: dict, position_snapshot: dict):
-        """
-        FEATURE 6: Refresh multi-timeframe filter tab data using state manager snapshots
-        """
-        try:
-            # Check if MTF filter is enabled
-            use_mtf = snapshot.get('use_mtf_filter', False)
-            self.mtf_enabled.setText("Yes" if use_mtf else "No")
-            self.mtf_enabled.setObjectName("success" if use_mtf else "value")
-
-            # Get current signal from position snapshot
-            signal = position_snapshot.get('option_signal', 'WAIT')
-            self.mtf_signal.setText(signal)
-
-            # Color based on signal
-            if signal in ['BUY_CALL', 'BUY_PUT']:
-                self.mtf_signal.setObjectName("success")
-            elif signal in ['EXIT_CALL', 'EXIT_PUT']:
-                self.mtf_signal.setObjectName("warning")
-            else:
-                self.mtf_signal.setObjectName("value")
-
-            # Get MTF results from snapshot
-            mtf_results = snapshot.get('mtf_results', {})
-            self.mtf_1m.setText(mtf_results.get('1', 'NEUTRAL'))
-            self.mtf_5m.setText(mtf_results.get('5', 'NEUTRAL'))
-            self.mtf_15m.setText(mtf_results.get('15', 'NEUTRAL'))
-
-            # Color the direction labels
-            self._set_mtf_direction_color(self.mtf_1m, mtf_results.get('1', 'NEUTRAL'))
-            self._set_mtf_direction_color(self.mtf_5m, mtf_results.get('5', 'NEUTRAL'))
-            self._set_mtf_direction_color(self.mtf_15m, mtf_results.get('15', 'NEUTRAL'))
-
-            # Count agreement
-            target = 'BULLISH' if signal == 'BUY_CALL' else 'BEARISH'
-            matches = sum(1 for d in mtf_results.values() if d == target)
-            self.mtf_agreement.setText(f"{matches}/3")
-
-            # Last decision
-            summary = snapshot.get('last_mtf_summary', '')
-            if "ALLOWED" in summary.upper():
-                self.mtf_decision.setText("ALLOWED")
-                self.mtf_decision.setObjectName("success")
-            elif "BLOCKED" in summary.upper():
-                self.mtf_decision.setText("BLOCKED")
-                self.mtf_decision.setObjectName("error")
-            else:
-                self.mtf_decision.setText(summary or "No decision")
-                self.mtf_decision.setObjectName("value")
-
-            # Update styles
-            self.mtf_enabled.style().unpolish(self.mtf_enabled)
-            self.mtf_enabled.style().polish(self.mtf_enabled)
-            self.mtf_signal.style().unpolish(self.mtf_signal)
-            self.mtf_signal.style().polish(self.mtf_signal)
-            self.mtf_decision.style().unpolish(self.mtf_decision)
-            self.mtf_decision.style().polish(self.mtf_decision)
-
-        except Exception as e:
-            logger.error(f"[ConnectionMonitorPopup._refresh_mtf_tab] Failed: {e}")
-
-    def _set_mtf_direction_color(self, label: QLabel, direction: str):
-        """Set color for MTF direction label"""
-        if direction == 'BULLISH':
-            label.setObjectName("success")
-        elif direction == 'BEARISH':
-            label.setObjectName("error")
-        else:
-            label.setObjectName("value")
-        label.style().unpolish(label)
-        label.style().polish(label)
 
     def _reconnect(self):
         """Attempt to reconnect WebSocket"""

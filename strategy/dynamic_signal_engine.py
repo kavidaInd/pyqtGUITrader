@@ -16,7 +16,9 @@ The engine implements a sophisticated voting system:
     - Human-readable explanations of evaluation results
 
 FIX: Day gap handling - prevents false crossovers across day boundaries
-Version: 2.8.1 (Added state_manager integration helpers)
+FIX: Post-computation column normaliser — replaces fragile indicator_columns
+     prediction approach.  Engine no longer depends on indicator_columns.py.
+Version: 2.9.0
 """
 
 from __future__ import annotations
@@ -37,9 +39,6 @@ except ImportError:
     ta = None
     _TA_AVAILABLE = False
     logger.warning("pandas_ta not installed — pip install pandas_ta")
-
-# Import the centralized column generator
-from strategy.indicator_columns import get_indicator_column, get_all_indicator_columns
 
 
 class OptionSignal(str, Enum):
@@ -281,106 +280,263 @@ def _get_min_periods(indicator: str, params: Dict[str, Any]) -> int:
         return base_periods + 5  # Add buffer for all indicators
 
 
-def _extract_indicator_column(result_df: pd.DataFrame, indicator: str, params: Dict[str, Any]) -> Optional[pd.Series]:
+def _normalise_indicator_result(
+    result: Union[pd.DataFrame, pd.Series],
+    indicator: str,
+    params: Dict[str, Any],
+) -> Dict[str, pd.Series]:
     """
-    Extract the appropriate column from a multi-column indicator result with dynamic column names.
+    Post-computation normaliser.
 
-    Args:
-        result_df: DataFrame returned by pandas_ta
-        indicator: Original indicator name
-        params: Indicator parameters used for calculation
+    Takes the *raw* pandas_ta output (DataFrame or Series) and maps every
+    column to a stable semantic key that never changes regardless of the
+    parameter values used.
+
+    Mapping strategy: prefix/substring matching on the uppercased column name.
+    No column names are ever predicted in advance — the actual columns returned
+    by pandas_ta are inspected at runtime.
 
     Returns:
-        Optional[pd.Series]: Extracted series or None
+        dict mapping stable key → pd.Series, e.g.:
+          {"MACD": Series, "SIGNAL": Series, "HIST": Series}   for macd
+          {"UPPER": Series, "MIDDLE": Series, "LOWER": Series} for bbands
+          {"MAIN": Series}                                      for single-output
+
+    Examples:
+        >>> # macd(fast=12, slow=26, signal=9) returns DataFrame with columns
+        >>> # ['MACD_12_26_9', 'MACDs_12_26_9', 'MACDh_12_26_9']
+        >>> norm = _normalise_indicator_result(result_df, 'macd', {})
+        >>> sorted(norm.keys())
+        ['HIST', 'MACD', 'SIGNAL']
+
+        >>> # bbands(length=20, std=2.0) returns DataFrame with columns
+        >>> # ['BBL_20_2.0', 'BBM_20_2.0', 'BBU_20_2.0', 'BBB_20_2.0', 'BBP_20_2.0']
+        >>> norm = _normalise_indicator_result(result_df, 'bbands', {})
+        >>> sorted(norm.keys())
+        ['BANDWIDTH', 'LOWER', 'MIDDLE', 'PERCENT', 'UPPER']
     """
     try:
-        indicator_lower = indicator.lower()
+        # ── Single-series result ───────────────────────────────────────────────
+        if isinstance(result, pd.Series):
+            return {"MAIN": result} if not result.isna().all() else {}
 
-        # For multi-column indicators, get all possible column names
-        if indicator_lower in MULTI_COLUMN_INDICATORS:
-            columns = get_all_indicator_columns(indicator, params)
+        if not isinstance(result, pd.DataFrame) or result.empty:
+            return {}
 
-            # Try each column type in order of preference
-            preferred_order = {
-                'macd': ['MACD', 'SIGNAL', 'HIST'],
-                'bbands': ['MIDDLE', 'UPPER', 'LOWER', 'BANDWIDTH', 'PERCENT'],
-                'stoch': ['K', 'D'],
-                'stochrsi': ['K', 'D'],
-                'supertrend': ['TREND', 'DIRECTION', 'LONG', 'SHORT'],
-                'kc': ['MIDDLE', 'UPPER', 'LOWER'],
-                'donchian': ['MIDDLE', 'UPPER', 'LOWER'],
-                'adx': ['ADX', 'PLUS_DI', 'MINUS_DI'],
-                'aroon': ['AROON_UP', 'AROON_DOWN'],
-                'dm': ['PLUS_DM', 'MINUS_DM'],
-                'adosc': ['ADOSC', 'AD'],
-                'kvo': ['KVO', 'SIGNAL'],
-                'ichimoku': ['ISA', 'ISB', 'ITS', 'IKS', 'ICS'],
-            }
+        ind = indicator.lower()
+        normalised: Dict[str, pd.Series] = {}
 
-            order = preferred_order.get(indicator_lower, [])
-            for col_type in order:
-                col_name = columns.get(col_type)
-                if col_name and col_name in result_df.columns:
-                    series = result_df[col_name]
-                    # Check if the series has any non-NaN values
-                    if series is not None and not series.isna().all():
-                        return series
+        # ── Per-column prefix/substring matching ──────────────────────────────
+        for col in result.columns:
+            col_u = col.upper()
+            series = result[col]
 
-            # If preferred not found, try any column that exists
-            for col_name in columns.values():
-                if col_name in result_df.columns:
-                    series = result_df[col_name]
-                    if series is not None and not series.isna().all():
-                        return series
-
-        # For single column indicators, try the generated name
-        col_name = get_indicator_column(indicator, params)
-        if col_name in result_df.columns:
-            series = result_df[col_name]
-            if series is not None and not series.isna().all():
-                return series
-
-        # Fallback to pattern matching
-        for col in result_df.columns:
-            col_upper = col.upper()
-            series = result_df[col]
-            if series is None or series.isna().all():
+            # Skip columns that are entirely NaN
+            if series.isna().all():
                 continue
 
-            if indicator_lower == 'macd' and ('MACD' in col_upper) and ('SIGNAL' not in col_upper) and ('HIST' not in col_upper):
-                return series
-            elif indicator_lower == 'bbands' and ('BBM' in col_upper or 'MID' in col_upper):
-                return series
-            elif indicator_lower == 'stoch' and ('STOCHK' in col_upper or '%K' in col_upper):
-                return series
-            elif indicator_lower == 'supertrend' and ('SUPERT' in col_upper) and ('d' not in col_upper):
-                return series
-            elif indicator_lower == 'kc' and ('KCB' in col_upper or 'MID' in col_upper):
-                return series
-            elif indicator_lower == 'donchian' and ('DCM' in col_upper or 'MID' in col_upper):
-                return series
-            elif indicator_lower == 'adx' and ('ADX' in col_upper) and ('DMP' not in col_upper) and ('DMN' not in col_upper):
-                return series
-            elif indicator_lower == 'aroon' and ('AROONU' in col_upper):
-                return series
-            elif indicator_lower == 'adosc' and ('ADOSC' in col_upper):
-                return series
-            elif indicator_lower == 'kvo' and ('KVO' in col_upper) and ('S' not in col_upper):
-                return series
-            elif indicator_lower == 'ichimoku' and ('ISA' in col_upper):
-                return series
+            mapped_key: Optional[str] = None
 
-        # Last resort: return first numeric column with non-NaN values
-        for col in result_df.columns:
-            if pd.api.types.is_numeric_dtype(result_df[col]):
-                series = result_df[col]
+            # ── MACD ──────────────────────────────────────────────────────────
+            if ind == "macd":
+                if col_u.startswith("MACDS"):
+                    mapped_key = "SIGNAL"
+                elif col_u.startswith("MACDH"):
+                    mapped_key = "HIST"
+                elif col_u.startswith("MACD"):
+                    mapped_key = "MACD"
+
+            # ── Stochastic ────────────────────────────────────────────────────
+            elif ind == "stoch":
+                if col_u.startswith("STOCHD"):
+                    mapped_key = "D"
+                elif col_u.startswith("STOCHK"):
+                    mapped_key = "K"
+
+            # ── StochRSI ──────────────────────────────────────────────────────
+            elif ind == "stochrsi":
+                if col_u.startswith("STOCHRSID"):
+                    mapped_key = "D"
+                elif col_u.startswith("STOCHRSIK"):
+                    mapped_key = "K"
+
+            # ── KVO ───────────────────────────────────────────────────────────
+            elif ind == "kvo":
+                if col_u.startswith("KVOS"):
+                    mapped_key = "SIGNAL"
+                elif col_u.startswith("KVO"):
+                    mapped_key = "KVO"
+
+            # ── ADX ───────────────────────────────────────────────────────────
+            elif ind == "adx":
+                if col_u.startswith("DMP"):
+                    mapped_key = "PLUS_DI"
+                elif col_u.startswith("DMN"):
+                    mapped_key = "MINUS_DI"
+                elif col_u.startswith("ADX"):
+                    mapped_key = "ADX"
+
+            # ── DM (Directional Movement) ─────────────────────────────────────
+            elif ind == "dm":
+                if col_u.startswith("DMN"):
+                    mapped_key = "MINUS_DM"
+                elif col_u.startswith("DMP"):
+                    mapped_key = "PLUS_DM"
+
+            # ── Aroon ─────────────────────────────────────────────────────────
+            elif ind == "aroon":
+                if col_u.startswith("AROOND"):
+                    mapped_key = "AROON_DOWN"
+                elif col_u.startswith("AROONU"):
+                    mapped_key = "AROON_UP"
+
+            # ── Supertrend ────────────────────────────────────────────────────
+            elif ind == "supertrend":
+                if col_u.startswith("SUPERTD"):
+                    mapped_key = "DIRECTION"
+                elif col_u.startswith("SUPERTL"):
+                    mapped_key = "LONG"
+                elif col_u.startswith("SUPERTS"):
+                    mapped_key = "SHORT"
+                elif col_u.startswith("SUPERT"):
+                    mapped_key = "TREND"
+
+            # ── Ichimoku ──────────────────────────────────────────────────────
+            elif ind == "ichimoku":
+                if col_u.startswith("ISA"):
+                    mapped_key = "ISA"
+                elif col_u.startswith("ISB"):
+                    mapped_key = "ISB"
+                elif col_u.startswith("ITS"):
+                    mapped_key = "ITS"
+                elif col_u.startswith("IKS"):
+                    mapped_key = "IKS"
+                elif col_u.startswith("ICS"):
+                    mapped_key = "ICS"
+
+            # ── Bollinger Bands ───────────────────────────────────────────────
+            elif ind == "bbands":
+                if col_u.startswith("BBU"):
+                    mapped_key = "UPPER"
+                elif col_u.startswith("BBL"):
+                    mapped_key = "LOWER"
+                elif col_u.startswith("BBB"):
+                    mapped_key = "BANDWIDTH"
+                elif col_u.startswith("BBP"):
+                    mapped_key = "PERCENT"
+                elif col_u.startswith("BBM"):
+                    mapped_key = "MIDDLE"
+
+            # ── Keltner Channel ───────────────────────────────────────────────
+            elif ind == "kc":
+                if col_u.startswith("KCU"):
+                    mapped_key = "UPPER"
+                elif col_u.startswith("KCL"):
+                    mapped_key = "LOWER"
+                elif col_u.startswith("KCB") or col_u.startswith("KCM"):
+                    mapped_key = "MIDDLE"
+
+            # ── Donchian Channel ──────────────────────────────────────────────
+            elif ind == "donchian":
+                if col_u.startswith("DCU"):
+                    mapped_key = "UPPER"
+                elif col_u.startswith("DCL"):
+                    mapped_key = "LOWER"
+                elif col_u.startswith("DCM"):
+                    mapped_key = "MIDDLE"
+
+            # ── ADOSC ─────────────────────────────────────────────────────────
+            elif ind == "adosc":
+                if col_u.startswith("ADOSC"):
+                    mapped_key = "ADOSC"
+                elif col_u == "AD":
+                    mapped_key = "AD"
+
+            # ── All other indicators ──────────────────────────────────────────
+            # Multi-column results from unknown indicators fall through to MAIN
+            # so the caller always gets something usable.
+            else:
+                mapped_key = "MAIN"
+
+            if mapped_key is not None:
+                # Only store the first match per key (avoid overwriting with a
+                # duplicate column from a different pandas_ta version)
+                if mapped_key not in normalised:
+                    normalised[mapped_key] = series
+
+        # ── Fallback: if nothing was mapped, return all columns as MAIN_N ─────
+        if not normalised:
+            logger.warning(
+                f"[_normalise_indicator_result] No columns matched for '{indicator}'. "
+                f"Available columns: {list(result.columns)}"
+            )
+            for i, col in enumerate(result.columns):
+                series = result[col]
                 if not series.isna().all():
-                    return series
+                    key = "MAIN" if i == 0 else f"MAIN_{i}"
+                    normalised[key] = series
 
-        return None
+        return normalised
 
     except Exception as e:
-        logger.error(f"[_extract_indicator_column] Failed for {indicator}: {e}", exc_info=True)
+        logger.error(
+            f"[_normalise_indicator_result] Failed for '{indicator}': {e}",
+            exc_info=True,
+        )
+        return {}
+
+
+# ── Default column priority per indicator ─────────────────────────────────────
+# When a rule has NO sub_col, the engine uses the first key in this list that
+# exists in the normalised dict.  For single-output indicators the dict always
+# contains only "MAIN", so the fallback at the end handles them automatically.
+_DEFAULT_SUB_COL: Dict[str, List[str]] = {
+    "macd":       ["MACD", "SIGNAL", "HIST"],
+    "stoch":      ["K", "D"],
+    "stochrsi":   ["K", "D"],
+    "kvo":        ["KVO", "SIGNAL"],
+    "adx":        ["ADX", "PLUS_DI", "MINUS_DI"],
+    "dm":         ["PLUS_DM", "MINUS_DM"],
+    "aroon":      ["AROON_UP", "AROON_DOWN"],
+    "supertrend": ["TREND", "DIRECTION", "LONG", "SHORT"],
+    "ichimoku":   ["ISA", "ISB", "ITS", "IKS", "ICS"],
+    "bbands":     ["MIDDLE", "UPPER", "LOWER", "BANDWIDTH", "PERCENT"],
+    "kc":         ["MIDDLE", "UPPER", "LOWER"],
+    "donchian":   ["MIDDLE", "UPPER", "LOWER"],
+    "adosc":      ["ADOSC", "AD"],
+}
+
+
+def _pick_default_series(
+    normalised: Dict[str, pd.Series],
+    indicator: str,
+) -> Optional[pd.Series]:
+    """
+    Pick the default (first-preference) series from a normalised dict when
+    no sub_col was specified in the rule.
+
+    For single-output indicators normalised always contains {"MAIN": series},
+    which is returned directly.  For multi-output indicators the priority list
+    in _DEFAULT_SUB_COL is used.
+    """
+    try:
+        # Single-output fast path
+        if "MAIN" in normalised:
+            return normalised["MAIN"]
+
+        # Multi-output: use priority order
+        priority = _DEFAULT_SUB_COL.get(indicator.lower(), [])
+        for key in priority:
+            if key in normalised:
+                return normalised[key]
+
+        # Last resort: return whatever is first
+        if normalised:
+            return next(iter(normalised.values()))
+
+        return None
+    except Exception as e:
+        logger.error(f"[_pick_default_series] Failed for '{indicator}': {e}", exc_info=True)
         return None
 
 
@@ -501,25 +657,22 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
                 logger.debug(f"Indicator {indicator} returned None - insufficient data during warmup")
                 return None
 
-            # Extract appropriate column from multi-column result
-            if isinstance(result, pd.DataFrame):
-                series = _extract_indicator_column(result, indicator, params)
+            # Normalise the raw result into stable keys, then pick the default
+            # column.  For multi-output indicators this returns e.g.
+            # {"MACD": series, "SIGNAL": series, "HIST": series} and we pick
+            # the first-preference key.  For single-output indicators the dict
+            # contains just {"MAIN": series}.
+            if isinstance(result, (pd.DataFrame, pd.Series)):
+                normalised = _normalise_indicator_result(result, indicator, params)
+                if not normalised:
+                    logger.debug(f"Indicator {indicator} returned all NaN values - still in warmup period")
+                    return None
+                series = _pick_default_series(normalised, indicator)
                 if series is not None and not series.isna().all():
-                    series = series.reindex(df.index)
-                    return series
+                    return series.reindex(df.index)
                 else:
                     logger.debug(f"Indicator {indicator} returned all NaN values - still in warmup period")
                     return None
-
-            elif isinstance(result, pd.Series):
-                if not result.isna().all():
-                    # Reindex to match original DataFrame index
-                    result = result.reindex(df.index)
-                    return result
-                else:
-                    logger.debug(f"Indicator {indicator} returned all NaN values - still in warmup period")
-                    return None
-
             else:
                 logger.warning(f"Unexpected result type from {indicator}: {type(result)}")
                 return None
@@ -542,38 +695,45 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
         return None
 
 
-def _compute_indicator_raw(df: pd.DataFrame, indicator: str,
-                           params: Dict[str, Any]) -> Optional[pd.DataFrame]:
+def _compute_indicator_normalised(
+    df: pd.DataFrame,
+    indicator: str,
+    params: Dict[str, Any],
+) -> Dict[str, pd.Series]:
     """
-    Like _compute_indicator but returns the *raw* DataFrame (or Series) from
-    pandas_ta without picking a specific column.  Used by _resolve_side when
-    sub_col is specified so we can extract any sub-column after the fact.
+    Compute an indicator and return the full normalised dict of stable-key →
+    pd.Series mappings.  Replaces the old _compute_indicator_raw /
+    _extract_sub_column pair.
+
+    Used by _resolve_side when a rule specifies sub_col so every output
+    column of a multi-output indicator is available for selection.
 
     Args:
-        df: OHLCV DataFrame
+        df:        OHLCV DataFrame
         indicator: Indicator name
-        params: Indicator parameters
+        params:    Indicator parameters (merged with defaults by the caller)
 
     Returns:
-        Optional[pd.DataFrame | pd.Series]: Raw result from pandas_ta, or None
+        Dict[str, pd.Series]: e.g. {"MACD": s, "SIGNAL": s, "HIST": s}
+                              or   {"MAIN": s} for single-output indicators
+                              or   {} on failure / insufficient data
     """
     try:
         if ta is None or df is None or df.empty:
-            return None
+            return {}
 
         _defaults = INDICATOR_DEFAULTS.get(indicator.lower(), {})
         params = {**_defaults, **params} if params else dict(_defaults)
 
         required_cols = _get_required_columns(indicator)
-        missing_cols = [c for c in required_cols if c not in df.columns]
-        if missing_cols:
-            return None
+        if any(c not in df.columns for c in required_cols):
+            return {}
 
         min_periods = _get_min_periods(indicator, params)
         if len(df) < min_periods:
-            return None
+            return {}
 
-        # Coerce types using the same logic as _compute_indicator
+        # Coerce types (same logic as _compute_indicator)
         _coerced: Dict[str, Any] = {}
         for _k, _v in params.items():
             _dv = _defaults.get(_k)
@@ -583,7 +743,7 @@ def _compute_indicator_raw(df: pd.DataFrame, indicator: str,
             if isinstance(_v, str):
                 try:
                     if isinstance(_dv, bool):
-                        _coerced[_k] = _v.lower().strip() in ('true', '1', 'yes', 'on', 'y', 't')
+                        _coerced[_k] = _v.lower().strip() in ("true", "1", "yes", "on", "y", "t")
                     elif isinstance(_dv, int):
                         _coerced[_k] = int(float(_v))
                     elif isinstance(_dv, float):
@@ -599,7 +759,7 @@ def _compute_indicator_raw(df: pd.DataFrame, indicator: str,
         ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
         method = getattr(ta, ind_name, None)
         if not method:
-            return None
+            return {}
 
         kwargs: Dict[str, Any] = {}
         for col in required_cols:
@@ -609,77 +769,24 @@ def _compute_indicator_raw(df: pd.DataFrame, indicator: str,
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
         result = method(**kwargs)
-        return result
+        if result is None:
+            return {}
+
+        normalised = _normalise_indicator_result(result, indicator, params)
+
+        # Reindex all series to match the input df
+        return {
+            k: s.reindex(df.index)
+            for k, s in normalised.items()
+            if not s.isna().all()
+        }
 
     except Exception as e:
-        logger.error(f"[_compute_indicator_raw] Failed for {indicator}: {e}", exc_info=True)
-        return None
-
-
-def _extract_sub_column(raw_result, indicator: str, params: Dict[str, Any],
-                        sub_col: str) -> Optional[pd.Series]:
-    """
-    Extract a specific named sub-column (e.g. 'SIGNAL', 'HIST') from a raw
-    pandas_ta result DataFrame.
-
-    The sub_col string is matched against the column-type keys defined in
-    IndicatorColumnGenerator (e.g. 'MACD', 'SIGNAL', 'HIST' for macd;
-    'UPPER', 'MIDDLE', 'LOWER' for bbands, etc.).
-
-    Args:
-        raw_result: Raw DataFrame (or Series) from pandas_ta
-        indicator: Indicator name (e.g. 'macd')
-        params: Indicator parameters
-        sub_col: Sub-column key (case-insensitive, e.g. 'SIGNAL', 'hist')
-
-    Returns:
-        Optional[pd.Series]: The requested series, or None if not found
-    """
-    try:
-        if raw_result is None:
-            return None
-
-        sub_col_upper = sub_col.upper()
-
-        if isinstance(raw_result, pd.DataFrame):
-            # Get the expected column name from the column generator
-            col_name = get_indicator_column(indicator, params, sub_col_upper)
-            if col_name in raw_result.columns:
-                series = raw_result[col_name]
-                if not series.isna().all():
-                    return series
-
-            # Fallback: try fuzzy match on actual column names
-            for col in raw_result.columns:
-                col_u = col.upper()
-                # For MACD sub-columns: MACD line, SIGNAL line, HIST
-                if indicator.lower() == 'macd':
-                    if sub_col_upper == 'MACD' and col_u.startswith('MACD_') and 'S_' not in col_u and 'H_' not in col_u:
-                        return raw_result[col]
-                    elif sub_col_upper == 'SIGNAL' and ('MACDS_' in col_u or col_u.startswith('MACDS')):
-                        return raw_result[col]
-                    elif sub_col_upper in ('HIST', 'HISTOGRAM') and ('MACDH_' in col_u or col_u.startswith('MACDH')):
-                        return raw_result[col]
-                else:
-                    # Generic: check if sub_col appears in the column name
-                    if sub_col_upper in col_u:
-                        series = raw_result[col]
-                        if not series.isna().all():
-                            return series
-
-            logger.warning(f"[_extract_sub_column] sub_col='{sub_col}' not found in {list(raw_result.columns)} for {indicator}")
-            return None
-
-        elif isinstance(raw_result, pd.Series):
-            # Single-series result — sub_col is ignored (only one column exists)
-            logger.debug(f"[_extract_sub_column] {indicator} returned a Series, ignoring sub_col='{sub_col}'")
-            return raw_result if not raw_result.isna().all() else None
-
-        return None
-
-    except Exception as e:
-        logger.error(f"[_extract_sub_column] Failed for {indicator} sub_col={sub_col}: {e}", exc_info=True)
-        return None
+        logger.error(
+            f"[_compute_indicator_normalised] Failed for '{indicator}': {e}",
+            exc_info=True,
+        )
+        return {}
 
 
 def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, Any]) -> Optional[pd.Series]:
@@ -691,10 +798,14 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
         - Column: Direct column from DataFrame
         - Indicator: Computed technical indicator
 
+    The cache stores normalised dicts (Dict[str, pd.Series]) under a base key
+    so every sub-column of a multi-output indicator is computed only once and
+    all sub_col selections share the same underlying computation.
+
     Args:
         df: OHLCV DataFrame
         side_def: Side definition dictionary
-        cache: Cache for computed indicators to avoid recalculation
+        cache: Indicator cache (base_key → Dict[str, Series])
 
     Returns:
         Optional[pd.Series]: Series of values, or None if resolution fails
@@ -735,60 +846,59 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
                 logger.warning(f"Error processing column {col}: {e}")
                 return None
 
-        # Indicator type
+        # ── Indicator type ─────────────────────────────────────────────────────
         indicator = side_def.get("indicator", "").lower()
         if not indicator:
             logger.warning("Indicator side definition missing 'indicator' field")
             return None
 
-        # Merge saved params with defaults — dict.get() returns {} when the
-        # key exists but is empty, so the fallback never fires without this.
         _saved = side_def.get("params", {})
         _defs  = INDICATOR_DEFAULTS.get(indicator, {})
         params = {**_defs, **_saved} if _saved else dict(_defs)
         shift = side_def.get("shift", 0)
-
-        # sub_col lets a rule pick a specific output column from a multi-output
-        # indicator.  e.g. for MACD: sub_col="MACD" → line, sub_col="SIGNAL" →
-        # signal line, sub_col="HIST" → histogram.  Without sub_col the engine
-        # falls back to the indicator's default column (always the first/main one),
-        # which caused both LHS and RHS of a MACD crossover rule to resolve to the
-        # same MACD line and therefore always compare a value to itself.
         sub_col = side_def.get("sub_col", None)
 
-        # Create cache key — include sub_col so the same indicator with different
-        # sub_col values gets stored separately in the cache.
+        # Build cache key for the normalised dict (shared across all sub_cols)
         try:
-            cache_key = f"{indicator}_{json.dumps(params, sort_keys=True)}_{shift}"
-        except Exception as e:
-            logger.warning(f"Failed to create cache key: {e}")
-            cache_key = f"{indicator}_{str(params)}_{shift}"
+            base_cache_key = f"__norm_{indicator}_{json.dumps(params, sort_keys=True)}"
+        except Exception:
+            base_cache_key = f"__norm_{indicator}_{str(params)}"
 
-        # The raw computed result (all columns) lives under the base key.
-        # We cache it once and then extract the desired sub-column.
-        raw_cache_key = f"__raw_{indicator}_{json.dumps(params, sort_keys=True) if True else str(params)}"
+        # Compute and cache the full normalised dict once per indicator+params
+        if base_cache_key not in cache:
+            cache[base_cache_key] = _compute_indicator_normalised(df, indicator, params)
 
+        normalised: Dict[str, pd.Series] = cache.get(base_cache_key) or {}
+
+        if not normalised:
+            logger.debug(f"[_resolve_side] No normalised result for '{indicator}' — "
+                         "insufficient data or computation failed")
+            return None
+
+        # Select the requested sub-column (or the default for this indicator)
         if sub_col is not None:
-            # We need access to the raw DataFrame result to pick a specific column.
-            # Compute and cache the full result separately.
-            if raw_cache_key not in cache:
-                cache[raw_cache_key] = _compute_indicator_raw(df, indicator, params)
-
-            raw_result = cache.get(raw_cache_key)
-            if raw_result is None:
-                return None
-
-            sub_cache_key = f"{cache_key}_sub_{sub_col}"
-            if sub_cache_key not in cache:
-                cache[sub_cache_key] = _extract_sub_column(raw_result, indicator, params, sub_col)
-
-            series = cache.get(sub_cache_key)
+            sub_key = sub_col.upper()
+            series = normalised.get(sub_key)
+            if series is None:
+                logger.warning(
+                    f"[_resolve_side] sub_col='{sub_col}' not in normalised keys "
+                    f"{list(normalised.keys())} for '{indicator}' — "
+                    f"falling back to default column"
+                )
+                series = _pick_default_series(normalised, indicator)
         else:
-            if cache_key not in cache:
-                cache[cache_key] = _compute_indicator(df, indicator, params)
-            series = cache.get(cache_key)
+            series = _pick_default_series(normalised, indicator)
 
-        if series is not None and shift > 0:
+        if series is None:
+            return None
+
+        # Cache the individual series so _compute_indicator() callers that
+        # don't use sub_col still get a hit on the plain key.
+        plain_key = f"{indicator}_{json.dumps(params, sort_keys=True) if True else str(params)}_{shift}"
+        if plain_key not in cache and sub_col is None:
+            cache[plain_key] = series
+
+        if shift > 0:
             series = series.shift(shift)
 
         return series

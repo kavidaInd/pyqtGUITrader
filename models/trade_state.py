@@ -56,7 +56,7 @@ ensures:
 The `current_index_data` field is kept for backward compatibility but should
 be considered deprecated. Use CandleStoreManager to access candle data instead.
 
-Version: 2.3.0 (Removed Candle dependency, integrated with CandleStoreManager)
+Version: 2.4.0 (Fixed option chain and DataFrame getters)
 """
 
 import copy
@@ -70,9 +70,6 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import pandas as pd
 
 from BaseEnums import STOP
-
-# IMPORTANT: Removed import of outdated Candle class
-# from models.Candle import Candle  # NO LONGER USED
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -162,6 +159,7 @@ class TradeState:
         - Snapshot methods provide atomic, consistent views of related fields
         - I/O is performed outside locks to minimize contention
         - update_from_dict() safely restores state from snapshots
+        - Dedicated update methods for dictionary fields to avoid copy issues
 
     Quick-start
     -----------
@@ -184,6 +182,9 @@ class TradeState:
 
         # Restore state from backtest
         state.update_from_dict(saved_snapshot)
+
+        # Update option chain (use dedicated method, not direct assignment)
+        state.update_option_chain_symbol("NSE:SYMBOL", {"ltp": 100, "ask": 101, "bid": 99})
     """
 
     # Singleton instance variables
@@ -233,7 +234,7 @@ class TradeState:
 
                 # ── Candle snapshots (DEPRECATED - use CandleStore) ─────────
                 # Kept for backward compatibility but should not be used
-                self._current_index_data: Optional[Dict[str, Any]] = None  # Changed from Candle()
+                self._current_index_data: Optional[Dict[str, Any]] = None
                 self._current_put_data: Optional[pd.DataFrame] = None
                 self._current_call_data: Optional[pd.DataFrame] = None
 
@@ -318,8 +319,6 @@ class TradeState:
 
                 # ── Misc market state ────────────────────────────────────────
                 self._market_trend: Optional[int] = None
-                self._supertrend_reset: Optional[Dict[str, Any]] = None
-                self._b_band: Optional[Dict[str, Any]] = None
                 self._all_symbols: List[str] = []
                 self._option_price_update: Optional[bool] = None
                 self._calculated_pcr: Optional[float] = None
@@ -410,7 +409,7 @@ class TradeState:
 
     def _set(self, attr: str, value: Any) -> None:
         """
-        Thread-safe set with error handling.
+        Thread-safe set with error handling and debug logging.
 
         Args:
             attr: Attribute name to set
@@ -418,7 +417,13 @@ class TradeState:
         """
         try:
             with self._lock:
+                old_value = object.__getattribute__(self, attr) if hasattr(self, attr) else None
                 object.__setattr__(self, attr, value)
+
+                # Log significant changes (debug level)
+                if logger.isEnabledFor(logging.DEBUG):
+                    if old_value != value:
+                        logger.debug(f"State update: {attr} = {value} (was: {old_value})")
         except AttributeError as e:
             logger.error(f"[_set] Attribute {attr} not found: {e}", exc_info=True)
         except Exception as e:
@@ -557,8 +562,18 @@ class TradeState:
 
         DEPRECATED: This field is kept for backward compatibility.
         Use CandleStoreManager to access option data instead.
+
+        Returns a read-only copy to prevent external mutation.
         """
-        return self._get("_current_put_data")
+        try:
+            with self._lock:
+                if self._current_put_data is None:
+                    return None
+                # Return a copy to prevent external mutation
+                return self._current_put_data.copy()
+        except Exception as e:
+            logger.error(f"[current_put_data getter] Failed: {e}", exc_info=True)
+            return None
 
     @current_put_data.setter
     def current_put_data(self, value: Optional[pd.DataFrame]) -> None:
@@ -577,8 +592,18 @@ class TradeState:
 
         DEPRECATED: This field is kept for backward compatibility.
         Use CandleStoreManager to access option data instead.
+
+        Returns a read-only copy to prevent external mutation.
         """
-        return self._get("_current_call_data")
+        try:
+            with self._lock:
+                if self._current_call_data is None:
+                    return None
+                # Return a copy to prevent external mutation
+                return self._current_call_data.copy()
+        except Exception as e:
+            logger.error(f"[current_call_data getter] Failed: {e}", exc_info=True)
+            return None
 
     @current_call_data.setter
     def current_call_data(self, value: Optional[pd.DataFrame]) -> None:
@@ -647,7 +672,21 @@ class TradeState:
     @derivative_current_price.setter
     def derivative_current_price(self, value: float) -> None:
         """Set current derivative price."""
-        self._set("_derivative_current_price", value)
+        try:
+            if value is None:
+                logger.warning("Attempted to set derivative_current_price to None")
+                return
+
+            # Convert to float if possible
+            try:
+                float_val = float(value)
+            except (ValueError, TypeError):
+                logger.error(f"Cannot convert {value} to float")
+                return
+
+            self._set("_derivative_current_price", float_val)
+        except Exception as e:
+            logger.error(f"[derivative_current_price setter] Failed: {e}", exc_info=True)
 
     @property
     def current_price(self) -> Optional[float]:
@@ -767,8 +806,7 @@ class TradeState:
 
     # ------------------------------------------------------------------
     # DataFrames (DEPRECATED - use CandleStore)
-    # Returned as the actual reference (DataFrames should be treated as
-    # read-only by callers; the setter replaces under the lock).
+    # Returned as copies to prevent external mutation.
     # ------------------------------------------------------------------
 
     @property
@@ -777,8 +815,18 @@ class TradeState:
         Historical OHLC data for derivative.
 
         DEPRECATED: Use CandleStoreManager.get_store(symbol).resample(minutes) instead.
+
+        Returns a read-only copy to prevent external mutation.
         """
-        return self._get("_derivative_history_df")
+        try:
+            with self._lock:
+                if self._derivative_history_df is None:
+                    return None
+                # Return a copy to prevent external mutation
+                return self._derivative_history_df.copy()
+        except Exception as e:
+            logger.error(f"[derivative_history_df getter] Failed: {e}", exc_info=True)
+            return None
 
     @derivative_history_df.setter
     def derivative_history_df(self, value: Optional[pd.DataFrame]) -> None:
@@ -790,7 +838,7 @@ class TradeState:
         if value is not None and not isinstance(value, pd.DataFrame):
             logger.error(
                 f"[TradeState] derivative_history_df setter received unexpected type "
-                f"{type(value).__name__!r} (value={str(value)!r:.80}); storing None instead"
+                f"{type(value).__name__!r}; storing None instead"
             )
             value = None
         self._set("_derivative_history_df", value)
@@ -801,8 +849,18 @@ class TradeState:
         Historical OHLC data for options.
 
         DEPRECATED: Use CandleStoreManager.get_store(symbol).resample(minutes) instead.
+
+        Returns a read-only copy to prevent external mutation.
         """
-        return self._get("_option_history_df")
+        try:
+            with self._lock:
+                if self._option_history_df is None:
+                    return None
+                # Return a copy to prevent external mutation
+                return self._option_history_df.copy()
+        except Exception as e:
+            logger.error(f"[option_history_df getter] Failed: {e}", exc_info=True)
+            return None
 
     @option_history_df.setter
     def option_history_df(self, value: Optional[pd.DataFrame]) -> None:
@@ -1479,44 +1537,6 @@ class TradeState:
         self._set("_market_trend", value)
 
     @property
-    def supertrend_reset(self) -> Optional[Dict[str, Any]]:
-        """Supertrend reset state (shallow copy)."""
-        try:
-            with self._lock:
-                return copy.copy(self._supertrend_reset) if self._supertrend_reset else None
-        except Exception as e:
-            logger.error(f"[supertrend_reset getter] Failed: {e}", exc_info=True)
-            return None
-
-    @supertrend_reset.setter
-    def supertrend_reset(self, value: Optional[Dict[str, Any]]) -> None:
-        """Set supertrend reset state."""
-        try:
-            with self._lock:
-                self._supertrend_reset = value
-        except Exception as e:
-            logger.error(f"[supertrend_reset setter] Failed: {e}", exc_info=True)
-
-    @property
-    def b_band(self) -> Optional[Dict[str, Any]]:
-        """Bollinger Band values (shallow copy)."""
-        try:
-            with self._lock:
-                return copy.copy(self._b_band) if self._b_band else None
-        except Exception as e:
-            logger.error(f"[b_band getter] Failed: {e}", exc_info=True)
-            return None
-
-    @b_band.setter
-    def b_band(self, value: Optional[Dict[str, Any]]) -> None:
-        """Set Bollinger Band values."""
-        try:
-            with self._lock:
-                self._b_band = value
-        except Exception as e:
-            logger.error(f"[b_band setter] Failed: {e}", exc_info=True)
-
-    @property
     def all_symbols(self) -> List[str]:
         """List of all subscribed symbols (shallow copy)."""
         try:
@@ -1591,12 +1611,20 @@ class TradeState:
 
     @property
     def option_chain(self) -> Dict[str, Any]:
-        """Option chain data (bid/ask for calculating mid-price)."""
+        """
+        Option chain data (bid/ask for calculating mid-price).
+
+        IMPORTANT: This returns a DEEP COPY for external use.
+        For internal updates, use the dedicated update methods.
+        """
         try:
             with self._lock:
                 # Use object.__getattribute__ to bypass property getter
                 chain = object.__getattribute__(self, "_option_chain")
-                return copy.copy(chain) if chain else {}
+                if chain:
+                    # Return a deep copy to prevent external mutation
+                    return copy.deepcopy(chain)
+                return {}
         except AttributeError:
             # If _option_chain doesn't exist yet, return empty dict
             return {}
@@ -1609,13 +1637,82 @@ class TradeState:
         """Set option chain data."""
         try:
             with self._lock:
-                # Use object.__setattr__ to bypass property setter
+                # Store the original, not a copy
                 object.__setattr__(self, "_option_chain", value)
         except AttributeError:
             # If _option_chain doesn't exist yet, create it
             object.__setattr__(self, "_option_chain", value)
         except Exception as e:
             logger.error(f"[option_chain setter] Failed: {e}", exc_info=True)
+
+    def update_option_chain_symbol(self, symbol: str, data: Dict[str, Optional[float]]) -> bool:
+        """
+        Update a single symbol in the option chain.
+        This avoids copying the entire dictionary.
+
+        Args:
+            symbol: The symbol to update
+            data: Dictionary with ltp, ask, bid values
+
+        Returns:
+            bool: True if updated, False if symbol not found
+        """
+        try:
+            with self._lock:
+                if symbol in self._option_chain:
+                    self._option_chain[symbol] = data
+                    logger.debug(f"Updated option chain for {symbol}: {data}")
+                    return True
+                else:
+                    logger.debug(f"Symbol {symbol} not in option chain")
+                    return False
+        except Exception as e:
+            logger.error(f"[update_option_chain_symbol] Failed: {e}", exc_info=True)
+            return False
+
+    def update_option_chain_batch(self, updates: Dict[str, Dict[str, Optional[float]]]) -> int:
+        """
+        Update multiple symbols in the option chain atomically.
+
+        Args:
+            updates: Dictionary mapping symbol -> {ltp, ask, bid}
+
+        Returns:
+            int: Number of symbols successfully updated
+        """
+        try:
+            with self._lock:
+                updated = 0
+                for symbol, data in updates.items():
+                    if symbol in self._option_chain:
+                        self._option_chain[symbol] = data
+                        updated += 1
+                if updated > 0:
+                    logger.debug(f"Batch updated {updated} symbols in option chain")
+                return updated
+        except Exception as e:
+            logger.error(f"[update_option_chain_batch] Failed: {e}", exc_info=True)
+            return 0
+
+    def get_option_chain_symbol(self, symbol: str) -> Optional[Dict[str, Optional[float]]]:
+        """
+        Get data for a specific symbol from the option chain.
+
+        Args:
+            symbol: The symbol to retrieve
+
+        Returns:
+            Optional[Dict]: Symbol data or None if not found
+        """
+        try:
+            with self._lock:
+                if symbol in self._option_chain:
+                    # Return a copy to prevent mutation
+                    return copy.copy(self._option_chain[symbol])
+                return None
+        except Exception as e:
+            logger.error(f"[get_option_chain_symbol] Failed: {e}", exc_info=True)
+            return None
 
     # ------------------------------------------------------------------
     # Dynamic signal result
@@ -2095,7 +2192,7 @@ class TradeState:
                         private_key = f"_{key}"
                         if hasattr(self, private_key):
                             # Skip DataFrame summary strings produced by get_snapshot()
-                            # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)").
+                            # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)
                             # These are human-readable representations, not real DataFrames,
                             # and must not be written back into DataFrame-typed attributes.
                             existing = getattr(self, private_key, _MISSING := object())
@@ -2116,10 +2213,10 @@ class TradeState:
                             logger.debug(f"[update_from_dict] Attribute {key} not found - skipping")
                             skipped_count += 1
 
-                logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
+                    logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
 
         except Exception as e:
-            logger.error(f"[update_from_dict] Failed: {e}", exc_info=True)
+                logger.error(f"[update_from_dict] Failed: {e}", exc_info=True)
 
     # ==================================================================
     # ATOMIC RESET
@@ -2265,8 +2362,6 @@ class TradeState:
 
                 # Clear dictionaries
                 self._current_order_id.clear()
-                self._supertrend_reset = None
-                self._b_band = None
                 self._option_signal_result = None
 
                 # Reset to defaults

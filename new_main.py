@@ -9,7 +9,9 @@ import logging.handlers
 import queue
 import threading
 import time
+from datetime import datetime
 from typing import Optional, Any, Dict
+from threading import Timer
 
 import pandas as pd
 
@@ -146,6 +148,12 @@ class TradingApp:
             self.should_stop = False
             self._stop_event = threading.Event()
 
+            # Add market status tracking
+            self._market_status_check_interval = 60  # Check market status every 60 seconds
+            self._last_market_status_check = 0
+            self._market_is_open = None  # None = unknown, True/False = known
+            self._backtest_mode = self._is_backtest_mode()
+
             logger.info("TradingApp initialized successfully with all features")
 
         except Exception as e:
@@ -180,6 +188,12 @@ class TradingApp:
         self._stop_event = threading.Event()
         self._cleanup_done = False
         self._token_expired_error = None  # Set by thread-pool workers on TokenExpiredError
+
+        # Market status tracking
+        self._market_status_check_interval = 60
+        self._last_market_status_check = 0
+        self._market_is_open = None
+        self._backtest_mode = False
 
     def _apply_trading_mode_to_executor(self) -> None:
         """
@@ -224,6 +238,45 @@ class TradingApp:
                 return False
             return not self.trading_mode_setting.is_live()
         except Exception:
+            return False
+
+    def _is_backtest_mode(self) -> bool:
+        """Check if we're in backtest mode."""
+        if self.trading_mode_setting is None:
+            return False
+        return getattr(self.trading_mode_setting, 'mode', '')== 'BACKTEST'
+
+    def _check_market_status(self) -> bool:
+        """
+        Check if market is open, with caching to avoid repeated checks.
+        Returns True if market is open, False otherwise.
+        """
+        try:
+            # In backtest mode, always return True (simulate market open)
+            if self._backtest_mode:
+                return True
+
+            now = time.time()
+
+            # Refresh cache periodically
+            if (self._last_market_status_check == 0 or
+                    now - self._last_market_status_check > self._market_status_check_interval):
+
+                # Use broker's market status check
+                if hasattr(self, 'broker') and self.broker:
+                    self._market_is_open = self.broker.is_market_open()
+                else:
+                    # Fallback to Utils
+                    from Utils.Utils import Utils
+                    self._market_is_open = Utils.is_market_open()
+
+                self._last_market_status_check = now
+                logger.debug(f"Market status checked: {'OPEN' if self._market_is_open else 'CLOSED'}")
+
+            return self._market_is_open if self._market_is_open is not None else False
+
+        except Exception as e:
+            logger.error(f"Error checking market status: {e}")
             return False
 
     def _create_signal_engine(self) -> DynamicSignalEngine:
@@ -322,10 +375,66 @@ class TradingApp:
         except Exception as e:
             logger.error(f"[TradingApp.initialize_market_state] Failed: {e!r}", exc_info=True)
 
+    def _schedule_market_open_connection(self):
+        """Schedule WebSocket connection for when market opens."""
+        try:
+            # Skip in backtest mode
+            if self._backtest_mode:
+                return
+
+            # Calculate time until market opens
+            now = datetime.now()
+            market_open = self.broker.get_market_start_time() if hasattr(self.broker, 'get_market_start_time') else None
+
+            if market_open and market_open > now:
+                wait_seconds = (market_open - now).total_seconds()
+
+                # Don't wait more than 12 hours
+                if 0 < wait_seconds < 43200:  # 12 hours max
+                    logger.info(f"Scheduling WebSocket connection in {wait_seconds:.0f} seconds (at market open)")
+                    Timer(wait_seconds, self._connect_at_market_open).start()
+                    return
+
+            # If we can't schedule, just retry after a reasonable interval
+            logger.info("Scheduling WebSocket connection retry in 5 minutes")
+            Timer(300, self._connect_at_market_open).start()  # Retry in 5 minutes
+
+        except Exception as e:
+            logger.error(f"Error scheduling market open connection: {e}")
+
+    def _connect_at_market_open(self):
+        """Called when market opens or on retry schedule."""
+        try:
+            if self.should_stop:
+                return
+
+            # Re-check market status
+            if self._check_market_status():
+                logger.info("Market is now open - connecting WebSocket")
+                self.subscribe_market_data()
+            else:
+                # Market still closed, reschedule
+                logger.info("Market still closed - rescheduling connection check")
+                self._schedule_market_open_connection()
+
+        except Exception as e:
+            logger.error(f"Error in scheduled connection: {e}")
+
     def subscribe_market_data(self) -> None:
         try:
-            state = state_manager.get_state()
+            # Skip WebSocket connection in backtest mode
+            if self._backtest_mode:
+                logger.info("Backtest mode - skipping WebSocket connection")
+                return
 
+            # Check if market is open before connecting
+            if not self._check_market_status():
+                logger.info("Market is closed - WebSocket connection deferred until market opens")
+                # Schedule a retry when market opens
+                self._schedule_market_open_connection()
+                return
+
+            state = state_manager.get_state()
             # Rule 6: Validate required attributes
             if state.derivative_current_price is None:
                 logger.warning("derivative_current_price is None, cannot subscribe to market data")
@@ -404,7 +513,6 @@ class TradingApp:
             if not message:
                 logger.warning("Empty message received")
                 return
-
             if not isinstance(message, dict):
                 logger.warning(f"Message is not a dict: {type(message)}")
                 return
@@ -415,8 +523,8 @@ class TradingApp:
                 return
 
             ltp = message.get("ltp")
-            ask_price = message.get("ask_price")
-            bid_price = message.get("bid_price")
+            ask_price = message.get("ask")
+            bid_price = message.get("bid")
 
             if ltp is None:
                 logger.warning(f"LTP missing for symbol {symbol}. Message: {message}")
@@ -439,12 +547,33 @@ class TradingApp:
         """
         Dedicated worker thread for Stage 2 processing.
         Processes ticks from queue and runs all monitoring/decision logic.
+        Enhanced with market status awareness.
         """
         logger.info("Stage 2 worker thread started")
+
+        # Track consecutive empty ticks for backtest/idle detection
+        empty_tick_count = 0
+        max_empty_ticks = 10  # After 10 empty ticks, slow down polling
+
         while not self.should_stop:
             try:
+                # In backtest mode, slow down processing
+                if self._backtest_mode:
+                    time.sleep(0.5)  # Backtest mode - process slower
+
                 # Wait for a tick with timeout (allows checking should_stop)
-                self._tick_queue.get(timeout=1.0)
+                tick_received = False
+                try:
+                    self._tick_queue.get(timeout=1.0)
+                    tick_received = True
+                    empty_tick_count = 0  # Reset counter on successful tick
+                except queue.Empty:
+                    empty_tick_count += 1
+
+                    # If market is closed and we're getting no ticks, slow down polling
+                    if not self._backtest_mode and not self._check_market_status() and empty_tick_count > max_empty_ticks:
+                        time.sleep(5.0)  # Sleep longer when market closed and no data
+                    continue
 
                 # Drain any queued ticks - process only the latest state once
                 drained = 0
@@ -457,6 +586,11 @@ class TradingApp:
 
                 if drained > 0:
                     logger.debug(f"Drained {drained} queued ticks")
+
+                # Skip processing if market is closed and we're not in backtest
+                if not self._backtest_mode and not self._check_market_status():
+                    logger.debug("Market closed - skipping stage 2 processing")
+                    continue
 
                 # Run Stage 2 processing
                 self._process_message_stage2()
@@ -561,15 +695,19 @@ class TradingApp:
             # Get full symbol for comparison
             full_symbol = self.symbol_full(symbol)
 
+            # Log the incoming tick for debugging
+            logger.debug(f"Tick received - Symbol: {full_symbol}, LTP: {ltp}, Ask: {ask_price}, Bid: {bid_price}")
+
             # Update derivative price
             deriv_full = self.symbol_full(state.derivative)
+            logger.debug(f"Derivative full symbol: {deriv_full}, Received symbol: {full_symbol}")
+
             if full_symbol == deriv_full:
                 old_price = state.derivative_current_price
                 state.derivative_current_price = ltp
+                logger.info(f"✅ Updated derivative price: {old_price} -> {ltp}")
 
-                if old_price != ltp:
-                    logger.debug(f"Updated {symbol} price: {old_price} -> {ltp}")
-
+                # Push tick into the derivative's CandleStore
                 try:
                     derivative = state.derivative
                     if derivative:
@@ -581,12 +719,21 @@ class TradingApp:
             # --- Option chain tick ---
             if self._option_chain_lock and hasattr(state, "option_chain"):
                 with self._option_chain_lock:
-                    if symbol in state.option_chain:
-                        state.option_chain[symbol] = {
+                    # Check if symbol exists in option_chain (exact match)
+                    if full_symbol in state.option_chain:
+                        # Update the option chain
+                        old_data = state.option_chain[full_symbol]
+                        state.update_option_chain_symbol(full_symbol, {
                             "ltp": ltp,
                             "ask": ask_price,
                             "bid": bid_price,
-                        }
+                        })
+
+                        logger.debug(f"✅ Updated option chain for {full_symbol}: LTP={ltp}")
+                    else:
+                        # Log if symbol not found in chain
+                        logger.debug(
+                            f"Symbol {full_symbol} not in option chain. Available: {list(state.option_chain.keys())}")
 
             # --- ATM option convenience state ---
             use_ask = bool(state.current_position)
@@ -594,24 +741,34 @@ class TradingApp:
             atm_put_sym = self.symbol_full(state.put_option)
             atm_call_sym = self.symbol_full(state.call_option)
 
+            logger.debug(f"ATM Call: {atm_call_sym}, ATM Put: {atm_put_sym}")
+
             if full_symbol == atm_put_sym:
                 old_put = state.put_current_close
-                state.put_current_close = ask_price if use_ask else bid_price
-                if old_put != state.put_current_close:
-                    logger.debug(f"Updated PUT price: {old_put} -> {state.put_current_close}")
+                new_value = ask_price if use_ask else bid_price
+                if new_value is not None:
+                    state.put_current_close = new_value
+                    logger.info(f"✅ Updated PUT price: {old_put} -> {new_value}")
             elif full_symbol == atm_call_sym:
                 old_call = state.call_current_close
-                state.call_current_close = ask_price if use_ask else bid_price
-                if old_call != state.call_current_close:
-                    logger.debug(f"Updated CALL price: {old_call} -> {state.call_current_close}")
+                new_value = ask_price if use_ask else bid_price
+                if new_value is not None:
+                    state.call_current_close = new_value
+                    logger.info(f"✅ Updated CALL price: {old_call} -> {new_value}")
 
             # Update current_price for open position P&L tracking
             if state.current_position:
                 cp = state.current_position
                 if cp == BaseEnums.CALL and state.call_current_close is not None:
+                    old_current = state.current_price
                     state.current_price = state.call_current_close
+                    if old_current != state.current_price:
+                        logger.debug(f"Updated current price (CALL): {old_current} -> {state.current_price}")
                 elif cp == BaseEnums.PUT and state.put_current_close is not None:
+                    old_current = state.current_price
                     state.current_price = state.put_current_close
+                    if old_current != state.current_price:
+                        logger.debug(f"Updated current price (PUT): {old_current} -> {state.current_price}")
 
         except Exception as e:
             logger.error(f"[TradingApp.update_market_state] Failed for symbol {symbol}: {e}", exc_info=True)
@@ -677,7 +834,7 @@ class TradingApp:
 
                 # Fetch data if store is empty
                 if store.is_empty():
-                    ok = store.fetch(days=5,broker_type=self.broker.broker_type)
+                    ok = store.fetch(days=5, broker_type=self.broker.broker_type)
                     if not ok or store.is_empty():
                         return None
 
@@ -1047,6 +1204,11 @@ class TradingApp:
 
             state = state_manager.get_state()
 
+            # Skip trading if market is closed (unless backtest mode)
+            if not self._backtest_mode and not self._check_market_status():
+                logger.info("Market closed - skipping trading decision")
+                return
+
             if Utils.check_sideway_time() and not state.sideway_zone_trade:
                 logger.info("Sideways period (12:00–2:00). Skipping trading decision.")
                 return
@@ -1068,7 +1230,7 @@ class TradingApp:
                     # FEATURE 6: Multi-Timeframe Filter check
                     if self.config.get('use_mtf_filter', False):
                         allowed, summary = self.mtf_filter.should_allow_entry(
-                            state.derivative, BaseEnums.CALL
+                            self.symbol_full(state.derivative), BaseEnums.CALL
                         )
                         state.last_mtf_summary = summary
                         if not allowed:
@@ -1091,7 +1253,7 @@ class TradingApp:
                     # FEATURE 6: Multi-Timeframe Filter check
                     if self.config.get('use_mtf_filter', False):
                         allowed, summary = self.mtf_filter.should_allow_entry(
-                            state.derivative, BaseEnums.PUT
+                            self.symbol_full(state.derivative), BaseEnums.PUT
                         )
                         state.last_mtf_summary = summary
                         if not allowed:
@@ -1185,12 +1347,11 @@ class TradingApp:
         except Exception as e:
             logger.error(f"🔥 Error in cancel_pending_trade: {e}", exc_info=True)
 
-    @staticmethod
-    def symbol_full(symbol: Optional[str]) -> Optional[str]:
+    def symbol_full(self, symbol: Optional[str]) -> Optional[str]:
         try:
             if not symbol:
                 return None
-            return f"NSE:{symbol}" if not symbol.startswith("NSE:") else symbol
+            return OptionUtils.get_symbol_for_broker(symbol, self.broker.broker_type)
         except Exception as e:
             logger.error(f"[symbol_full] Error processing {symbol}: {e}", exc_info=True)
             return symbol  # Return original on error
@@ -1228,7 +1389,7 @@ class TradingApp:
             # Apply trade_config settings
             if self.trade_config:
                 state.capital_reserve = getattr(self.trade_config, "capital_reserve", 0)
-                state.derivative = getattr(self.trade_config, "derivative", "")
+                state.derivative = self.symbol_full(getattr(self.trade_config, "derivative", ""))
                 state.expiry = getattr(self.trade_config, "week", "")
                 state.lot_size = getattr(self.trade_config, "lot_size", 0)
                 state.call_lookback = getattr(self.trade_config, "call_lookback", 0)

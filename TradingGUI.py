@@ -247,6 +247,10 @@ class TradingGUI(QMainWindow):
             self._connection_status = "Disconnected"
             self._last_heartbeat = datetime.now()
 
+            # Market status tracking
+            self._market_status = "UNKNOWN"  # "OPEN", "CLOSED", "UNKNOWN"
+            self._market_status_check_timer = None
+
             # Apply the active strategy immediately
             self._apply_active_strategy()
 
@@ -305,6 +309,7 @@ class TradingGUI(QMainWindow):
         self.timer_chart = None
         self.timer_app_status = None
         self.timer_connection_check = None
+        self.timer_market_status = None
         self._last_chart_fp = ""
         self._chart_update_pending = False
         self.chart_widget = None
@@ -327,6 +332,8 @@ class TradingGUI(QMainWindow):
         self._update_count = 0
         self._connection_status = "Disconnected"
         self._last_heartbeat = None
+        self._market_status = "UNKNOWN"
+        self._market_status_check_timer = None
 
     def _initialize_infrastructure(self):
         """
@@ -636,7 +643,7 @@ class TradingGUI(QMainWindow):
             self.error_occurred.emit(f"Failed to build layout: {e}")
 
     def _build_button_panel(self) -> QWidget:
-        """Build horizontal button panel below chart"""
+        """Build horizontal button panel below chart with mode-dependent visibility"""
         panel = QWidget()
         try:
             panel.setFixedHeight(70)
@@ -723,9 +730,13 @@ class TradingGUI(QMainWindow):
             self.btn_strategy.clicked.connect(self._show_strategy_picker)
             layout.addWidget(self.btn_strategy)
 
-            # Control buttons
+            # Control buttons - THESE WERE MISSING!
             self.btn_start = make_btn("▶  Start", "#238636", "#2ea043", obj_name="successBtn")
             self.btn_stop = make_btn("■  Stop", "#da3633", "#f85149", obj_name="dangerBtn")
+
+            # Add start/stop buttons to layout
+            layout.addWidget(self.btn_start)
+            layout.addWidget(self.btn_stop)
 
             # Connection status button
             self.btn_connection = QPushButton("🔌 Disconnected")
@@ -745,6 +756,12 @@ class TradingGUI(QMainWindow):
             self.btn_connection.clicked.connect(self._show_connection_monitor)
             layout.addWidget(self.btn_connection)
 
+            # Create a container for manual trading buttons
+            self.manual_buttons_container = QWidget()
+            manual_layout = QHBoxLayout(self.manual_buttons_container)
+            manual_layout.setContentsMargins(0, 0, 0, 0)
+            manual_layout.setSpacing(10)
+
             self.btn_call = make_btn("📈  Buy Call", "#1f6feb", "#388bfd")
             self.btn_put = make_btn("📉  Buy Put", "#6e40c9", "#8957e5")
             self.btn_exit = make_btn("🚪  Exit", "#9e6a03", "#d29922")
@@ -762,22 +779,25 @@ class TradingGUI(QMainWindow):
             self.btn_put.clicked.connect(lambda: self._manual_buy(BaseEnums.PUT))
             self.btn_exit.clicked.connect(self._manual_exit)
 
-            # Add buttons in order
-            layout.addWidget(self.btn_start)
-            layout.addWidget(self.btn_stop)
+            # Add manual buttons to container
+            manual_layout.addWidget(self.btn_call)
+            manual_layout.addWidget(self.btn_put)
+            manual_layout.addWidget(self.btn_exit)
+
+            # Initially hide manual buttons (default to algo mode)
+            self.manual_buttons_container.setVisible(False)
+
+            # Add stretch and manual container
             layout.addStretch()
-            layout.addWidget(self.btn_call)
-            layout.addWidget(self.btn_put)
-            layout.addWidget(self.btn_exit)
+            layout.addWidget(self.manual_buttons_container)
 
         except Exception as e:
             logger.error(f"[TradingGUI._build_button_panel] Failed: {e}", exc_info=True)
             self.error_occurred.emit(f"Failed to build button panel: {e}")
 
         return panel
-
     def _setup_timers(self):
-        """Setup all timers"""
+        """Setup all timers - enhanced with market status check."""
         try:
             # Fast timer (1 second) - for status updates
             self.timer_fast = QTimer(self)
@@ -801,6 +821,14 @@ class TradingGUI(QMainWindow):
             self.timer_connection_check.timeout.connect(self._check_connection)
             self.timer_connection_check.start(10000)
 
+            # NEW: Market status check timer (30 seconds)
+            self.timer_market_status = QTimer(self)
+            self.timer_market_status.timeout.connect(self._update_market_status)
+            self.timer_market_status.start(30000)  # Every 30 seconds
+
+            # Initial market status check
+            QTimer.singleShot(100, self._update_market_status)
+
         except Exception as e:
             logger.error(f"[TradingGUI._setup_timers] Failed: {e}", exc_info=True)
 
@@ -808,11 +836,13 @@ class TradingGUI(QMainWindow):
     def _tick_fast(self):
         """Fast timer tick - update UI"""
         try:
+            # Always refresh status panel — index price, balance etc. must
+            # update even before the trading engine is started.
+            if self.status_panel is not None:
+                self.status_panel.refresh(self.config)
+
             if self.trading_app is None:
                 return
-
-            # Use state manager to get snapshot for display
-            self.status_panel.refresh(self.config)
 
             # Update popups if they're open
             if self.stats_popup is not None and self.stats_popup.isVisible():
@@ -887,7 +917,8 @@ class TradingGUI(QMainWindow):
                 'has_position': position_snapshot.get('current_position') is not None,
                 'trade_confirmed': position_snapshot.get('current_trade_confirmed', False),
                 'last_exit_reason': position_snapshot.get('reason_to_exit'),
-                'connection_status': self._connection_status
+                'connection_status': self._connection_status,
+                'market_status': self._market_status
             }
 
             # Add position type if exists
@@ -921,6 +952,31 @@ class TradingGUI(QMainWindow):
 
         except Exception as e:
             logger.error(f"[TradingGUI._update_app_status] Failed: {e}", exc_info=True)
+
+    def _update_market_status(self):
+        """Update market status and button states accordingly."""
+        try:
+            if self.trading_app and hasattr(self.trading_app, '_check_market_status'):
+                is_open = self.trading_app._check_market_status()
+                self._market_status = "OPEN" if is_open else "CLOSED"
+            else:
+                # Fallback to Utils
+                from Utils.Utils import Utils
+                is_open = Utils.is_market_open()
+                self._market_status = "OPEN" if is_open else "CLOSED"
+
+            # Update status bar with market status
+            if self.app_status_bar:
+                self.app_status_bar.update_market_status(self._market_status)
+
+            # Update button states based on market status and mode
+            self._update_button_states()
+
+            logger.debug(f"Market status updated: {self._market_status}")
+
+        except Exception as e:
+            logger.error(f"[TradingGUI._update_market_status] Failed: {e}", exc_info=True)
+            self._market_status = "UNKNOWN"
 
     def _check_connection(self):
         """Check connection status"""
@@ -1115,24 +1171,63 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._on_timeframe_changed] Failed: {e}", exc_info=True)
 
     def _update_button_states(self):
-        """Enable/disable buttons based on app state"""
+        """Enable/disable buttons based on app state and market status."""
         try:
             # Get position snapshot
             position_snapshot = state_manager.get_position_snapshot()
             has_pos = position_snapshot.get('current_position') is not None
             manual = self.trading_mode == "manual"
 
+            # Check if we're in backtest mode
+            is_backtest = False
+            if self.trading_mode_setting:
+                is_backtest = self.trading_mode_setting.mode.value.upper() == "BACKTEST"
+
+            # Check if market is open
+            market_open = self._market_status == "OPEN"
+
+            # Base button states
             self.btn_start.setDisabled(self.app_running)
             self.btn_stop.setDisabled(not self.app_running)
 
-            if self.app_running and manual:
-                self.btn_call.setDisabled(has_pos)
-                self.btn_put.setDisabled(has_pos)
-                self.btn_exit.setDisabled(not has_pos)
+            # Show/hide manual buttons based on mode
+            if hasattr(self, 'manual_buttons_container'):
+                self.manual_buttons_container.setVisible(manual and not is_backtest)
+
+            # For backtest mode, always enable start button (no market dependency)
+            if is_backtest:
+                self.btn_start.setDisabled(self.app_running)
+                # Update start button text to indicate backtest mode
+                if not self.app_running:
+                    self.btn_start.setText("▶  Start Backtest")
+                return
+
+            # For non-backtest modes, check market status
+            if self.app_running:
+                if manual:
+                    # Manual mode - trading buttons depend on market
+                    if market_open:
+                        self.btn_call.setDisabled(has_pos)
+                        self.btn_put.setDisabled(has_pos)
+                        self.btn_exit.setDisabled(not has_pos)
+                    else:
+                        # Market closed - disable manual trading
+                        self.btn_call.setDisabled(True)
+                        self.btn_put.setDisabled(True)
+                        self.btn_exit.setDisabled(True)
+
+                        # Show tooltip explaining why buttons are disabled
+                        self.btn_call.setToolTip("Market is closed - manual trading unavailable")
+                        self.btn_put.setToolTip("Market is closed - manual trading unavailable")
+                        self.btn_exit.setToolTip("Market is closed - manual trading unavailable")
             else:
-                self.btn_call.setDisabled(True)
-                self.btn_put.setDisabled(True)
-                self.btn_exit.setDisabled(True)
+                # App not running - update start button based on market status
+                if not market_open:
+                    self.btn_start.setText("▶  Start (Market Closed)")
+                    self.btn_start.setToolTip("Market is closed - trading will start when market opens")
+                else:
+                    self.btn_start.setText("▶  Start")
+                    self.btn_start.setToolTip("Start trading engine")
 
         except AttributeError as e:
             logger.warning(f"[TradingGUI._update_button_states] Attribute error (normal during init): {e}")
@@ -1214,17 +1309,34 @@ class TradingGUI(QMainWindow):
 
     @pyqtSlot()
     def _start_app(self):
-        """Start trading engine on QThread"""
+        """Start trading engine on QThread - enhanced with market status check."""
         try:
             if self.trading_app is None:
                 logger.error("Start failed: Trading app not initialized")
                 QMessageBox.critical(self, "Error", "Trading app not initialised.")
                 return
 
+            # Check if we're in backtest mode
+            is_backtest = False
+            if self.trading_mode_setting:
+                is_backtest = self.trading_mode_setting.mode.value.upper() == "BACKTEST"
+
             # ── License gate: block LIVE mode for free / trial users ──────────
             if self._is_live_mode() and not license_manager.is_live_trading_allowed():
                 self._show_live_upgrade_dialog()
                 return
+
+            # For non-backtest modes, warn if market is closed
+            if not is_backtest and self._market_status != "OPEN":
+                reply = QMessageBox.question(
+                    self, "Market Closed",
+                    "The market is currently closed.\n\n"
+                    "The trading engine can still start but will wait for market open.\n"
+                    "Do you want to continue?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
 
             # Check if we need to login first
             if self._check_token_expired():
@@ -1259,12 +1371,16 @@ class TradingGUI(QMainWindow):
                 True
             )
             self._update_button_states()
-            self.status_updated.emit("Starting trading engine...")
+
+            if is_backtest:
+                self.status_updated.emit("Starting backtest...")
+            else:
+                self.status_updated.emit("Starting trading engine...")
 
             # Start the thread
             self.trading_thread.start()
 
-            logger.info("Trading engine thread started")
+            logger.info(f"Trading engine thread started (mode: {'BACKTEST' if is_backtest else 'LIVE/PAPER'}")
 
         except Exception as e:
             logger.error(f"[TradingGUI._start_app] Failed: {e}", exc_info=True)
@@ -1449,6 +1565,12 @@ class TradingGUI(QMainWindow):
                 logger.warning("Manual buy attempted with no trading app")
                 return
 
+            # Check market status for manual trades
+            if self._market_status != "OPEN":
+                QMessageBox.warning(self, "Market Closed",
+                                   "Cannot place manual orders when market is closed.")
+                return
+
             self.app_status_bar.update_status({'status': f'Placing {option_type} order...'}, self.trading_mode, True)
             threading.Thread(
                 target=self._threaded_manual_buy,
@@ -1482,6 +1604,12 @@ class TradingGUI(QMainWindow):
                 return
             if not self.trading_app:
                 logger.warning("Manual exit attempted with no trading app")
+                return
+
+            # Check market status for manual exits
+            if self._market_status != "OPEN":
+                QMessageBox.warning(self, "Market Closed",
+                                   "Cannot exit positions when market is closed.")
                 return
 
             self.app_status_bar.update_status({'status': 'Exiting position...'}, self.trading_mode, True)
@@ -2170,6 +2298,8 @@ class TradingGUI(QMainWindow):
                 self.timer_app_status.stop()
             if self.timer_connection_check:
                 self.timer_connection_check.stop()
+            if self.timer_market_status:
+                self.timer_market_status.stop()
 
             # Close all popups
             self._close_all_popups()
@@ -2216,7 +2346,7 @@ class TradingGUI(QMainWindow):
             logger.info("[TradingGUI] Starting cleanup")
 
             # Stop timers
-            for timer in [self.timer_fast, self.timer_chart, self.timer_app_status, self.timer_connection_check]:
+            for timer in [self.timer_fast, self.timer_chart, self.timer_app_status, self.timer_connection_check, self.timer_market_status]:
                 if timer is not None:
                     try:
                         timer.stop()
