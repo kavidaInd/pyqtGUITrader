@@ -171,6 +171,66 @@ class FyersBroker(BaseBroker):
 
     # ── Symbol formatting ────────────────────────────────────────────────────
 
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Fyers option symbol format: ``NSE:NIFTY2531825000CE``
+        (or ``NSE:NIFTY25MAR25000CE`` for monthly expiry contracts).
+
+        Fyers requires the ``NSE:`` prefix for all NFO instruments.
+        SENSEX uses ``BSE:`` prefix.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying,
+                spot_price=spot_price,
+                option_type=option_type,
+                weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[FyersBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """Fyers: ``NSE:`` prefix for NSE indices, ``BSE:`` for SENSEX."""
+        if not params:
+            return None
+        prefix = "BSE:" if params.underlying == "SENSEX" else "NSE:"
+        return f"{prefix}{params.compact_core}"
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """Build a Fyers option chain with NSE:/BSE: prefixes."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[FyersBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
     def _format_symbol(self, symbol: str) -> Optional[str]:
         """
         Format any symbol for the Fyers API.
@@ -193,6 +253,7 @@ class FyersBroker(BaseBroker):
 
     @staticmethod
     def _get_error_code(response: Any) -> int:
+        print(response)
         if isinstance(response, dict):
             try:
                 code = response.get("code", 0)
@@ -456,19 +517,66 @@ class FyersBroker(BaseBroker):
             logger.error(f"[get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             if not order_id or not self.fyers:
                 return None
+
             response = self.retry_on_failure(
                 lambda: self.fyers.orderbook({"id": order_id}),
                 context="order_status"
             )
-            return response.get("orderBook") if response else None
+
+            if not response or response.get("s") != self.OK:
+                return None
+
+            orders = response.get("orderBook", [])
+            for order in orders:
+                if str(order.get("id")) == str(order_id):
+                    status_str = str(order.get("status") or "").upper()
+                    if status_str in ("COMPLETE", "COMPLETED", "FILLED", "TRADED"):
+                        return 2
+                    if status_str in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED"):
+                        return -1
+                    # OPEN, PENDING, TRIGGER_PENDING, etc.
+                    return 1
+            return None
         except TokenExpiredError:
             raise
         except Exception as e:
-            logger.error(f"[get_current_order_status] {e!r}", exc_info=True)
+            logger.error(f"[FyersBroker.get_current_order_status] {e!r}", exc_info=True)
+            return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Fyers orderbook includes 'traded_price' for filled orders.
+        """
+        try:
+            if not broker_order_id or not self.fyers:
+                return None
+
+            response = self.retry_on_failure(
+                lambda: self.fyers.orderbook({"id": broker_order_id}),
+                context="get_fill_price"
+            )
+
+            if not response or response.get("s") != self.OK:
+                return None
+
+            orders = response.get("orderBook", [])
+            for order in orders:
+                if str(order.get("id")) == str(broker_order_id):
+                    fill_price = order.get("traded_price") or order.get("avg_price")
+                    if fill_price:
+                        return float(fill_price)
+            return None
+        except Exception as e:
+            logger.error(f"[FyersBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
     def is_connected(self) -> bool:
@@ -861,10 +969,6 @@ class FyersBroker(BaseBroker):
     def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
         """
         Normalize a Fyers tick to the unified format.
-
-        Fyers SymbolUpdate tick fields:
-            symbol, ltp, timestamp, bid_price, ask_price,
-            volume, open_price, high_price, low_price, prev_close_price, oi
         """
         try:
             if self._ws_closed or not isinstance(raw_tick, dict):
@@ -892,8 +996,8 @@ class FyersBroker(BaseBroker):
                 "symbol": symbol,
                 "ltp": float(ltp),
                 "timestamp": timestamp_str,
-                "bid": raw_tick.get("bid_price"),
-                "ask": raw_tick.get("ask_price"),
+                "bid": raw_tick.get("best_bid_price"),
+                "ask": raw_tick.get("best_ask_price"),
                 "volume": raw_tick.get("volume"),
                 "oi": raw_tick.get("oi"),
                 "open": raw_tick.get("open_price"),
@@ -902,6 +1006,6 @@ class FyersBroker(BaseBroker):
                 "close": raw_tick.get("prev_close_price"),
             }
         except Exception as e:
-            if not self._ws_closed:  # Only log if not during shutdown
+            if not self._ws_closed:
                 logger.error(f"[FyersBroker.normalize_tick] {e}", exc_info=True)
             return None

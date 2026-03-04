@@ -639,12 +639,73 @@ class AliceBlueBroker(BaseBroker):
             logger.error(f"[AliceBlueBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        AliceBlue (pya3) option symbol: bare compact core resolved to
+        a pya3 Instrument object at order/quote time via
+        ``_resolve_alice_instrument()``.
+
+        AliceBlue does not use text symbols directly in API calls — it needs
+        Instrument objects.  We return the compact core here; the broker's
+        ``_get_instrument()`` resolves it to an Instrument object when needed.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """AliceBlueBroker symbol from OptionParams."""
+        if not params:
+            return None
+        # AliceBlue: bare compact core; Instrument object resolved at order time
+        return params.compact_core
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """AliceBlue option chain as bare compact core strings."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[AliceBlueBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
     def is_connected(self) -> bool:
         try:
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -903,7 +964,7 @@ class AliceBlueBroker(BaseBroker):
         Normalize an Alice Blue pya3 tick.
 
         pya3 tick dict fields: symbol, ltp, ltq, ltt, atp,
-        volume, best_bid_price, best_ask_price,
+        volume, best_bid_price/bp1, best_ask_price/sp1,
         open, high, low, prev_close, oi.
         """
         try:
@@ -924,9 +985,6 @@ class AliceBlueBroker(BaseBroker):
                 symbol_str = f"{prefix}:{raw_symbol.tradingsymbol}"
             else:
                 if ":" not in str(raw_symbol):
-                    # BUG FIX: Was always prefixing NSE: even for NFO options/futures
-                    # ticks.  Detect the correct exchange from the symbol string using
-                    # the same suffix logic as _exchange_from_symbol.
                     import re as _re
                     bare = str(raw_symbol).upper()
                     prefix = "NFO" if _re.search(r'(CE|PE|FUT)$', bare) else "NSE"
@@ -934,12 +992,16 @@ class AliceBlueBroker(BaseBroker):
                 else:
                     symbol_str = str(raw_symbol)
 
+            # Get bid/ask with fallbacks for different field names
+            bid = raw_tick.get("best_bid_price") or raw_tick.get("bp1")
+            ask = raw_tick.get("best_ask_price") or raw_tick.get("sp1")
+
             return {
                 "symbol": symbol_str,
                 "ltp": float(ltp),
                 "timestamp": str(raw_tick.get("ltt", "")),
-                "bid": raw_tick.get("best_bid_price"),
-                "ask": raw_tick.get("best_ask_price"),
+                "bid": float(bid) if bid is not None else None,
+                "ask": float(ask) if ask is not None else None,
                 "volume": raw_tick.get("volume"),
                 "oi": raw_tick.get("oi"),
                 "open": raw_tick.get("open"),
@@ -948,7 +1010,7 @@ class AliceBlueBroker(BaseBroker):
                 "close": raw_tick.get("prev_close"),
             }
         except Exception as e:
-            if not self._ws_closed:  # Only log if not during shutdown
+            if not self._ws_closed:
                 logger.error(f"[AliceBlueBroker.normalize_tick] {e}", exc_info=True)
             return None
 
@@ -962,9 +1024,9 @@ class AliceBlueBroker(BaseBroker):
             if symbol in cache:
                 return cache[symbol]
 
-            upper = symbol.upper()
+            # Use the same exchange detection as _exchange_from_symbol
+            exchange = self._exchange_from_symbol(symbol)
             bare = symbol.split(":")[-1]
-            exchange = "NFO" if "NFO:" in upper else "NSE"
 
             inst = alice.get_instrument_by_symbol(exchange, bare)
             if inst is None and exchange == "NSE":

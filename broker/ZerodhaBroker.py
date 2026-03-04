@@ -545,20 +545,122 @@ class ZerodhaBroker(BaseBroker):
             logger.error(f"[ZerodhaBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             if not order_id or not self.kite:
                 return None
-            result = self._call(
+
+            # Get the latest state from order history
+            orders = self._call(
                 lambda: self.kite.order_history(order_id=order_id),
                 context="order_status"
             )
-            return result
+
+            if not orders:
+                return None
+
+            # The last entry is the current state
+            latest = orders[-1] if orders else None
+            if not latest:
+                return None
+
+            status_str = str(latest.get("status", "")).upper()
+            if status_str == "COMPLETE":
+                return 2
+            if status_str in ("REJECTED", "CANCELLED"):
+                return -1
+            return 1  # OPEN, PENDING, etc.
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[ZerodhaBroker.get_current_order_status] {e!r}", exc_info=True)
             return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Zerodha order history includes 'average_price' for filled orders.
+        """
+        try:
+            if not broker_order_id or not self.kite:
+                return None
+
+            orders = self._call(
+                lambda: self.kite.order_history(order_id=broker_order_id),
+                context="get_fill_price"
+            )
+
+            if not orders:
+                return None
+
+            # The last entry has the current average_price
+            latest = orders[-1] if orders else None
+            if latest and latest.get("status") == "COMPLETE":
+                return float(latest.get("average_price", 0))
+            return None
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.get_fill_price] {e!r}", exc_info=True)
+            return None
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Zerodha option symbol format: ``NFO:NIFTY2531825000CE``
+
+        Zerodha uses the ``NFO:`` exchange prefix for all F&O instruments.
+        SENSEX options use ``BFO:`` prefix (BSE F&O).
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """Zerodha: ``NFO:`` for NSE indices, ``BFO:`` for SENSEX."""
+        if not params:
+            return None
+        prefix = "BFO:" if params.underlying == "SENSEX" else "NFO:"
+        return f"{prefix}{params.compact_core}"
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """Build a Zerodha option chain with NFO:/BFO: prefixes."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[ZerodhaBroker.build_option_chain] {e}", exc_info=True)
+            return []
 
     def is_connected(self) -> bool:
         try:
@@ -615,26 +717,40 @@ class ZerodhaBroker(BaseBroker):
 
     # ── Instrument token helper ───────────────────────────────────────────────
 
+    def _load_zerodha_instruments(self):
+        """Load Zerodha instrument master and cache it."""
+        if not hasattr(self, '_instruments_df') or self._instruments_df is None:
+            try:
+                # Fetch all instruments once
+                instruments = self._call(
+                    lambda: self.kite.instruments(),
+                    context="load_instruments"
+                )
+                self._instruments_df = pd.DataFrame(instruments)
+                logger.info(f"ZerodhaBroker: loaded {len(self._instruments_df)} instruments")
+            except Exception as e:
+                logger.error(f"ZerodhaBroker: instrument load failed: {e}")
+                self._instruments_df = None
+        return self._instruments_df
+
     def _get_instrument_token(self, exchange: str, tradingsymbol: str) -> Optional[int]:
         """
         Look up Zerodha instrument token for historical data.
-        Caches results for the session to avoid repeated API calls.
+        Uses cached instrument master for efficiency.
         """
         try:
             cache_key = f"{exchange}:{tradingsymbol}"
             if cache_key in self._instrument_cache:
                 return self._instrument_cache[cache_key]
 
-            instruments = self._call(
-                lambda: self.kite.instruments(exchange=exchange),
-                context="get_instruments"
-            )
-            if instruments:
-                for inst in instruments:
-                    if inst.get("tradingsymbol") == tradingsymbol:
-                        token = inst["instrument_token"]
-                        self._instrument_cache[cache_key] = token
-                        return token
+            instruments_df = self._load_zerodha_instruments()
+            if instruments_df is not None:
+                mask = (instruments_df['exchange'] == exchange) & (instruments_df['tradingsymbol'] == tradingsymbol)
+                matches = instruments_df[mask]
+                if not matches.empty:
+                    token = int(matches.iloc[0]['instrument_token'])
+                    self._instrument_cache[cache_key] = token
+                    return token
             return None
         except Exception as e:
             logger.error(f"[ZerodhaBroker._get_instrument_token] {e}", exc_info=True)
@@ -843,7 +959,7 @@ class ZerodhaBroker(BaseBroker):
                 self._ws_ticker = None
 
             # Call on_close callback
-            if self._ws_on_close and not self._ws_closed:
+            if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
                 except Exception as e:

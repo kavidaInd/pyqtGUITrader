@@ -5,6 +5,24 @@ GUI for daily trade settings with database integration.
 
 UPDATED: Derivative selection now uses dropdown from OptionUtils constants.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
+
+FIX LOG
+-------
+- _on_derivative_changed(): New slot — auto-fills lot_size from a live NSE
+  fetch via OptionUtils.get_lot_size() whenever the derivative dropdown changes.
+
+- Week field: Disabled (and tooltip updated) for monthly-only indices
+  (BANKNIFTY, FINNIFTY, MIDCPNIFTY) because those indices have no weekly
+  contracts since SEBI circular Nov 20, 2024.
+
+- max_num_of_option: Pre-filled with per-index sensible defaults from
+  OptionUtils.get_default_max_options() when the derivative changes.
+
+- Expiry-type badge: A small read-only label next to the derivative dropdown
+  shows "Weekly + Monthly" or "Monthly Only" so the trader always knows.
+
+- Info tab: Updated lot sizes and week-field descriptions to reflect Jan 2026
+  regulatory changes.
 """
 
 import logging
@@ -61,13 +79,13 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         ("240 minutes", "240m")
     ]
 
-    # UPDATED: Derivative choices from OptionUtils
+    # Derivative choices — value is the canonical key used in OptionUtils.
     DERIVATIVE_CHOICES = [
-        ("NIFTY 50", "NIFTY50"),
-        ("BANK NIFTY", "BANKNIFTY"),
-        ("FIN NIFTY", "FINNIFTY"),
-        ("MIDCP NIFTY", "MIDCPNIFTY"),
-        ("SENSEX", "SENSEX"),
+        ("NIFTY 50",     "NIFTY50"),
+        ("BANK NIFTY",   "BANKNIFTY"),
+        ("FIN NIFTY",    "FINNIFTY"),
+        ("MIDCP NIFTY",  "MIDCPNIFTY"),
+        ("SENSEX",       "SENSEX"),
     ]
 
     VALIDATION_RANGES = {
@@ -111,12 +129,11 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             self.setWindowTitle("Daily Trade Settings")
             self.setModal(True)
-            self.setMinimumSize(750, 700)  # Increased size for new tabs
+            self.setMinimumSize(750, 700)
             self.resize(750, 700)
 
             # Root layout
             root = QVBoxLayout(self)
-            # Margins and spacing will be set in apply_theme
 
             # Header
             header = QLabel("⚙️ Daily Trade Settings")
@@ -130,9 +147,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             # Add all tabs
             self.tabs.addTab(self._build_settings_tab(), "⚙️ Core Settings")
-            self.tabs.addTab(self._build_risk_tab(), "⚠️ Risk Management")  # FEATURE 1
-            self.tabs.addTab(self._build_mtf_tab(), "📈 MTF Filter")  # FEATURE 6
-            self.tabs.addTab(self._build_signal_tab(), "🎯 Signal")  # FEATURE 3
+            self.tabs.addTab(self._build_risk_tab(), "⚠️ Risk Management")
+            self.tabs.addTab(self._build_mtf_tab(), "📈 MTF Filter")
+            self.tabs.addTab(self._build_signal_tab(), "🎯 Signal")
             self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
 
             # Status + Save (always visible below tabs)
@@ -153,6 +170,12 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             # Apply theme initially
             self.apply_theme()
 
+            # FIX: Trigger derivative-change handler once after UI is built so
+            # lot size, week-field state and expiry badge are correct on open.
+            QTimer.singleShot(0, lambda: self._on_derivative_changed(
+                self.derivative_combo.currentIndex() if self.derivative_combo else 0
+            ))
+
             logger.info("DailyTradeSettingGUI initialized")
 
         except Exception as e:
@@ -160,14 +183,15 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
+        """Rule 2: Initialize all attributes with safe defaults."""
         self.daily_setting = None
         self.app = None
         self.tabs = None
         self.vars = {}
         self.entries = {}
         self.interval_combo = None
-        self.derivative_combo = None  # UPDATED: New field for derivative dropdown
+        self.derivative_combo = None
+        self.expiry_badge = None          # FIX: label showing Weekly/Monthly
         self.sideway_check = None
         self.status_label = None
         self.save_btn = None
@@ -175,38 +199,34 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         self._save_timer = None
 
     def apply_theme(self, _: str = None) -> None:
-        """
-        Rule 13.2: Apply theme colors to the dialog.
-        Called on theme change, density change, and initial render.
-        """
+        """Rule 13.2: Apply theme colors to the dialog."""
         try:
             c = self._c
             ty = self._ty
             sp = self._sp
 
-            # Update root layout margins and spacing
             layout = self.layout()
             if layout:
                 layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
                 layout.setSpacing(sp.GAP_MD)
 
-            # Apply main stylesheet
             self.setStyleSheet(self._get_stylesheet())
 
-            # Update header
             header = self.findChild(QLabel, "header")
             if header:
-                header.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;")
+                header.setStyleSheet(
+                    f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; "
+                    f"font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;"
+                )
 
-            # Update status label
             if self.status_label:
-                self.status_label.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(
+                    f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};"
+                )
 
-            # Update save button
             if self.save_btn:
                 self.save_btn.setStyleSheet(self._get_button_style())
 
-            # Update all hint labels
             self._update_hint_styles()
 
             logger.debug("[DailyTradeSettingGUI.apply_theme] Applied theme")
@@ -215,7 +235,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI.apply_theme] Failed: {e}", exc_info=True)
 
     def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
+        """Generate stylesheet with current theme tokens."""
         c = self._c
         ty = self._ty
         sp = self._sp
@@ -266,6 +286,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
                 border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS};
             }}
+            QLineEdit:disabled {{
+                background:{c.BG_PANEL}; color:{c.TEXT_DISABLED};
+            }}
             QSpinBox::up-button, QSpinBox::down-button,
             QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
                 background: {c.BORDER};
@@ -297,7 +320,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         """
 
     def _get_button_style(self) -> str:
-        """Get styled button with theme tokens"""
+        """Get styled button with theme tokens."""
         c = self._c
         sp = self._sp
         ty = self._ty
@@ -313,21 +336,13 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         """
 
     def _update_hint_styles(self):
-        """Update all hint labels with theme colors"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
-        hint_style = f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;"
-        hint_indented_style = f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;"
-
-        # Find all QLabel widgets that are hints (we can't easily identify them,
-        # but they'll be updated when they're recreated in refresh)
+        """Update all hint labels with theme colors (placeholder for dynamic refresh)."""
+        pass
 
     # ── Signal wiring ─────────────────────────────────────────────────────────
 
     def _connect_signals(self):
-        """Connect internal signals"""
+        """Connect internal signals."""
         try:
             self.error_occurred.connect(self._on_error)
             self.operation_started.connect(self._on_operation_started)
@@ -338,7 +353,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     # ── Error handling ────────────────────────────────────────────────────────
 
     def _create_error_dialog(self, parent):
-        """Create error dialog if initialization fails"""
+        """Create error dialog if initialization fails."""
         try:
             c = self._c
             ty = self._ty
@@ -353,7 +368,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;")
+            error_label.setStyleSheet(
+                f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;"
+            )
             layout.addWidget(error_label)
 
             close_btn = QPushButton("Close")
@@ -363,9 +380,10 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
 
-    # ── Core Settings Tab (Original) ──────────────────────────────────────────
+    # ── Core Settings Tab ─────────────────────────────────────────────────────
+
     def _build_settings_tab(self):
-        """Build the core settings tab with form fields"""
+        """Build the core settings tab with form fields."""
         try:
             c = self._c
             ty = self._ty
@@ -398,14 +416,18 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                  "Name of the exchange, e.g. NSE, BSE, NFO."),
 
                 ("Week", "week", int, "📆",
-                 "e.g. 0  (0 = current week)",
-                 "Week number for options expiry (0–53).",
-                 "0 means the current/nearest expiry week. Increase for far-dated contracts."),
+                 "e.g. 0  (0 = current week, NIFTY/SENSEX only)",
+                 "Weekly expiry offset — only for NIFTY 50 and SENSEX.",
+                 "0 = current/nearest weekly expiry. BANKNIFTY/FINNIFTY/MIDCPNIFTY "
+                 "are monthly-only (SEBI circular Nov 20, 2024) so this field is "
+                 "disabled for those indices."),
 
                 ("Lot Size", "lot_size", int, "🔢",
-                 "e.g. 50",
-                 "Number of units per lot (1–10 000).",
-                 "Standard lot size for the selected derivative on your exchange."),
+                 "Auto-filled from NSE on derivative change",
+                 "Units per lot — fetched live from NSE and auto-filled.",
+                 "Auto-populated when you change the derivative. "
+                 "Jan 2026 values: NIFTY=65, BANKNIFTY=30, FINNIFTY=60, "
+                 "MIDCPNIFTY=120, SENSEX=20."),
 
                 ("Call Lookback", "call_lookback", int, "🔎",
                  "e.g. 5",
@@ -420,7 +442,8 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 ("Max Num of Option", "max_num_of_option", int, "📈",
                  "e.g. 10",
                  "Maximum open option positions allowed at once (1–10 000).",
-                 "The strategy will stop opening new positions once this limit is reached."),
+                 "The strategy will stop opening new positions once this limit is reached. "
+                 "Auto-filled with a per-index default when derivative changes."),
 
                 ("Lower Percentage", "lower_percentage", float, "🔻",
                  "e.g. 0.5",
@@ -444,7 +467,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                     edit.setPlaceholderText(placeholder)
                     edit.setToolTip(tooltip)
 
-                    # Safely get value from settings
                     val = ""
                     if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
                         val = self.daily_setting.data.get(key, "")
@@ -461,21 +483,49 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
                 except Exception as e:
                     logger.error(f"Failed to create field {key}: {e}", exc_info=True)
-                    # Add a placeholder to maintain layout
                     edit = QLineEdit()
                     edit.setPlaceholderText("Error loading field")
                     edit.setEnabled(False)
                     form.addRow(f"{icon} {label}:", edit)
 
-            # UPDATED: Derivative Dropdown
-            derivative_label = QLabel("💡 Derivative:")
-            derivative_label.setToolTip("The underlying instrument whose options or futures will be traded.")
-            form.addRow(derivative_label, self._create_derivative_dropdown())
-            derivative_hint = QLabel("Underlying symbol for the derivative contract (NIFTY50, BANKNIFTY, etc.)")
-            derivative_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            form.addRow("", derivative_hint)
+            # ── Derivative Dropdown + expiry badge ────────────────────────────
+            try:
+                derivative_label = QLabel("💡 Derivative:")
+                derivative_label.setToolTip(
+                    "The underlying instrument whose options or futures will be traded."
+                )
 
-            # History Interval ComboBox
+                # Build a small horizontal container: [combo] [badge]
+                deriv_row = QWidget()
+                deriv_row_layout = QHBoxLayout(deriv_row)
+                deriv_row_layout.setContentsMargins(0, 0, 0, 0)
+                deriv_row_layout.setSpacing(sp.GAP_SM)
+
+                self.derivative_combo = self._create_derivative_dropdown()
+                deriv_row_layout.addWidget(self.derivative_combo, stretch=1)
+
+                # FIX: Expiry-type badge — updated by _on_derivative_changed()
+                self.expiry_badge = QLabel("")
+                self.expiry_badge.setFixedWidth(160)
+                self.expiry_badge.setAlignment(Qt.AlignCenter)
+                self.expiry_badge.setStyleSheet(
+                    f"font-size:{ty.SIZE_XS}pt; border-radius:{sp.RADIUS_SM}px; "
+                    f"padding:2px 6px;"
+                )
+                deriv_row_layout.addWidget(self.expiry_badge)
+
+                form.addRow(derivative_label, deriv_row)
+
+                derivative_hint = QLabel(
+                    "Underlying symbol. Lot size and expiry type are auto-filled when changed."
+                )
+                derivative_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+                form.addRow("", derivative_hint)
+
+            except Exception as e:
+                logger.error(f"Failed to create derivative row: {e}", exc_info=True)
+
+            # ── History Interval ComboBox ──────────────────────────────────────
             try:
                 interval_label = QLabel("⏱️ History Interval:")
                 interval_label.setToolTip(
@@ -505,7 +555,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 interval_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
                 form.addRow("", interval_hint)
 
-                # Store interval in vars for validation
                 self.vars["history_interval"] = (self.interval_combo, str)
 
             except Exception as e:
@@ -516,9 +565,11 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             layout.addLayout(form)
 
-            # Sideway Zone checkbox
+            # ── Sideway Zone checkbox ─────────────────────────────────────────
             try:
-                self.sideway_check = QCheckBox("Enable trading during sideways market (12:00–14:00)")
+                self.sideway_check = QCheckBox(
+                    "Enable trading during sideways market (12:00–14:00)"
+                )
 
                 checked = False
                 if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
@@ -530,12 +581,13 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                     "low-volatility midday window (12:00–14:00). Disable to avoid choppy moves."
                 )
                 sideway_hint = QLabel("Allow entries during the low-volatility midday window.")
-                sideway_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
+                sideway_hint.setStyleSheet(
+                    f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;"
+                )
 
                 layout.addWidget(self.sideway_check)
                 layout.addWidget(sideway_hint)
 
-                # Store sideway in vars
                 self.vars["sideway_zone_trade"] = (self.sideway_check, bool)
 
             except Exception as e:
@@ -553,25 +605,23 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             return self._create_error_scroll(f"Error building settings tab: {e}")
 
     def _create_derivative_dropdown(self) -> QComboBox:
-        """UPDATED: Create dropdown for derivative selection"""
+        """Create dropdown for derivative selection and wire the change signal."""
         try:
-            self.derivative_combo = QComboBox()
-            self.derivative_combo.setToolTip("The underlying instrument whose options or futures will be traded.")
+            combo = QComboBox()
+            combo.setToolTip("The underlying instrument whose options or futures will be traded.")
 
-            # Populate from DERIVATIVE_CHOICES
             for display, value in self.DERIVATIVE_CHOICES:
-                self.derivative_combo.addItem(display, value)
+                combo.addItem(display, value)
 
-            # Get current value from settings
+            # Restore saved value
             current_val = "NIFTY50"
             if self.daily_setting is not None and hasattr(self.daily_setting, 'derivative'):
                 current_val = self.daily_setting.derivative
 
-            # Select current value
             found = False
-            for i in range(self.derivative_combo.count()):
-                if self.derivative_combo.itemData(i) == current_val:
-                    self.derivative_combo.setCurrentIndex(i)
+            for i in range(combo.count()):
+                if combo.itemData(i) == current_val:
+                    combo.setCurrentIndex(i)
                     found = True
                     break
 
@@ -579,10 +629,14 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 logger.warning(f"Derivative value {current_val} not found in choices")
 
             # Store in vars for saving
-            self.vars["derivative"] = (self.derivative_combo, str)
-            self.entries["derivative"] = self.derivative_combo
+            self.vars["derivative"] = (combo, str)
+            self.entries["derivative"] = combo
 
-            return self.derivative_combo
+            # FIX: Connect change signal AFTER storing reference
+            self.derivative_combo = combo
+            combo.currentIndexChanged.connect(self._on_derivative_changed)
+
+            return combo
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._create_derivative_dropdown] Failed: {e}", exc_info=True)
@@ -591,9 +645,113 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             combo.setEnabled(False)
             return combo
 
+    # ── FIX: Derivative change handler ────────────────────────────────────────
+
+    def _on_derivative_changed(self, _index: int) -> None:
+        """Auto-fill lot size and update week/badge when derivative changes.
+
+        Called both programmatically on startup and by the user via the dropdown.
+        Performs the live lot-size fetch in a background thread to avoid
+        freezing the UI.
+        """
+        try:
+            if self.derivative_combo is None:
+                return
+
+            derivative_val = self.derivative_combo.currentData()
+            if not derivative_val:
+                return
+
+            # ── Expiry-type badge ─────────────────────────────────────────────
+            has_weekly = OptionUtils.has_weekly_expiry(derivative_val)
+            if self.expiry_badge is not None:
+                c = self._c
+                ty = self._ty
+                if has_weekly:
+                    self.expiry_badge.setText("📅 Weekly + Monthly")
+                    self.expiry_badge.setStyleSheet(
+                        f"color:{c.GREEN}; background:{c.BG_HOVER}; "
+                        f"font-size:{ty.SIZE_XS}pt; border-radius:4px; padding:2px 6px; "
+                        f"border:1px solid {c.GREEN};"
+                    )
+                else:
+                    self.expiry_badge.setText("📆 Monthly Only")
+                    self.expiry_badge.setStyleSheet(
+                        f"color:{c.TEXT_DIM}; background:{c.BG_HOVER}; "
+                        f"font-size:{ty.SIZE_XS}pt; border-radius:4px; padding:2px 6px; "
+                        f"border:1px solid {c.BORDER};"
+                    )
+
+            # ── Week field: disable for monthly-only indices ──────────────────
+            week_edit = self.entries.get("week")
+            if week_edit and isinstance(week_edit, QLineEdit):
+                week_edit.setEnabled(has_weekly)
+                if not has_weekly:
+                    week_edit.setText("0")
+                    week_edit.setToolTip(
+                        f"{derivative_val} has monthly-only expiry since SEBI circular "
+                        "Nov 20, 2024. Weekly expiry selection is not applicable."
+                    )
+                else:
+                    week_edit.setToolTip(
+                        "0 = current/nearest weekly expiry.\n"
+                        "1 = next week's expiry, 2 = two weeks out, etc."
+                    )
+
+            # ── Max options: fill default if field is empty ───────────────────
+            max_edit = self.entries.get("max_num_of_option")
+            if max_edit and isinstance(max_edit, QLineEdit) and not max_edit.text().strip():
+                default_max = OptionUtils.get_default_max_options(derivative_val)
+                max_edit.setText(str(default_max))
+
+            # ── Lot size: fetch live in background thread ─────────────────────
+            lot_edit = self.entries.get("lot_size")
+            if lot_edit and isinstance(lot_edit, QLineEdit):
+                # Show a placeholder while fetching
+                lot_edit.setPlaceholderText("Fetching...")
+
+                def _fetch_lot(sym: str):
+                    try:
+                        lot = OptionUtils.get_lot_size(sym, fetch_live=True)
+                        # Marshal back to the Qt main thread via a zero-delay timer
+                        QTimer.singleShot(0, lambda: self._apply_lot_size(lot))
+                    except Exception as ex:
+                        logger.error(f"[_fetch_lot] Failed for {sym}: {ex}", exc_info=True)
+                        fallback = OptionUtils.LOT_SIZE_MAP.get(
+                            OptionUtils.get_exchange_symbol(sym), 65
+                        )
+                        QTimer.singleShot(0, lambda: self._apply_lot_size(fallback))
+
+                threading.Thread(
+                    target=_fetch_lot,
+                    args=(derivative_val,),
+                    daemon=True,
+                    name="LotSizeFetch"
+                ).start()
+
+            logger.info(
+                f"[_on_derivative_changed] derivative={derivative_val}, "
+                f"has_weekly={has_weekly}"
+            )
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._on_derivative_changed] Failed: {e}", exc_info=True)
+
+    def _apply_lot_size(self, lot_size: int) -> None:
+        """Apply the fetched lot size to the lot_size field (must run on main thread)."""
+        try:
+            lot_edit = self.entries.get("lot_size")
+            if lot_edit and isinstance(lot_edit, QLineEdit):
+                lot_edit.setText(str(lot_size))
+                lot_edit.setPlaceholderText("Auto-filled from NSE on derivative change")
+            logger.debug(f"[_apply_lot_size] Set lot_size to {lot_size}")
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._apply_lot_size] Failed: {e}", exc_info=True)
+
     # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
+
     def _build_risk_tab(self):
-        """Build risk management tab"""
+        """Build risk management tab."""
         try:
             c = self._c
             ty = self._ty
@@ -669,14 +827,13 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             layout.addWidget(limits_group)
 
-            # Info Card
             info_card = self._create_info_card(
                 "📘 About Risk Management:",
-                "• **Max Daily Loss**: When daily P&L reaches this negative value, "
+                "• Max Daily Loss: When daily P&L reaches this negative value, "
                 "the bot stops trading automatically.\n\n"
-                "• **Max Trades/Day**: Hard limit on the number of entries per day. "
+                "• Max Trades/Day: Hard limit on the number of entries per day. "
                 "Once reached, no new positions are opened.\n\n"
-                "• **Daily Target**: Visual progress indicator only - does not stop trading.\n\n"
+                "• Daily Target: Visual progress indicator only — does not stop trading.\n\n"
                 "These limits help protect your capital and prevent over-trading."
             )
             layout.addWidget(info_card)
@@ -690,8 +847,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             return self._create_error_scroll(f"Error building risk tab: {e}")
 
     # ── FEATURE 6: Multi-Timeframe Filter Tab ────────────────────────────────
+
     def _build_mtf_tab(self):
-        """Build Multi-Timeframe Filter settings tab"""
+        """Build Multi-Timeframe Filter settings tab."""
         try:
             c = self._c
             ty = self._ty
@@ -706,7 +864,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
             layout.setSpacing(sp.GAP_LG)
 
-            # Enable/Disable Group
             enable_group = QGroupBox("MTF Filter Status")
             enable_layout = QVBoxLayout(enable_group)
 
@@ -725,13 +882,11 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             layout.addWidget(enable_group)
 
-            # Timeframe Configuration Group
             tf_group = QGroupBox("Timeframe Configuration")
             tf_layout = QFormLayout(tf_group)
             tf_layout.setSpacing(sp.GAP_SM)
             tf_layout.setLabelAlignment(Qt.AlignRight)
 
-            # Timeframes
             tf_edit = QLineEdit()
             tf_edit.setPlaceholderText("1,5,15")
             tf_edit.setToolTip("Comma-separated list of timeframes in minutes")
@@ -746,7 +901,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             tf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             tf_layout.addRow("", tf_hint)
 
-            # Fast EMA
             fast_spin = QSpinBox()
             fast_spin.setRange(1, 50)
             fast_spin.setSuffix(" periods")
@@ -758,7 +912,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             tf_layout.addRow("Fast EMA:", fast_spin)
             self.vars["mtf_ema_fast"] = (fast_spin, int)
 
-            # Slow EMA
             slow_spin = QSpinBox()
             slow_spin.setRange(5, 200)
             slow_spin.setSuffix(" periods")
@@ -770,7 +923,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             tf_layout.addRow("Slow EMA:", slow_spin)
             self.vars["mtf_ema_slow"] = (slow_spin, int)
 
-            # Agreement Required
             agree_spin = QSpinBox()
             agree_spin.setRange(1, 3)
             agree_spin.setSuffix(" timeframes")
@@ -788,7 +940,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             layout.addWidget(tf_group)
 
-            # Info Card
             info_card = self._create_mtf_info_card()
             layout.addWidget(info_card)
 
@@ -801,8 +952,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             return self._create_error_scroll(f"Error building MTF tab: {e}")
 
     # ── FEATURE 3: Signal Confidence Tab ─────────────────────────────────────
+
     def _build_signal_tab(self):
-        """Build signal confidence settings tab"""
+        """Build signal confidence settings tab."""
         try:
             c = self._c
             ty = self._ty
@@ -817,13 +969,11 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
             layout.setSpacing(sp.GAP_LG)
 
-            # Confidence Group
             conf_group = QGroupBox("Signal Confidence Settings")
             conf_layout = QFormLayout(conf_group)
             conf_layout.setSpacing(sp.GAP_SM)
             conf_layout.setLabelAlignment(Qt.AlignRight)
 
-            # Min Confidence
             conf_spin = QDoubleSpinBox()
             conf_spin.setRange(0.0, 1.0)
             conf_spin.setSingleStep(0.05)
@@ -842,12 +992,11 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             layout.addWidget(conf_group)
 
-            # Info Card
             info_card = self._create_info_card(
                 "📘 About Signal Confidence:",
-                "• **Confidence Score**: Weighted average of rule results\n"
-                "• **Min Confidence**: Signals below this threshold are ignored\n"
-                "• **Rule Weights**: Configured in Strategy Editor\n\n"
+                "• Confidence Score: Weighted average of rule results\n"
+                "• Min Confidence: Signals below this threshold are ignored\n"
+                "• Rule Weights: Configured in Strategy Editor\n\n"
                 "Example: If min confidence = 0.6, a group needs 60% of weighted "
                 "rules to pass before firing."
             )
@@ -862,8 +1011,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             return self._create_error_scroll(f"Error building signal tab: {e}")
 
     # ── Information Tab ───────────────────────────────────────────────────────
+
     def _build_info_tab(self):
-        """Build the information tab with help content"""
+        """Build the information tab with help content."""
         try:
             c = self._c
             ty = self._ty
@@ -887,24 +1037,33 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 ),
                 (
                     "📆  Week",
-                    "Selects the expiry week for options contracts.\n\n"
-                    "• 0 = current/nearest expiry week (most liquid).\n"
-                    "• 1 = next week's expiry, 2 = two weeks out, and so on.\n"
-                    "• Higher values select far-dated contracts with wider spreads."
+                    "Selects the expiry week — applicable ONLY for NIFTY 50 and SENSEX.\n\n"
+                    "• BANKNIFTY, FINNIFTY and MIDCPNIFTY are MONTHLY ONLY since\n"
+                    "  Nov 20, 2024 (SEBI circular SEBI/HO/MRD/TPD-1/P/CIR/2024/132).\n"
+                    "  The Week field is automatically disabled for those indices.\n\n"
+                    "• For NIFTY / SENSEX:\n"
+                    "    0 = current/nearest weekly expiry (most liquid).\n"
+                    "    1 = next week's expiry, 2 = two weeks out, and so on."
                 ),
                 (
                     "💡  Derivative",
                     "The underlying instrument whose options or futures will be traded.\n\n"
-                    "• Supported values: NIFTY50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX.\n"
-                    "• Must match the symbol name exactly as listed on your exchange.\n"
-                    "• The lot size and contract specs depend on this choice."
+                    "• Supported: NIFTY50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX.\n"
+                    "• Changing this auto-fills the Lot Size from the live NSE feed.\n"
+                    "• The expiry type (Weekly+Monthly or Monthly Only) is shown next\n"
+                    "  to the dropdown."
                 ),
                 (
-                    "🔢  Lot Size",
-                    "The number of units in one contract lot for the chosen derivative.\n\n"
-                    "• NIFTY = 50 units/lot, BANKNIFTY = 15 units/lot (subject to exchange changes).\n"
-                    "• The strategy multiplies this by the number of lots to compute order quantity.\n"
-                    "• Setting the wrong lot size will cause over- or under-sized orders."
+                    "🔢  Lot Size  (auto-filled — Jan 2026 values)",
+                    "Number of units in one contract lot for the chosen derivative.\n\n"
+                    "• NIFTY = 65 units/lot       (was 75 before Jan 2026)\n"
+                    "• BANKNIFTY = 30 units/lot   (was 35 before Jan 2026)\n"
+                    "• FINNIFTY = 60 units/lot    (was 65 before Jan 2026)\n"
+                    "• MIDCPNIFTY = 120 units/lot (was 140 before Jan 2026)\n"
+                    "• SENSEX = 20 units/lot\n\n"
+                    "Source: NSE Circular 176/2025 (effective Oct 28, 2025).\n"
+                    "The value is fetched live from NSE on derivative change and\n"
+                    "will stay current even after future regulatory revisions."
                 ),
                 (
                     "🔎  Call / Put Lookback",
@@ -916,9 +1075,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 (
                     "⚠️  Risk Management",
                     "Daily loss limits and trade counts to protect capital.\n\n"
-                    "• **Max Daily Loss**: Stop trading when daily P&L hits this level.\n"
-                    "• **Max Trades/Day**: Hard limit on number of entries.\n"
-                    "• **Daily Target**: Visual progress indicator for profit goals."
+                    "• Max Daily Loss: Stop trading when daily P&L hits this level.\n"
+                    "• Max Trades/Day: Hard limit on number of entries.\n"
+                    "• Daily Target: Visual progress indicator for profit goals."
                 ),
                 (
                     "📈  Multi-Timeframe Filter",
@@ -947,7 +1106,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 try:
                     info_card = self._create_info_card(title, body)
                     layout.addWidget(info_card)
-
                 except Exception as e:
                     logger.error(f"Failed to create info card for {title}: {e}", exc_info=True)
 
@@ -960,7 +1118,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             return self._create_error_scroll(f"Error building information tab: {e}")
 
     def _create_info_card(self, title: str, body: str) -> QFrame:
-        """Create an information card with themed styling"""
+        """Create an information card with themed styling."""
         c = self._c
         ty = self._ty
         sp = self._sp
@@ -984,7 +1142,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         return card
 
     def _create_mtf_info_card(self) -> QFrame:
-        """Create info card for MTF filter"""
+        """Create info card for MTF filter."""
         c = self._c
         ty = self._ty
         sp = self._sp
@@ -1013,7 +1171,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         return card
 
     def _create_error_scroll(self, error_msg):
-        """Create a scroll area with error message"""
+        """Create a scroll area with error message."""
         c = self._c
         ty = self._ty
         sp = self._sp
@@ -1031,22 +1189,18 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         return scroll
 
     # ── Validation ────────────────────────────────────────────────────────────
+
     def validate_field(self, key: str, value: str, typ: type) -> Tuple[bool, Any, Optional[str]]:
-        """Validate a field value against type and range constraints"""
+        """Validate a field value against type and range constraints."""
         try:
-            # Rule 6: Input validation
             if not isinstance(key, str):
-                logger.warning(f"validate_field called with non-string key: {key}")
                 return False, None, "Invalid field key"
 
-            # Handle empty strings - allow for string fields, convert to default for numbers
             if not value.strip():
                 if typ in (int, float):
-                    # Use default from validation ranges
                     if key in self.VALIDATION_RANGES:
                         lo, hi = self.VALIDATION_RANGES[key]
-                        default_val = lo if typ == int else float(lo)
-                        return True, default_val, None
+                        return True, lo if typ == int else float(lo), None
                     return True, 0, None
                 return True, "", None
 
@@ -1067,7 +1221,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                             return False, None, f"{key} must be between {lo} and {hi}"
                     return True, val, None
 
-                else:  # str
+                else:
                     return True, value, None
 
             except ValueError as e:
@@ -1079,14 +1233,17 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             return False, None, f"Validation error for {key}"
 
     # ── Feedback helpers ──────────────────────────────────────────────────────
+
     def show_success_feedback(self):
-        """Show success feedback with animation"""
+        """Show success feedback with animation."""
         try:
             c = self._c
             sp = self._sp
 
             self.status_label.setText("✓ Settings saved successfully!")
-            self.status_label.setStyleSheet(f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(
+                f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};"
+            )
             self.save_btn.setText("✓ Saved!")
             self.save_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -1094,22 +1251,22 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                     font-weight:{self._ty.WEIGHT_BOLD}; font-size:{self._ty.SIZE_BODY}pt;
                 }}
             """)
-            # Reset styles after delay
             QTimer.singleShot(1500, self.reset_styles)
-
             logger.info("Success feedback shown")
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.show_success_feedback] Failed: {e}", exc_info=True)
 
     def show_error_feedback(self, error_msg):
-        """Show error feedback with animation"""
+        """Show error feedback."""
         try:
             c = self._c
             sp = self._sp
 
             self.status_label.setText(f"✗ {error_msg}")
-            self.status_label.setStyleSheet(f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(
+                f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};"
+            )
             self.save_btn.setStyleSheet(f"""
                 QPushButton {{
                     background:{c.RED}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
@@ -1117,26 +1274,24 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 }}
             """)
             QTimer.singleShot(2000, self.reset_styles)
-
             logger.warning(f"Error feedback shown: {error_msg}")
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.show_error_feedback] Failed: {e}", exc_info=True)
 
     def reset_styles(self):
-        """Reset all styles to normal"""
+        """Reset all styles to normal."""
         try:
             self.save_btn.setText("💾 Save All Settings")
             self.save_btn.setStyleSheet(self._get_button_style())
-
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.reset_styles] Failed: {e}", exc_info=True)
 
     # ── Save logic ────────────────────────────────────────────────────────────
+
     def save(self):
-        """Save settings with validation and background thread"""
+        """Save settings with validation and background thread."""
         try:
-            # Prevent multiple saves
             if self._save_in_progress:
                 logger.warning("Save already in progress")
                 return
@@ -1151,14 +1306,12 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             data_to_save = {}
             validation_errors = []
 
-            # Validate all fields
             for key, (widget, typ) in self.vars.items():
                 try:
                     if widget is None:
                         logger.warning(f"Widget for {key} is None")
                         continue
 
-                    # Get value based on widget type
                     if isinstance(widget, QLineEdit):
                         text = widget.text().strip()
                     elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
@@ -1172,9 +1325,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                         logger.warning(f"Unknown widget type for {key}")
                         continue
 
-                    # Validate the value
                     if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                        # Already validated by the widget
                         data_to_save[key] = widget.value()
                     else:
                         is_valid, value, error = self.validate_field(key, text, typ)
@@ -1182,10 +1333,10 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                             data_to_save[key] = value
                         else:
                             validation_errors.append(error or f"Invalid value for {key}")
-                            # Highlight the error
                             if isinstance(widget, QLineEdit):
                                 widget.setStyleSheet(
-                                    f"QLineEdit {{ background:{self._c.BG_ROW_B}; color:{self._c.TEXT_MAIN}; border:{self._sp.SEPARATOR}px solid {self._c.RED}; }}"
+                                    f"QLineEdit {{ background:{self._c.BG_ROW_B}; color:{self._c.TEXT_MAIN}; "
+                                    f"border:{self._sp.SEPARATOR}px solid {self._c.RED}; }}"
                                 )
 
                 except Exception as e:
@@ -1200,22 +1351,24 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 self.operation_finished.emit()
                 return
 
-            # UPDATED: Add derivative from dropdown if not already in vars
+            # Ensure derivative is captured
             if "derivative" not in data_to_save and self.derivative_combo is not None:
                 data_to_save["derivative"] = self.derivative_combo.currentData()
 
-            # Add interval combo value
+            # Ensure interval is captured
             if self.interval_combo is not None:
                 data_to_save["history_interval"] = self.interval_combo.currentData()
 
-            # Add sideway checkbox if not already in vars
+            # Ensure sideway is captured
             if "sideway_zone_trade" not in data_to_save and self.sideway_check is not None:
                 data_to_save["sideway_zone_trade"] = self.sideway_check.isChecked()
 
-            # Save in background thread
-            threading.Thread(target=self._threaded_save,
-                             args=(data_to_save,),
-                             daemon=True, name="DailyTradeSave").start()
+            threading.Thread(
+                target=self._threaded_save,
+                args=(data_to_save,),
+                daemon=True,
+                name="DailyTradeSave"
+            ).start()
 
             logger.info(f"Save operation started with {len(data_to_save)} fields")
 
@@ -1227,12 +1380,11 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             self.save_btn.setEnabled(True)
 
     def _threaded_save(self, data_to_save: Dict[str, Any]):
-        """Threaded save operation"""
+        """Threaded save operation."""
         try:
             if self.daily_setting is None:
                 raise ValueError("Daily setting object is None")
 
-            # Update settings
             for key, value in data_to_save.items():
                 try:
                     if hasattr(self.daily_setting, key):
@@ -1242,7 +1394,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 except Exception as e:
                     logger.error(f"Failed to set {key}={value}: {e}", exc_info=True)
 
-            # Save to database
             success = False
             if hasattr(self.daily_setting, 'save'):
                 success = self.daily_setting.save()
@@ -1265,13 +1416,12 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             self.operation_finished.emit()
 
     def on_save_completed(self, success, message):
-        """Handle save completion"""
+        """Handle save completion."""
         try:
             if success:
                 self.show_success_feedback()
                 self.save_btn.setEnabled(True)
 
-                # Refresh app if available
                 if self.app is not None and hasattr(self.app, "refresh_settings_live"):
                     try:
                         self.app.refresh_settings_live()
@@ -1288,7 +1438,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI.on_save_completed] Failed: {e}", exc_info=True)
 
     def _on_error(self, error_msg: str):
-        """Handle error signal"""
+        """Handle error signal."""
         try:
             logger.error(f"Error signal received: {error_msg}")
             self.show_error_feedback(error_msg)
@@ -1298,20 +1448,17 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI._on_error] Failed: {e}", exc_info=True)
 
     def _on_operation_started(self):
-        """Handle operation started signal"""
         pass
 
     def _on_operation_finished(self):
-        """Handle operation finished signal"""
         pass
 
-    # Rule 8: Cleanup method
+    # Rule 8: Cleanup
     def cleanup(self):
-        """Clean up resources before closing"""
+        """Clean up resources before closing."""
         try:
             logger.info("[DailyTradeSettingGUI] Starting cleanup")
 
-            # Cancel any pending timers
             if hasattr(self, '_save_timer') and self._save_timer is not None:
                 try:
                     if self._save_timer.isActive():
@@ -1319,13 +1466,13 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 except Exception as e:
                     logger.warning(f"Error stopping timer: {e}")
 
-            # Clear references
             self.daily_setting = None
             self.app = None
             self.vars.clear()
             self.entries.clear()
             self.interval_combo = None
-            self.derivative_combo = None  # UPDATED: Clear new field
+            self.derivative_combo = None
+            self.expiry_badge = None
             self.sideway_check = None
             self.status_label = None
             self.save_btn = None
@@ -1337,14 +1484,12 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI.cleanup] Error: {e}", exc_info=True)
 
     def closeEvent(self, event):
-        """Handle close event with cleanup"""
+        """Handle close event with cleanup."""
         try:
             if self._save_in_progress:
                 logger.warning("Closing while save in progress")
-
             self.cleanup()
             event.accept()
-
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.closeEvent] Failed: {e}", exc_info=True)
             event.accept()

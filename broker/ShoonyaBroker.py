@@ -639,12 +639,22 @@ class ShoonyaBroker(BaseBroker):
             logger.error(f"[ShoonyaBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             orders = self.get_orderbook()
             for order in orders:
                 if str(order.get("norenordno")) == str(order_id):
-                    return order
+                    status_str = str(order.get("status") or "").upper()
+                    if status_str in ("COMPLETE", "FILLED", "TRADED"):
+                        return 2
+                    if status_str in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED"):
+                        return -1
+                    # OPEN, PENDING, TRIGGER_PENDING, etc.
+                    return 1
             return None
         except TokenExpiredError:
             raise
@@ -652,12 +662,90 @@ class ShoonyaBroker(BaseBroker):
             logger.error(f"[ShoonyaBroker.get_current_order_status] {e!r}", exc_info=True)
             return None
 
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Shoonya orderbook includes 'avgprc' (average price) on filled orders.
+        """
+        try:
+            if not broker_order_id or not self.api:
+                return None
+            orders = self.get_orderbook()
+            for order in orders:
+                if str(order.get("norenordno")) == str(broker_order_id):
+                    avg = order.get("avgprc") or order.get("prc")
+                    if avg:
+                        return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[ShoonyaBroker.get_fill_price] {e!r}", exc_info=True)
+            return None
+
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Shoonya option symbol format: ``NFO|NIFTY2531825000CE``
+
+        Shoonya (NorenRestApiPy) uses a pipe separator between exchange
+        and tradingsymbol.  All NSE F&O instruments use the ``NFO|`` prefix.
+        SENSEX options use ``BFO|``.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[ShoonyaBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """ShoonyaBroker symbol from OptionParams."""
+        if not params:
+            return None
+        prefix = "BFO|" if params.underlying == "SENSEX" else "NFO|"
+        return f"{prefix}{params.compact_core}"
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """Shoonya option chain with NFO|/BFO| prefixes."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[ShoonyaBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
     def is_connected(self) -> bool:
         try:
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -903,7 +991,7 @@ class ShoonyaBroker(BaseBroker):
                 self._ws_api = None
 
             # Call on_close callback
-            if self._ws_on_close and not self._ws_closed:
+            if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
                 except Exception as e:
@@ -918,36 +1006,54 @@ class ShoonyaBroker(BaseBroker):
         """
         Normalize a Shoonya/Finvasia tick.
 
-        Shoonya tick fields: t (type), e (exchange), tk (token), lp (last price),
-        ft (feed time), v (volume), oi (OI), bp1/sp1 (bid/ask), o/h/l/c (ohlc).
+        IMPORTANT: All numeric values in Shoonya ticks are STRINGS, not numbers.
+        Must convert with float() or int() after checking existence.
         """
         try:
             if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
 
             if raw_tick.get("t") not in ("sf", "tf", "if"):
-                return None   # skip non-feed messages (order updates, etc.)
+                return None  # skip non-feed messages (order updates, etc.)
 
             lp = raw_tick.get("lp")
             if lp is None:
                 return None
 
-            exch  = raw_tick.get("e", "NSE")
+            exch = raw_tick.get("e", "NSE")
             token = raw_tick.get("tk", "")
             symbol = f"{exch}:{token}"
 
+            # Helper to safely convert string to float
+            def to_float(val):
+                if val is None:
+                    return None
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return None
+
+            # Helper to safely convert to int
+            def to_int(val):
+                if val is None:
+                    return None
+                try:
+                    return int(float(val))  # Convert through float first to handle "5000.0"
+                except (ValueError, TypeError):
+                    return None
+
             return {
-                "symbol":    symbol,
-                "ltp":       float(lp),
+                "symbol": symbol,
+                "ltp": to_float(lp),
                 "timestamp": str(raw_tick.get("ft", "")),
-                "bid":       float(raw_tick["bp1"]) if raw_tick.get("bp1") else None,
-                "ask":       float(raw_tick["sp1"]) if raw_tick.get("sp1") else None,
-                "volume":    raw_tick.get("v"),
-                "oi":        raw_tick.get("oi"),
-                "open":      float(raw_tick["o"]) if raw_tick.get("o") else None,
-                "high":      float(raw_tick["h"]) if raw_tick.get("h") else None,
-                "low":       float(raw_tick["lo"]) if raw_tick.get("lo") else None,
-                "close":     float(raw_tick["c"]) if raw_tick.get("c") else None,
+                "bid": to_float(raw_tick.get("bp1")),
+                "ask": to_float(raw_tick.get("sp1")),
+                "volume": to_int(raw_tick.get("v")),
+                "oi": to_int(raw_tick.get("oi")),
+                "open": to_float(raw_tick.get("o")),
+                "high": to_float(raw_tick.get("h")),
+                "low": to_float(raw_tick.get("lo")),
+                "close": to_float(raw_tick.get("c")),
             }
         except Exception as e:
             if not self._ws_closed:  # Only log if not during shutdown
@@ -958,8 +1064,6 @@ class ShoonyaBroker(BaseBroker):
         """
         Map generic NSE:SYMBOL → Shoonya exchange|token string.
         e.g. "NSE:NIFTY50-INDEX" → "NSE|26000"
-
-        Caches results. For unknown symbols uses searchscrip() API.
         """
         try:
             cache = getattr(self, "_sh_sym_cache", {})
@@ -976,7 +1080,20 @@ class ShoonyaBroker(BaseBroker):
 
             ret = self.api.searchscrip(exchange=exchange, searchtext=bare)
             if ret and ret.get("values"):
-                token = ret["values"][0].get("token")
+                values = ret["values"]
+                # For options, try to find exact expiry match if possible
+                if exchange == "NFO" and len(values) > 1:
+                    # Look for exact symbol match in tsym (trading symbol)
+                    for val in values:
+                        if val.get("tsym") == bare:
+                            token = val.get("token")
+                            if token:
+                                result = f"{exchange}|{token}"
+                                cache[symbol] = result
+                                self._sh_sym_cache = cache
+                                return result
+                # Fallback to first match
+                token = values[0].get("token")
                 if token:
                     result = f"{exchange}|{token}"
                     cache[symbol] = result

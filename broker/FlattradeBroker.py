@@ -303,6 +303,7 @@ class FlattradeBroker(BaseBroker):
             if result and result.get("stat") == "Ok":
                 values = result.get("values", [])
                 if values:
+                    # For options, filter by expiry if needed
                     token = values[0].get("token")
                     self._symbol_token_cache[cache_key] = token
                     return token
@@ -652,12 +653,22 @@ class FlattradeBroker(BaseBroker):
             logger.error(f"[FlattradeBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             orders = self.get_orderbook()
             for order in orders:
                 if str(order.get("norenordno")) == str(order_id):
-                    return order
+                    status_str = str(order.get("status") or "").upper()
+                    if status_str in ("COMPLETE", "FILLED", "TRADED"):
+                        return 2
+                    if status_str in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED"):
+                        return -1
+                    # OPEN, PENDING, TRIGGER_PENDING, etc.
+                    return 1
             return None
         except TokenExpiredError:
             raise
@@ -665,12 +676,89 @@ class FlattradeBroker(BaseBroker):
             logger.error(f"[FlattradeBroker.get_current_order_status] {e!r}", exc_info=True)
             return None
 
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Flattrade orderbook includes 'avgprc' (average price) on filled orders.
+        """
+        try:
+            if not broker_order_id or not self.api:
+                return None
+            orders = self.get_orderbook()
+            for order in orders:
+                if str(order.get("norenordno")) == str(broker_order_id):
+                    avg = order.get("avgprc") or order.get("prc")
+                    if avg:
+                        return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.get_fill_price] {e!r}", exc_info=True)
+            return None
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        FlatTrade option symbol format: ``NFO|NIFTY2531825000CE``
+
+        FlatTrade (NorenRestApiPy) uses the same pipe-separated format as
+        Shoonya.  All NSE F&O instruments use ``NFO|`` prefix.
+        SENSEX options use ``BFO|``.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """FlattradeBroker symbol from OptionParams."""
+        if not params:
+            return None
+        prefix = "BFO|" if params.underlying == "SENSEX" else "NFO|"
+        return f"{prefix}{params.compact_core}"
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """FlatTrade option chain with NFO|/BFO| prefixes."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[FlattradeBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
     def is_connected(self) -> bool:
         try:
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -902,8 +990,8 @@ class FlattradeBroker(BaseBroker):
             # Clear reference
             self._ws_api = None
 
-            # Call on_close callback
-            if self._ws_on_close and not self._ws_closed:
+            # Call on_close callback regardless of _ws_closed
+            if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
                 except Exception as e:
@@ -916,15 +1004,16 @@ class FlattradeBroker(BaseBroker):
 
     def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
         """
-        Normalize a Flattrade NorenApi tick (identical structure to Shoonya).
+        Normalize a Flattrade NorenApi tick.
 
-        Fields: t (type), e (exchange), tk (token), lp (last price),
-        ft (feed time), v (volume), oi (OI), bp1/sp1 (bid/ask), o/h/lo/c.
+        IMPORTANT: All numeric values in Flattrade ticks are STRINGS, not numbers.
+        Must convert with float() or int() after checking existence.
         """
         try:
             if self._ws_closed or not isinstance(raw_tick, dict):
                 return None
 
+            # Filter only relevant tick types
             if raw_tick.get("t") not in ("sf", "tf", "if"):
                 return None
 
@@ -932,25 +1021,43 @@ class FlattradeBroker(BaseBroker):
             if lp is None:
                 return None
 
-            exch   = raw_tick.get("e", "NSE")
-            token  = raw_tick.get("tk", "")
+            exch = raw_tick.get("e", "NSE")
+            token = raw_tick.get("tk", "")
             symbol = f"{exch}:{token}"
 
+            # Helper to safely convert string to float
+            def to_float(val):
+                if val is None:
+                    return None
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return None
+
+            # Helper to safely convert to int
+            def to_int(val):
+                if val is None:
+                    return None
+                try:
+                    return int(float(val))  # Convert through float first to handle "5000.0"
+                except (ValueError, TypeError):
+                    return None
+
             return {
-                "symbol":    symbol,
-                "ltp":       float(lp),
+                "symbol": symbol,
+                "ltp": to_float(lp),
                 "timestamp": str(raw_tick.get("ft", "")),
-                "bid":       float(raw_tick["bp1"]) if raw_tick.get("bp1") else None,
-                "ask":       float(raw_tick["sp1"]) if raw_tick.get("sp1") else None,
-                "volume":    raw_tick.get("v"),
-                "oi":        raw_tick.get("oi"),
-                "open":      float(raw_tick["o"])  if raw_tick.get("o")  else None,
-                "high":      float(raw_tick["h"])  if raw_tick.get("h")  else None,
-                "low":       float(raw_tick["lo"]) if raw_tick.get("lo") else None,
-                "close":     float(raw_tick["c"])  if raw_tick.get("c")  else None,
+                "bid": to_float(raw_tick.get("bp1")),
+                "ask": to_float(raw_tick.get("sp1")),
+                "volume": to_int(raw_tick.get("v")),
+                "oi": to_int(raw_tick.get("oi")),
+                "open": to_float(raw_tick.get("o")),
+                "high": to_float(raw_tick.get("h")),
+                "low": to_float(raw_tick.get("lo")),
+                "close": to_float(raw_tick.get("c")),
             }
         except Exception as e:
-            if not self._ws_closed:  # Only log if not during shutdown
+            if not self._ws_closed:
                 logger.error(f"[FlattradeBroker.normalize_tick] {e}", exc_info=True)
             return None
 

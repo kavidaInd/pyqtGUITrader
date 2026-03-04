@@ -366,6 +366,138 @@ class BaseBroker(ABC):
     # Symbol helpers  (concrete, delegates to OptionUtils — override as needed)
     # =========================================================================
 
+    # =========================================================================
+    # Option symbol construction  (BROKER-SPECIFIC — must override)
+    # =========================================================================
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Build a complete, broker-ready option symbol string for this broker.
+
+        WHY THIS IS HERE
+        ----------------
+        Every broker API expects a different symbol format for options:
+
+            Broker      Format
+            ──────────  ──────────────────────────────────────────────────
+            Fyers       "NSE:NIFTY2531825000CE"
+            Zerodha     "NFO:NIFTY2531825000CE"
+            Shoonya     "NFO|NIFTY2531825000CE"
+            FlatTrade   "NFO|NIFTY2531825000CE"
+            AliceBlue   "NIFTY2531825000CE" (bare, via instrument object)
+            AngelOne    "NIFTY2531825000CE" (bare, token looked up separately)
+            KotakNeo    "NIFTY2531825000CE" (bare, exchange passed separately)
+            Dhan        numeric security_id  (instrument master lookup)
+            Upstox      "NSE_FO|<ISIN>"     (instrument_key lookup)
+            ICICI       "NFO:NIFTY:18MAR2025:25000:CE"  (structured string)
+
+        The previous approach — building symbols in OptionUtils and then
+        translating them — only worked for Fyers (prefix-based).  Every other
+        broker either silently received a wrong string or needed workarounds.
+
+        PARAMETERS
+        ----------
+        underlying      : Derivative name ("NIFTY", "BANKNIFTY", "SENSEX", …).
+        spot_price      : Current index price (used to calculate ATM strike).
+        option_type     : "CE" or "PE".
+        weeks_offset    : Expiry offset (0 = nearest, 1 = next, …).
+                          For monthly-only indices interpreted as month offset.
+        lookback_strikes: Strikes to move away from ATM (signed int).
+                          CE: positive = lower strike (deeper ITM).
+                          PE: positive = higher strike (deeper ITM).
+
+        RETURNS
+        -------
+        A broker-specific symbol string, or ``None`` on failure.
+        Each concrete subclass MUST override this method.
+
+        DEFAULT IMPLEMENTATION
+        ----------------------
+        The base class returns the NSE compact core string (no prefix) as a
+        safe fallback so legacy brokers that have not yet been migrated still
+        return *something* sensible.  Subclasses should always override.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying,
+                spot_price=spot_price,
+                option_type=option_type,
+                weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            if params is None:
+                return None
+            logger.debug(
+                f"[BaseBroker.build_option_symbol] fallback core: {params.compact_core}"
+            )
+            return params.compact_core   # bare core — subclass should override
+        except Exception as e:
+            logger.error(f"[BaseBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """
+        Build a list of broker-ready option symbol strings for an option chain.
+
+        Calls ``build_option_symbol()`` for every strike from ITM to OTM.
+        Each broker subclass's ``build_option_symbol()`` implementation is
+        used automatically — no broker-specific logic here.
+
+        Returns a list of valid symbol strings (None entries are dropped).
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying,
+                spot_price=spot_price,
+                option_type=option_type,
+                weeks_offset=weeks_offset,
+                itm=itm,
+                otm=otm,
+            )
+            result = []
+            for p in all_params:
+                sym = self._params_to_symbol(p)
+                if sym:
+                    result.append(sym)
+            return result
+        except Exception as e:
+            logger.error(f"[BaseBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """
+        Convert an ``OptionParams`` object to a broker-ready symbol string.
+
+        Subclasses override ``build_option_symbol()`` for the user-facing API.
+        Internally ``build_option_chain()`` calls this to avoid recomputing
+        expiry dates for every strike in the chain.
+
+        The default implementation returns the compact core.
+        Override in each broker to apply the broker-specific prefix/format.
+        """
+        try:
+            return params.compact_core if params else None
+        except Exception as e:
+            logger.error(f"[BaseBroker._params_to_symbol] {e}", exc_info=True)
+            return None
+
     def _format_symbol(self, symbol: str) -> Optional[str]:
         """
         Format any symbol — index or option/futures — for this broker's API.

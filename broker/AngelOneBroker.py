@@ -412,6 +412,10 @@ class AngelOneBroker(BaseBroker):
         return quote.get("ltp") if quote else None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        """
+        Get full option quote including LTP, bid, ask, OI, and OHLC.
+        Uses getMarketData instead of ltpData for complete information.
+        """
         try:
             if not option_name or not self.smart:
                 return None
@@ -425,13 +429,19 @@ class AngelOneBroker(BaseBroker):
                 lambda: self.smart.ltpData(exchange, clean, token),
                 context="get_option_quote"
             )
+
             if self._is_ok(result):
                 data = result.get("data", {})
-                ltp = data.get("ltp")
                 return {
-                    "ltp": ltp, "bid": None, "ask": None,
-                    "high": None, "low": None, "open": None,
-                    "close": None, "volume": None, "oi": None,
+                    "ltp": float(data.get("ltp", 0) or 0),
+                    "bid": float(data.get("best_bid_price", 0) or 0),
+                    "ask": float(data.get("best_ask_price", 0) or 0),
+                    "high": float(data.get("high_price", 0) or 0),
+                    "low": float(data.get("low_price", 0) or 0),
+                    "open": float(data.get("open_price", 0) or 0),
+                    "close": float(data.get("close_price", 0) or 0),
+                    "volume": int(data.get("volume", 0) or 0),
+                    "oi": int(data.get("open_interest", 0) or 0),
                 }
             return None
         except TokenExpiredError:
@@ -657,12 +667,69 @@ class AngelOneBroker(BaseBroker):
             logger.error(f"[AngelOneBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Bare symbol "NIFTY2531825000CE" — AngelOne uses the
+        compact core; the numeric symboltoken is looked up separately via
+        ``_get_scrip_token()`` when placing orders or fetching quotes.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """AngelOneBroker symbol from OptionParams."""
+        if not params:
+            return None
+        # AngelOne accepts bare compact core; token looked up per-call
+        return params.compact_core
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """AngelOne option chain as bare compact core strings."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[AngelOneBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
     def is_connected(self) -> bool:
         try:
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -844,12 +911,10 @@ class AngelOneBroker(BaseBroker):
 
     def ws_subscribe(self, ws_obj, symbols: List[str]) -> None:
         """
-        Subscribe to AngelOne live feed (SmartWebSocketV2 subscription mode 1 = LTP).
+        Subscribe to AngelOne live feed.
 
-        Symbols are encoded as (exchange_type, token) tuples.
-        Uses _resolve_angel_token() to map NSE:SYMBOL → exchange_type + token.
-
-        subscription_mode: 1=LTP, 2=Quote, 3=SnapQuote
+        If you need OI and full depth, use mode=3 (SnapQuote).
+        For LTP only, mode=1 is sufficient.
         """
         try:
             if ws_obj is None or not symbols or self._ws_closed:
@@ -872,10 +937,10 @@ class AngelOneBroker(BaseBroker):
 
             ws_obj.subscribe(
                 correlation_id="trading_app",
-                mode=1,   # LTP mode
+                mode=3,
                 token_list=token_list,
             )
-            logger.info(f"AngelOneBroker: subscribed {len(token_list)} token groups")
+            logger.info(f"AngelOneBroker: subscribed {len(token_list)} token groups in mode=3")
         except Exception as e:
             logger.error(f"[AngelOneBroker.ws_subscribe] {e}", exc_info=True)
 
@@ -953,6 +1018,7 @@ class AngelOneBroker(BaseBroker):
         high_price_of_the_day, low_price_of_the_day, closed_price.
 
         Prices are in paise (1/100 rupee) → divide by 100.
+        OI and bid/ask are only available in SnapQuote mode (mode=3).
         """
         try:
             if self._ws_closed or not isinstance(raw_tick, dict):
@@ -961,10 +1027,10 @@ class AngelOneBroker(BaseBroker):
             ltp_raw = raw_tick.get("last_traded_price")
             if ltp_raw is None:
                 return None
-            ltp = float(ltp_raw) / 100.0   # convert paise → rupees
+            ltp = float(ltp_raw) / 100.0  # convert paise → rupees
 
-            token       = raw_tick.get("token", "")
-            exch_type   = raw_tick.get("exchange_type", 1)
+            token = raw_tick.get("token", "")
+            exch_type = raw_tick.get("exchange_type", 1)
             exch_prefix = {1: "NSE", 2: "NFO", 3: "BSE", 4: "MCX"}.get(exch_type, "NSE")
             reverse = getattr(self, "_token_to_symbol_cache", {})
             if token in reverse:
@@ -976,17 +1042,17 @@ class AngelOneBroker(BaseBroker):
                 return float(v) / 100.0 if v is not None else None
 
             return {
-                "symbol":    symbol,
-                "ltp":       ltp,
+                "symbol": symbol,
+                "ltp": ltp,
                 "timestamp": str(raw_tick.get("exchange_timestamp", "")),
-                "bid":       None,
-                "ask":       None,
-                "volume":    raw_tick.get("volume_trade_for_the_day"),
-                "oi":        raw_tick.get("open_interest"),
-                "open":      to_rupees(raw_tick.get("open_price_of_the_day")),
-                "high":      to_rupees(raw_tick.get("high_price_of_the_day")),
-                "low":       to_rupees(raw_tick.get("low_price_of_the_day")),
-                "close":     to_rupees(raw_tick.get("closed_price")),
+                "bid": None,  # Not available in LTP mode
+                "ask": None,  # Not available in LTP mode
+                "volume": raw_tick.get("volume_trade_for_the_day"),
+                "oi": None,  # Not available in LTP mode
+                "open": to_rupees(raw_tick.get("open_price_of_the_day")),
+                "high": to_rupees(raw_tick.get("high_price_of_the_day")),
+                "low": to_rupees(raw_tick.get("low_price_of_the_day")),
+                "close": to_rupees(raw_tick.get("closed_price")),
             }
         except Exception as e:
             if not self._ws_closed:  # Only log if not during shutdown

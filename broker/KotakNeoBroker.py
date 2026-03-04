@@ -580,12 +580,22 @@ class KotakNeoBroker(BaseBroker):
             logger.error(f"[KotakNeoBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             orders = self.get_orderbook()
             for order in orders:
                 if str(order.get("nOrdNo") or order.get("orderId")) == str(order_id):
-                    return order
+                    status_str = str(order.get("orderStatus") or "").upper()
+                    if status_str in ("COMPLETE", "FILLED", "EXECUTED"):
+                        return 2
+                    if status_str in ("REJECTED", "CANCELLED", "CANCELED"):
+                        return -1
+                    # OPEN, PENDING, TRIGGER_PENDING, etc.
+                    return 1
             return None
         except TokenExpiredError:
             raise
@@ -593,12 +603,89 @@ class KotakNeoBroker(BaseBroker):
             logger.error(f"[KotakNeoBroker.get_current_order_status] {e!r}", exc_info=True)
             return None
 
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Kotak Neo orderbook includes 'avgPrice' for filled orders.
+        """
+        try:
+            if not broker_order_id or not self.client:
+                return None
+            orders = self.get_orderbook()
+            for order in orders:
+                if str(order.get("nOrdNo") or order.get("orderId")) == str(broker_order_id):
+                    avg = order.get("avgPrice") or order.get("averagePrice")
+                    if avg:
+                        return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.get_fill_price] {e!r}", exc_info=True)
+            return None
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        KotakNeo option symbol: bare compact core ``NIFTY2531825000CE``.
+
+        Kotak Neo passes the exchange_segment separately in the API request
+        payload; the symbol itself is just the NSE compact core without
+        any exchange prefix.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """KotakNeoBroker symbol from OptionParams."""
+        if not params:
+            return None
+        # KotakNeo: bare compact core; exchange_segment added at order time
+        return params.compact_core
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """KotakNeo option chain as bare compact core strings."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[KotakNeoBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
     def is_connected(self) -> bool:
         try:
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -822,7 +909,7 @@ class KotakNeoBroker(BaseBroker):
                 self._ws_client = None
 
             # Call on_close callback
-            if self._ws_on_close and not self._ws_closed:
+            if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
                 except Exception as e:
@@ -875,18 +962,36 @@ class KotakNeoBroker(BaseBroker):
                 logger.error(f"[KotakNeoBroker.normalize_tick] {e}", exc_info=True)
             return None
 
-    def _resolve_neo_token(self, symbol: str) -> Optional[str]:
-        """
-        Map generic NSE:SYMBOL → Kotak Neo instrument_token.
+    def _load_neo_instruments(self):
+        """Load Kotak Neo instrument master from their CDN."""
+        try:
+            url = "https://kite.kotakneo.com/static/instruments.json"
+            self._instruments_df = pd.read_json(url)
+            logger.info("KotakNeoBroker: instrument master loaded")
+        except Exception as e:
+            logger.error(f"KotakNeoBroker: instrument load failed: {e}")
 
-        Kotak Neo uses numeric token strings. Without the instruments CSV,
-        we return the bare symbol as a best-effort fallback.
-        For production, download the instrument file and build a proper cache.
-        """
+    def _resolve_neo_token(self, symbol: str) -> Optional[str]:
+        """Map generic NSE:SYMBOL → Kotak Neo instrument_token."""
         try:
             cache = getattr(self, "_neo_token_cache", {})
             if symbol in cache:
                 return cache[symbol]
+
+            # Try to look up from instrument master
+            if hasattr(self, '_instruments_df') and self._instruments_df is not None:
+                clean = symbol.split(":")[-1].replace("-EQ", "")
+                match = self._instruments_df[
+                    (self._instruments_df['tradingsymbol'].str.contains(clean)) &
+                    (self._instruments_df['exchange'] == 'NSE')
+                    ]
+                if not match.empty:
+                    token = str(match.iloc[0]['instrument_token'])
+                    cache[symbol] = token
+                    self._neo_token_cache = cache
+                    return token
+
+            # Fallback to bare symbol
             bare = symbol.split(":")[-1]
             cache[symbol] = bare
             self._neo_token_cache = cache

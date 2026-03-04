@@ -682,10 +682,15 @@ class IciciBroker(BaseBroker):
             logger.error(f"[IciciBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             if not order_id or not self.breeze:
                 return None
+
             result = self._call(
                 lambda: self.breeze.get_order_detail(
                     exchange_code="NSE",
@@ -693,15 +698,133 @@ class IciciBroker(BaseBroker):
                 ),
                 context="order_status"
             )
-            if self._is_ok(result) and result.get("Success"):
-                data = result["Success"]
-                return data[0] if isinstance(data, list) and data else data
-            return None
+
+            if not self._is_ok(result) or not result.get("Success"):
+                return None
+
+            data = result["Success"]
+            if isinstance(data, list) and data:
+                order = data[0]
+            else:
+                order = data or {}
+
+            if not order:
+                return None
+
+            status_str = str(order.get("order_status") or "").upper()
+            if status_str in ("EXECUTED", "COMPLETE", "FILLED", "TRADED"):
+                return 2
+            if status_str in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED"):
+                return -1
+            # OPEN, PENDING, etc.
+            return 1
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[IciciBroker.get_current_order_status] {e!r}", exc_info=True)
             return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Breeze order detail includes 'average_price' for filled orders.
+        """
+        try:
+            if not broker_order_id or not self.breeze:
+                return None
+
+            result = self._call(
+                lambda: self.breeze.get_order_detail(
+                    exchange_code="NSE",
+                    order_id=broker_order_id,
+                ),
+                context="get_fill_price"
+            )
+
+            if not self._is_ok(result) or not result.get("Success"):
+                return None
+
+            data = result["Success"]
+            if isinstance(data, list) and data:
+                order = data[0]
+            else:
+                order = data or {}
+
+            avg = order.get("average_price") or order.get("avg_price")
+            if avg:
+                return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[IciciBroker.get_fill_price] {e!r}", exc_info=True)
+            return None
+
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        ICICI Breeze structured option string:
+        ``"NFO:NIFTY:18MAR2025:25000:CE"``
+
+        ICICI Breeze (breeze-connect) does not accept compact symbols.
+        Instead options are identified by a colon-separated tuple of
+        (exchange, stock_code, expiry_ddmmmyyyy, strike, right).
+
+        ``get_option_quote()`` and ``place_order()`` in IciciBroker already
+        parse this format via ``option_name.split(":")`` — this method
+        simply produces it.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[IciciBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """IciciBroker symbol from OptionParams."""
+        if not params:
+            return None
+        # ICICI Breeze structured format: "NFO:NIFTY:18MAR2025:25000:CE"
+        return (
+            f"NFO:{params.underlying}:"
+            f"{params.expiry_str_ddmmmyyyy}:"
+            f"{params.strike}:"
+            f"{params.option_type}"
+        )
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """ICICI Breeze option chain as structured colon-strings."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[IciciBroker.build_option_chain] {e}", exc_info=True)
+            return []
 
     def is_connected(self) -> bool:
         try:
@@ -709,6 +832,7 @@ class IciciBroker(BaseBroker):
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -902,8 +1026,6 @@ class IciciBroker(BaseBroker):
     def ws_disconnect(self, ws_obj) -> None:
         """
         Close ICICI Breeze WebSocket with timeout protection.
-
-        FIXED: Added timeout and better error handling.
         """
         try:
             if ws_obj is None:
@@ -938,8 +1060,8 @@ class IciciBroker(BaseBroker):
             if self._ws_breeze == breeze:
                 self._ws_breeze = None
 
-            # Call on_close callback
-            if self._ws_on_close and not self._ws_closed:
+            # Call on_close callback - removed the inverted guard
+            if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
                 except Exception as e:
@@ -997,10 +1119,31 @@ class IciciBroker(BaseBroker):
         """Map generic NSE:SYMBOL → (exchange_code, stock_code) for Breeze."""
         try:
             upper = symbol.upper()
-            bare  = symbol.split(":")[-1]
-            # Strip Fyers-style suffixes like -INDEX, 50-INDEX
-            stock_code = bare.replace("-INDEX", "").replace("50", "")
+            bare = symbol.split(":")[-1]
+
+            # Handle index symbols
+            if bare in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+                stock_code = bare
+            # Handle equity symbols
+            elif bare.endswith("-EQ"):
+                stock_code = bare[:-3]  # Remove -EQ suffix
+            # Handle option symbols (structured format)
+            elif ":" in symbol and len(symbol.split(":")) >= 5:
+                parts = symbol.split(":")
+                stock_code = parts[1]  # Extract from structured format
+            else:
+                stock_code = bare
+
             exch = "NFO" if "NFO:" in upper else "NSE"
             return exch, stock_code
         except Exception:
             return "NSE", None
+
+    def _check_token_error(self, response: Any):
+        if isinstance(response, dict):
+            error = str(response.get("Error", "") or "").lower()
+            code = str(response.get("Code", ""))
+            if "session" in error or "token" in error or "login" in error or "expired" in error:
+                raise TokenExpiredError(response.get("Error", "Session expired"))
+            if code in ["401", "403", "1001", "1002"]:  # Add Breeze error codes
+                raise TokenExpiredError(f"Token error code: {code}")

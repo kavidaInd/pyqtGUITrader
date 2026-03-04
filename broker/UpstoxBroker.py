@@ -44,6 +44,7 @@ from db.crud import tokens
 try:
     import upstox_client
     from upstox_client.rest import ApiException
+
     UPSTOX_AVAILABLE = True
 except ImportError:
     UPSTOX_AVAILABLE = False
@@ -51,32 +52,32 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ── Upstox product / order constants ─────────────────────────────────────────
-UPSTOX_PRODUCT_INTRADAY  = "I"    # MIS
-UPSTOX_PRODUCT_DELIVERY  = "D"    # CNC
-UPSTOX_PRODUCT_MTF       = "MTF"  # Margin Trade Financing
+UPSTOX_PRODUCT_INTRADAY = "I"  # MIS
+UPSTOX_PRODUCT_DELIVERY = "D"  # CNC
+UPSTOX_PRODUCT_MTF = "MTF"  # Margin Trade Financing
 
 UPSTOX_ORDER_MARKET = "MARKET"
-UPSTOX_ORDER_LIMIT  = "LIMIT"
-UPSTOX_ORDER_SL     = "SL"
-UPSTOX_ORDER_SLM    = "SL-M"
+UPSTOX_ORDER_LIMIT = "LIMIT"
+UPSTOX_ORDER_SL = "SL"
+UPSTOX_ORDER_SLM = "SL-M"
 
-UPSTOX_BUY  = "BUY"
+UPSTOX_BUY = "BUY"
 UPSTOX_SELL = "SELL"
 
 # Upstox interval mapping: generic -> API
 UPSTOX_INTERVAL_MAP = {
-    "1":   "1minute",
-    "2":   "2minute",
-    "3":   "3minute",
-    "5":   "5minute",
-    "10":  "10minute",
-    "15":  "15minute",
-    "30":  "30minute",
-    "60":  "60minute",
-    "D":   "day",
+    "1": "1minute",
+    "2": "2minute",
+    "3": "3minute",
+    "5": "5minute",
+    "10": "10minute",
+    "15": "15minute",
+    "30": "30minute",
+    "60": "60minute",
+    "D": "day",
     "day": "day",
-    "W":   "week",
-    "M":   "month",
+    "W": "week",
+    "M": "month",
 }
 
 
@@ -108,8 +109,8 @@ class UpstoxBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for UpstoxBroker.")
 
-            self.api_key      = getattr(broker_setting, 'client_id', None)
-            self.api_secret   = getattr(broker_setting, 'secret_key', None)
+            self.api_key = getattr(broker_setting, 'client_id', None)
+            self.api_secret = getattr(broker_setting, 'secret_key', None)
             self.redirect_uri = getattr(broker_setting, 'redirect_uri', None)
 
             # Load saved token
@@ -138,7 +139,7 @@ class UpstoxBroker(BaseBroker):
 
     @property
     def broker_type(self) -> str:
-        return "upstocks"
+        return "upstox"
 
     def _safe_defaults_init(self):
         self.state = None
@@ -168,11 +169,11 @@ class UpstoxBroker(BaseBroker):
     def _build_api_clients(self):
         """Instantiate all Upstox API sub-clients."""
         self._api_client = upstox_client.ApiClient(self._config)
-        self._order_api        = upstox_client.OrderApiV3(self._api_client)
-        self._portfolio_api    = upstox_client.PortfolioApi(self._api_client)
+        self._order_api = upstox_client.OrderApiV3(self._api_client)
+        self._portfolio_api = upstox_client.PortfolioApi(self._api_client)
         self._market_quote_api = upstox_client.MarketQuoteApi(self._api_client)
-        self._history_api      = upstox_client.HistoryApi(self._api_client)
-        self._user_api         = upstox_client.UserApi(self._api_client)
+        self._history_api = upstox_client.HistoryApi(self._api_client)
+        self._user_api = upstox_client.UserApi(self._api_client)
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -311,15 +312,14 @@ class UpstoxBroker(BaseBroker):
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
         try:
-            if not self._portfolio_api:
+            if not self._user_api:
                 return 0.0
             result = self._call(
                 lambda: self._user_api.get_user_fund_margin(api_version="2.0"),
                 context="get_balance"
             )
-            if result and result.data:
-                equity = result.data.equity or {}
-                available = float(getattr(equity, 'available_margin', 0.0) or 0.0)
+            if result and result.data and result.data.equity:
+                available = float(result.data.equity.available_margin or 0.0)
                 if capital_reserve > 0:
                     available = available * (1 - capital_reserve / 100)
                 return available
@@ -337,19 +337,19 @@ class UpstoxBroker(BaseBroker):
             instrument_key = self._get_instrument_key(symbol)
             if not instrument_key:
                 return None
-            to_date = to_date_str(datetime.now())
-            from_date = to_date_str(datetime.now() - timedelta(days=4))
             upstox_interval = self._to_upstox_interval(interval)
             self._check_rate_limit()
             result = self._call(
                 lambda: self._history_api.get_intra_day_candle_data(
-                    instrument_key, upstox_interval, api_version="2.0"
+                    instrument_key,
+                    upstox_interval,
+                    api_version="2.0"
                 ),
                 context="get_history"
             )
             if result and result.data and result.data.candles:
                 candles = result.data.candles
-                df = pd.DataFrame(candles, columns=["time","open","high","low","close","volume","oi"])
+                df = pd.DataFrame(candles, columns=["time", "open", "high", "low", "close", "volume", "oi"])
                 return df.tail(length)
             return None
         except TokenExpiredError:
@@ -365,8 +365,8 @@ class UpstoxBroker(BaseBroker):
             instrument_key = self._get_instrument_key(symbol)
             if not instrument_key:
                 return None
-            fetch_days = max(days, 60) if interval in ["15","30","60"] else (
-                max(days, 120) if interval in ["120","240"] else days
+            fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
+                max(days, 120) if interval in ["120", "240"] else days
             )
             to_date = to_date_str(datetime.now())
             from_date = to_date_str(datetime.now() - timedelta(days=fetch_days))
@@ -374,14 +374,17 @@ class UpstoxBroker(BaseBroker):
             self._check_rate_limit()
             result = self._call(
                 lambda: self._history_api.get_historical_candle_data(
-                    instrument_key, upstox_interval, to_date,
-                    from_date=from_date, api_version="2.0"
+                    instrument_key,
+                    upstox_interval,
+                    to_date,
+                    from_date,
+                    api_version="2.0"
                 ),
                 context="get_history_for_timeframe"
             )
             if result and result.data and result.data.candles:
                 df = pd.DataFrame(result.data.candles,
-                                  columns=["time","open","high","low","close","volume","oi"])
+                                  columns=["time", "open", "high", "low", "close", "volume", "oi"])
                 df["time"] = pd.to_datetime(df["time"])
                 return df
             return None
@@ -420,14 +423,14 @@ class UpstoxBroker(BaseBroker):
                     ask = asks[0].price if asks else None
                 ohlc = getattr(q, 'ohlc', None)
                 return {
-                    "ltp":    getattr(q, 'last_price', None),
-                    "bid":    bid, "ask": ask,
-                    "high":   getattr(ohlc, 'high', None) if ohlc else None,
-                    "low":    getattr(ohlc, 'low', None) if ohlc else None,
-                    "open":   getattr(ohlc, 'open', None) if ohlc else None,
-                    "close":  getattr(ohlc, 'close', None) if ohlc else None,
+                    "ltp": getattr(q, 'last_price', None),
+                    "bid": bid, "ask": ask,
+                    "high": getattr(ohlc, 'high', None) if ohlc else None,
+                    "low": getattr(ohlc, 'low', None) if ohlc else None,
+                    "open": getattr(ohlc, 'open', None) if ohlc else None,
+                    "close": getattr(ohlc, 'close', None) if ohlc else None,
                     "volume": getattr(q, 'volume', None),
-                    "oi":     getattr(q, 'oi', None),
+                    "oi": getattr(q, 'oi', None),
                 }
             return None
         except TokenExpiredError:
@@ -455,11 +458,19 @@ class UpstoxBroker(BaseBroker):
             if result and result.data:
                 for ikey, q in result.data.items():
                     clean = ikey.split("|")[-1]
+                    depth = getattr(q, 'depth', None)
+                    bid = ask = None
+                    if depth:
+                        bids = getattr(depth, 'buy', [])
+                        asks = getattr(depth, 'sell', [])
+                        bid = bids[0].price if bids else None
+                        ask = asks[0].price if asks else None
                     out[clean] = {
-                        "ltp":    getattr(q, 'last_price', None),
-                        "bid":    None, "ask": None,
+                        "ltp": getattr(q, 'last_price', None),
+                        "bid": bid,
+                        "ask": ask,
                         "volume": getattr(q, 'volume', None),
-                        "oi":     getattr(q, 'oi', None),
+                        "oi": getattr(q, 'oi', None),
                     }
             return out
         except TokenExpiredError:
@@ -478,7 +489,7 @@ class UpstoxBroker(BaseBroker):
             order_type = kwargs.get('order_type', self.MARKET_ORDER_TYPE)
             product = kwargs.get('product_type', UPSTOX_PRODUCT_INTRADAY)
             limit_price = float(kwargs.get('limitPrice', 0) or 0)
-            stop_price  = float(kwargs.get('stopPrice', 0) or 0)
+            stop_price = float(kwargs.get('stopPrice', 0) or 0)
 
             if not symbol or qty <= 0:
                 return None
@@ -488,8 +499,8 @@ class UpstoxBroker(BaseBroker):
                 return None
 
             upstox_order_type = {
-                self.MARKET_ORDER_TYPE:          UPSTOX_ORDER_MARKET,
-                self.LIMIT_ORDER_TYPE:           UPSTOX_ORDER_LIMIT,
+                self.MARKET_ORDER_TYPE: UPSTOX_ORDER_MARKET,
+                self.LIMIT_ORDER_TYPE: UPSTOX_ORDER_LIMIT,
                 self.STOPLOSS_MARKET_ORDER_TYPE: UPSTOX_ORDER_SLM,
             }.get(order_type, UPSTOX_ORDER_MARKET)
 
@@ -591,9 +602,19 @@ class UpstoxBroker(BaseBroker):
                 lambda: self._portfolio_api.get_positions(api_version="2.0"),
                 context="get_positions"
             )
+            positions = []
             if result and result.data:
-                return [vars(p) for p in result.data]
-            return []
+                for p in result.data:
+                    positions.append({
+                        "instrument_key": getattr(p, 'instrument_key', ''),
+                        "quantity": getattr(p, 'quantity', 0),
+                        "average_price": getattr(p, 'average_price', 0.0),
+                        "last_price": getattr(p, 'last_price', 0.0),
+                        "pnl": getattr(p, 'pnl', 0.0),
+                        "product": getattr(p, 'product', ''),
+                        "exchange": getattr(p, 'exchange', ''),
+                    })
+            return positions
         except TokenExpiredError:
             raise
         except Exception as e:
@@ -608,31 +629,154 @@ class UpstoxBroker(BaseBroker):
                 lambda: self._order_api.get_order_book(api_version="2.0"),
                 context="get_orderbook"
             )
+            orders = []
             if result and result.data:
-                return [vars(o) for o in result.data]
-            return []
+                for o in result.data:
+                    orders.append({
+                        "order_id": getattr(o, 'order_id', ''),
+                        "instrument_key": getattr(o, 'instrument_key', ''),
+                        "quantity": getattr(o, 'quantity', 0),
+                        "filled_quantity": getattr(o, 'filled_quantity', 0),
+                        "status": getattr(o, 'status', ''),
+                        "average_price": getattr(o, 'average_price', 0.0),
+                        "price": getattr(o, 'price', 0.0),
+                        "trigger_price": getattr(o, 'trigger_price', 0.0),
+                        "order_type": getattr(o, 'order_type', ''),
+                        "transaction_type": getattr(o, 'transaction_type', ''),
+                        "product": getattr(o, 'product', ''),
+                    })
+            return orders
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[UpstoxBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return order status as integer:
+        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
+        """
         try:
             if not order_id or not self._order_api:
                 return None
+
             result = self._call(
                 lambda: self._order_api.get_order_details(
                     order_id=order_id, api_version="2.0"
                 ),
                 context="order_status"
             )
-            return result.data if result else None
+
+            if not result or not result.data:
+                return None
+
+            status_str = str(getattr(result.data, 'status', '')).lower()
+            if status_str in ("complete", "filled", "traded", "executed"):
+                return 2
+            if status_str in ("rejected", "cancelled", "canceled", "expired"):
+                return -1
+            # open, pending, after_market_order_req_received, etc.
+            return 1
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f"[UpstoxBroker.get_current_order_status] {e!r}", exc_info=True)
             return None
+
+    def get_fill_price(self, broker_order_id: str) -> Optional[float]:
+        """
+        Return the actual average fill price for a completed order.
+        Upstox order details include 'average_price' for filled orders.
+        """
+        try:
+            if not broker_order_id or not self._order_api:
+                return None
+
+            result = self._call(
+                lambda: self._order_api.get_order_details(
+                    order_id=broker_order_id, api_version="2.0"
+                ),
+                context="get_fill_price"
+            )
+
+            if result and result.data:
+                avg = getattr(result.data, 'average_price', None)
+                if avg:
+                    return float(avg)
+            return None
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.get_fill_price] {e!r}", exc_info=True)
+            return None
+
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+            self,
+            underlying: str,
+            spot_price: float,
+            option_type: str,
+            weeks_offset: int = 0,
+            lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Upstox instrument_key format: ``NSE_FO|<ISIN>``
+
+        Upstox does NOT accept text tradingsymbols for options — it requires
+        a pre-mapped instrument_key from the Upstox instrument CSV.
+        This method builds the NSE compact core and looks it up via
+        ``_get_instrument_key()``.  Returns compact core as fallback.
+        """
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """UpstoxBroker symbol from OptionParams."""
+        if not params:
+            return None
+        core = params.compact_core
+        try:
+            key = self._get_instrument_key(f"NFO:{core}")
+            if key:
+                return key
+        except Exception:
+            pass
+        logger.warning(
+            f"[UpstoxBroker._params_to_symbol] instrument_key not found for "
+            f"{core} — returning compact core as fallback"
+        )
+        return core
+
+    def build_option_chain(
+            self,
+            underlying: str,
+            spot_price: float,
+            option_type: str,
+            weeks_offset: int = 0,
+            itm: int = 5,
+            otm: int = 5,
+    ) -> List[str]:
+        """Upstox option chain as instrument_key strings."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[UpstoxBroker.build_option_chain] {e}", exc_info=True)
+            return []
 
     def is_connected(self) -> bool:
         try:
@@ -640,6 +784,7 @@ class UpstoxBroker(BaseBroker):
         except TokenExpiredError:
             return False
         except Exception:
+
             return False
 
     def cleanup(self) -> None:
@@ -699,18 +844,18 @@ class UpstoxBroker(BaseBroker):
                     raise TokenExpiredError(f"Upstox auth error: {e.body}")
                 if e.status == 429:
                     delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    logger.warning(f"[Upstox.{context}] Rate limit, retry {attempt+1}")
+                    logger.warning(f"[Upstox.{context}] Rate limit, retry {attempt + 1}")
                     time.sleep(delay)
                 elif e.status in (500, 502, 503):
                     delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    logger.warning(f"[Upstox.{context}] Server error {e.status}, retry {attempt+1}")
+                    logger.warning(f"[Upstox.{context}] Server error {e.status}, retry {attempt + 1}")
                     time.sleep(delay)
                 else:
                     logger.error(f"[Upstox.{context}] ApiException {e.status}: {e.body}")
                     return None
             except (Timeout, ConnectionError) as e:
                 delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                logger.warning(f"[Upstox.{context}] Network error, retry {attempt+1}: {e}")
+                logger.warning(f"[Upstox.{context}] Network error, retry {attempt + 1}: {e}")
                 time.sleep(delay)
             except Exception as e:
                 logger.error(f"[Upstox.{context}] Unexpected: {e!r}", exc_info=True)
@@ -755,8 +900,8 @@ class UpstoxBroker(BaseBroker):
             # Create streamer with safety-wrapped callbacks
             streamer = MarketDataStreamer(
                 upstox_client.ApiClient(configuration),
-                [],          # instruments list — populated in ws_subscribe
-                "full",      # mode: "ltpc" | "full" | "option_greeks"
+                [],  # instruments list — populated in ws_subscribe
+                "full",  # mode: "ltpc" | "full" | "option_greeks"
             )
 
             def safe_on_message(data):
@@ -776,9 +921,9 @@ class UpstoxBroker(BaseBroker):
                     on_error(str(e))
 
             streamer.on("message", safe_on_message)
-            streamer.on("open",    safe_on_open)
-            streamer.on("close",   safe_on_close)
-            streamer.on("error",   safe_on_error)
+            streamer.on("open", safe_on_open)
+            streamer.on("close", safe_on_close)
+            streamer.on("error", safe_on_error)
 
             self._ws_streamer = streamer
             logger.info("UpstoxBroker: MarketDataStreamer object created")
@@ -876,7 +1021,7 @@ class UpstoxBroker(BaseBroker):
                 self._ws_streamer = None
 
             # Call on_close callback
-            if self._ws_on_close and not self._ws_closed:
+            if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
                 except Exception as e:
@@ -890,10 +1035,6 @@ class UpstoxBroker(BaseBroker):
     def normalize_tick(self, raw_tick) -> Optional[Dict[str, Any]]:
         """
         Normalize an Upstox MarketDataStreamer tick.
-
-        Upstox sends protobuf-decoded dicts with fields depending on mode:
-        Full mode: instrument_key, ltp, open, high, low, close, volume,
-                   oi, bid_price, ask_price, timestamp.
         """
         try:
             if self._ws_closed or not isinstance(raw_tick, dict):
@@ -909,37 +1050,45 @@ class UpstoxBroker(BaseBroker):
                             feed_data.get("ff", {}).get("indexFF", {})
                 if not full_feed:
                     continue
-                ltpc  = full_feed.get("ltpc", {})
-                ltp   = ltpc.get("ltp")
+                ltpc = full_feed.get("ltpc", {})
+                ltp = ltpc.get("ltp")
                 if ltp is None:
                     continue
 
                 ohlc_data = full_feed.get("dayOhlc", {})
-                depth     = full_feed.get("marketLevel", {})
-                bid_data  = depth.get("bidAskQuote", [{}])
-                ask_data  = depth.get("bidAskQuote", [{}])
+                depth = full_feed.get("marketLevel", {})
+                bid_ask_quotes = depth.get("bidAskQuote", [])
+
+                # Extract best bid and ask
+                bid = None
+                ask = None
+                for quote in bid_ask_quotes:
+                    if "bp" in quote and quote.get("bp"):  # bid price
+                        bid = quote.get("bp")
+                    if "sp" in quote and quote.get("sp"):  # ask price
+                        ask = quote.get("sp")
 
                 # Convert instrument_key back to app format
                 # "NSE_EQ|INE002A01018" → "NSE:INE002A01018"
                 sym_parts = instrument_key.split("|")
-                exch      = sym_parts[0].split("_")[0] if sym_parts else "NSE"
-                bare_sym  = sym_parts[1] if len(sym_parts) > 1 else instrument_key
-                symbol    = f"{exch}:{bare_sym}"
+                exch = sym_parts[0].split("_")[0] if sym_parts else "NSE"
+                bare_sym = sym_parts[1] if len(sym_parts) > 1 else instrument_key
+                symbol = f"{exch}:{bare_sym}"
 
                 ts = full_feed.get("ltt") or raw_tick.get("currentTs", "")
 
                 results.append({
-                    "symbol":    symbol,
-                    "ltp":       float(ltp),
+                    "symbol": symbol,
+                    "ltp": float(ltp),
                     "timestamp": str(ts),
-                    "bid":       bid_data[0].get("bp") if bid_data else None,
-                    "ask":       ask_data[-1].get("sp") if ask_data else None,
-                    "volume":    full_feed.get("vtt"),
-                    "oi":        full_feed.get("oi"),
-                    "open":      ohlc_data.get("open"),
-                    "high":      ohlc_data.get("high"),
-                    "low":       ohlc_data.get("low"),
-                    "close":     ohlc_data.get("close"),
+                    "bid": float(bid) if bid else None,
+                    "ask": float(ask) if ask else None,
+                    "volume": full_feed.get("vtt"),
+                    "oi": full_feed.get("oi"),
+                    "open": ohlc_data.get("open"),
+                    "high": ohlc_data.get("high"),
+                    "low": ohlc_data.get("low"),
+                    "close": ohlc_data.get("close"),
                 })
 
             # Return first tick — WebSocketManager handles one at a time
@@ -964,14 +1113,14 @@ class UpstoxBroker(BaseBroker):
                 return cache[symbol]
 
             upper = symbol.upper()
-            bare  = symbol.split(":")[-1]
+            bare = symbol.split(":")[-1]
 
             # Known index mappings
             index_map = {
                 "NIFTY50-INDEX": "NSE_INDEX|Nifty 50",
-                "NIFTY 50":      "NSE_INDEX|Nifty 50",
-                "BANKNIFTY":     "NSE_INDEX|Nifty Bank",
-                "SENSEX":        "BSE_INDEX|SENSEX",
+                "NIFTY 50": "NSE_INDEX|Nifty 50",
+                "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+                "SENSEX": "BSE_INDEX|SENSEX",
             }
             for k, v in index_map.items():
                 if k in upper:

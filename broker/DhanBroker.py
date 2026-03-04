@@ -309,13 +309,18 @@ class DhanBroker(BaseBroker):
                 return None
             exchange_seg = self._exchange_segment(symbol)
             dhan_interval = self._to_dhan_interval(interval)
+
+            # Dhan requires date range for intraday data
             to_date = to_date_str(datetime.now())
             from_date = to_date_str(datetime.now() - timedelta(days=4))
+
             result = self._call(
                 lambda: self.dhan.intraday_minute_data(
                     security_id=security_id,
                     exchange_segment=exchange_seg,
                     instrument_type="OPTIDX" if "FNO" in exchange_seg else "EQUITY",
+                    from_date=from_date,
+                    to_date=to_date,
                 ),
                 context="get_history"
             )
@@ -622,12 +627,77 @@ class DhanBroker(BaseBroker):
             logger.error(f"[DhanBroker.get_fill_price] {e!r}", exc_info=True)
             return None
 
-    def is_connected(self) -> bool:
+    # ── Broker-specific option symbol construction ────────────────────────────
+
+    def build_option_symbol(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        lookback_strikes: int = 0,
+    ) -> Optional[str]:
+        """
+        Dhan option symbol: numeric ``security_id`` from Dhan instrument master.
+
+        Dhan does NOT use a text tradingsymbol for orders — every instrument
+        is identified by a numeric security_id.  This method builds the NSE
+        compact core (e.g. "NIFTY2531825000CE"), looks it up in the Dhan
+        instrument master CSV, and returns the security_id string.
+        Returns compact core as fallback if the lookup fails.
+        """
         try:
-            return self.get_profile() is not None
-        except TokenExpiredError:
-            return False
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            params = OptionSymbolBuilder.get_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                lookback_strikes=lookback_strikes,
+            )
+            return self._params_to_symbol(params)
+        except Exception as e:
+            logger.error(f"[DhanBroker.build_option_symbol] {e}", exc_info=True)
+            return None
+
+    def _params_to_symbol(self, params) -> Optional[str]:
+        """Dhan: security_id lookup from instrument master using compact core."""
+        if not params:
+            return None
+        core = params.compact_core           # e.g. "NIFTY2531825000CE"
+        try:
+            security_id = self._get_security_id(f"NFO:{core}")
+            if security_id:
+                return security_id
         except Exception:
+            pass
+        logger.warning(
+            f"[DhanBroker._params_to_symbol] security_id not found for "
+            f"{core} — returning compact core as fallback"
+        )
+        return core
+
+    def build_option_chain(
+        self,
+        underlying: str,
+        spot_price: float,
+        option_type: str,
+        weeks_offset: int = 0,
+        itm: int = 5,
+        otm: int = 5,
+    ) -> List[str]:
+        """Build a Dhan option chain as a list of security_ids."""
+        try:
+            from Utils.OptionSymbolBuilder import OptionSymbolBuilder
+            all_params = OptionSymbolBuilder.get_all_option_params(
+                underlying=underlying, spot_price=spot_price,
+                option_type=option_type, weeks_offset=weeks_offset,
+                itm=itm, otm=otm,
+            )
+            return [s for s in (self._params_to_symbol(p) for p in all_params) if s]
+        except Exception as e:
+            logger.error(f"[DhanBroker.build_option_chain] {e}", exc_info=True)
+            return []
+
+    def is_connected(self) -> bool:
             return False
 
     def cleanup(self) -> None:
@@ -955,3 +1025,12 @@ class DhanBroker(BaseBroker):
             return result
         except Exception:
             return (None, None)
+
+    def _check_token_error(self, response: Any):
+        if isinstance(response, dict):
+            msg = response.get("remarks", "")
+            code = response.get("errorCode", "")
+            if "invalid" in str(msg).lower() or "unauthori" in str(msg).lower():
+                raise TokenExpiredError(str(msg))
+            if code in ["E8001", "E8002", "E8003"]:
+                raise TokenExpiredError(f"Token error code: {code}")

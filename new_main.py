@@ -197,14 +197,7 @@ class TradingApp:
 
     def _apply_trading_mode_to_executor(self) -> None:
         """
-        Forward the paper/live mode flag from TradingModeSetting to OrderExecutor.
-
-        Called once during __init__ and again after _reload_broker so that
-        OrderExecutor always knows whether to send real orders or simulate them.
-
-        If trading_mode_setting is None (no mode was passed at construction —
-        e.g. from an older call-site) we default to LIVE so existing behaviour
-        is preserved and no silent paper-trade regression is introduced.
+        Forward the paper/live mode flag from TradingModeSetting to OrderExecutor and Broker.
         """
         try:
             if not self.executor:
@@ -217,11 +210,17 @@ class TradingApp:
                     "Pass trading_mode_var to TradingApp() to enable paper mode."
                 )
             else:
-                # TradingModeSetting.is_live() returns True when mode == LIVE.
-                # Paper / Backtest both mean we must NOT send real orders.
                 is_paper = not self.trading_mode_setting.is_live()
 
+            # Set executor paper mode
             self.executor.paper_mode = is_paper
+
+            if hasattr(self.broker, 'paper_mode'):
+                self.broker.paper_mode = is_paper
+                logger.info(
+                    f"[TradingApp] Broker paper_mode set to: {is_paper}"
+                )
+
             logger.info(
                 f"[TradingApp] Trading mode applied to executor: "
                 f"{'PAPER' if is_paper else 'LIVE'} "
@@ -443,30 +442,36 @@ class TradingApp:
             spot = state.derivative_current_price
             expiry = state.expiry
             derivative = state.derivative
-
             if not derivative:
                 logger.warning(f"Missing derivative ({derivative})")
                 return
 
-            # ATM options (used for trade execution & history)
-            state.put_option = OptionUtils.get_option_at_price(
-                spot, op_type="PE", expiry=expiry,
-                lookback=state.put_lookback,
-                derivative_name=derivative)
+            state.put_option = self.broker.build_option_symbol(
+                underlying=derivative,
+                spot_price=spot,
+                option_type="PE",
+                weeks_offset=expiry,
+                lookback_strikes=state.put_lookback,
+            )
 
-            state.call_option = OptionUtils.get_option_at_price(
-                spot, op_type="CE", expiry=expiry,
-                lookback=state.call_lookback,
-                derivative_name=derivative)
+            state.call_option = self.broker.build_option_symbol(
+                underlying=derivative,
+                spot_price=spot,
+                option_type="CE",
+                weeks_offset=expiry,
+                lookback_strikes=state.call_lookback,
+            )
 
             # Build option chain: _chain_itm ITM + ATM + _chain_otm OTM on each side
-            call_chain = OptionUtils.get_all_option(
-                expiry=expiry, symbol=derivative, strike=spot,
-                itm=self._chain_itm, otm=self._chain_otm, putorcall="CE")
+            call_chain = self.broker.build_option_chain(
+                underlying=derivative, spot_price=spot,
+                option_type="CE", weeks_offset=expiry,
+                itm=self._chain_itm, otm=self._chain_otm)
 
-            put_chain = OptionUtils.get_all_option(
-                expiry=expiry, symbol=derivative, strike=spot,
-                itm=self._chain_itm, otm=self._chain_otm, putorcall="PE")
+            put_chain = self.broker.build_option_chain(
+                underlying=derivative, spot_price=spot,
+                option_type="PE", weeks_offset=expiry,
+                itm=self._chain_itm, otm=self._chain_otm)
 
             # Initialize chain storage with zero-state entries
             if self._option_chain_lock:
@@ -1348,13 +1353,16 @@ class TradingApp:
             logger.error(f"🔥 Error in cancel_pending_trade: {e}", exc_info=True)
 
     def symbol_full(self, symbol: Optional[str]) -> Optional[str]:
-        try:
-            if not symbol:
-                return None
-            return OptionUtils.get_symbol_for_broker(symbol, self.broker.broker_type)
-        except Exception as e:
-            logger.error(f"[symbol_full] Error processing {symbol}: {e}", exc_info=True)
-            return symbol  # Return original on error
+        """
+        Return the broker-ready full symbol for *symbol*.
+
+        Since ``build_option_chain()`` and ``build_option_symbol()`` now
+        return broker-ready strings directly, this method is mostly a
+        no-op pass-through.  It retains a lightweight fallback via
+        OptionUtils for any legacy call sites that still pass bare core
+        symbols (e.g. from saved state or config files).
+        """
+        return symbol
 
     def refresh_settings_live(self) -> None:
         """Refresh settings from config files."""
