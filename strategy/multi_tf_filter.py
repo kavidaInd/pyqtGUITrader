@@ -10,18 +10,17 @@ Now derives higher timeframe data from 1-minute data for consistency and efficie
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from Utils.Utils import Utils, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any, Set, Callable
 from functools import lru_cache
-from contextlib import contextmanager
-from collections import defaultdict
-import numpy as np
+from typing import Dict, List, Optional, Tuple, Any
 
 import pandas as pd
 import pandas_ta as ta
+
+from Utils.Utils import Utils
 
 logger = logging.getLogger(__name__)
 

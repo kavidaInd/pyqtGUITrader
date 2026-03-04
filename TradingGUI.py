@@ -1875,18 +1875,117 @@ class TradingGUI(QMainWindow):
         except Exception as e:
             logger.error(f"[TradingGUI._show_live_upgrade_dialog] {e}", exc_info=True)
 
-    def _check_token_expired(self) -> bool:
-        """Check if token appears to be expired"""
+    def _check_token_expired(self, buffer_minutes: int = 1) -> bool:
+        """
+        Check if the stored broker token has expired.
+
+        Handles timezone differences by assuming stored timestamps are in UTC
+        (as they typically are from brokers) and converting local time to UTC
+        for comparison.
+
+        Args:
+            buffer_minutes: Number of minutes before actual expiry to consider as expired
+                           (default: 1 minute)
+
+        Returns:
+            bool: True if token is expired or no valid token exists, False if token is still valid
+        """
         try:
-            # This is a simple check - you might want to implement more sophisticated logic
-            if hasattr(self.brokerage_setting, 'token_expiry'):
-                expiry = self.brokerage_setting.token_expiry
-                if expiry and datetime.now() > expiry:
+            from datetime import datetime, timezone
+            from db.crud import tokens
+
+            # Get the current token data from database
+            token_data = tokens.get()
+
+            if not token_data:
+                logger.warning("[TradingGUI._check_token_expired] No token data found in database")
+                return True
+
+            # Get the expiry timestamp
+            expiry_str = token_data.get('expires_at')
+
+            if not expiry_str:
+                # Also check if there's an access token at least
+                access_token = token_data.get('access_token', '')
+                if access_token:
+                    logger.debug("[TradingGUI._check_token_expired] Token exists but no expiry date")
+                    # Without expiry, assume it's valid (some tokens don't expire)
+                    return False
+                else:
+                    logger.debug("[TradingGUI._check_token_expired] No access token found")
                     return True
-            return False
+
+            # Parse the expiry timestamp - assume it's in UTC (as most brokers provide)
+            expiry = None
+
+            # List of possible timestamp formats to try
+            formats = [
+                "%Y-%m-%dT%H:%M:%S",  # ISO format: 2024-01-20T15:30:00
+                "%Y-%m-%d %H:%M:%S",  # SQL format: 2024-01-20 15:30:00
+                "%Y-%m-%dT%H:%M:%S.%f",  # ISO with microseconds
+                "%Y-%m-%d %H:%M:%S.%f",  # SQL with microseconds
+            ]
+
+            for fmt in formats:
+                try:
+                    # Parse as naive datetime first
+                    naive_expiry = datetime.strptime(expiry_str, fmt)
+                    # Assume it's UTC and add timezone
+                    expiry = naive_expiry.replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+
+            # Try fromisoformat as fallback
+            if expiry is None:
+                try:
+                    # Handle Zulu time (UTC)
+                    if expiry_str.endswith('Z'):
+                        expiry_str = expiry_str.replace('Z', '+00:00')
+                    expiry = datetime.fromisoformat(expiry_str)
+                    # If the parsed datetime is naive, assume UTC
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=timezone.utc)
+                except (ValueError, AttributeError):
+                    pass
+
+            if expiry is None:
+                logger.error(f"[TradingGUI._check_token_expired] Could not parse expiry date: {expiry_str}")
+                return True
+
+            # Get current time in UTC for fair comparison
+            # This works correctly even if you're in GMT+5:30
+            now_utc = datetime.now(timezone.utc)
+
+            # Log for debugging
+            logger.debug(f"[TradingGUI._check_token_expired] Current UTC: {now_utc}")
+            logger.debug(f"[TradingGUI._check_token_expired] Expiry UTC: {expiry}")
+            logger.debug(f"[TradingGUI._check_token_expired] Your local time: {datetime.now()}")
+
+            # Add buffer time
+            buffer_seconds = buffer_minutes * 60
+            time_remaining = (expiry - now_utc).total_seconds()
+
+            if time_remaining <= buffer_seconds:
+                if time_remaining > 0:
+                    logger.info(
+                        f"[TradingGUI._check_token_expired] Token expires in {time_remaining / 60:.1f} minutes (within {buffer_minutes} min buffer)")
+                else:
+                    logger.info(
+                        f"[TradingGUI._check_token_expired] Token expired {abs(time_remaining / 60):.1f} minutes ago")
+                return True
+            else:
+                logger.debug(
+                    f"[TradingGUI._check_token_expired] Token valid for {time_remaining / 60:.1f} more minutes")
+                return False
+
+        except ImportError as e:
+            logger.error(f"[TradingGUI._check_token_expired] Failed to import: {e}")
+            return True
         except Exception as e:
-            logger.warning(f"[TradingGUI._check_token_expired] Failed: {e}")
-            return False
+            logger.error(f"[TradingGUI._check_token_expired] Unexpected error: {e}", exc_info=True)
+            return True
+
 
     @pyqtSlot()
     def _stop_app(self):

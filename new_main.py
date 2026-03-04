@@ -62,10 +62,6 @@ class TradingApp:
 
             # Use state_manager instead of direct TradeState
             self.config = config
-            # Store the trading mode setting so every subsystem can read it.
-            # trading_mode_var is a TradingModeSetting object with an .is_live()
-            # method.  When None we treat it as LIVE for backward-compatibility
-            # (existing callers that don't pass it must be audited separately).
             self.trading_mode_setting = trading_mode_var
             self.broker = BrokerFactory.create(state=state_manager.get_state(), broker_setting=broker_setting)
 
@@ -79,19 +75,24 @@ class TradingApp:
             self.signal_engine = self._create_signal_engine()
             self.detector = TrendDetector(config=self.config, signal_engine=self.signal_engine)
             self.executor = OrderExecutor(broker_api=self.broker, config=self.config)
-            # Propagate paper mode to executor immediately so it never places
-            # real orders when the user has chosen PAPER mode.
             self._apply_trading_mode_to_executor()
             self.monitor = PositionMonitor()
+
+            # during or after initialisation (Bug #1 fix).
+            self.notifier = Notifier(self.config)
 
             # FEATURE 1: Risk Manager
             self.risk_manager = RiskManager()
             self.risk_manager.risk_breach.connect(
-                lambda reason: (self.stop(), self.notifier.notify_risk_breach(reason))
+                lambda reason: (
+                    self.executor.exit_position() if (
+                            self.executor and
+                            state_manager.get_state().current_position is not None
+                    ) else None,
+                    self.stop(),
+                    self.notifier.notify_risk_breach(reason),
+                )
             )
-
-            # FEATURE 4: Telegram Notifier
-            self.notifier = Notifier(self.config)
 
             # FEATURE 6: Multi-Timeframe Filter
             self.mtf_filter = MultiTimeframeFilter(self.broker)
@@ -243,7 +244,7 @@ class TradingApp:
         """Check if we're in backtest mode."""
         if self.trading_mode_setting is None:
             return False
-        return getattr(self.trading_mode_setting, 'mode', '')== 'BACKTEST'
+        return getattr(self.trading_mode_setting, 'mode', '') == 'BACKTEST'
 
     def _check_market_status(self) -> bool:
         """
@@ -535,8 +536,8 @@ class TradingApp:
                 logger.warning(f"LTP missing for symbol {symbol}. Message: {message}")
                 return
 
-            # Stage 1: Fast update - write LTP to state immediately
-            self.update_market_state(symbol, ltp, ask_price, bid_price)
+            volume = message.get("ltq", 0) or 0
+            self.update_market_state(symbol, ltp, ask_price, bid_price, volume)
 
             # Push to queue for Stage 2 processing (non-blocking)
             try:
@@ -688,7 +689,8 @@ class TradingApp:
         except Exception as e:
             logger.error(f"Error in _on_trade_closed: {e}", exc_info=True)
 
-    def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float) -> None:
+    def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float,
+                            volume: float = 0.0) -> None:
         try:
             state = state_manager.get_state()
 
@@ -716,7 +718,7 @@ class TradingApp:
                 try:
                     derivative = state.derivative
                     if derivative:
-                        candle_store_manager.push_tick(derivative, ltp)
+                        candle_store_manager.push_tick(derivative, ltp, volume=volume)
                 except Exception as e:
                     logger.debug(f"CandleStore push error: {e}")
                 return
@@ -740,9 +742,7 @@ class TradingApp:
                         logger.debug(
                             f"Symbol {full_symbol} not in option chain. Available: {list(state.option_chain.keys())}")
 
-            # --- ATM option convenience state ---
-            use_ask = bool(state.current_position)
-
+            use_ask = not bool(state.current_position)
             atm_put_sym = self.symbol_full(state.put_option)
             atm_call_sym = self.symbol_full(state.call_option)
 
@@ -791,12 +791,14 @@ class TradingApp:
                     interval=state.interval
             ):
                 if self._history_fetch_in_progress and not self._history_fetch_in_progress.is_set():
-                    self._history_fetch_in_progress.set()
                     if self._fetch_executor:
-                        self._fetch_executor.submit(self._fetch_history_and_detect)
+                        try:
+                            self._fetch_executor.submit(self._fetch_history_and_detect)
+                            self._history_fetch_in_progress.set()
+                        except Exception as submit_err:
+                            logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
                     else:
                         logger.error("Thread pool not available for history fetch")
-                        self._history_fetch_in_progress.clear()
 
             state.trend = self.determine_trend_from_signals()
 
@@ -1061,9 +1063,6 @@ class TradingApp:
 
             state = state_manager.get_state()
 
-            if not state.current_trade_confirmed:
-                return
-
             index_stop_loss = state.index_stop_loss
             current_derivative_price = state.derivative_current_price
 
@@ -1074,7 +1073,7 @@ class TradingApp:
                         state.reason_to_exit = "Auto-exit before market close."
                         if hasattr(self, 'executor') and self.executor:
                             try:
-                                success = self.executor.exit_position(state)
+                                success = self.executor.exit_position()
                                 if not success:
                                     logger.error("Exit failed near market close")
                             except TokenExpiredError:
@@ -1089,7 +1088,7 @@ class TradingApp:
                         state.reason_to_exit = f"PUT exit: {state.option_signal}"
                         if hasattr(self, 'executor') and self.executor:
                             try:
-                                success = self.executor.exit_position(state)
+                                success = self.executor.exit_position()
                                 if not success:
                                     logger.error("Exit failed for PUT")
                             except TokenExpiredError:
@@ -1101,7 +1100,7 @@ class TradingApp:
                         state.reason_to_exit = "PUT exit: Derivative crossed above ST (safety)"
                         if hasattr(self, 'executor') and self.executor:
                             try:
-                                success = self.executor.exit_position(state)
+                                success = self.executor.exit_position()
                                 if not success:
                                     logger.error("Exit failed for PUT (safety)")
                             except TokenExpiredError:
@@ -1114,7 +1113,7 @@ class TradingApp:
                         state.reason_to_exit = f"CALL exit: {state.option_signal}"
                         if hasattr(self, 'executor') and self.executor:
                             try:
-                                success = self.executor.exit_position(state)
+                                success = self.executor.exit_position()
                                 if not success:
                                     logger.error("Exit failed for CALL")
                             except TokenExpiredError:
@@ -1126,7 +1125,7 @@ class TradingApp:
                         state.reason_to_exit = "CALL exit: Derivative dropped below ST (safety)"
                         if hasattr(self, 'executor') and self.executor:
                             try:
-                                success = self.executor.exit_position(state)
+                                success = self.executor.exit_position()
                                 if not success:
                                     logger.error("Exit failed for CALL (safety)")
                             except TokenExpiredError:
@@ -1176,7 +1175,7 @@ class TradingApp:
                 state.reason_to_exit = f"{state.current_position} exit: Option price below stop loss."
                 if hasattr(self, 'executor') and self.executor:
                     try:
-                        success = self.executor.exit_position(state)
+                        success = self.executor.exit_position()
                         if not success:
                             logger.error(f"Exit failed for stop loss at {stop_loss}")
                     except TokenExpiredError:
@@ -1188,7 +1187,7 @@ class TradingApp:
                 state.reason_to_exit = f"{state.current_position} exit: Target profit hit."
                 if hasattr(self, 'executor') and self.executor:
                     try:
-                        success = self.executor.exit_position(state)
+                        success = self.executor.exit_position()
                         if not success:
                             logger.error(f"Exit failed for take profit at {tp_point}")
                     except TokenExpiredError:
@@ -1311,20 +1310,23 @@ class TradingApp:
 
             for order in state.orders:
                 order_id = order.get("id")
+                broker_id = order.get("broker_id")
                 try:
-                    if self.broker and hasattr(self.broker, 'get_current_order_status'):
-                        status_list = self.broker.get_current_order_status(order_id)
-                        if status_list and len(status_list) > 0:
-                            order_status = status_list[0].get("status")
-                            if order_status == BaseEnums.ORDER_STATUS_CONFIRMED:
-                                confirmed_found = True
-                                confirmed_orders.append(order)
-                                logger.info(f"✅ Order {order_id} confirmed. Will not cancel.")
-                                continue
+                    if self.broker and broker_id and hasattr(self.broker, 'get_current_order_status'):
+                        status = self.broker.get_current_order_status(broker_id)
+                        if status == BaseEnums.ORDER_STATUS_CONFIRMED:
+                            confirmed_found = True
+                            confirmed_orders.append(order)
+                            logger.info(f"✅ Order {order_id} (broker={broker_id}) confirmed. Will not cancel.")
+                            continue
+
+                    if broker_id is None:
+                        logger.debug(f"Paper order {order_id} — skipping broker cancel.")
+                        continue
 
                     if self.broker and hasattr(self.broker, 'cancel_order'):
-                        self.broker.cancel_order(order_id=order_id)
-                        logger.info(f"Cancelled order ID: {order_id}")
+                        self.broker.cancel_order(order_id=broker_id)
+                        logger.info(f"Cancelled broker order {broker_id} (db_id={order_id})")
 
                 except TokenExpiredError:
                     raise
@@ -1353,15 +1355,6 @@ class TradingApp:
             logger.error(f"🔥 Error in cancel_pending_trade: {e}", exc_info=True)
 
     def symbol_full(self, symbol: Optional[str]) -> Optional[str]:
-        """
-        Return the broker-ready full symbol for *symbol*.
-
-        Since ``build_option_chain()`` and ``build_option_symbol()`` now
-        return broker-ready strings directly, this method is mostly a
-        no-op pass-through.  It retains a lightweight fallback via
-        OptionUtils for any legacy call sites that still pass bare core
-        symbols (e.g. from saved state or config files).
-        """
         return symbol
 
     def refresh_settings_live(self) -> None:
@@ -1399,7 +1392,10 @@ class TradingApp:
                 state.capital_reserve = getattr(self.trade_config, "capital_reserve", 0)
                 state.derivative = self.symbol_full(getattr(self.trade_config, "derivative", ""))
                 state.expiry = getattr(self.trade_config, "week", "")
-                state.lot_size = getattr(self.trade_config, "lot_size", 0)
+                _config_lot_size = getattr(self.trade_config, "lot_size", 0)
+                state.lot_size = OptionUtils.get_lot_size(
+                    state.derivative, fallback=_config_lot_size
+                )
                 state.call_lookback = getattr(self.trade_config, "call_lookback", 0)
                 state.put_lookback = getattr(self.trade_config, "put_lookback", 0)
                 state.original_call_lookback = state.call_lookback

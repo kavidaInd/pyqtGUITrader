@@ -657,11 +657,6 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
                 logger.debug(f"Indicator {indicator} returned None - insufficient data during warmup")
                 return None
 
-            # Normalise the raw result into stable keys, then pick the default
-            # column.  For multi-output indicators this returns e.g.
-            # {"MACD": series, "SIGNAL": series, "HIST": series} and we pick
-            # the first-preference key.  For single-output indicators the dict
-            # contains just {"MAIN": series}.
             if isinstance(result, (pd.DataFrame, pd.Series)):
                 normalised = _normalise_indicator_result(result, indicator, params)
                 if not normalised:
@@ -891,15 +886,12 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
 
         if series is None:
             return None
-
-        # Cache the individual series so _compute_indicator() callers that
-        # don't use sub_col still get a hit on the plain key.
-        plain_key = f"{indicator}_{json.dumps(params, sort_keys=True) if True else str(params)}_{shift}"
-        if plain_key not in cache and sub_col is None:
-            cache[plain_key] = series
-
         if shift > 0:
             series = series.shift(shift)
+
+        plain_key = f"{indicator}_{json.dumps(params, sort_keys=True)}_{shift}"
+        if plain_key not in cache and sub_col is None:
+            cache[plain_key] = series
 
         return series
 
@@ -923,14 +915,13 @@ def _has_day_gap(df_index, bar_index: int = -1) -> bool:
         if df_index is None or len(df_index) < 2:
             return False
 
-        # Get the last two bars
-        if isinstance(df_index, pd.DatetimeIndex):
-            last_time = df_index[bar_index] if bar_index < 0 else df_index.iloc[bar_index]
-            prev_time = df_index[bar_index - 1] if bar_index < 0 else df_index.iloc[bar_index - 1]
-        else:
-            # Handle list or array
-            last_time = df_index[bar_index] if bar_index < 0 else df_index[bar_index]
-            prev_time = df_index[bar_index - 1] if bar_index < 0 else df_index[bar_index - 1]
+        # Get the last two bars.
+        # Bug #1 fix: DatetimeIndex does NOT have .iloc — use plain [] for both
+        # DatetimeIndex and list/array.  The previous ternary used .iloc for the
+        # positive-index path and produced an AttributeError; the list branch had
+        # an identical expression on both sides of the ternary (dead code).
+        last_time = df_index[bar_index]
+        prev_time = df_index[bar_index - 1]
 
         # Check if they're on different days
         if hasattr(last_time, 'date') and hasattr(prev_time, 'date'):
@@ -1577,9 +1568,7 @@ class DynamicSignalEngine:
 
             for rule in rules:
                 try:
-                    # Get rule weight (FEATURE 3)
                     weight = float(rule.get("weight", 1.0))
-                    total_weight += weight
 
                     rule_str = _rule_to_string(rule)
 
@@ -1603,6 +1592,7 @@ class DynamicSignalEngine:
                         )
                         rules_evaluated += 1
 
+                    total_weight += weight
                     if result:
                         passed_weight += weight
 
@@ -1627,6 +1617,11 @@ class DynamicSignalEngine:
                         group_result = group_result and result
                     else:  # OR logic
                         group_result = group_result or result
+
+                    if logic == "AND" and not group_result:
+                        break
+                    if logic == "OR" and group_result:
+                        break
 
                 except Exception as e:
                     logger.error(f"Rule eval error: {e}", exc_info=True)
@@ -1740,7 +1735,9 @@ class DynamicSignalEngine:
             # Build indicator snapshot
             indicator_values = {}
             for cache_key, series in cache.items():
-                if series is not None and hasattr(series, "iloc") and len(series) > 0:
+                if not isinstance(series, pd.Series):
+                    continue
+                if series is not None and len(series) > 0:
                     try:
                         # Get last non-NaN value
                         last_valid_idx = series.last_valid_index()
@@ -1770,8 +1767,6 @@ class DynamicSignalEngine:
             if not has_any_rules:
                 return neutral
 
-            # Apply confidence threshold to determine which groups actually fired
-            # FIX #5: Lower threshold for exit signals
             fired_after_threshold = {}
             for sig in SIGNAL_GROUPS:
                 sig_val = sig.value
@@ -1802,7 +1797,7 @@ class DynamicSignalEngine:
                 "raw_fired": fired,  # Include raw firing status for debugging
                 "rule_results": rule_results,
                 "indicator_values": indicator_values,
-                "conflict": fired.get("BUY_CALL", False) and fired.get("BUY_PUT", False),
+                "conflict": fired_after_threshold.get("BUY_CALL", False) and fired_after_threshold.get("BUY_PUT", False),
                 "available": True,
                 "confidence": confidences,
                 "threshold": self.min_confidence,
@@ -1833,10 +1828,13 @@ class DynamicSignalEngine:
 
             for sig, is_fired in fired.items():
                 conf = confidences.get(sig, 0)
-                if conf >= self.min_confidence:
-                    status = "✅ FIRED" if is_fired else "⚠️ SUPPRESSED"
+                conf_ok = conf >= self.min_confidence
+                if is_fired and conf_ok:
+                    status = "✅ FIRED"
+                elif not is_fired and conf_ok:
+                    status = "❌ DID_NOT_FIRE"
                 else:
-                    status = "❌ BLOCKED"
+                    status = "⚠️ LOW_CONF"
                 parts.append(f"{sig}: {conf:.0%} {status}")
 
             # Add conflict info if both BUY signals are high
@@ -1918,8 +1916,12 @@ class DynamicSignalEngine:
                     logger.debug(f"Flat position: BUY_PUT fired")
                     return OptionSignal.BUY_PUT
 
+                if fired.get("HOLD", False):
+                    logger.debug("Flat position: HOLD fired - no entry")
+                    return OptionSignal.HOLD
+
                 # No entry signals
-                logger.debug(f"Flat position: No entry signals - waiting")
+                logger.debug("Flat position: No entry signals - waiting")
                 return OptionSignal.WAIT
 
         except Exception as e:

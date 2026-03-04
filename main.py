@@ -18,17 +18,26 @@ from gui.theme_manager import show_themed_message_box
 
 PyQt5.QtCore.QCoreApplication.setAttribute(PyQt5.QtCore.Qt.AA_ShareOpenGLContexts, True)
 
-# ── Bootstrap logging before any other import ─────────────────────────────────
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 _log_file = os.path.join(LOG_DIR, "algotrade.log")
+
+
+class _FlushingRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Bug #8 fix: flush after every emit so crash logs are never truncated."""
+
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.handlers.RotatingFileHandler(
+        _FlushingRotatingFileHandler(
             _log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
         ),
     ],
@@ -226,7 +235,8 @@ def _run_license_gate(qt_app, splash=None) -> bool:
         }
         display_reason = reason_map.get(result.reason, result.reason)
 
-        while True:
+        _max_activation_attempts = 3
+        for _attempt in range(_max_activation_attempts):
             dlg = ActivationDialog(
                 parent=None,
                 reason=display_reason,
@@ -247,9 +257,12 @@ def _run_license_gate(qt_app, splash=None) -> bool:
                 )
                 if reply == QMessageBox.Yes:
                     return False
-    except Exception as e:
-        logger.error(f"[main._run_license_gate] Failed: {e}", exc_info=True)
+        # Bug #7 fix: exhausted max activation attempts
+        logger.warning("[main._run_license_gate] Max activation attempts reached — exiting")
         return False
+    except Exception as e:
+        logger.error(f"[main._run_license_gate] Unexpected error — continuing in free mode: {e}", exc_info=True)
+        return True
 
 
 # ── Onboarding ─────────────────────────────────────────────────────────────
@@ -283,7 +296,6 @@ def _run_onboarding(splash=None) -> bool:
         if result == QDialog.Accepted:
             logger.info("[main._run_onboarding] Onboarding completed successfully")
 
-            # Reload all settings to ensure they're fresh in memory
             _reload_all_settings()
 
             return True
@@ -299,23 +311,25 @@ def _run_onboarding(splash=None) -> bool:
             )
             return reply == QMessageBox.Yes
     except Exception as e:
-        logger.error(f"[main._run_onboarding] Failed: {e}", exc_info=True)
-        return False
+        logger.error(f"[main._run_onboarding] Failed — skipping onboarding: {e}", exc_info=True)
+        return True
 
 
 def _reload_all_settings():
-    """Reload all settings from database after onboarding."""
     try:
         from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
         from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
         from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
         from gui.trading_mode.TradingModeSetting import TradingModeSetting
 
-        # Force reload all settings from database
-        BrokerageSetting().load()
-        DailyTradeSetting().load()
-        ProfitStoplossSetting().load()
-        TradingModeSetting().load()
+        _bs = BrokerageSetting()
+        _bs.load()
+        _dt = DailyTradeSetting()
+        _dt.load()
+        _pl = ProfitStoplossSetting()
+        _pl.load()
+        _tm = TradingModeSetting()
+        _tm.load()
 
         logger.info("[main._reload_all_settings] All settings reloaded from database after onboarding")
     except Exception as e:
@@ -337,7 +351,6 @@ def _launch_main_window(qt_app, splash=None, update_info=None) -> int:
         if update_info and hasattr(update_info, 'available') and update_info.available:
             _inject_update_banner(window, update_info)
 
-        # Inject trial expiry banner
         _inject_trial_banner(window)
 
         # Update splash to ready
@@ -346,7 +359,6 @@ def _launch_main_window(qt_app, splash=None, update_info=None) -> int:
         # Process events to ensure splash updates
         qt_app.processEvents()
 
-        # IMPORTANT: First show the main window, THEN finish the splash
         window.show()
         window.raise_()  # Bring to front
         window.activateWindow()  # Activate window
@@ -395,18 +407,24 @@ def _inject_update_banner(window, update_info):
         def _download_in_thread(dlg):
             import threading
             from license.auto_updater import DownloadProgress
+            from PyQt5.QtCore import pyqtSignal, QObject
+
+            class _ProgressRelay(QObject):
+                progress = pyqtSignal(int, str)  # (percent, message)
+
+            relay = _ProgressRelay()
+            relay.progress.connect(dlg.set_progress)
 
             def _run():
                 def _cb(p: DownloadProgress):
-                    from PyQt5.QtCore import QMetaObject, Qt
-                    pct = p.percent
-                    msg = f"Downloading… {pct:.0f}%" if not p.done else "Installing…"
+                    pct = int(p.percent)
                     if p.error:
                         msg = f"Error: {p.error}"
-                    QMetaObject.invokeMethod(
-                        dlg, "set_progress",
-                        Qt.QueuedConnection,
-                    )
+                    elif p.done:
+                        msg = "Installing…"
+                    else:
+                        msg = f"Downloading… {pct:.0f}%"
+                    relay.progress.emit(pct, msg)
 
                 auto_updater.download_and_install(update_info, _cb)
 
@@ -482,37 +500,46 @@ def main() -> int:
         splash = _show_splash()
         qt_app.processEvents()
 
+        def _exit(code: int, msg_title: str = "", msg_body: str = "") -> int:
+            """Bug #6 fix: always close the splash before an early exit."""
+            if splash:
+                try:
+                    splash.close()
+                except Exception:
+                    pass
+            if msg_title and msg_body:
+                show_themed_message_box(None, msg_title, msg_body, QMessageBox.Ok)
+            return code
+
         # ── Step 4: DB ─────────────────────────────────────────────────────────
         if not _run_db_init(splash):
-            show_themed_message_box(
-                None, "Database Error",
+            return _exit(
+                1,
+                "Database Error",
                 "Database initialisation failed.\n"
                 "Check the logs/ folder for details.\n\n"
                 "The application will now exit.",
-                QMessageBox.Ok
             )
-            return 1
 
         # ── Step 5: State manager ───────────────────────────────────────────────
         if not _init_state_manager(splash):
-            show_themed_message_box(
-                None, "State Manager Error",
+            return _exit(
+                1,
+                "State Manager Error",
                 "State manager initialisation failed.\n"
                 "Check the logs/ folder for details.\n\n"
                 "The application will now exit.",
-                QMessageBox.Ok
             )
-            return 1
 
         # ── Step 6: License ─────────────────────────────────────────────────────
         if not _run_license_gate(qt_app, splash):
             logger.info("[main.main] License gate rejected — exiting")
-            return 1
+            return _exit(1)
 
         # ── Step 7: Onboarding (first-time setup) ───────────────────────────────
         if not _run_onboarding(splash):
             logger.info("[main.main] User chose to exit after onboarding")
-            return 1
+            return _exit(1)
 
         # ── Step 8: Main window ─────────────────────────────────────────────────
         exit_code = _launch_main_window(qt_app, splash)

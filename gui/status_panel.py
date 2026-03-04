@@ -200,112 +200,7 @@ class StatusCard(QFrame):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ConfidenceBar - FEATURE 3 (NOW THEMED)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ConfidenceBar(QWidget):
-    """FEATURE 3: Confidence bar for signal groups"""
-
-    def __init__(self, parent=None):
-        self._safe_defaults_init()
-        try:
-            super().__init__(parent)
-
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            layout = QHBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(4)
-
-            self.label = QLabel("BUY_CALL")
-            self.label.setFixedWidth(70)
-            layout.addWidget(self.label)
-
-            self.progress = QProgressBar()
-            self.progress.setRange(0, 100)
-            self.progress.setValue(0)
-            self.progress.setFixedHeight(12)
-            self.progress.setTextVisible(False)
-            layout.addWidget(self.progress, 1)
-
-            self.value = QLabel("0%")
-            self.value.setFixedWidth(40)
-            layout.addWidget(self.value)
-
-            # Apply theme initially
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[ConfidenceBar.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        self.label = None
-        self.progress = None
-        self.value = None
-
-    # =========================================================================
-    # Shorthand properties for theme tokens
-    # =========================================================================
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the confidence bar."""
-        try:
-            c = self._c
-            ty = self._ty
-
-            if self.label:
-                self.label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
-
-            if self.value:
-                self.value.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
-
-            # Progress bar styling will be updated in set_confidence based on value
-        except Exception as e:
-            logger.error(f"[ConfidenceBar.apply_theme] Failed: {e}", exc_info=True)
-
-    def set_confidence(self, signal: str, confidence: float, threshold: float = 0.6):
-        """Set confidence value for a signal"""
-        try:
-            c = self._c
-
-            self.label.setText(signal.replace('_', ' '))
-
-            percent = int(confidence * 100)
-            self.progress.setValue(percent)
-            self.value.setText(f"{percent}%")
-
-            # Color based on threshold
-            if confidence >= threshold:
-                color = c.GREEN
-            elif confidence >= threshold * 0.7:
-                color = c.YELLOW_BRIGHT
-            else:
-                color = c.RED
-
-            self.progress.setStyleSheet(f"""
-                QProgressBar::chunk {{ background: {color}; border-radius: {self._sp.RADIUS_SM}px; }}
-                QProgressBar {{ border: {self._sp.SEPARATOR}px solid {c.BORDER}; border-radius: {self._sp.RADIUS_SM}px; background: {c.BG_PANEL}; }}
-            """)
-        except Exception as e:
-            logger.error(f"[ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# StatusPanel - ENHANCED WITH ALL FEATURES AND THEME INTEGRATION
+# StatusPanel - ENHANCED WITH THEME INTEGRATION (REMOVED EXTRA TABS)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StatusPanel(QWidget):
@@ -314,10 +209,9 @@ class StatusPanel(QWidget):
     - Signal in its own card
     - Market status connected to Utils
     - FEATURE 1: Risk management display
-    - FEATURE 3: Signal confidence bars
-    - FEATURE 6: Multi-timeframe filter status
 
     UPDATED: Now uses state_manager with null-safe operations and ThemeManager.
+    REMOVED: Performance, Confidence, MTF Filter, and Positions tabs.
     """
 
     # Cards that only make sense when a trade is open
@@ -387,25 +281,13 @@ class StatusPanel(QWidget):
             header = self._create_header()
             root.addWidget(header)
 
-            # Tab widget
+            # Tab widget - now only with Trade and Account tabs
             self._tabs = QTabWidget()
 
             # Tab 1: Trade Status (YOUR CARD LAYOUT)
             self._create_trade_tab()
 
-            # Tab 2: Performance (Enhanced with win rate)
-            self._create_performance_tab()
-
-            # Tab 3: FEATURE 3 - Signal Confidence
-            self._create_confidence_tab()
-
-            # Tab 4: FEATURE 6 - MTF Filter
-            self._create_mtf_tab()
-
-            # Tab 5: Positions
-            self._create_positions_tab()
-
-            # Tab 6: Account
+            # Tab 2: Account (simplified)
             self._create_account_tab()
 
             root.addWidget(self._tabs)
@@ -438,10 +320,7 @@ class StatusPanel(QWidget):
         self._tabs = None
         self._no_trade_lbl = None
         self.cards = {}
-        self._perf_labels = {}
         self._account_labels = {}
-        self._confidence_bars = {}
-        self._mtf_labels = {}
         self.positions_table = None
         self.recent_table = None
         self.exit_btn = None
@@ -523,21 +402,10 @@ class StatusPanel(QWidget):
             if self.conflict_label:
                 self.conflict_label.setStyleSheet(f"color: {c.RED_BRIGHT}; font-size: {ty.SIZE_XS}pt;")
 
-            # Update performance tab styles
-            self._update_performance_tab_style()
-
-            # Update MTF tab styles
-            self._update_mtf_tab_style()
-
             # Update all cards
             for card in self.cards.values():
                 if hasattr(card, 'apply_theme'):
                     card.apply_theme()
-
-            # Update confidence bars
-            for bar in self._confidence_bars.values():
-                if hasattr(bar, 'apply_theme'):
-                    bar.apply_theme()
 
             # Update button styles
             if self.exit_btn:
@@ -585,104 +453,6 @@ class StatusPanel(QWidget):
 
         except Exception as e:
             logger.error(f"[StatusPanel.apply_theme] Failed: {e}", exc_info=True)
-
-    def _update_performance_tab_style(self):
-        """Update styles for performance tab"""
-        try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
-            # Group box style
-            group_style = f"""
-                QGroupBox {{
-                    color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    margin-top: {sp.PAD_MD}px;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    color: {c.TEXT_MAIN};
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: {sp.PAD_SM}px;
-                    padding: 0 {sp.PAD_XS}px;
-                    color: {c.BLUE};
-                }}
-            """
-
-            # Table style
-            table_style = f"""
-                QTableWidget {{
-                    background: {c.BG_PANEL};
-                    gridline-color: {c.BORDER};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    color: {c.TEXT_MAIN};
-                    font-size: {ty.SIZE_XS}pt;
-                }}
-                QTableWidget::item {{ padding: {sp.PAD_XS}px {sp.PAD_SM}px; }}
-                QHeaderView::section {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_DIM};
-                    border: none;
-                    border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    font-size: {ty.SIZE_XS}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-            """
-
-            # Apply styles to performance tab widgets
-            if hasattr(self, 'today_trades') and self.today_trades:
-                self.today_trades.setStyleSheet(f"color: {c.BLUE}; font-weight: {ty.WEIGHT_BOLD};")
-            if hasattr(self, 'today_wins') and self.today_wins:
-                self.today_wins.setStyleSheet(f"color: {c.GREEN}; font-weight: {ty.WEIGHT_BOLD};")
-            if hasattr(self, 'today_losses') and self.today_losses:
-                self.today_losses.setStyleSheet(f"color: {c.RED}; font-weight: {ty.WEIGHT_BOLD};")
-
-            if hasattr(self, 'recent_table') and self.recent_table:
-                self.recent_table.setStyleSheet(table_style)
-
-        except Exception as e:
-            logger.error(f"[StatusPanel._update_performance_tab_style] Failed: {e}", exc_info=True)
-
-    def _update_mtf_tab_style(self):
-        """Update styles for MTF tab"""
-        try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
-            group_style = f"""
-                QGroupBox {{
-                    color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    margin-top: {sp.PAD_MD}px;
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: {sp.PAD_SM}px;
-                    padding: 0 {sp.PAD_XS}px;
-                    color: {c.BLUE};
-                }}
-            """
-
-            # Update MTF labels with default color
-            if hasattr(self, 'mtf_1m') and self.mtf_1m:
-                self.mtf_1m.setStyleSheet(f"color: {c.TEXT_DIM}; font-weight: {ty.WEIGHT_BOLD};")
-            if hasattr(self, 'mtf_5m') and self.mtf_5m:
-                self.mtf_5m.setStyleSheet(f"color: {c.TEXT_DIM}; font-weight: {ty.WEIGHT_BOLD};")
-            if hasattr(self, 'mtf_15m') and self.mtf_15m:
-                self.mtf_15m.setStyleSheet(f"color: {c.TEXT_DIM}; font-weight: {ty.WEIGHT_BOLD};")
-
-            # Summary label
-            if hasattr(self, 'mtf_summary') and self.mtf_summary:
-                self.mtf_summary.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
-
-        except Exception as e:
-            logger.error(f"[StatusPanel._update_mtf_tab_style] Failed: {e}", exc_info=True)
 
     def _create_header(self) -> QWidget:
         """Create header with timestamp and market status from Utils"""
@@ -806,187 +576,8 @@ class StatusPanel(QWidget):
 
         self._tabs.addTab(trade_tab, "📊 Trade")
 
-    def _create_performance_tab(self):
-        """Tab 2: Performance metrics with win rate"""
-        perf_tab = QWidget()
-        layout = QVBoxLayout(perf_tab)
-        layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM)
-        layout.setSpacing(self._sp.GAP_MD)
-
-        # Today's summary
-        today_group = QGroupBox("Today")
-        today_layout = QGridLayout()
-        today_layout.setSpacing(self._sp.GAP_XS)
-
-        today_layout.addWidget(QLabel("Trades:"), 0, 0)
-        self.today_trades = QLabel("0")
-        today_layout.addWidget(self.today_trades, 0, 1)
-
-        today_layout.addWidget(QLabel("Wins:"), 0, 2)
-        self.today_wins = QLabel("0")
-        today_layout.addWidget(self.today_wins, 0, 3)
-
-        today_layout.addWidget(QLabel("Losses:"), 0, 4)
-        self.today_losses = QLabel("0")
-        today_layout.addWidget(self.today_losses, 0, 5)
-
-        today_layout.addWidget(QLabel("P&L:"), 1, 0)
-        self.today_pnl = QLabel("₹0")
-        today_layout.addWidget(self.today_pnl, 1, 1, 1, 5)
-
-        today_group.setLayout(today_layout)
-        layout.addWidget(today_group)
-
-        # Performance stats
-        perf_group = QGroupBox("Stats")
-        perf_layout = QFormLayout()
-        perf_layout.setSpacing(self._sp.GAP_XS)
-        perf_layout.setLabelAlignment(Qt.AlignLeft)
-
-        stats = [
-            ("Win Rate:", "win_rate", "0%"),
-            ("Avg Win:", "avg_win", "₹0"),
-            ("Avg Loss:", "avg_loss", "₹0"),
-            ("Max Win:", "max_win", "₹0"),
-            ("Max Loss:", "max_loss", "₹0"),
-            ("Total Trades:", "total_trades", "0"),
-        ]
-
-        for label, key, default in stats:
-            value_label = QLabel(default)
-            perf_layout.addRow(QLabel(label), value_label)
-            self._perf_labels[key] = value_label
-
-        perf_group.setLayout(perf_layout)
-        layout.addWidget(perf_group)
-
-        # Recent trades mini table
-        recent_group = QGroupBox("Recent")
-        recent_layout = QVBoxLayout()
-
-        self.recent_table = QTableWidget(0, 3)
-        self.recent_table.setHorizontalHeaderLabels(["Time", "Type", "P&L"])
-        self.recent_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.recent_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.recent_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.recent_table.verticalHeader().setVisible(False)
-        self.recent_table.setMaximumHeight(100)
-
-        recent_layout.addWidget(self.recent_table)
-        recent_group.setLayout(recent_layout)
-        layout.addWidget(recent_group)
-
-        self._tabs.addTab(perf_tab, "📈 Performance")
-
-    def _create_confidence_tab(self):
-        """
-        FEATURE 3: Signal confidence tab
-        """
-        conf_tab = QWidget()
-        layout = QVBoxLayout(conf_tab)
-        layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM)
-        layout.setSpacing(self._sp.GAP_SM)
-
-        # Explanation label
-        self.conf_explanation = QLabel("No signal evaluation yet")
-        self.conf_explanation.setWordWrap(True)
-        layout.addWidget(self.conf_explanation)
-
-        # Confidence bars for each signal group
-        signal_groups = ['BUY_CALL', 'BUY_PUT', 'EXIT_CALL', 'EXIT_PUT', 'HOLD']
-
-        for signal in signal_groups:
-            bar = ConfidenceBar()
-            bar.set_confidence(signal, 0.0)
-            layout.addWidget(bar)
-            self._confidence_bars[signal] = bar
-
-        # Threshold indicator
-        threshold_group = QGroupBox("Threshold")
-        threshold_layout = QHBoxLayout()
-        self.threshold_label = QLabel("Min Confidence: 60%")
-        threshold_layout.addWidget(self.threshold_label)
-        threshold_layout.addStretch()
-        threshold_group.setLayout(threshold_layout)
-        layout.addWidget(threshold_group)
-
-        layout.addStretch()
-        self._tabs.addTab(conf_tab, "🎯 Confidence")
-
-    def _create_mtf_tab(self):
-        """
-        FEATURE 6: Multi-Timeframe Filter tab
-        """
-        mtf_tab = QWidget()
-        layout = QVBoxLayout(mtf_tab)
-        layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM)
-        layout.setSpacing(self._sp.GAP_SM)
-
-        # Status group
-        status_group = QGroupBox("MTF Filter Status")
-        status_layout = QFormLayout()
-        status_layout.setSpacing(self._sp.GAP_XS)
-
-        self.mtf_enabled = QLabel("Disabled")
-        status_layout.addRow("Enabled:", self.mtf_enabled)
-
-        self.mtf_decision = QLabel("No decision")
-        status_layout.addRow("Last Decision:", self.mtf_decision)
-
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
-
-        # Timeframe directions
-        tf_group = QGroupBox("Timeframe Directions")
-        tf_layout = QFormLayout()
-        tf_layout.setSpacing(self._sp.GAP_XS)
-
-        self.mtf_1m = QLabel("NEUTRAL")
-        tf_layout.addRow("1 Minute:", self.mtf_1m)
-
-        self.mtf_5m = QLabel("NEUTRAL")
-        tf_layout.addRow("5 Minute:", self.mtf_5m)
-
-        self.mtf_15m = QLabel("NEUTRAL")
-        tf_layout.addRow("15 Minute:", self.mtf_15m)
-
-        self.mtf_agreement = QLabel("0/3")
-        tf_layout.addRow("Agreement:", self.mtf_agreement)
-
-        tf_group.setLayout(tf_layout)
-        layout.addWidget(tf_group)
-
-        # Summary
-        summary_group = QGroupBox("Summary")
-        summary_layout = QVBoxLayout()
-        self.mtf_summary = QLabel("No MTF evaluation yet")
-        self.mtf_summary.setWordWrap(True)
-        summary_layout.addWidget(self.mtf_summary)
-        summary_group.setLayout(summary_layout)
-        layout.addWidget(summary_group)
-
-        layout.addStretch()
-        self._tabs.addTab(mtf_tab, "📈 MTF Filter")
-
-    def _create_positions_tab(self):
-        """Tab 5: Active positions"""
-        pos_tab = QWidget()
-        layout = QVBoxLayout(pos_tab)
-        layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM)
-
-        self.positions_table = QTableWidget(0, 4)
-        self.positions_table.setHorizontalHeaderLabels(["Symbol", "Type", "Qty", "P&L"])
-        self.positions_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.positions_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.positions_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.positions_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.positions_table.verticalHeader().setVisible(False)
-
-        layout.addWidget(self.positions_table)
-        self._tabs.addTab(pos_tab, "📋 Positions")
-
     def _create_account_tab(self):
-        """Tab 6: Account info"""
+        """Tab 2: Account info (simplified)"""
         account_tab = QWidget()
         layout = QFormLayout(account_tab)
         layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
@@ -1177,11 +768,6 @@ class StatusPanel(QWidget):
             # Get snapshots
             full_snap = self._get_cached_snapshot()
             pos_snap = self._get_cached_position_snapshot()
-            # Get signal snapshot safely
-            try:
-                signal_snap = state_manager.get_state().get_option_signal_snapshot()
-            except Exception:
-                signal_snap = {}
 
             # Get values from snapshots with null-safe operations
             pos = full_snap.get('current_position')
@@ -1244,9 +830,6 @@ class StatusPanel(QWidget):
                 pnl_txt = self._fmt_percent(pnl_pct) if pnl_pct is not None else "—"
                 self._set_card("pnl", pnl_txt, self._pnl_color(pnl_pct))
 
-            # Update positions table
-            self._update_positions_table(trade_active, symbol, pos, int(lots) if lots else 0, pnl_abs)
-
             # Update account tab
             if "balance" in self._account_labels:
                 self._account_labels["balance"].setText(self._fmt_currency(balance))
@@ -1257,12 +840,6 @@ class StatusPanel(QWidget):
 
             # FEATURE 1: Update risk cards (with null-safe operations)
             self._update_risk_cards(full_snap, pos_snap)
-
-            # FEATURE 3: Update confidence tab
-            self._update_confidence_tab(signal_snap, pos_snap)
-
-            # FEATURE 6: Update MTF tab (with null-safe operations)
-            self._update_mtf_tab(full_snap, pos_snap)
 
         except Exception as e:
             logger.error(f"StatusPanel.refresh error: {e}", exc_info=True)
@@ -1296,198 +873,6 @@ class StatusPanel(QWidget):
         except Exception as e:
             logger.error(f"[StatusPanel._update_risk_cards] Failed: {e}", exc_info=True)
 
-    def _update_confidence_tab(self, signal_snap: Dict, pos_snap: Dict):
-        """
-        FEATURE 3: Update confidence tab
-        """
-        try:
-            c = self._c
-            confidence = self._safe_get_dict(signal_snap, 'confidence')
-            explanation = self._safe_get_str(signal_snap, 'explanation', "No signal evaluation yet")
-            threshold = self._safe_get_float(signal_snap, 'threshold', 0.6)
-
-            # Update explanation
-            if hasattr(self, 'conf_explanation') and self.conf_explanation:
-                self.conf_explanation.setText(explanation)
-                self.conf_explanation.setStyleSheet(
-                    f"color: {c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt; padding: {self._sp.PAD_SM}px; background: {c.BG_PANEL}; border: {self._sp.SEPARATOR}px solid {c.BORDER}; border-radius: {self._sp.RADIUS_SM}px;")
-
-            # Update threshold
-            threshold_pct = int(threshold * 100)
-            self.threshold_label.setText(f"Min Confidence: {threshold_pct}%")
-            self.threshold_label.setStyleSheet(f"color: {c.YELLOW_BRIGHT}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-            # Update confidence bars
-            for signal, bar in self._confidence_bars.items():
-                conf = confidence.get(signal, 0.0)
-                bar.set_confidence(signal, conf, threshold)
-
-        except Exception as e:
-            logger.error(f"[StatusPanel._update_confidence_tab] Failed: {e}", exc_info=True)
-
-    def _update_mtf_tab(self, full_snap: Dict, pos_snap: Dict):
-        """
-        FEATURE 6: Update MTF filter tab with null-safe operations.
-        """
-        try:
-            c = self._c
-
-            # Get MTF results from state with safe dict access
-            mtf_results = self._safe_get_dict(full_snap, 'mtf_results')
-
-            # Update timeframe directions with safe string conversion
-            self.mtf_1m.setText(self._safe_get_str(mtf_results, '1', 'NEUTRAL'))
-            self.mtf_5m.setText(self._safe_get_str(mtf_results, '5', 'NEUTRAL'))
-            self.mtf_15m.setText(self._safe_get_str(mtf_results, '15', 'NEUTRAL'))
-
-            # Color based on direction
-            self._set_mtf_direction_color(self.mtf_1m, self._safe_get_str(mtf_results, '1', 'NEUTRAL'))
-            self._set_mtf_direction_color(self.mtf_5m, self._safe_get_str(mtf_results, '5', 'NEUTRAL'))
-            self._set_mtf_direction_color(self.mtf_15m, self._safe_get_str(mtf_results, '15', 'NEUTRAL'))
-
-            # Count agreement
-            target = 'BULLISH' if self._safe_get_str(pos_snap, 'option_signal', '') == 'BUY_CALL' else 'BEARISH'
-            matches = sum(1 for d in mtf_results.values() if d == target)
-            self.mtf_agreement.setText(f"{matches}/3")
-
-            # Update enabled status
-            mtf_allowed = self._safe_get_bool(full_snap, 'mtf_allowed', True)
-            self.mtf_enabled.setText("Yes" if mtf_allowed else "No")
-            self.mtf_enabled.setStyleSheet(f"color: {c.GREEN if mtf_allowed else c.RED}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-            # Update decision with safe upper conversion
-            summary = self._safe_get_str(full_snap, 'last_mtf_summary', 'No MTF evaluation yet')
-            self.mtf_summary.setText(summary)
-
-            # Color based on decision (using safe upper)
-            summary_upper = self._safe_upper(summary)
-            if "ALLOWED" in summary_upper:
-                self.mtf_decision.setText("ALLOWED")
-                self.mtf_decision.setStyleSheet(f"color: {c.GREEN}; font-weight: {self._ty.WEIGHT_BOLD};")
-            elif "BLOCKED" in summary_upper:
-                self.mtf_decision.setText("BLOCKED")
-                self.mtf_decision.setStyleSheet(f"color: {c.RED}; font-weight: {self._ty.WEIGHT_BOLD};")
-            else:
-                self.mtf_decision.setText(summary)
-                self.mtf_decision.setStyleSheet(f"color: {c.TEXT_DIM}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-        except Exception as e:
-            logger.error(f"[StatusPanel._update_mtf_tab] Failed: {e}", exc_info=True)
-
-    def _set_mtf_direction_color(self, label: QLabel, direction: str):
-        """Set color for MTF direction label"""
-        c = self._c
-        if direction == 'BULLISH':
-            label.setStyleSheet(f"color: {c.GREEN}; font-weight: {self._ty.WEIGHT_BOLD};")
-        elif direction == 'BEARISH':
-            label.setStyleSheet(f"color: {c.RED}; font-weight: {self._ty.WEIGHT_BOLD};")
-        else:
-            label.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-    def _update_positions_table(self, trade_active: bool, symbol: str, pos: str,
-                                lots: int, pnl: float):
-        """Update positions table"""
-        try:
-            c = self._c
-            self.positions_table.setRowCount(0)
-
-            if trade_active and symbol:
-                self.positions_table.insertRow(0)
-                self.positions_table.setItem(0, 0, QTableWidgetItem(str(symbol)))
-                self.positions_table.setItem(0, 1, QTableWidgetItem(str(pos) if pos else "—"))
-                self.positions_table.setItem(0, 2, QTableWidgetItem(f"{lots}"))
-
-                pnl_item = QTableWidgetItem(self._fmt_currency(pnl))
-                color = c.GREEN if pnl and pnl > 0 else c.RED if pnl and pnl < 0 else c.TEXT_MAIN
-                pnl_item.setForeground(QColor(color))
-                self.positions_table.setItem(0, 3, pnl_item)
-        except Exception as e:
-            logger.error(f"[StatusPanel._update_positions_table] Failed: {e}")
-
-    def add_recent_trade(self, trade_data: Dict):
-        """Add a completed trade to recent list"""
-        try:
-            c = self._c
-            self._recent_trades.append(trade_data)
-
-            time_str = datetime.now().strftime("%H:%M")
-            trade_type = trade_data.get('type', 'CALL')
-            pnl = trade_data.get('pnl', 0)
-
-            # Keep only last 8
-            if self.recent_table.rowCount() >= 8:
-                self.recent_table.removeRow(0)
-
-            row = self.recent_table.rowCount()
-            self.recent_table.insertRow(row)
-            self.recent_table.setItem(row, 0, QTableWidgetItem(time_str))
-            self.recent_table.setItem(row, 1, QTableWidgetItem(trade_type))
-
-            pnl_item = QTableWidgetItem(f"{pnl:+.0f}")
-            pnl_item.setForeground(QColor(c.GREEN if pnl > 0 else c.RED))
-            self.recent_table.setItem(row, 2, pnl_item)
-
-            # Update performance metrics
-            self._update_performance_metrics()
-
-        except Exception as e:
-            logger.error(f"[StatusPanel.add_recent_trade] Failed: {e}")
-
-    def _update_performance_metrics(self):
-        """Update performance metrics from trade history"""
-        try:
-            c = self._c
-
-            if not self._recent_trades:
-                return
-
-            total = len(self._recent_trades)
-            winning = [t for t in self._recent_trades if t.get('pnl', 0) > 0]
-            losing = [t for t in self._recent_trades if t.get('pnl', 0) < 0]
-
-            win_count = len(winning)
-            loss_count = len(losing)
-            win_rate = (win_count / total * 100) if total > 0 else 0
-
-            avg_win = sum(t.get('pnl', 0) for t in winning) / win_count if win_count > 0 else 0
-            avg_loss = sum(t.get('pnl', 0) for t in losing) / loss_count if loss_count > 0 else 0
-            max_win = max((t.get('pnl', 0) for t in winning), default=0)
-            max_loss = min((t.get('pnl', 0) for t in losing), default=0)
-
-            # Today's stats
-            today = datetime.now().date()
-            today_trades = [t for t in self._recent_trades
-                            if t.get('time', datetime.now()).date() == today]
-            today_wins = sum(1 for t in today_trades if t.get('pnl', 0) > 0)
-            today_losses = sum(1 for t in today_trades if t.get('pnl', 0) < 0)
-            today_pnl = sum(t.get('pnl', 0) for t in today_trades)
-
-            # Update UI
-            self.today_trades.setText(str(len(today_trades)))
-            self.today_wins.setText(str(today_wins))
-            self.today_losses.setText(str(today_losses))
-            self.today_pnl.setText(self._fmt_currency(today_pnl))
-
-            color = c.GREEN if today_pnl > 0 else c.RED if today_pnl < 0 else c.BLUE
-            self.today_pnl.setStyleSheet(f"color: {color}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-            # Update perf labels
-            if "win_rate" in self._perf_labels:
-                self._perf_labels["win_rate"].setText(f"{win_rate:.1f}%")
-            if "avg_win" in self._perf_labels:
-                self._perf_labels["avg_win"].setText(self._fmt_currency(avg_win))
-            if "avg_loss" in self._perf_labels:
-                self._perf_labels["avg_loss"].setText(self._fmt_currency(abs(avg_loss)))
-            if "max_win" in self._perf_labels:
-                self._perf_labels["max_win"].setText(self._fmt_currency(max_win))
-            if "max_loss" in self._perf_labels:
-                self._perf_labels["max_loss"].setText(self._fmt_currency(abs(max_loss)))
-            if "total_trades" in self._perf_labels:
-                self._perf_labels["total_trades"].setText(str(total))
-
-        except Exception as e:
-            logger.error(f"[StatusPanel._update_performance_metrics] Failed: {e}")
-
     def set_connection_status(self, connected: bool):
         """Set connection status indicator"""
         color = self._c.GREEN if connected else self._c.RED
@@ -1513,7 +898,6 @@ class StatusPanel(QWidget):
             self.clear_cache()
             self.cards.clear()
             self._recent_trades.clear()
-            self._confidence_bars.clear()
 
             if self._market_timer and self._market_timer.isActive():
                 self._market_timer.stop()

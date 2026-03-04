@@ -380,7 +380,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             mode_form.setLabelAlignment(Qt.AlignRight)
 
             self.mode_combo = QComboBox()
-            self.mode_combo.addItem("🖥️ Simulation (Paper Trading)", TradingMode.SIM.value)
+            self.mode_combo.addItem("🖥️ Simulation (Paper Trading)", TradingMode.PAPER.value)
             self.mode_combo.addItem("💰 Live Trading", TradingMode.LIVE.value)
             self.mode_combo.addItem("📊 Backtest", TradingMode.BACKTEST.value)
             self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -925,7 +925,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
             # Set mode
             if self.mode_combo is not None:
-                mode_value = self.trading_mode_setting.mode.value if self.trading_mode_setting.mode else TradingMode.SIM.value
+                mode_value = self.trading_mode_setting.mode.value if self.trading_mode_setting.mode else TradingMode.PAPER.value
                 mode_index = self.mode_combo.findData(mode_value)
                 if mode_index >= 0:
                     self.mode_combo.setCurrentIndex(mode_index)
@@ -1120,7 +1120,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     self.trading_mode_setting.mode = TradingMode(current_data)
             except (ValueError, TypeError) as e:
                 logger.error(f"Invalid mode value: {e}")
-                self.trading_mode_setting.mode = TradingMode.SIM
+                self.trading_mode_setting.mode = TradingMode.PAPER
 
             # Mode settings
             if self.allow_live_check is not None:

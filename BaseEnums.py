@@ -9,24 +9,16 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Defines the operational modes for the trading bot system.
 # These modes determine how the bot interacts with the market and processes trades.
-# - BACK: Historical data analysis mode for strategy testing without real trading
 # - SIM: Paper trading mode using real-time data but no actual money
 # - LIVE: Production mode with real money trading on actual exchanges
-# - OPTI: Parameter optimization mode for finding optimal strategy settings
 # - PAPER: Alias for SIM mode for backward compatibility
-# - BACKTEST: Alias for BACK mode for backward compatibility
-BACK = "Backtest"
-SIM = "Simulation"  # Paper trading
 LIVE = "Live"
-OPTI = "Optimizer"
-
-# Add new enums
-PAPER = "Paper"  # Alias for SIM
+PAPER = "Paper"
 BACKTEST = "Backtest"
 
 # Valid bot modes for validation
 # Set of all allowed bot operation modes for input validation throughout the system
-VALID_BOT_MODES: Set[str] = {BACK, SIM, LIVE, OPTI, PAPER, BACKTEST}
+VALID_BOT_MODES: Set[str] = {LIVE, PAPER, BACKTEST}
 
 # ============================================================================
 # Backtest Execution Status
@@ -653,7 +645,7 @@ def get_order_status_description(status_code: int) -> str:
 # Re-export all original constants (already defined above)
 __all__ = [
     # Bot Modes
-    'BACK', 'SIM', 'LIVE', 'OPTI', 'PAPER', 'BACKTEST',
+    'LIVE', 'PAPER', 'BACKTEST',
 
     # Backtest Status
     'BACKTEST_PENDING', 'BACKTEST_RUNNING', 'BACKTEST_COMPLETED', 'BACKTEST_FAILED',

@@ -56,7 +56,7 @@ ensures:
 The `current_index_data` field is kept for backward compatibility but should
 be considered deprecated. Use CandleStoreManager to access candle data instead.
 
-Version: 2.4.0 (Fixed option chain and DataFrame getters)
+Version: 2.5.0 (Added trading mode properties, fixed DataFrame handling)
 """
 
 import copy
@@ -69,7 +69,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import pandas as pd
 
-from BaseEnums import STOP
+import BaseEnums
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -222,6 +222,10 @@ class TradeState:
                 # __setattr__ references _lock before the instance is ready.
                 object.__setattr__(self, "_lock", threading.RLock())
 
+                # ── Trading mode (runtime configuration) ─────────────────────────
+                self._trading_mode: str = BaseEnums.PAPER  # Default to LIVE
+                self._is_paper_mode: bool = True  # True = LIVE, False = PAPER/BACKTEST
+
                 # ── Trend dicts ─────────────────────────────────────────────
                 self._option_trend: Dict[str, Any] = _default_trend_dict()
                 self._derivative_trend: Dict[str, Any] = _default_trend_dict()
@@ -267,7 +271,7 @@ class TradeState:
                 self._current_buy_price: Optional[float] = None
                 self._positions_hold: int = 0
                 self._order_pending: bool = False
-                self._take_profit_type: Optional[str] = STOP
+                self._take_profit_type: Optional[str] = BaseEnums.STOP
 
                 # ── Risk / P&L ───────────────────────────────────────────────
                 self._index_stop_loss: Optional[float] = None
@@ -374,7 +378,6 @@ class TradeState:
         """
         with cls._singleton_lock:
             if cls._instance is not None:
-                # Clean up the old instance
                 try:
                     cls._instance.cleanup()
                 except Exception as e:
@@ -401,7 +404,7 @@ class TradeState:
             with self._lock:
                 return object.__getattribute__(self, attr)
         except AttributeError as e:
-            logger.error(f"[_get] Attribute {attr} not found: {e}", exc_info=True)
+            logger.debug(f"[_get] Attribute {attr} not found: {e}")
             return None
         except Exception as e:
             logger.error(f"[_get] Failed for {attr}: {e}", exc_info=True)
@@ -425,7 +428,7 @@ class TradeState:
                     if old_value != value:
                         logger.debug(f"State update: {attr} = {value} (was: {old_value})")
         except AttributeError as e:
-            logger.error(f"[_set] Attribute {attr} not found: {e}", exc_info=True)
+            logger.debug(f"[_set] Attribute {attr} not found: {e}")
         except Exception as e:
             logger.error(f"[_set] Failed for {attr}: {e}", exc_info=True)
 
@@ -433,6 +436,48 @@ class TradeState:
     # PROPERTIES
     # Every public attribute is a property so the lock is always held.
     # ==================================================================
+
+    # ------------------------------------------------------------------
+    # Trading Mode (runtime configuration, not global constant)
+    # ------------------------------------------------------------------
+
+    @property
+    def trading_mode(self) -> str:
+        """
+        Current trading mode: LIVE, PAPER, or BACKTEST.
+        This overrides the global BaseEnums.BOT_TYPE constant.
+        """
+        return self._get("_trading_mode")
+
+    @trading_mode.setter
+    def trading_mode(self, value: str) -> None:
+        """Set trading mode and update paper flag accordingly."""
+        try:
+            with self._lock:
+                self._trading_mode = value
+                self._is_paper_mode = value != BaseEnums.LIVE
+                logger.info(f"[TradeState] Trading mode set to: {value} (paper_mode={self._is_paper_mode})")
+        except Exception as e:
+            logger.error(f"[trading_mode setter] Failed: {e}", exc_info=True)
+
+    @property
+    def is_paper_mode(self) -> bool:
+        """
+        True when in paper or backtest mode (i.e., not LIVE).
+        Used throughout the application to determine if real broker orders should be placed.
+        """
+        return self._get("_is_paper_mode")
+
+    @is_paper_mode.setter
+    def is_paper_mode(self, value: bool) -> None:
+        """Set paper mode flag and update trading mode accordingly."""
+        try:
+            with self._lock:
+                self._is_paper_mode = bool(value)
+                self._trading_mode = BaseEnums.PAPER if value else BaseEnums.LIVE
+                logger.debug(f"[TradeState] Paper mode set to: {value}")
+        except Exception as e:
+            logger.error(f"[is_paper_mode setter] Failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Trend dicts
@@ -890,8 +935,7 @@ class TradeState:
                     epoch = int(value.timestamp())
                 else:
                     # Fallback for older datetime objects
-                    epoch = int(value.timestamp()) if hasattr(value, 'timestamp') else int(
-                        time.mktime(value.timetuple()))
+                    epoch = int(time.mktime(value.timetuple()))
             elif isinstance(value, (float, int)):
                 # Convert float/int to integer epoch
                 epoch = int(value)
@@ -1270,10 +1314,11 @@ class TradeState:
     def lot_size(self, value: int) -> None:
         """Set lot size with validation."""
         try:
-            if int(value) <= 0:
+            val = int(value)
+            if val <= 0:
                 logger.error(f"lot_size must be positive, got {value}")
                 return
-            self._set("_lot_size", int(value))
+            self._set("_lot_size", val)
         except Exception as e:
             logger.error(f"[lot_size setter] Failed: {e}", exc_info=True)
 
@@ -1912,6 +1957,8 @@ class TradeState:
                 - last_slippage (FEATURE 2)
                 - last_mtf_summary (FEATURE 6)
                 - mtf_allowed (FEATURE 6)
+                - is_paper_mode (trading mode)
+                - trading_mode (exact mode)
         """
         try:
             with self._lock:
@@ -1947,6 +1994,9 @@ class TradeState:
                     # FEATURE 6 fields
                     "last_mtf_summary": self._last_mtf_summary,
                     "mtf_allowed": self._mtf_allowed,
+                    # Trading mode
+                    "is_paper_mode": self._is_paper_mode,
+                    "trading_mode": self._trading_mode,
                 }
         except Exception as e:
             logger.error(f"[get_position_snapshot] Failed: {e}", exc_info=True)
@@ -2004,6 +2054,10 @@ class TradeState:
                 explanation = r.get("explanation", "") if r else ""
 
                 return {
+                    # Trading mode
+                    "trading_mode": self._trading_mode,
+                    "is_paper_mode": self._is_paper_mode,
+
                     # Identifiers
                     "derivative": self._derivative,
                     "call_option": self._call_option,
@@ -2012,12 +2066,14 @@ class TradeState:
                     "expiry": self._expiry,
                     "interval": self._interval,
                     "all_symbols": list(self._all_symbols) if self._all_symbols else [],
+
                     # Prices
                     "derivative_current_price": self._derivative_current_price,
                     "current_price": self._current_price,
                     "highest_current_price": self._highest_current_price,
                     "call_current_close": self._call_current_close,
                     "put_current_close": self._put_current_close,
+
                     # Position
                     "current_position": self._current_position,
                     "previous_position": self._previous_position,
@@ -2028,6 +2084,7 @@ class TradeState:
                     "current_order_id": dict(self._current_order_id) if self._current_order_id else {},
                     "orders": len(self._orders) if self._orders else 0,
                     "confirmed_orders": len(self._confirmed_orders) if self._confirmed_orders else 0,
+
                     # Risk
                     "stop_loss": self._stop_loss,
                     "tp_point": self._tp_point,
@@ -2041,10 +2098,12 @@ class TradeState:
                     "profit_step": self._profit_step,
                     "loss_step": self._loss_step,
                     "take_profit_type": self._take_profit_type,
+
                     # P&L
                     "current_pnl": self._current_pnl,
                     "percentage_change": self._percentage_change,
                     "account_balance": self._account_balance,
+
                     # Config
                     "lot_size": self._lot_size,
                     "max_num_of_option": self._max_num_of_option,
@@ -2056,34 +2115,42 @@ class TradeState:
                     "put_lookback": self._put_lookback,
                     "original_call_lookback": self._original_call_lookback,
                     "original_put_lookback": self._original_put_lookback,
+
                     # Metadata
                     "reason_to_exit": self._reason_to_exit,
                     "current_trade_started_time": self._current_trade_started_time,
                     "last_status_check": self._last_status_check,
                     "last_index_updated": self._last_index_updated,
+
                     # FEATURE 2 fields
                     "last_slippage": self._last_slippage,
                     "order_attempts": self._order_attempts,
                     "last_order_attempt_time": self._last_order_attempt_time,
+
                     # FEATURE 6 fields
                     "last_mtf_summary": self._last_mtf_summary,
                     "mtf_allowed": self._mtf_allowed,
                     "mtf_results": dict(self._mtf_results) if self._mtf_results else {},
+
                     # PCR
                     "calculated_pcr": self._calculated_pcr,
                     "current_pcr": self._current_pcr,
                     "current_pcr_vol": self._current_pcr_vol,
+
                     # Misc
                     "market_trend": self._market_trend,
                     "option_price_update": self._option_price_update,
                     "trend": self._trend,
+
                     # Signal summary
                     "option_signal": sig,
                     "signal_conflict": bool(r and r.get("conflict", False)),
                     "dynamic_signals_active": bool(r and r.get("available", False)),
+
                     # FEATURE 3: Signal confidence
                     "signal_confidence": dict(confidence) if confidence else {},
                     "signal_explanation": explanation,
+
                     # DataFrame summaries (not full data) - DEPRECATED
                     "derivative_history_df": _df_repr(self._derivative_history_df),
                     "option_history_df": _df_repr(self._option_history_df),
@@ -2192,10 +2259,10 @@ class TradeState:
                         private_key = f"_{key}"
                         if hasattr(self, private_key):
                             # Skip DataFrame summary strings produced by get_snapshot()
-                            # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)
+                            # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)")
                             # These are human-readable representations, not real DataFrames,
                             # and must not be written back into DataFrame-typed attributes.
-                            existing = getattr(self, private_key, _MISSING := object())
+                            existing = getattr(self, private_key, None)
                             if isinstance(existing, (pd.DataFrame, type(None))) and isinstance(value, str):
                                 logger.debug(
                                     f"[update_from_dict] Skipping DataFrame summary string "
@@ -2213,10 +2280,10 @@ class TradeState:
                             logger.debug(f"[update_from_dict] Attribute {key} not found - skipping")
                             skipped_count += 1
 
-                    logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
+                logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
 
         except Exception as e:
-                logger.error(f"[update_from_dict] Failed: {e}", exc_info=True)
+            logger.error(f"[update_from_dict] Failed: {e}", exc_info=True)
 
     # ==================================================================
     # ATOMIC RESET
@@ -2235,6 +2302,9 @@ class TradeState:
         resetting, then calls the provided log function (outside the lock)
         to record the completed trade.
 
+        This preserves trading mode settings (trading_mode, is_paper_mode)
+        while resetting trade-specific fields.
+
         Parameters
         ----------
         current_position:
@@ -2252,6 +2322,10 @@ class TradeState:
         audit = {}
         try:
             with self._lock:
+                # Save trading mode before reset
+                trading_mode = self._trading_mode
+                is_paper_mode = self._is_paper_mode
+
                 # ── Build audit record while values are still live ────────
                 audit = {
                     "order_id": dict(self._current_order_id) if self._current_order_id else {},
@@ -2303,6 +2377,11 @@ class TradeState:
                 self._last_mtf_summary = None
                 self._mtf_allowed = True
                 self._mtf_results = {}
+
+                # Restore trading mode settings
+                self._trading_mode = trading_mode
+                self._is_paper_mode = is_paper_mode
+
                 # NOTE: option_signal_result is refreshed every bar — do NOT clear here
 
             # ── Log outside the lock so no I/O is done while holding it ──
@@ -2328,11 +2407,13 @@ class TradeState:
                 price = self._derivative_current_price
                 r = self._option_signal_result
                 sig = r.get("signal_value", "WAIT") if r else "WAIT"
+                mode = self._trading_mode
             return (
                 f"TradeState("
                 f"position={pos!r}, "
                 f"derivative_price={price}, "
-                f"signal={sig!r}"
+                f"signal={sig!r}, "
+                f"mode={mode!r}"
                 f")"
             )
         except Exception as e:
@@ -2364,7 +2445,10 @@ class TradeState:
                 self._current_order_id.clear()
                 self._option_signal_result = None
 
-                # Reset to defaults
+                # Reset to defaults but preserve trading mode
+                trading_mode = self._trading_mode
+                is_paper_mode = self._is_paper_mode
+
                 self._current_position = None
                 self._previous_position = None
                 self._current_trading_symbol = None
@@ -2380,6 +2464,10 @@ class TradeState:
                 # FEATURE 6 fields
                 self._last_mtf_summary = None
                 self._mtf_allowed = True
+
+                # Restore trading mode
+                self._trading_mode = trading_mode
+                self._is_paper_mode = is_paper_mode
 
             logger.info("[TradeState] Cleanup completed")
 

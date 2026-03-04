@@ -1553,7 +1553,7 @@ class SimpleChartWidget(QWidget):
     """
     Chart widget with:
     - Timeframe selector toolbar (1m, 3m, 5m, 15m, 30m, 1h)
-    - Spot price chart + volume
+    - Spot price chart + volume (directly embedded, no tab)
     - Max 200 bars displayed
     - Live reload from CandleStoreManager on TF change
     """
@@ -1594,13 +1594,10 @@ class SimpleChartWidget(QWidget):
             toolbar = self._build_tf_toolbar()
             root.addWidget(toolbar)
 
-            # ── Tab widget (Spot chart) ────────────────────────────────────────
-            self.tabs = QTabWidget()
+            # ── Spot chart directly (no tabs) ──────────────────────────────────
             self.spot_chart = SpotChartWidget()
             self.spot_chart.set_symbol("Spot Index")
-            self.tabs.addTab(self.spot_chart, "📈 Spot")
-
-            root.addWidget(self.tabs, 1)
+            root.addWidget(self.spot_chart, 1)
 
             # Apply theme initially
             self.apply_theme()
@@ -1619,7 +1616,6 @@ class SimpleChartWidget(QWidget):
         self._tf_buttons = {}
         self._btn_ss_normal = ""
         self._btn_ss_active = ""
-        self.tabs = None
         self.spot_chart = None
 
     # =========================================================================
@@ -1649,34 +1645,6 @@ class SimpleChartWidget(QWidget):
             if layout:
                 layout.setContentsMargins(sp.PAD_XS, sp.PAD_XS, sp.PAD_XS, sp.PAD_XS)
                 layout.setSpacing(sp.GAP_XS)
-
-            # Update tab widget styling
-            self.tabs.setStyleSheet(f"""
-                QTabWidget::pane {{
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    background: {c.BG_MAIN};
-                }}
-                QTabBar::tab {{
-                    background: {c.BG_PANEL};
-                    color: {c.TEXT_DIM};
-                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-bottom: none;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    min-width: 150px;
-                    min-height: {sp.TAB_H}px;
-                }}
-                QTabBar::tab:selected {{
-                    background: {c.BLUE_DARK};
-                    color: {c.TEXT_INVERSE};
-                    border-color: {c.BLUE};
-                }}
-                QTabBar::tab:hover:!selected {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
-                }}
-            """)
 
             # Update button styles for timeframe toolbar
             self._btn_ss_normal = f"""
@@ -1725,7 +1693,6 @@ class SimpleChartWidget(QWidget):
         """Build the timeframe selector row above the chart."""
         bar = QWidget()
         bar.setObjectName("tfToolbar")
-        # Height will be set in apply_theme
 
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_XS, self._sp.PAD_SM, self._sp.PAD_XS)
@@ -1788,7 +1755,7 @@ class SimpleChartWidget(QWidget):
 
             logger.debug(f"[SimpleChartWidget] Got {len(df)} bars for {self._symbol}")
 
-            # ... rest of method (trim to MAX_BARS, convert to dict, update chart)
+            # Trim to MAX_BARS
             if len(df) > self.MAX_BARS:
                 df = df.iloc[-self.MAX_BARS:]
 

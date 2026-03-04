@@ -1,3 +1,6 @@
+# OptionUtils.py - All option-related methods consolidated here
+# Updated: Full broker-aware symbol generation and interval translation
+
 import calendar
 import logging.handlers
 from datetime import datetime, timedelta
@@ -11,6 +14,7 @@ from Utils.common import (
 
 logger = logging.getLogger(__name__)
 
+# ── Broker identifier constants (mirrors BrokerFactory.BrokerType) ─────────────
 BROKER_FYERS = "fyers"
 BROKER_ZERODHA = "zerodha"
 BROKER_DHAN = "dhan"
@@ -37,14 +41,12 @@ class OptionUtils:
         "FINNIFTY-INDEX": "FINNIFTY",
         "NIFTYBANK": "BANKNIFTY",
         "NIFTYBANK-INDEX": "BANKNIFTY",
-        "BANKNIFTY": "BANKNIFTY",
         "SENSEX": "SENSEX",
         "SENSEX-INDEX": "SENSEX",
         "MIDCPNIFTY": "MIDCPNIFTY",
         "MIDCPNIFTY-INDEX": "MIDCPNIFTY"
     }
 
-    # Strike-price rounding interval.  NOT the trading lot size.
     MULTIPLIER_MAP = {
         "NIFTY": 50,
         "FINNIFTY": 50,
@@ -53,29 +55,20 @@ class OptionUtils:
         "MIDCPNIFTY": 25
     }
 
-    LOT_SIZE_MAP: Dict[str, int] = {
-        "NIFTY":      65,    # was 75 before Jan 2026
-        "BANKNIFTY":  30,    # was 35 before Jan 2026
-        "FINNIFTY":   60,    # was 65 before Jan 2026
-        "MIDCPNIFTY": 120,   # was 140 before Jan 2026
-        "SENSEX":     20,    # BSE — unchanged in Jan 2026 revision
+    LOT_SIZE_MAP = {
+        "NIFTY":      65,
+        "BANKNIFTY":  30,
+        "FINNIFTY":   60,
+        "MIDCPNIFTY": 120,
+        "SENSEX":     20,
     }
 
-    EXPIRY_TYPE_MAP: Dict[str, str] = {
-        "NIFTY":      "weekly",    # NSE: weekly + monthly
-        "SENSEX":     "weekly",    # BSE: weekly + monthly
-        "BANKNIFTY":  "monthly",   # monthly only since Nov 20, 2024
-        "FINNIFTY":   "monthly",   # monthly only since Nov 20, 2024
-        "MIDCPNIFTY": "monthly",   # monthly only since Nov 20, 2024
-    }
-
-    # ── FIX: Per-index default max options per trade ───────────────────────────
-    MAX_OPTIONS_MAP: Dict[str, int] = {
+    FREEZE_SIZE_MAP = {
         "NIFTY":      1800,
-        "BANKNIFTY":  600,
-        "FINNIFTY":   1200,
-        "MIDCPNIFTY": 2800,
-        "SENSEX":     1800,
+        "BANKNIFTY":   900,
+        "FINNIFTY":   1800,
+        "MIDCPNIFTY": 2400,
+        "SENSEX":      400,
     }
 
     # Month codes for weekly options: 1-9, O=Oct, N=Nov, D=Dec
@@ -93,14 +86,17 @@ class OptionUtils:
     # NSE circular effective September 2, 2025:
     # All NSE indices now expire Tuesday; SENSEX (BSE) on Thursday.
     EXPIRY_WEEKDAY_MAP = {
-        "NIFTY": 1,         # Tuesday
-        "BANKNIFTY": 1,     # Tuesday (monthly only)
-        "FINNIFTY": 1,      # Tuesday (monthly only)
-        "MIDCPNIFTY": 1,    # Tuesday (monthly only)
-        "SENSEX": 3         # Thursday
+        "NIFTY": 1,  # Tuesday
+        "BANKNIFTY": 1,  # Tuesday
+        "FINNIFTY": 1,  # Tuesday
+        "MIDCPNIFTY": 1,  # Tuesday
+        "SENSEX": 3  # Thursday
     }
 
     # ── Index symbol maps per broker ────────────────────────────────────────────
+    # Key = canonical exchange symbol (NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY / SENSEX)
+    # Value = string the broker's API expects for history calls
+
     _INDEX_SYMBOL_MAP: Dict[str, Dict[str, str]] = {
         BROKER_FYERS: {
             "NIFTY": "NSE:NIFTY50-INDEX",
@@ -260,108 +256,6 @@ class OptionUtils:
     MTF_HISTORY_DAYS = {"1": 2, "5": 5, "15": 15}
 
     # ==========================================================================
-    # FIX: Lot size helpers — static map + live fetch with fallback
-    # ==========================================================================
-
-    @classmethod
-    def get_lot_size(cls, symbol: str, fetch_live: bool = False) -> int:
-        """Return the current lot size for the given derivative.
-
-        Attempts a live fetch from Angel Broking's public instrument master
-        (no API key required) to ensure the value stays up-to-date after
-        regulatory revisions.  Falls back to LOT_SIZE_MAP on any error.
-
-        Args:
-            symbol     : Derivative symbol in any recognised format.
-            fetch_live : Set False to skip HTTP call (e.g. in unit tests).
-
-        Returns:
-            Integer lot size.  Returns 65 (NIFTY default) for unknown symbols.
-        """
-        exchange_symbol = cls.get_exchange_symbol(symbol)
-        fallback = cls.LOT_SIZE_MAP.get(exchange_symbol, 65)
-
-        if not fetch_live:
-            return fallback
-
-        try:
-            import urllib.request
-            import json
-
-            url = (
-                "https://margincalculator.angelbroking.com/OpenAPI_File/files/"
-                "OpenAPIScripMaster.json"
-            )
-            _angel_sym_map = {
-                "NIFTY": "NIFTY",
-                "BANKNIFTY": "BANKNIFTY",
-                "FINNIFTY": "FINNIFTY",
-                "MIDCPNIFTY": "MIDCPNIFTY",
-                "SENSEX": "SENSEX",
-            }
-            target = _angel_sym_map.get(exchange_symbol)
-            if target is None:
-                return fallback
-
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode())
-
-            for row in data:
-                if (
-                    row.get("instrumenttype") in ("OPTIDX", "FUTIDX")
-                    and row.get("symbol", "").startswith(target)
-                    and int(row.get("lotsize", 0)) > 0
-                ):
-                    fetched = int(row["lotsize"])
-                    if 1 <= fetched <= 10000:
-                        logger.info(
-                            f"[get_lot_size] Live lot size for {exchange_symbol}: {fetched}"
-                        )
-                        # Update in-memory cache for fast subsequent calls.
-                        cls.LOT_SIZE_MAP[exchange_symbol] = fetched
-                        return fetched
-
-        except Exception as e:
-            logger.warning(
-                f"[get_lot_size] Live fetch failed for {symbol}, "
-                f"using static fallback {fallback}: {e}"
-            )
-
-        return fallback
-
-    @classmethod
-    def get_expiry_type(cls, symbol: str) -> str:
-        """Return 'weekly' or 'monthly' for the given derivative.
-
-        Per SEBI circular effective November 20, 2024:
-          NSE: only NIFTY 50 has weekly expiry.
-          BSE: only SENSEX has weekly expiry.
-          BANKNIFTY, FINNIFTY, MIDCPNIFTY are monthly-only.
-        """
-        try:
-            exchange_symbol = cls.get_exchange_symbol(symbol)
-            return cls.EXPIRY_TYPE_MAP.get(exchange_symbol, "monthly")
-        except Exception as e:
-            logger.error(f"[get_expiry_type] Failed for {symbol}: {e}", exc_info=True)
-            return "monthly"
-
-    @classmethod
-    def has_weekly_expiry(cls, symbol: str) -> bool:
-        """Return True if the index has weekly option contracts available."""
-        return cls.get_expiry_type(symbol) == "weekly"
-
-    @classmethod
-    def get_default_max_options(cls, symbol: str) -> int:
-        """Return the recommended default max_num_of_option for the index."""
-        try:
-            exchange_symbol = cls.get_exchange_symbol(symbol)
-            return cls.MAX_OPTIONS_MAP.get(exchange_symbol, 5)
-        except Exception as e:
-            logger.error(f"[get_default_max_options] Failed for {symbol}: {e}", exc_info=True)
-            return 5
-
-    # ==========================================================================
     # Broker-aware symbol translation
     # ==========================================================================
 
@@ -377,9 +271,18 @@ class OptionUtils:
            ``get_exchange_symbol()`` (e.g. "NIFTY50-INDEX" → "NIFTY").
         2. If the canonical name is a **known index** (present in
            ``_INDEX_SYMBOL_MAP`` for the requested broker), return the full
-           broker-specific index string from that map.
+           broker-specific index string from that map
+           (e.g. "NSE:NIFTY50-INDEX" for Fyers, "NSE_INDEX|Nifty 50" for
+           Upstox).  This covers the old ``get_index_symbol_for_broker`` path.
         3. Otherwise treat ``symbol`` as an **option / futures core symbol**
-           and prepend the broker's exchange prefix from ``_OPTION_PREFIX``.
+           and prepend the broker's exchange prefix from ``_OPTION_PREFIX``
+           (e.g. "NSE:" for Fyers, "NFO:" for Zerodha).  This covers the old
+           ``get_option_symbol_for_broker`` path.
+
+        Because both paths share the same canonical-name resolution step you
+        can now pass any symbol — NIFTY50-INDEX, NIFTYBANK, NIFTY25021CE,
+        NSE:NIFTY50-INDEX, etc. — without knowing in advance which lookup
+        table to hit.
 
         Args:
             symbol      : Raw symbol string in any recognised format.
@@ -394,6 +297,13 @@ class OptionUtils:
             broker_key = broker_type.lower()
 
             # ── Idempotency guard ─────────────────────────────────────────────
+            # Strip any existing exchange prefix so that symbols which have
+            # already been formatted (e.g. "NSE:NIFTY25021CE" coming from
+            # build_option_symbol, or "NSE:NIFTY50-INDEX" stored in state) are
+            # not double-prefixed when passed through ws_subscribe or any other
+            # path that calls _format_symbol a second time.
+            # We detect a prefix as a known exchange identifier followed by
+            # ":" or "|".
             core_symbol = symbol
             known_prefixes = ("NSE:", "NFO:", "BSE:", "NSE_INDEX|", "NSE_FO|",
                               "NFO|", "BSE|", "MCX:", "MCX|", "CDS:")
@@ -403,17 +313,27 @@ class OptionUtils:
                     break
 
             # ── Index path ────────────────────────────────────────────────────
+            # Resolve core_symbol to its canonical exchange name.
+            # If it maps to a known index canonical (NIFTY, BANKNIFTY, …),
+            # return the full broker-specific index string from _INDEX_SYMBOL_MAP.
             canonical = cls.get_exchange_symbol(core_symbol)
             broker_index_map = cls._INDEX_SYMBOL_MAP.get(broker_key, {})
             if canonical in broker_index_map:
                 return broker_index_map[canonical]
 
             # ── Already-translated index guard ────────────────────────────────
+            # If the symbol was already the broker's own index string (e.g.
+            # Upstox's "NSE_INDEX|Nifty 50" or Zerodha's "NSE:NIFTY 50"),
+            # after prefix-stripping the core won't match SYMBOL_MAP but it
+            # IS valid for this broker — check all broker index maps to see if
+            # the original symbol is already a canonical broker value.
             for _broker_map in cls._INDEX_SYMBOL_MAP.values():
                 if symbol in _broker_map.values():
-                    return symbol
+                    return symbol  # already a valid broker index string
 
             # ── Option / futures path ─────────────────────────────────────────
+            # core_symbol is a formed option/futures string (e.g. "NIFTY25021CE").
+            # Prepend the broker's exchange prefix exactly once.
             prefix = cls._OPTION_PREFIX.get(broker_key, "")
             return f"{prefix}{core_symbol}"
 
@@ -428,17 +348,30 @@ class OptionUtils:
 
     @classmethod
     def get_index_symbol_for_broker(cls, derivative: str, broker_type: str) -> str:
-        """Deprecated: use get_symbol_for_broker() instead."""
+        """
+        Deprecated: use ``get_symbol_for_broker(derivative, broker_type)`` instead.
+
+        Kept for backward compatibility.  Delegates entirely to the merged
+        method; the index-detection logic there guarantees the same result as
+        the original implementation.
+        """
         return cls.get_symbol_for_broker(derivative, broker_type)
 
     @classmethod
     def get_option_symbol_for_broker(cls, core_symbol: str, broker_type: str) -> str:
-        """Deprecated: use get_symbol_for_broker() instead."""
+        """
+        Deprecated: use ``get_symbol_for_broker(core_symbol, broker_type)`` instead.
+
+        Kept for backward compatibility.  Delegates to the merged method.
+        Because a formed option symbol (e.g. "NIFTY25021CE") will not match
+        any index canonical name, the merged method always takes the prefix
+        path — identical behaviour to the original.
+        """
         return cls.get_symbol_for_broker(core_symbol, broker_type)
 
     @classmethod
     def translate_interval(cls, interval: str, broker_type: str) -> str:
-        """Translate canonical interval string to broker-specific format."""
+        """Translate the app's canonical interval string to the format expected by the given broker."""
         try:
             broker_map = cls._INTERVAL_MAP.get(broker_type.lower(), {})
             return broker_map.get(str(interval), str(interval))
@@ -448,7 +381,7 @@ class OptionUtils:
 
     @classmethod
     def get_supported_intervals(cls, broker_type: str) -> List[str]:
-        """Return canonical interval strings supported by the given broker."""
+        """Return the list of canonical interval strings supported by the given broker."""
         _NO_HISTORY = {BROKER_KOTAK, BROKER_ALICEBLUE}
         if broker_type.lower() in _NO_HISTORY:
             return []
@@ -474,7 +407,7 @@ class OptionUtils:
             broker_type: Optional[str] = None,
             num_expiries_plus: int = 0,
     ) -> Optional[str]:
-        """High-level: build a complete, broker-ready option symbol in one call."""
+        """High-level convenience method: build a complete, broker-ready option symbol in one call."""
         try:
             exchange_symbol = cls.get_exchange_symbol(derivative)
 
@@ -504,7 +437,7 @@ class OptionUtils:
 
     @classmethod
     def get_exchange_symbol(cls, symbol: str) -> str:
-        """Convert input symbol to canonical exchange symbol."""
+        """Convert input symbol to canonical exchange symbol"""
         try:
             if symbol is None:
                 logger.warning("get_exchange_symbol called with None symbol")
@@ -516,7 +449,7 @@ class OptionUtils:
 
     @classmethod
     def get_multiplier(cls, symbol: str) -> int:
-        """Get strike rounding multiplier for symbol (NOT lot size)."""
+        """Get strike multiplier for symbol"""
         try:
             exchange_symbol = cls.get_exchange_symbol(symbol)
             return cls.MULTIPLIER_MAP.get(exchange_symbol, 50)
@@ -525,8 +458,43 @@ class OptionUtils:
             return 50
 
     @classmethod
+    def get_lot_size(cls, symbol: str, fallback: int = 0) -> int:
+        """
+        Return the SEBI-regulated lot size for *symbol*.
+
+        Resolves any broker-prefixed or aliased symbol to its canonical
+        exchange name first (e.g. "NSE:NIFTY50-INDEX" -> "NIFTY"), then
+        looks up LOT_SIZE_MAP.
+
+        Args:
+            symbol  : Any form of the derivative name - canonical
+                      ("NIFTY"), broker-prefixed ("NSE:NIFTY50-INDEX"),
+                      or aliased ("NIFTY50-INDEX", "NIFTYBANK").
+            fallback: Value to return when the index is not recognised.
+                      Pass the manually-configured lot size here so the
+                      caller degrades gracefully for unknown instruments.
+
+        Returns:
+            Lot size as a positive integer, or *fallback* if not found.
+        """
+        try:
+            exchange_symbol = cls.get_exchange_symbol(symbol)
+            lot = cls.LOT_SIZE_MAP.get(exchange_symbol)
+            if lot is not None:
+                return lot
+            logger.warning(
+                f"[OptionUtils.get_lot_size] No lot size entry for "
+                f"\'{symbol}\' (canonical=\'{exchange_symbol}\'). "
+                f"Using fallback={fallback}."
+            )
+            return fallback
+        except Exception as e:
+            logger.error(f"[get_lot_size] Failed for {symbol}: {e}", exc_info=True)
+            return fallback
+
+    @classmethod
     def lookbacks(cls, derivative: str = 'NIFTY', side: str = BaseEnums.CALL, lookback: int = 0) -> int:
-        """Calculate strike price adjustment based on lookback."""
+        """Calculate strike price adjustment based on lookback"""
         try:
             derivative = cls.get_exchange_symbol(derivative)
             if side not in {BaseEnums.CALL, BaseEnums.PUT}:
@@ -573,7 +541,7 @@ class OptionUtils:
 
     @classmethod
     def get_last_thursday_of_month(cls, year: int, month: int) -> datetime:
-        """Get the last Thursday of a given month (backward compatibility)."""
+        """Get the last Thursday of a given month (kept for backward compatibility)"""
         try:
             return cls.get_last_expiry_weekday_of_month(year, month, target_weekday=3)
         except Exception as e:
@@ -601,19 +569,9 @@ class OptionUtils:
 
     @classmethod
     def get_current_weekly_expiry_date(cls, derivative: str = "NIFTY") -> datetime:
-        """Get the current (or next upcoming) weekly expiry date.
-
-        FIX: BANKNIFTY / FINNIFTY / MIDCPNIFTY no longer have weekly contracts
-        (discontinued Nov 20 2024).  For those indices we now return their
-        upcoming monthly expiry instead of computing a non-existent Tuesday.
-        """
+        """Get the current (or next upcoming) weekly expiry date."""
         try:
             exchange_symbol = cls.get_exchange_symbol(derivative)
-
-            # FIX: Monthly-only indices — redirect to monthly expiry.
-            if cls.EXPIRY_TYPE_MAP.get(exchange_symbol) == "monthly":
-                return cls.get_monthly_expiry_day_date(derivative=exchange_symbol)
-
             target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
 
             today = datetime.now()
@@ -681,16 +639,13 @@ class OptionUtils:
 
     @classmethod
     def should_use_monthly_format(cls, derivative: str = "NIFTY") -> bool:
-        """Determine if we should use monthly option symbol format.
-        """
+        """Determine if we should use monthly option format."""
         try:
             exchange_symbol = cls.get_exchange_symbol(derivative)
 
-            # FIX: Monthly-only indices always need monthly symbol format.
-            if cls.EXPIRY_TYPE_MAP.get(exchange_symbol) == "monthly":
+            if exchange_symbol == "SENSEX":
                 return True
 
-            # Weekly-capable index: True only during monthly expiry week.
             next_expiry = cls.get_current_weekly_expiry_date(derivative=exchange_symbol)
             monthly_expiry = cls.get_monthly_expiry_date(
                 next_expiry.year, next_expiry.month, derivative=exchange_symbol
@@ -757,8 +712,7 @@ class OptionUtils:
     @classmethod
     def prepare_weekly_options_symbol(cls, input_symbol: str, strike: Any, option_type: str,
                                       num_weeks_plus: int = 0) -> Optional[str]:
-        """Prepare option symbol in weekly or monthly format as appropriate..
-        """
+        """Prepare weekly expiry option symbol (core NSE compact format, no broker prefix)."""
         try:
             if not input_symbol:
                 logger.warning("prepare_weekly_options_symbol called with empty input_symbol")
@@ -789,18 +743,10 @@ class OptionUtils:
                 logger.error(f"Failed to convert strike {strike} to int: {e}")
                 return None
 
-            exchange_symbol = cls.get_exchange_symbol(input_symbol)
-
-            # FIX: Monthly-only indices must use the three-letter monthly code.
-            if cls.EXPIRY_TYPE_MAP.get(exchange_symbol) == "monthly":
-                month_code = cls.MONTHLY_MONTH_CODES.get(expiry_date.month, "JAN")
-                symbol = f"{exchange_symbol}{year2d}{month_code}{strike_int}{option_type}"
-            else:
-                month_code = cls.WEEKLY_MONTH_CODES.get(expiry_date.month, str(expiry_date.month))
-                day_str = f"{expiry_date.day:02d}"
-                symbol = f"{input_symbol}{year2d}{month_code}{day_str}{strike_int}{option_type}"
-
-            logger.debug(f"[prepare_weekly_options_symbol] => {symbol}")
+            month_code = cls.WEEKLY_MONTH_CODES.get(expiry_date.month, str(expiry_date.month))
+            day_str = f"{expiry_date.day:02d}"
+            symbol = f"{input_symbol}{year2d}{month_code}{day_str}{strike_int}{option_type}"
+            logger.debug(f"[prepare_weekly_options_symbol] Weekly format: {symbol}")
             return symbol
         except Exception as e:
             logger.error(f"[prepare_weekly_options_symbol] Error: {e}", exc_info=True)
@@ -829,7 +775,7 @@ class OptionUtils:
 
     @classmethod
     def get_nearest_strike_price(cls, price: float, nearest_multiple: int = 50) -> int:
-        """Round price to nearest strike multiple."""
+        """Round price to nearest strike multiple"""
         try:
             if price is None:
                 logger.warning("get_nearest_strike_price called with None price")
@@ -1022,7 +968,7 @@ class OptionUtils:
     @classmethod
     def get_weekly_expiry_day_date(cls, date_time_obj: Optional[datetime] = None,
                                    derivative: str = "NIFTY") -> datetime:
-        """Alias for get_current_weekly_expiry_date."""
+        """Alias for get_current_weekly_expiry_date"""
         try:
             return cls.get_current_weekly_expiry_date(derivative)
         except Exception as e:
@@ -1053,7 +999,7 @@ class OptionUtils:
 
     @classmethod
     def is_today_weekly_expiry_day(cls, derivative: str = "NIFTY50") -> bool:
-        """Check if today is weekly expiry day."""
+        """Check if today is weekly expiry day"""
         try:
             expiry_date = cls.get_current_weekly_expiry_date(derivative=derivative)
             today = get_time_of_day(0, 0, 0)
@@ -1064,7 +1010,7 @@ class OptionUtils:
 
     @classmethod
     def is_today_one_day_before_weekly_expiry_day(cls, derivative: str = "NIFTY50") -> bool:
-        """Check if tomorrow is weekly expiry day."""
+        """Check if tomorrow is weekly expiry day"""
         try:
             expiry_date = cls.get_current_weekly_expiry_date(derivative=derivative)
             today = get_time_of_day(0, 0, 0)
@@ -1106,8 +1052,111 @@ class OptionUtils:
     # Rule 8: Cleanup method
     @classmethod
     def cleanup(cls):
-        """Clean up resources."""
+        """Clean up resources"""
         try:
             logger.info("[OptionUtils] Cleanup completed")
         except Exception as e:
             logger.error(f"[OptionUtils.cleanup] Error: {e}", exc_info=True)
+
+    @classmethod
+    def get_freeze_size(cls, symbol: str) -> int:
+        """
+        Return the exchange freeze limit (max shares per single order) for
+        *symbol*.
+
+        If the total quantity to trade exceeds this value the caller must
+        split the order into multiple child orders, each with a quantity
+        that is <= the freeze size AND a whole multiple of the lot size.
+
+        Resolves any broker-prefixed or aliased symbol to its canonical
+        exchange name first, identical to get_lot_size().
+
+        Args:
+            symbol: Any form of the derivative name — canonical ("NIFTY"),
+                    broker-prefixed ("NSE:NIFTY50-INDEX"), or aliased
+                    ("NIFTYBANK", "NIFTY50-INDEX").
+
+        Returns:
+            Freeze size in shares (positive int), or 0 if not recognised
+            (caller should treat 0 as "no split required / unknown").
+        """
+        try:
+            exchange_symbol = cls.get_exchange_symbol(symbol)
+            freeze = cls.FREEZE_SIZE_MAP.get(exchange_symbol, 0)
+            if freeze == 0:
+                logger.warning(
+                    f"[OptionUtils.get_freeze_size] No freeze size entry for "
+                    f"'{symbol}' (canonical='{exchange_symbol}'). "
+                    f"Returning 0 — caller should skip order splitting."
+                )
+            return freeze
+        except Exception as e:
+            logger.error(f"[get_freeze_size] Failed for {symbol}: {e}", exc_info=True)
+            return 0
+
+    @classmethod
+    def split_order_quantities(cls, symbol: str, total_shares: int) -> list:
+        """
+        Split *total_shares* into a list of per-order quantities that each
+        respect the exchange freeze limit and are whole multiples of the
+        lot size.
+
+        Example — NIFTY, buying 3900 shares (60 lots of 65):
+            freeze = 1800, lot = 65
+            → [1755, 1755, 390]   <- each a multiple of 65, total = 3900
+
+        Actually: floor(1800/65)*65 = 27*65 = 1755 per child order
+            ceil(3900/1755) = 3 orders → [1755, 1755, 390]
+
+        Args:
+            symbol      : Any form of the derivative name.
+            total_shares: Total quantity to buy (must be a whole lot multiple).
+
+        Returns:
+            List of int quantities. Returns [total_shares] unchanged if:
+            - total_shares <= freeze size (no split needed), or
+            - freeze size is unknown (0), or
+            - total_shares is 0.
+        """
+        try:
+            if total_shares <= 0:
+                return []
+
+            freeze = cls.get_freeze_size(symbol)
+            lot = cls.get_lot_size(symbol)
+
+            # Cannot split meaningfully without both values
+            if freeze == 0 or lot == 0 or total_shares <= freeze:
+                return [total_shares]
+
+            # Max whole lots that fit within one freeze window
+            lots_per_child = freeze // lot
+            shares_per_child = lots_per_child * lot
+
+            if shares_per_child <= 0:
+                # Degenerate: lot > freeze (should never happen with valid data)
+                logger.error(
+                    f"[split_order_quantities] lot_size ({lot}) exceeds "
+                    f"freeze_size ({freeze}) for '{symbol}'. Cannot split."
+                )
+                return [total_shares]
+
+            quantities = []
+            remaining = total_shares
+            while remaining > 0:
+                chunk = min(shares_per_child, remaining)
+                quantities.append(chunk)
+                remaining -= chunk
+
+            logger.debug(
+                f"[split_order_quantities] {symbol}: {total_shares} shares "
+                f"split into {len(quantities)} orders {quantities}"
+            )
+            return quantities
+
+        except Exception as e:
+            logger.error(
+                f"[split_order_quantities] Failed for {symbol}: {e}",
+                exc_info=True,
+            )
+            return [total_shares]

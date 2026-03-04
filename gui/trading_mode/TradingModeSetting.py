@@ -26,18 +26,18 @@ logger = logging.getLogger(__name__)
 
 class TradingMode(Enum):
     LIVE = "Live"
-    SIM = "Simulation"
+    PAPER = "Paper"
     BACKTEST = "Backtest"
 
     @classmethod
     def _missing_(cls, value):
         """Handle missing enum values gracefully."""
         try:
-            logger.warning(f"Unknown trading mode value: {value}, defaulting to SIM")
-            return cls.SIM
+            logger.warning(f"Unknown trading mode value: {value}, defaulting to Paper")
+            return cls.PAPER
         except Exception as e:
             logger.error(f"[TradingMode._missing_] Failed: {e}", exc_info=True)
-            return cls.SIM
+            return cls.PAPER
 
 
 class TradingModeSetting:
@@ -54,7 +54,7 @@ class TradingModeSetting:
     # Rule 2: Class-level defaults with new features
     DEFAULTS = {
         # Original fields
-        "mode": TradingMode.SIM,
+        "mode": TradingMode.PAPER,
         "paper_balance": 100000.0,
         "allow_live_trading": False,
         "confirm_live_trades": True,
@@ -144,7 +144,7 @@ class TradingModeSetting:
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.mode = TradingMode.SIM
+        self.mode = TradingMode.PAPER
         self.paper_balance = 100000.0
         self.allow_live_trading = False
         self.confirm_live_trades = True
@@ -173,7 +173,7 @@ class TradingModeSetting:
     def _set_defaults(self):
         """Set all attributes to default values"""
         try:
-            self.mode = TradingMode.SIM
+            self.mode = TradingMode.PAPER
             self.paper_balance = 100000.0
             self.allow_live_trading = False
             self.confirm_live_trades = True
@@ -288,12 +288,12 @@ class TradingModeSetting:
 
             if data:
                 # Mode with special handling
-                mode_str = data.get("mode", "SIM")
+                mode_str = data.get("mode", "Paper")
                 try:
                     self.mode = TradingMode(mode_str)
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid mode value {mode_str!r}: {e}. Using SIM.")
-                    self.mode = TradingMode.SIM
+                    logger.warning(f"Invalid mode value {mode_str!r}: {e}. Using PAPER.")
+                    self.mode = TradingMode.PAPER
 
                 # Paper balance
                 try:
@@ -493,7 +493,7 @@ class TradingModeSetting:
         try:
             return {
                 # Original fields
-                "mode": self.mode.value if self.mode else TradingMode.SIM.value,
+                "mode": self.mode.value if self.mode else TradingMode.PAPER.value,
                 "paper_balance": float(self.paper_balance) if self.paper_balance is not None else 100000.0,
                 "allow_live_trading": bool(self.allow_live_trading),
                 "confirm_live_trades": bool(self.confirm_live_trades),
@@ -520,7 +520,7 @@ class TradingModeSetting:
         except Exception as e:
             logger.error(f"[TradingModeSetting.to_dict] Failed: {e}", exc_info=True)
             return {
-                "mode": TradingMode.SIM.value,
+                "mode": TradingMode.PAPER.value,
                 "paper_balance": 100000.0,
                 "allow_live_trading": False,
                 "confirm_live_trades": True,
@@ -559,7 +559,7 @@ class TradingModeSetting:
                 self.mode = TradingMode(mode_str)
             except (ValueError, TypeError) as e:
                 logger.warning(f"Invalid mode value {mode_str!r}: {e}. Using SIM.")
-                self.mode = TradingMode.SIM
+                self.mode = TradingMode.PAPER
 
             # Paper balance
             try:
@@ -689,7 +689,7 @@ class TradingModeSetting:
     def is_sim(self) -> bool:
         """Check if simulation mode is active."""
         try:
-            return self.mode == TradingMode.SIM
+            return self.mode == TradingMode.PAPER
         except Exception as e:
             logger.error(f"[TradingModeSetting.is_sim] Failed: {e}", exc_info=True)
             return True  # Default to SIM for safety
@@ -705,10 +705,10 @@ class TradingModeSetting:
     def get_mode_name(self) -> str:
         """Get current mode name as string."""
         try:
-            return self.mode.value if self.mode else TradingMode.SIM.value
+            return self.mode.value if self.mode else TradingMode.PAPER.value
         except Exception as e:
             logger.error(f"[TradingModeSetting.get_mode_name] Failed: {e}", exc_info=True)
-            return TradingMode.SIM.value
+            return TradingMode.PAPER.value
 
     # ==================================================================
     # FEATURE 6: Multi-Timeframe Filter helpers

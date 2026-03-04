@@ -14,7 +14,27 @@ State access rules
   * Historical / candle data is NEVER fetched or stored by this class.
     CandleStore ownership lives exclusively in TradingApp._candle_stores.
 
-UPDATED: Uses state_manager for state access and integrates with risk manager.
+FREEZE-SIZE CHANGES
+-------------------
+  place_orders:
+    Previously split orders by `state.max_num_of_option` (a manually-entered
+    GUI value). Replaced with `OptionUtils.split_order_quantities()` which
+    derives the correct per-order chunk size from the exchange freeze limit
+    for the specific index (NIFTY=1800, BANKNIFTY=900, etc.) so no manual
+    configuration is required and the split stays correct after SEBI lot-size
+    revisions.
+
+  exit_position:
+    Sell orders for each position are now also split by freeze size. Each
+    position's quantity is passed through `OptionUtils.split_order_quantities()`
+    so a single large position is exited via multiple sell orders that each
+    stay within the exchange freeze limit. Previously there was no splitting
+    on the sell side — large positions would be rejected by the exchange.
+
+  adjust_positions:
+    `calculate_shares_to_buy` was called with `state.lot_size` (the manually-
+    entered value). Now uses `OptionUtils.get_lot_size(state.derivative,
+    fallback=state.lot_size)` — consistent with buy_option.
 """
 
 import logging.handlers
@@ -72,11 +92,16 @@ class OrderExecutor:
         Feature 2: Smart order execution.
         Feature 1: Risk manager pre-flight check.
 
+        Lot size is resolved from OptionUtils.LOT_SIZE_MAP using the
+        derivative index name at the time of the order, rather than
+        relying on the manually-entered trade_config.lot_size value.
+        state.lot_size is retained as a fallback for instruments that
+        are not in the map (custom stock options, etc.).
+
         Args:
             option_type: BaseEnums.CALL or BaseEnums.PUT
         """
         try:
-            # Get state from manager
             state = state_manager.get_state()
 
             if state is None:
@@ -87,7 +112,7 @@ class OrderExecutor:
                 logger.error(f"Invalid option_type: {option_type}")
                 return False
 
-            # Risk manager check (config already has risk settings)
+            # Risk manager pre-flight check
             if self.risk_manager:
                 allowed, reason = self.risk_manager.should_allow_trade(self.config)
                 if not allowed:
@@ -109,10 +134,12 @@ class OrderExecutor:
 
                 # Claim the pending slot immediately — still within _order_lock
                 state.order_pending = True
-                option_name = state.call_option if option_type == BaseEnums.CALL else state.put_option
 
-                # BUG FIX: Validate option_name before continuing — it is None when the
-                # option chain has not been loaded yet (e.g. market just opened).
+                option_name = (
+                    state.call_option if option_type == BaseEnums.CALL
+                    else state.put_option
+                )
+
                 if not option_name:
                     logger.error(
                         f"[BUY] option_name is None for {option_type}. "
@@ -133,33 +160,61 @@ class OrderExecutor:
                         state.order_pending = False
                         return False
 
+                # ── Lot size resolution ────────────────────────────────────────
+                # Resolve from OptionUtils.LOT_SIZE_MAP using the canonical index
+                # name. state.lot_size is the fallback for unknown instruments.
+                lot_size = OptionUtils.get_lot_size(
+                    state.derivative, fallback=state.lot_size
+                )
+
+                if lot_size <= 0:
+                    logger.error(
+                        f"[BUY] Could not determine lot size for "
+                        f"'{state.derivative}' (fallback={state.lot_size}). "
+                        f"Aborting order to prevent zero-quantity trade."
+                    )
+                    state.order_pending = False
+                    return False
+                # ── End lot size resolution ────────────────────────────────────
+
                 try:
                     shares = Utils.calculate_shares_to_buy(
-                        price=market_price, balance=state.account_balance, lot_size=state.lot_size
+                        price=market_price,
+                        balance=state.account_balance,
+                        lot_size=lot_size,
                     )
                 except Exception as e:
                     logger.error(f"Failed to calculate shares: {e}", exc_info=True)
                     state.order_pending = False
                     return False
 
-                logger.info(f"Buying {option_type}: {option_name}, Price: {market_price}, Shares: {shares}")
+                logger.info(
+                    f"Buying {option_type}: {option_name}, "
+                    f"Price: {market_price}, Shares: {shares}, "
+                    f"Lot size: {lot_size} (index: {state.derivative})"
+                )
 
-                if shares < state.lot_size:
+                if shares < lot_size:
                     shares = self.adjust_positions(shares=shares, side=option_type)
-                    # Get updated state after adjustment
+                    # Refresh state and prices after position adjustment
                     state = state_manager.get_state()
-                    option_name = state.call_option if option_type == BaseEnums.CALL else state.put_option
+                    option_name = (
+                        state.call_option if option_type == BaseEnums.CALL
+                        else state.put_option
+                    )
                     market_price = self._fetch_live_price(option_name)
                     if market_price is None:
                         state.order_pending = False
                         return False
 
-                if shares < state.lot_size:
+                if shares < lot_size:
                     logger.warning("Insufficient balance even after adjusting positions.")
                     state.order_pending = False
                     return False
 
-                success = self._smart_order_execution(state, option_type, option_name, shares, market_price)
+                success = self._smart_order_execution(
+                    state, option_type, option_name, shares, market_price
+                )
                 if success:
                     logger.info(f"{option_type} position entered successfully.")
                 state.order_pending = False
@@ -233,7 +288,16 @@ class OrderExecutor:
             logger.warning("[ORDER] Attempt 2 failed. Trying MARKET order.")
             self._cancel_unconfirmed_orders(orders, state)
 
-            if self.api and BaseEnums.BOT_TYPE == BaseEnums.LIVE:
+            # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
+            is_paper = False
+            if hasattr(state, 'is_paper_mode'):
+                is_paper = state.is_paper_mode
+            elif hasattr(state, 'trading_mode'):
+                is_paper = state.trading_mode != BaseEnums.LIVE
+
+            is_live = not is_paper
+
+            if is_live and self.api:
                 logger.info(f"[ORDER] Attempt 3/3: MARKET order for {shares} shares")
                 try:
                     side_buy = getattr(self.api, 'SIDE_BUY', 1)
@@ -327,70 +391,113 @@ class OrderExecutor:
     # Order placement
     # ------------------------------------------------------------------
 
-    def place_orders(self, symbol, shares, price, state):
+    def place_orders(self, symbol: str, shares: int, price: float, state) -> List[Dict]:
+        """
+        Place one or more buy orders for *shares* at *price*, automatically
+        splitting into child orders that each respect the exchange freeze limit.
+
+        Returns:
+            List of order dicts: [{id, broker_id, qty, symbol, price}, ...]
+            Empty list on any fatal error.
+        """
         orders = []
         try:
             if not symbol or shares <= 0 or price <= 0 or state is None:
                 return []
 
-            max_lot = state.max_num_of_option
             session_id = getattr(state, 'session_id', None)
-            is_live = BaseEnums.BOT_TYPE == BaseEnums.LIVE and max_lot > 0
+
+            # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
+            # Check if we're in paper mode - either from state or from trading_mode_setting
+            is_paper = False
+            if hasattr(state, 'is_paper_mode'):
+                is_paper = state.is_paper_mode
+            elif hasattr(state, 'trading_mode'):
+                is_paper = state.trading_mode != BaseEnums.LIVE
+
+            is_live = not is_paper
 
             if is_live and self.api:
-                full_lots, remainder = divmod(shares, max_lot)
-                for i in range(full_lots):
-                    try:
-                        broker_id = self.api.place_order(symbol=symbol, qty=max_lot, limitPrice=price)
-                        if broker_id:
-                            oid = orders_crud.create(
-                                session_id=session_id, symbol=symbol,
-                                position_type=state.current_position or "UNKNOWN",
-                                quantity=max_lot, broker_order_id=broker_id,
-                                entry_price=price, stop_loss=state.stop_loss,
-                                take_profit=state.tp_point, db=get_db(),
-                            )
-                            if oid > 0:
-                                orders.append({"id": oid, "broker_id": broker_id,
-                                               "qty": max_lot, "symbol": symbol, "price": price})
-                    except Exception as e:
-                        logger.error(f"Failed to place lot {i + 1}: {e}", exc_info=True)
+                chunks = OptionUtils.split_order_quantities(state.derivative, shares)
 
-                if remainder > 0:
+                logger.info(
+                    f"[place_orders] {symbol}: {shares} shares split into "
+                    f"{len(chunks)} order(s) {chunks} "
+                    f"(freeze limit: {OptionUtils.get_freeze_size(state.derivative)})"
+                )
+
+                for i, qty in enumerate(chunks, start=1):
                     try:
-                        broker_id = self.api.place_order(symbol=symbol, qty=remainder, limitPrice=price)
+                        broker_id = self.api.place_order(
+                            symbol=symbol, qty=qty, limitPrice=price
+                        )
                         if broker_id:
                             oid = orders_crud.create(
-                                session_id=session_id, symbol=symbol,
+                                session_id=session_id,
+                                symbol=symbol,
                                 position_type=state.current_position or "UNKNOWN",
-                                quantity=remainder, broker_order_id=broker_id,
-                                entry_price=price, stop_loss=state.stop_loss,
-                                take_profit=state.tp_point, db=get_db(),
+                                quantity=qty,
+                                broker_order_id=broker_id,
+                                entry_price=price,
+                                stop_loss=state.stop_loss,
+                                take_profit=state.tp_point,
+                                db=get_db(),
                             )
                             if oid > 0:
-                                orders.append({"id": oid, "broker_id": broker_id,
-                                               "qty": remainder, "symbol": symbol, "price": price})
+                                orders.append({
+                                    "id": oid,
+                                    "broker_id": broker_id,
+                                    "qty": qty,
+                                    "symbol": symbol,
+                                    "price": price,
+                                })
+                                logger.debug(
+                                    f"[place_orders] Child order {i}/{len(chunks)}: "
+                                    f"qty={qty} broker_id={broker_id}"
+                                )
+                        else:
+                            logger.error(
+                                f"[place_orders] Broker returned no ID for chunk "
+                                f"{i}/{len(chunks)} qty={qty}"
+                            )
                     except Exception as e:
-                        logger.error(f"Failed to place remainder order: {e}", exc_info=True)
+                        logger.error(
+                            f"[place_orders] Failed to place chunk {i}/{len(chunks)} "
+                            f"qty={qty}: {e}",
+                            exc_info=True,
+                        )
+
             else:
+                # Paper / simulation — single DB record, no broker call
                 try:
                     oid = orders_crud.create(
-                        session_id=session_id, symbol=symbol,
+                        session_id=session_id,
+                        symbol=symbol,
                         position_type=state.current_position or "UNKNOWN",
                         quantity=shares,
-                        broker_order_id=f"paper_{random.randint(10000,99999)}_{Utils.get_epoch()}",
-                        entry_price=price, stop_loss=state.stop_loss,
-                        take_profit=state.tp_point, db=get_db(),
+                        broker_order_id=(
+                            f"paper_{random.randint(10000, 99999)}_{Utils.get_epoch()}"
+                        ),
+                        entry_price=price,
+                        stop_loss=state.stop_loss,
+                        take_profit=state.tp_point,
+                        db=get_db(),
                     )
                     if oid > 0:
-                        orders.append({"id": oid, "broker_id": None,
-                                       "qty": shares, "symbol": symbol, "price": price})
+                        orders.append({
+                            "id": oid,
+                            "broker_id": None,
+                            "qty": shares,
+                            "symbol": symbol,
+                            "price": price,
+                        })
                 except Exception as e:
-                    logger.error(f"Failed to create paper order: {e}", exc_info=True)
+                    logger.error(f"[place_orders] Failed to create paper order: {e}", exc_info=True)
 
             return orders
+
         except Exception as e:
-            logger.exception(f"Failed to place orders: {e}")
+            logger.exception(f"[place_orders] Failed: {e}")
             return []
 
     # ------------------------------------------------------------------
@@ -446,31 +553,58 @@ class OrderExecutor:
     # ------------------------------------------------------------------
 
     def adjust_positions(self, shares, side):
-        """Try cheaper strikes when insufficient balance."""
+        """
+        Try cheaper strikes when insufficient balance.
+
+        FREEZE-SIZE CHANGE
+        ------------------
+        `calculate_shares_to_buy` was previously called with `state.lot_size`
+        (the manually-entered GUI value). Now uses
+        `OptionUtils.get_lot_size(state.derivative, fallback=state.lot_size)`
+        — consistent with buy_option — so the lot size is always derived
+        from the index.
+        """
         try:
             state = state_manager.get_state()
             if state is None:
                 return shares or 0
 
+            # Resolve lot size from index (same logic as buy_option)
+            lot_size = OptionUtils.get_lot_size(
+                state.derivative, fallback=state.lot_size
+            )
+
             for attempt in range(10):
                 try:
-                    if shares >= state.lot_size:
+                    if shares >= lot_size:
                         break
                     if side == BaseEnums.CALL:
                         state.call_lookback = OptionUtils.lookbacks(
-                            derivative=state.derivative, lookback=state.call_lookback, side=side)
+                            derivative=state.derivative,
+                            lookback=state.call_lookback,
+                            side=side,
+                        )
                         state.call_option = OptionUtils.get_option_at_price(
                             derivative_price=state.derivative_current_price,
-                            lookback=state.call_lookback, expiry=state.expiry,
-                            op_type='CE', derivative_name=state.derivative)
+                            lookback=state.call_lookback,
+                            expiry=state.expiry,
+                            op_type='CE',
+                            derivative_name=state.derivative,
+                        )
                         option_name = state.call_option
                     else:
                         state.put_lookback = OptionUtils.lookbacks(
-                            derivative=state.derivative, lookback=state.put_lookback, side=side)
+                            derivative=state.derivative,
+                            lookback=state.put_lookback,
+                            side=side,
+                        )
                         state.put_option = OptionUtils.get_option_at_price(
                             derivative_price=state.derivative_current_price,
-                            lookback=state.put_lookback, expiry=state.expiry,
-                            op_type='PE', derivative_name=state.derivative)
+                            lookback=state.put_lookback,
+                            expiry=state.expiry,
+                            op_type='PE',
+                            derivative_name=state.derivative,
+                        )
                         option_name = state.put_option
 
                     if not option_name:
@@ -478,8 +612,12 @@ class OrderExecutor:
                     price = self._fetch_live_price(option_name)
                     if price is None:
                         continue
+
                     shares = Utils.calculate_shares_to_buy(
-                        price=price, balance=state.account_balance, lot_size=state.lot_size)
+                        price=price,
+                        balance=state.account_balance,
+                        lot_size=lot_size,
+                    )
                 except Exception as e:
                     logger.warning(f"[ADJUST] Attempt {attempt + 1} failed: {e}")
             return shares
@@ -495,6 +633,17 @@ class OrderExecutor:
         """
         Sell all confirmed orders, cancel pending ones, persist to DB.
         Features 4 & 5: Telegram notification + trade-closed callback.
+
+        FREEZE-SIZE CHANGE
+        ------------------
+        Each position's sell quantity is now split by the exchange freeze
+        limit via `OptionUtils.split_order_quantities()` before being sent
+        to the broker. Previously there was no splitting on the sell side,
+        meaning a single large position would result in one oversized sell
+        order that the exchange would reject.
+
+        For paper orders (`broker_id` is None) the full quantity is passed
+        through without splitting — the broker is never called in that case.
         """
         try:
             state = state_manager.get_state()
@@ -519,7 +668,16 @@ class OrderExecutor:
             db = get_db()
             total_pnl = 0.0
             total_qty = 0
-            failed_orders = []  # BUG FIX: track orders whose broker sell failed
+            failed_orders = []  # track orders whose broker sell failed
+
+            # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
+            is_paper = False
+            if hasattr(state, 'is_paper_mode'):
+                is_paper = state.is_paper_mode
+            elif hasattr(state, 'trading_mode'):
+                is_paper = state.trading_mode != BaseEnums.LIVE
+
+            is_live = not is_paper
 
             for order in orders:
                 try:
@@ -530,30 +688,37 @@ class OrderExecutor:
                     qty = order.get("qty", 0)
                     broker_id = order.get("broker_id")
 
-                    # BUG FIX: Attempt broker sell FIRST.  Only proceed to DB close and
-                    # PnL accounting if the sell actually succeeds (or is a paper order).
                     broker_sell_ok = True
-                    if self.api and broker_id:
-                        try:
-                            self.api.sell_at_current(symbol=symbol, qty=qty)
-                        except Exception as e:
-                            logger.error(
-                                f"[EXIT] Broker sell failed for order {order_id} "
-                                f"(broker_id={broker_id}): {e}",
-                                exc_info=True,
-                            )
-                            broker_sell_ok = False
-                            failed_orders.append(order)
+                    if is_live and self.api and broker_id:
+                        sell_chunks = OptionUtils.split_order_quantities(
+                            state.derivative, qty
+                        )
+                        logger.info(
+                            f"[EXIT] {symbol}: selling {qty} shares in "
+                            f"{len(sell_chunks)} order(s) {sell_chunks}"
+                        )
+                        for chunk_qty in sell_chunks:
+                            try:
+                                self.api.sell_at_current(symbol=symbol, qty=chunk_qty)
+                            except Exception as e:
+                                logger.error(
+                                    f"[EXIT] Broker sell failed for order {order_id} "
+                                    f"chunk qty={chunk_qty} (broker_id={broker_id}): {e}",
+                                    exc_info=True,
+                                )
+                                broker_sell_ok = False
+                                break  # stop sending further chunks for this order
 
                     if not broker_sell_ok:
                         # Do NOT close this order in the DB — position is still open
-                        # with the broker.  Caller must retry.
+                        # with the broker. Caller must retry.
+                        failed_orders.append(order)
                         continue
 
-                    # BUG FIX: Attempt to get the actual broker fill price; fall back to
+                    # Attempt to get the actual broker fill price; fall back to
                     # the last tick price only when the API does not return one.
                     actual_exit_price = sell_price
-                    if self.api and broker_id:
+                    if is_live and self.api and broker_id:
                         try:
                             fill = self.api.get_fill_price(broker_id)
                             if fill and fill > 0:
@@ -571,19 +736,24 @@ class OrderExecutor:
 
                     if order_id:
                         orders_crud.close_order(
-                            order_id=order_id, exit_price=actual_exit_price,
-                            pnl=pnl, reason=exit_reason, db=db)
+                            order_id=order_id,
+                            exit_price=actual_exit_price,
+                            pnl=pnl,
+                            reason=exit_reason,
+                            db=db,
+                        )
                 except Exception as e:
                     logger.error(f"[EXIT] Order processing error: {e}", exc_info=True)
 
-            # BUG FIX: If any broker sell failed, keep the position open and return False
+            # If any broker sell failed, keep the position open and return False
             # so the caller can retry rather than silently believing the exit succeeded.
             if failed_orders:
                 logger.error(
                     f"[EXIT] {len(failed_orders)} order(s) failed to sell with broker. "
                     "Position NOT fully closed. Retaining state for retry."
                 )
-                # Partial fills: update orders list to only the ones that failed
+                # Update orders list to only the ones that failed so retry attempts
+                # know exactly which positions are still open.
                 state.orders = failed_orders
                 state.order_pending = False
                 return False
@@ -594,9 +764,13 @@ class OrderExecutor:
             if self.notifier and state.current_buy_price:
                 try:
                     self.notifier.notify_exit(
-                        symbol=state.current_trading_symbol, direction=state.current_position,
-                        entry_price=state.current_buy_price, exit_price=sell_price,
-                        pnl=total_pnl, reason=exit_reason or 'Signal')
+                        symbol=state.current_trading_symbol,
+                        direction=state.current_position,
+                        entry_price=state.current_buy_price,
+                        exit_price=sell_price,
+                        pnl=total_pnl,
+                        reason=exit_reason or 'Signal',
+                    )
                 except Exception as e:
                     logger.error(f"[EXIT] Telegram notify failed: {e}", exc_info=True)
 
@@ -606,7 +780,7 @@ class OrderExecutor:
                 except Exception as e:
                     logger.error(f"[EXIT] Trade closed callback failed: {e}", exc_info=True)
 
-            if self.api:
+            if is_live and self.api:
                 try:
                     state.account_balance = self.api.get_balance(state.capital_reserve)
                 except Exception as e:
@@ -617,9 +791,8 @@ class OrderExecutor:
             state.reset_trade_attributes(current_position=state.previous_position)
             state.order_pending = False
 
-            # BUG FIX: Invalidate risk manager cache so the next should_allow_trade()
-            # call immediately re-queries the DB for the updated daily PnL and trade
-            # count rather than serving a stale cached value.
+            # Invalidate risk manager cache so the next should_allow_trade() call
+            # immediately re-queries the DB for updated daily PnL and trade count.
             if self.risk_manager:
                 try:
                     self.risk_manager.invalidate_cache()
@@ -634,7 +807,6 @@ class OrderExecutor:
             if state:
                 state.order_pending = False
             return False
-
     # ------------------------------------------------------------------
     # DB helpers
     # ------------------------------------------------------------------
@@ -647,6 +819,14 @@ class OrderExecutor:
             return False
 
     def cancel_order(self, order_id: int, reason: str = None) -> bool:
+        """
+        Cancel a single order by DB id — broker cancel + DB update.
+
+        No freeze-size change needed here: this method cancels an already-
+        placed order by its ID, not a quantity. Each child order created by
+        place_orders already has its own DB row and broker_order_id, so
+        _cancel_unconfirmed_orders calls this correctly per-chunk.
+        """
         try:
             db = get_db()
             order = orders_crud.get(order_id, db)

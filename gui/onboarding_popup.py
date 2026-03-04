@@ -3011,11 +3011,11 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
         mode_settings = TradingModeSetting()
 
         # Set mode
-        if self.config['trading']['mode'] == 'live':
+        if self.config['trading']['mode'] == 'Live':
             mode_settings.mode = TradingMode.LIVE
             mode_settings.allow_live_trading = True
         else:
-            mode_settings.mode = TradingMode.SIM
+            mode_settings.mode = TradingMode.PAPER
             mode_settings.allow_live_trading = False
 
         # Set other defaults

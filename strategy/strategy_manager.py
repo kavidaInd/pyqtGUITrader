@@ -62,8 +62,12 @@ class StrategyManager:
                         strategy = self.get(slug)
                         if strategy and "engine" in strategy:
                             strategy["engine"]["min_confidence"] = 0.6
-                            self.save(slug, strategy)
-
+                            saved = self.save(slug, strategy)
+                            if not saved:
+                                logger.warning(
+                                    "[_ensure_defaults] save() failed — activating "
+                                    "anyway but engine config may be incomplete"
+                                )
                         strategy_crud.activate(slug, db)
                         logger.info("Created default strategy")
             except Exception as e:
@@ -148,7 +152,7 @@ class StrategyManager:
                 return strategy_crud.get_active_name(db)
             except Exception as e:
                 logger.error(f"[get_active_name] Failed: {e}", exc_info=True)
-                return "None"
+                return ""
 
     def create(self, name: str, description: str = "") -> Tuple[bool, str]:
         """Create a new strategy. Returns (ok, slug_or_error)."""
@@ -186,6 +190,7 @@ class StrategyManager:
         with self._lock:
             try:
                 db = get_db()
+                data = deepcopy(data)
 
                 # FEATURE 3: Validate confidence threshold if present
                 if "engine" in data and data["engine"]:
@@ -254,8 +259,7 @@ class StrategyManager:
                 # FEATURE 3: Ensure min_confidence is present
                 if config and "min_confidence" not in config:
                     config["min_confidence"] = 0.6
-
-                return deepcopy(config) if config else deepcopy(ENGINE_DEFAULTS)
+                return deepcopy(config) if config is not None else deepcopy(ENGINE_DEFAULTS)
             except Exception as e:
                 logger.error(f"[get_active_engine_config] Failed: {e}", exc_info=True)
                 return deepcopy(ENGINE_DEFAULTS)
@@ -436,6 +440,30 @@ class StrategyManager:
 
     def _validate_rule(self, rule: Dict, signal: str, rule_index: int, errors: List[str]):
         """Validate a single rule."""
+
+        def _validate_side_fields(side, side_type, sig, ridx, label, errs):
+            """Bug #4 fix: type-specific sub-field validation."""
+            _OHLCV_COLS = {"open", "high", "low", "close", "volume", "time"}
+            if side_type == "indicator":
+                ind = side.get("indicator", "")
+                if not ind:
+                    errs.append(f"{sig} rule {ridx}: {label} type='indicator' but 'indicator' key is missing or empty")
+            elif side_type == "scalar":
+                val = side.get("value")
+                if val is None:
+                    errs.append(f"{sig} rule {ridx}: {label} type='scalar' but 'value' key is missing")
+                else:
+                    try:
+                        float(val)
+                    except (ValueError, TypeError):
+                        errs.append(f"{sig} rule {ridx}: {label} scalar 'value' is not numeric: {val!r}")
+            elif side_type == "column":
+                col = side.get("column", "")
+                if not col:
+                    errs.append(f"{sig} rule {ridx}: {label} type='column' but 'column' key is missing or empty")
+                elif col.lower() not in _OHLCV_COLS:
+                    errs.append(f"{sig} rule {ridx}: {label} column '{col}' is not a known OHLCV column")
+
         try:
             # Check required fields
             if "lhs" not in rule:
@@ -458,21 +486,28 @@ class StrategyManager:
                 if w <= 0:
                     errors.append(f"{signal} rule {rule_index}: Weight must be positive, got {w}")
                 elif w > 10:
-                    errors.append(f"{signal} rule {rule_index}: Weight unusually large ({w})")
+                    logger.warning(
+                        f"[_validate_rule] {signal} rule {rule_index}: "
+                        f"weight is unusually large ({w}) — this is allowed but may "
+                        f"dominate confidence scoring"
+                    )
             except (ValueError, TypeError):
                 errors.append(f"{signal} rule {rule_index}: Invalid weight value '{weight}'")
 
-            # Validate LHS
             lhs = rule.get("lhs", {})
             lhs_type = lhs.get("type", "")
             if lhs_type not in ["indicator", "scalar", "column"]:
                 errors.append(f"{signal} rule {rule_index}: Invalid LHS type '{lhs_type}'")
+            else:
+                _validate_side_fields(lhs, lhs_type, signal, rule_index, "LHS", errors)
 
             # Validate RHS
             rhs = rule.get("rhs", {})
             rhs_type = rhs.get("type", "")
             if rhs_type not in ["indicator", "scalar", "column"]:
                 errors.append(f"{signal} rule {rule_index}: Invalid RHS type '{rhs_type}'")
+            else:
+                _validate_side_fields(rhs, rhs_type, signal, rule_index, "RHS", errors)
 
         except Exception as e:
             errors.append(f"{signal} rule {rule_index}: Validation error: {e}")
@@ -516,11 +551,12 @@ class StrategyManager:
                         enabled_count += 1
 
                     for rule in rules:
-                        # Count indicators
                         for side in ["lhs", "rhs"]:
                             side_data = rule.get(side, {})
                             if side_data.get("type") == "indicator":
-                                indicators.add(side_data.get("indicator", "").lower())
+                                ind_name = side_data.get("indicator", "").lower()
+                                if ind_name:
+                                    indicators.add(ind_name)
 
                         # Sum weights
                         weight = rule.get("weight", 1.0)
@@ -561,9 +597,34 @@ class StrategyManager:
         except Exception as e:
             logger.error(f"[StrategyManager.cleanup] Error: {e}", exc_info=True)
 
+_strategy_manager_instance: Optional["StrategyManager"] = None
+_strategy_manager_lock = threading.Lock()
 
-# Singleton instance
-strategy_manager = StrategyManager()
+
+def get_strategy_manager() -> "StrategyManager":
+    """
+    Return the module-level StrategyManager singleton, creating it on first call.
+
+    Use this instead of importing ``strategy_manager`` directly so the DB is
+    guaranteed to be ready before StrategyManager.__init__ runs.
+    """
+    global _strategy_manager_instance
+    if _strategy_manager_instance is None:
+        with _strategy_manager_lock:
+            if _strategy_manager_instance is None:
+                _strategy_manager_instance = StrategyManager()
+    return _strategy_manager_instance
+
+
+class _LazyStrategyManagerProxy:
+    """Transparent proxy that defers StrategyManager construction until first use."""
+    def __getattr__(self, name):
+        return getattr(get_strategy_manager(), name)
+    def __repr__(self):
+        return repr(get_strategy_manager())
+
+
+strategy_manager = _LazyStrategyManagerProxy()
 
 
 # Context manager (unchanged)
