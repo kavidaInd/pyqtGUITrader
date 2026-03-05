@@ -17,6 +17,7 @@ from typing import Dict, Optional, List, Any
 
 import pandas as pd
 
+from broker.BaseBroker import TokenExpiredError
 # Use the existing CandleStore implementation
 from data.candle_store import CandleStore, resample_df
 
@@ -131,33 +132,40 @@ class CandleStoreManager:
         Returns:
             CandleStore instance for the symbol
         """
-        with self._lock:
-            # Update last access time
-            self._last_access[symbol] = datetime.now()
+        try:
+            with self._lock:
+                # Update last access time
+                self._last_access[symbol] = datetime.now()
 
-            # Return existing store if available
-            if symbol in self._stores:
-                store = self._stores[symbol]
-                logger.debug(f"Returning existing CandleStore for {symbol}")
+                # Return existing store if available
+                if symbol in self._stores:
+                    store = self._stores[symbol]
+                    logger.debug(f"Returning existing CandleStore for {symbol}")
+                    return store
+
+                # Create new store
+                if max_bars is None:
+                    max_bars = self._default_max_bars
+
+                logger.info(f"Creating new CandleStore for {symbol} with max_bars={max_bars}")
+
+                # Use the existing CandleStore constructor
+                store = CandleStore(
+                    symbol=symbol,
+                    broker=self._broker if not self._backtest_mode else None,
+                    max_bars=max_bars
+                )
+
+                self._stores[symbol] = store
+                self._store_refs[symbol] = weakref.ref(store)
+
                 return store
-
-            # Create new store
-            if max_bars is None:
-                max_bars = self._default_max_bars
-
-            logger.info(f"Creating new CandleStore for {symbol} with max_bars={max_bars}")
-
-            # Use the existing CandleStore constructor
-            store = CandleStore(
-                symbol=symbol,
-                broker=self._broker if not self._backtest_mode else None,
-                max_bars=max_bars
-            )
-
-            self._stores[symbol] = store
-            self._store_refs[symbol] = weakref.ref(store)
-
-            return store
+        except TokenExpiredError as e:
+            logger.error(f"Token expired during get_store: {e}", exc_info=True)
+            raise
+        except Exception as e:
+            logger.critical(f"Unhandled exception during get_store: {e!r}", exc_info=True)
+            raise
 
     def create_from_dataframe(self, symbol: str, df: pd.DataFrame, max_bars: Optional[int] = None) -> CandleStore:
         """
@@ -173,25 +181,32 @@ class CandleStoreManager:
         Returns:
             CandleStore instance populated with the DataFrame
         """
-        with self._lock:
-            # Ensure we're in backtest mode
-            if not self._backtest_mode and self._broker is not None:
-                logger.warning("Creating store from DataFrame in non-backtest mode - this may indicate an issue")
+        try:
+            with self._lock:
+                # Ensure we're in backtest mode
+                if not self._backtest_mode and self._broker is not None:
+                    logger.warning("Creating store from DataFrame in non-backtest mode - this may indicate an issue")
 
-            # Use the existing from_dataframe class method
-            store = CandleStore.from_dataframe(df, symbol=symbol)
+                # Use the existing from_dataframe class method
+                store = CandleStore.from_dataframe(df, symbol=symbol)
 
-            # Override max_bars if provided
-            if max_bars is not None:
-                store.max_bars = max_bars
+                # Override max_bars if provided
+                if max_bars is not None:
+                    store.max_bars = max_bars
 
-            # Store it
-            self._stores[symbol] = store
-            self._store_refs[symbol] = weakref.ref(store)
-            self._last_access[symbol] = datetime.now()
+                # Store it
+                self._stores[symbol] = store
+                self._store_refs[symbol] = weakref.ref(store)
+                self._last_access[symbol] = datetime.now()
 
-            logger.info(f"Created CandleStore for {symbol} from DataFrame with {len(df)} bars")
-            return store
+                logger.info(f"Created CandleStore for {symbol} from DataFrame with {len(df)} bars")
+                return store
+        except TokenExpiredError as e:
+            logger.error(f"Token expired during create_from_dataframe: {e}", exc_info=True)
+            raise
+        except Exception as e:
+            logger.critical(f"Unhandled exception during create_from_dataframe: {e!r}", exc_info=True)
+            raise
 
     def has_store(self, symbol: str) -> bool:
         """Check if a store exists for the given symbol."""
@@ -205,15 +220,19 @@ class CandleStoreManager:
         Returns:
             bool: True if store was removed, False if it didn't exist
         """
-        with self._lock:
-            if symbol in self._stores:
-                del self._stores[symbol]
-                if symbol in self._store_refs:
-                    del self._store_refs[symbol]
-                if symbol in self._last_access:
-                    del self._last_access[symbol]
-                logger.info(f"Removed CandleStore for {symbol}")
-                return True
+        try:
+            with self._lock:
+                if symbol in self._stores:
+                    del self._stores[symbol]
+                    if symbol in self._store_refs:
+                        del self._store_refs[symbol]
+                    if symbol in self._last_access:
+                        del self._last_access[symbol]
+                    logger.info(f"Removed CandleStore for {symbol}")
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Error removing store for {symbol}: {e}", exc_info=True)
             return False
 
     def get_all_symbols(self) -> List[str]:
@@ -241,9 +260,13 @@ class CandleStoreManager:
 
         Returns:
             Dict mapping symbol -> success boolean
+
+        Raises:
+            TokenExpiredError: If token is expired during fetch
         """
         results = {}
         symbols_to_fetch = symbols or self.get_all_symbols()
+        token_expired_error = None
 
         for symbol in symbols_to_fetch:
             try:
@@ -253,9 +276,19 @@ class CandleStoreManager:
                 results[symbol] = success
                 if not success:
                     logger.warning(f"Failed to fetch data for {symbol}")
+            except TokenExpiredError as e:
+                logger.error(f"Token expired while fetching data for {symbol}: {e}", exc_info=True)
+                token_expired_error = e
+                results[symbol] = False
+                # Break early on token expiry - no point continuing
+                break
             except Exception as e:
                 logger.error(f"Error fetching data for {symbol}: {e}", exc_info=True)
                 results[symbol] = False
+
+        # If we encountered a token expiry, raise it after logging all results
+        if token_expired_error:
+            raise token_expired_error
 
         return results
 
@@ -276,6 +309,8 @@ class CandleStoreManager:
         try:
             store = self.get_store(symbol)
             return store.push_tick(ltp, timestamp)
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error pushing tick to {symbol}: {e}", exc_info=True)
             return False
@@ -292,23 +327,37 @@ class CandleStoreManager:
 
         Returns:
             Resampled DataFrame or None if error
+
+        Raises:
+            TokenExpiredError: If token is expired during data access
         """
         try:
             store = self.get_store(symbol)
             return store.resample(minutes)
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error resampling data for {symbol}: {e}", exc_info=True)
             return None
 
     def get_1min(self, symbol: str) -> Optional[pd.DataFrame]:
         """Get raw 1-min data for a symbol."""
-        return self.resample(symbol, 1)
+        try:
+            store = self.get_store(symbol)
+            return store.resample(1)
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting 1min data for {symbol}: {e}", exc_info=True)
+            return None
 
     def last_bar_time(self, symbol: str) -> Optional[datetime]:
         """Get timestamp of last completed bar for a symbol."""
         try:
             store = self.get_store(symbol)
             return store.last_bar_time()
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error getting last bar time for {symbol}: {e}", exc_info=True)
             return None
@@ -318,6 +367,8 @@ class CandleStoreManager:
         try:
             store = self.get_store(symbol)
             return store.is_empty()
+        except TokenExpiredError:
+            raise
         except Exception:
             return True
 
@@ -326,6 +377,8 @@ class CandleStoreManager:
         try:
             store = self.get_store(symbol)
             return store.bar_count()
+        except TokenExpiredError:
+            raise
         except Exception:
             return 0
 
@@ -341,10 +394,15 @@ class CandleStoreManager:
             tz: Target timezone
 
         Returns DataFrame with time column converted to target timezone.
+
+        Raises:
+            TokenExpiredError: If token is expired during data access
         """
         try:
             store = self.get_store(symbol)
             return store.get_data_in_timezone(minutes, tz)
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error getting data in timezone for {symbol}: {e}", exc_info=True)
             return None
@@ -363,29 +421,33 @@ class CandleStoreManager:
         Returns:
             int: Number of stores removed
         """
-        with self._lock:
-            cutoff = datetime.now() - timedelta(minutes=max_idle_minutes)
-            to_remove = []
+        try:
+            with self._lock:
+                cutoff = datetime.now() - timedelta(minutes=max_idle_minutes)
+                to_remove = []
 
-            for symbol, last_access in self._last_access.items():
-                if last_access < cutoff:
-                    # Check if store still has weak reference
-                    if symbol in self._store_refs:
-                        ref = self._store_refs[symbol]
-                        if ref() is None:  # Store was garbage collected
-                            to_remove.append(symbol)
-                        else:
-                            # Store still exists but is idle - optional: keep or remove
-                            # For now, we'll keep it but log a warning
-                            logger.debug(f"Store for {symbol} idle for {max_idle_minutes}+ minutes")
+                for symbol, last_access in self._last_access.items():
+                    if last_access < cutoff:
+                        # Check if store still has weak reference
+                        if symbol in self._store_refs:
+                            ref = self._store_refs[symbol]
+                            if ref() is None:  # Store was garbage collected
+                                to_remove.append(symbol)
+                            else:
+                                # Store still exists but is idle - optional: keep or remove
+                                # For now, we'll keep it but log a warning
+                                logger.debug(f"Store for {symbol} idle for {max_idle_minutes}+ minutes")
 
-            for symbol in to_remove:
-                self.remove_store(symbol)
+                for symbol in to_remove:
+                    self.remove_store(symbol)
 
-            if to_remove:
-                logger.info(f"Cleaned up {len(to_remove)} unused stores")
+                if to_remove:
+                    logger.info(f"Cleaned up {len(to_remove)} unused stores")
 
-            return len(to_remove)
+                return len(to_remove)
+        except Exception as e:
+            logger.error(f"Error during cleanup_unused: {e}", exc_info=True)
+            return 0
 
     def set_default_max_bars(self, max_bars: int) -> None:
         """Set default max_bars for new stores."""
@@ -422,6 +484,8 @@ class CandleStoreManager:
                 'max_bars': store.max_bars,
                 'cached_timeframes': list(store._resample_cache.keys()) if hasattr(store, '_resample_cache') else []
             }
+        except TokenExpiredError:
+            raise
         except Exception as e:
             logger.error(f"Error getting store info for {symbol}: {e}", exc_info=True)
             return {}

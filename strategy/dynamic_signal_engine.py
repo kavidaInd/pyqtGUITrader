@@ -1726,8 +1726,41 @@ class DynamicSignalEngine:
                 if pos not in ["CALL", "PUT"]:
                     pos = None
 
-            # First, evaluate all signal groups
+            if pos == "CALL":
+                active_groups = {
+                    OptionSignal.EXIT_CALL,
+                    OptionSignal.BUY_PUT,
+                    OptionSignal.HOLD,
+                }
+                skipped_groups = {OptionSignal.BUY_CALL, OptionSignal.EXIT_PUT}
+            elif pos == "PUT":
+                active_groups = {
+                    OptionSignal.EXIT_PUT,
+                    OptionSignal.BUY_CALL,
+                    OptionSignal.HOLD,
+                }
+                skipped_groups = {OptionSignal.BUY_PUT, OptionSignal.EXIT_CALL}
+            else:
+                active_groups = {
+                    OptionSignal.BUY_CALL,
+                    OptionSignal.BUY_PUT,
+                    OptionSignal.HOLD,
+                }
+                skipped_groups = {OptionSignal.EXIT_CALL, OptionSignal.EXIT_PUT}
+
+            logger.debug(
+                f"[evaluate] pos={pos!r}  active={[s.value for s in active_groups]}  "
+                f"skipped={[s.value for s in skipped_groups]}"
+            )
+
+            # First, evaluate active signal groups only
             for sig in SIGNAL_GROUPS:
+                if sig in skipped_groups:
+                    fired[sig.value] = False
+                    rule_results[sig.value] = []
+                    confidences[sig.value] = 0.0
+                    continue
+
                 gf, rd, conf, _ = self._evaluate_group(sig, df, cache, df_index)
                 fired[sig.value] = gf
                 rule_results[sig.value] = rd

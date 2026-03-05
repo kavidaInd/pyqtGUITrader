@@ -447,6 +447,39 @@ class CandleStore:
             return False
         return (now - last) > timedelta(minutes=max_gap_minutes)
 
+    # Add this method to candle_store.py in the CandleStore class
+
+    def needs_update(self, interval_minutes: int, max_gap_minutes: int = 1) -> bool:
+        """
+        Check if the store needs to fetch updated history.
+
+        Args:
+            interval_minutes: Target interval for analysis (e.g., 1, 5, 15)
+            max_gap_minutes: Maximum allowed gap before considering data stale
+
+        Returns:
+            True if data needs updating, False otherwise
+        """
+        with self._lock:
+            if self.is_empty():
+                return True
+
+            last_bar = self.last_bar_time()
+            if last_bar is None:
+                return True
+
+            now = datetime.now(IST)
+            now_t = now.time()
+
+            # Only check during market hours
+            if not (_MARKET_OPEN <= now_t <= _MARKET_CLOSE):
+                return False
+
+            # Calculate time since last bar in minutes
+            time_since_last = (now - last_bar).total_seconds() / 60
+
+            return time_since_last > max_gap_minutes
+
     def get_data_in_timezone(self, minutes: int,
                              tz: str = "Asia/Kolkata") -> Optional[pd.DataFrame]:
         """

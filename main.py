@@ -9,11 +9,14 @@ import logging.handlers
 import os
 import sys
 import traceback
+from datetime import datetime
 from typing import Optional
 
 import PyQt5.QtCore
 from PyQt5.QtWidgets import QMessageBox
 
+from Utils.session_utils import generate_session_id
+from data.trade_state_manager import state_manager
 from gui.theme_manager import show_themed_message_box
 
 PyQt5.QtCore.QCoreApplication.setAttribute(PyQt5.QtCore.Qt.AA_ShareOpenGLContexts, True)
@@ -196,6 +199,86 @@ def _init_state_manager(splash=None) -> bool:
         return True
     except Exception as e:
         logger.critical(f"[main._init_state_manager] State manager initialisation failed: {e}", exc_info=True)
+        return False
+
+
+# ── Session Initialization (Database Session) ─────────────────────────────
+def _init_db_session(splash=None) -> Optional[int]:
+    """
+    Create a database session record and store the session ID in state manager.
+
+    Args:
+        splash: Optional splash screen for status updates
+
+    Returns:
+        Optional[int]: Database session ID if successful, None otherwise
+    """
+    try:
+        _update_splash(splash, "Creating trading session...", 25)
+
+        from db.crud import sessions, daily_trade, trading_mode, strategies
+
+        # Get current settings for session creation
+        daily_settings = daily_trade.get()
+        mode_settings = trading_mode.get()
+        active_strategy = strategies.get_active_slug()
+
+        # Create database session
+        session_id = sessions.create(
+            mode=mode_settings.get("mode", "SIM"),
+            exchange=daily_settings.get("exchange", "NSE"),
+            derivative=daily_settings.get("derivative", "NIFTY"),
+            lot_size=daily_settings.get("lot_size", 65),
+            interval=daily_settings.get("history_interval", "1m"),
+            strategy_slug=active_strategy
+        )
+
+        if session_id > 0:
+            logger.info(f"[main._init_db_session] Database session created with ID: {session_id}")
+
+            # Store in state manager for global access
+            state = state_manager.get_state()
+            state.session_id = session_id
+
+            return session_id
+        else:
+            logger.error("[main._init_db_session] Failed to create database session")
+            return None
+
+    except Exception as e:
+        logger.error(f"[main._init_db_session] Failed: {e}", exc_info=True)
+        return None
+
+
+def _init_app_session(splash=None) -> bool:
+    """
+    Initialize application session ID and update it to trade state.
+
+    Args:
+        splash: Optional splash screen for status updates
+
+    Returns:
+        bool: True if successful
+    """
+    try:
+        _update_splash(splash, "Initializing application session...", 15)
+
+        # Generate application session ID
+        app_session_id = generate_session_id()
+        session_start_time = datetime.now()
+
+        # Get trade state and update session info
+        state = state_manager.get_state()
+        state.app_session_id = app_session_id
+        state.session_start_time = session_start_time
+
+        logger.info(f"[main._init_app_session] Application session initialized: {app_session_id}")
+        logger.info(f"[main._init_app_session] Session start time: {session_start_time}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"[main._init_app_session] Failed to initialize application session: {e}", exc_info=True)
         return False
 
 
@@ -488,6 +571,9 @@ def main() -> int:
     logger.info("  Algo Trading Pro — starting up")
     logger.info("=" * 60)
 
+    # Global variable to store database session ID for use throughout the app
+    global session_id
+
     try:
         # ── Step 1: Create Qt app ──────────────────────────────────────────────
         qt_app = _qt_app()
@@ -531,17 +617,29 @@ def main() -> int:
                 "The application will now exit.",
             )
 
-        # ── Step 6: License ─────────────────────────────────────────────────────
+        # ── Step 6: Application Session (string ID) ────────────────────────────
+        if not _init_app_session(splash):
+            logger.warning("[main.main] Application session initialization failed, continuing anyway")
+            # Not critical, continue
+
+        # ── Step 7: License ─────────────────────────────────────────────────────
         if not _run_license_gate(qt_app, splash):
             logger.info("[main.main] License gate rejected — exiting")
             return _exit(1)
 
-        # ── Step 7: Onboarding (first-time setup) ───────────────────────────────
+        # ── Step 8: Onboarding (first-time setup) ───────────────────────────────
         if not _run_onboarding(splash):
             logger.info("[main.main] User chose to exit after onboarding")
             return _exit(1)
 
-        # ── Step 8: Main window ─────────────────────────────────────────────────
+        # ── Step 9: Database Session (integer ID for foreign keys) ─────────────
+        # This MUST happen after onboarding because onboarding might change settings
+        session_id = _init_db_session(splash)
+        if session_id is None:
+            logger.warning("[main.main] Database session creation failed, continuing with limited functionality")
+            # Not critical for UI, but orders won't work
+
+        # ── Step 10: Main window ────────────────────────────────────────────────
         exit_code = _launch_main_window(qt_app, splash)
         logger.info(f"[main.main] Application exited with code {exit_code}")
         return exit_code
@@ -557,6 +655,20 @@ def main() -> int:
         except:
             pass
         return 1
+
+
+# Global variable to store database session ID for use throughout the app
+session_id = None
+
+
+def get_session_id() -> Optional[int]:
+    """
+    Get the current database session ID.
+
+    Returns:
+        Optional[int]: Database session ID or None if not initialized
+    """
+    return session_id
 
 
 if __name__ == "__main__":

@@ -2697,6 +2697,31 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
 
+            # Bug #1 fix: stop and clean up the OLD TradingApp before replacing it.
+            # Without this, the old stage2 worker thread, WebSocket connection, and
+            # executor all keep running.  Two TradingApp instances would then be active
+            # simultaneously — both receiving ticks and potentially placing orders.
+            if self.trading_app is not None:
+                try:
+                    # Stop the trading thread if it is running
+                    if self.trading_thread and self.trading_thread.isRunning():
+                        self.trading_thread.request_stop()
+                        if not self.trading_thread.wait(3000):
+                            logger.warning("[_reload_broker] Trading thread did not stop in 3s — terminating")
+                            self.trading_thread.terminate()
+                        self.trading_thread = None
+
+                    # Cleanup the app (stops stage2 worker, WebSocket, executor, broker)
+                    if hasattr(self.trading_app, 'cleanup'):
+                        self.trading_app.cleanup()
+
+                    logger.info("[TradingGUI._reload_broker] Old TradingApp stopped and cleaned up")
+                except Exception as cleanup_err:
+                    logger.error(f"[TradingGUI._reload_broker] Old app cleanup failed: {cleanup_err}", exc_info=True)
+                finally:
+                    self.trading_app = None
+                    self.app_running = False
+
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,

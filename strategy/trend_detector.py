@@ -322,14 +322,11 @@ class TrendDetector:
             except Exception as e:
                 logger.debug(f"Failed to process timestamps: {e}")
 
-            # Evaluate dynamic signals if engine is available
             option_signal_result = None
             if self.signal_engine is not None:
                 try:
-                    # Pass current position to signal engine for better resolution
                     option_signal_result = self.signal_engine.evaluate(df, current_position)
 
-                    # FEATURE 3: Add confidence data to state via state_manager
                     if option_signal_result:
                         self._update_state_with_signal_result(option_signal_result)
 
@@ -352,7 +349,6 @@ class TrendDetector:
                     logger.error(f"Error evaluating dynamic signals: {e}", exc_info=True)
                     option_signal_result = None
 
-            # Add the signal result to the trend data
             results['option_signal'] = option_signal_result
 
             return results

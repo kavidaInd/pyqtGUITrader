@@ -8,6 +8,8 @@ Simplified chart widget with:
 - Detailed signal data tab with indicator values and rule results
 - Clean, minimal design with only Spot chart
 - Integrated with CandleStoreManager for centralized data access
+- Token expiry handling with re-authentication propagation
+- Fixed timezone handling (IST/GMT+5:30)
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import logging
 import logging.handlers
 import numpy as np
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 
@@ -35,11 +37,20 @@ from PyQt5.QtWidgets import (
 # Import CandleStoreManager for centralized data access
 from data.candle_store_manager import candle_store_manager
 
+# Import TokenExpiredError for proper handling
+from broker.BaseBroker import TokenExpiredError
+
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
+
+# Timezone constants
+from pytz import timezone
+
+IST = timezone('Asia/Kolkata')
+UTC = timezone('UTC')
 
 
 # =============================================================================
@@ -288,6 +299,7 @@ class SpotChartWidget(QWebEngineView):
     chart_clicked = pyqtSignal(float, float)  # x, y
     trade_marked = pyqtSignal(dict)  # trade annotation
     timeframe_changed = pyqtSignal(str)  # new timeframe
+    token_expired = pyqtSignal(str)  # token expired signal
 
     def __init__(self, parent=None):
         # Rule 2: Safe defaults first
@@ -466,6 +478,35 @@ class SpotChartWidget(QWebEngineView):
             logger.error(f"[SpotChartWidget._setup_web_engine] Failed: {e}")
 
     # =========================================================================
+    # Token Expiry Handling
+    # =========================================================================
+
+    def _handle_token_expired(self, message: str):
+        """Handle token expiry by propagating to parent"""
+        try:
+            logger.warning(f"[SpotChartWidget] Token expired: {message}")
+
+            # First try to emit signal if connected
+            try:
+                self.token_expired.emit(message)
+                return
+            except:
+                pass
+
+            # Fallback: try to find parent with token expiry handling
+            parent = self.parent()
+            while parent:
+                if hasattr(parent, '_handle_token_expired'):
+                    parent._handle_token_expired(message)
+                    break
+                if hasattr(parent, 'token_expired') and hasattr(parent.token_expired, 'emit'):
+                    parent.token_expired.emit(message)
+                    break
+                parent = parent.parent()
+        except Exception as e:
+            logger.error(f"[SpotChartWidget._handle_token_expired] Failed: {e}")
+
+    # =========================================================================
     # PUBLIC API
     # =========================================================================
 
@@ -547,6 +588,9 @@ class SpotChartWidget(QWebEngineView):
             if self._update_timer:
                 self._update_timer.start(300)
 
+        except TokenExpiredError as e:
+            logger.error(f"[SpotChartWidget] Token expired while updating data: {e}")
+            self._handle_token_expired(str(e))
         except Exception as e:
             logger.error(f"[SpotChartWidget.update_data] Failed: {e}")
             self._error_count += 1
@@ -556,9 +600,10 @@ class SpotChartWidget(QWebEngineView):
     @staticmethod
     def _to_epoch(ts):
         """
-        Safely convert any timestamp type to a Unix epoch float.
+        Safely convert any timestamp type to a Unix epoch float (UTC).
         Handles int/float, pandas Timestamp, datetime, numpy datetime64, str.
         Returns None if conversion fails.
+        Always returns UTC epoch (which when displayed with IST formatting shows correct time).
         """
         try:
             if ts is None:
@@ -567,16 +612,30 @@ class SpotChartWidget(QWebEngineView):
                 return float(ts)
             # pandas Timestamp and datetime both expose .timestamp()
             if hasattr(ts, "timestamp"):
+                # Ensure we get UTC timestamp
+                if hasattr(ts, 'tz') and ts.tz is not None:
+                    # Convert to UTC first to get correct epoch
+                    ts_utc = ts.astimezone(UTC)
+                    return ts_utc.timestamp()
                 return ts.timestamp()
             # numpy datetime64 — convert via pandas
             try:
                 import pandas as pd
-                return pd.Timestamp(ts).timestamp()
+                ts_pd = pd.Timestamp(ts)
+                if ts_pd.tz is not None:
+                    ts_pd = ts_pd.tz_convert('UTC')
+                return ts_pd.timestamp()
             except Exception:
                 pass
             # Last resort: ISO string
-            return datetime.fromisoformat(str(ts)).timestamp()
-        except Exception:
+            dt = datetime.fromisoformat(str(ts))
+            if dt.tzinfo is None:
+                # Assume IST if no timezone
+                dt = IST.localize(dt)
+            dt_utc = dt.astimezone(UTC)
+            return dt_utc.timestamp()
+        except Exception as e:
+            logger.debug(f"Error converting timestamp {ts}: {e}")
             return None
 
     def update_chart(self, trend_data: dict) -> None:
@@ -602,12 +661,15 @@ class SpotChartWidget(QWebEngineView):
             # Build human-readable datetime list from validated epoch values
             if epoch_timestamps:
                 data["datetime"] = [
-                    datetime.fromtimestamp(ts) if ts is not None else None
+                    datetime.fromtimestamp(ts, tz=IST) if ts is not None else None
                     for ts in epoch_timestamps
                 ]
 
             self.update_data(data)
 
+        except TokenExpiredError as e:
+            logger.error(f"[SpotChartWidget] Token expired in update_chart: {e}")
+            self._handle_token_expired(str(e))
         except Exception as e:
             logger.error(f"[SpotChartWidget.update_chart] Failed: {e}")
 
@@ -740,6 +802,9 @@ class SpotChartWidget(QWebEngineView):
             else:
                 self._show_placeholder("Insufficient data for chart")
 
+        except TokenExpiredError as e:
+            logger.error(f"[SpotChartWidget] Token expired in _perform_update: {e}")
+            self._handle_token_expired(str(e))
         except Exception as e:
             logger.error(f"Chart update error: {e}", exc_info=True)
             self._show_error_placeholder(str(e))
@@ -751,17 +816,22 @@ class SpotChartWidget(QWebEngineView):
             if not timestamps:
                 return data
 
-            # Get today's date (midnight) as epoch float
-            import datetime
-            now = datetime.datetime.now()
-            today_start = datetime.datetime(now.year, now.month, now.day).timestamp()
+            # Get today's date in IST
+            import datetime as dt
+            now_ist = dt.datetime.now(IST)
+            today_start_ist = dt.datetime(now_ist.year, now_ist.month, now_ist.day,
+                                          tzinfo=IST)
+            today_start_epoch = today_start_ist.timestamp()
 
-            # Find indices for today's data — normalise each ts to float first
+            # Find indices for today's data
             today_indices = []
             for i, ts in enumerate(timestamps):
                 epoch = self._to_epoch(ts)
-                if epoch is not None and epoch >= today_start:
-                    today_indices.append(i)
+                if epoch is not None and epoch >= today_start_epoch:
+                    # Verify it's within market hours (optional)
+                    dt_obj = dt.datetime.fromtimestamp(epoch, tz=IST)
+                    if 9 <= dt_obj.hour <= 15:  # Market hours roughly
+                        today_indices.append(i)
 
             if not today_indices:
                 # If no timestamps from today, take last 50 bars as fallback
@@ -822,11 +892,18 @@ class SpotChartWidget(QWebEngineView):
             if n < 5:
                 return None
 
-            # Create x-axis labels
+            # Create x-axis labels with proper timezone handling
             timestamps = data.get("timestamp", [])
             if timestamps and len(timestamps) == n:
-                x = [datetime.fromtimestamp(self._to_epoch(ts)).strftime("%H:%M") if self._to_epoch(
-                    ts) is not None else str(i) for i, ts in enumerate(timestamps)]
+                x = []
+                for ts in timestamps:
+                    try:
+                        # Convert epoch to IST datetime
+                        dt = datetime.fromtimestamp(ts, tz=IST)
+                        x.append(dt.strftime("%H:%M"))
+                    except Exception as e:
+                        logger.debug(f"Error formatting timestamp {ts}: {e}")
+                        x.append(str(len(x)))
             else:
                 x = list(range(n))
 
@@ -1556,10 +1633,14 @@ class SimpleChartWidget(QWidget):
     - Spot price chart + volume (directly embedded, no tab)
     - Max 200 bars displayed
     - Live reload from CandleStoreManager on TF change
+    - Token expiry handling with re-authentication propagation
+    - Fixed timezone handling (IST/GMT+5:30)
     """
 
     # Emitted when user picks a new timeframe (minutes as int)
     timeframe_changed = pyqtSignal(int)
+    # Emitted when token expires
+    token_expired = pyqtSignal(str)
 
     # Available timeframes: label → minutes
     TIMEFRAMES = [
@@ -1597,6 +1678,10 @@ class SimpleChartWidget(QWidget):
             # ── Spot chart directly (no tabs) ──────────────────────────────────
             self.spot_chart = SpotChartWidget()
             self.spot_chart.set_symbol("Spot Index")
+
+            # Connect spot chart token expired signal to this widget's signal
+            self.spot_chart.token_expired.connect(self._on_spot_chart_token_expired)
+
             root.addWidget(self.spot_chart, 1)
 
             # Apply theme initially
@@ -1742,7 +1827,6 @@ class SimpleChartWidget(QWidget):
         try:
             logger.debug(f"[SimpleChartWidget] Attempting to load data for {self._symbol} at {self._current_tf}m")
 
-            # Check if manager has broker
             from data.candle_store_manager import candle_store_manager
             logger.debug(f"[SimpleChartWidget] Manager broker: {candle_store_manager._broker}")
 
@@ -1759,6 +1843,22 @@ class SimpleChartWidget(QWidget):
             if len(df) > self.MAX_BARS:
                 df = df.iloc[-self.MAX_BARS:]
 
+            # FIX: Convert time column to IST and ensure proper format
+            if "time" in df.columns:
+                # Ensure time is timezone-aware IST
+                if df["time"].dt.tz is None:
+                    from pytz import timezone
+                    IST = timezone('Asia/Kolkata')
+                    df["time"] = df["time"].dt.tz_localize(IST)
+                elif df["time"].dt.tz.zone != "Asia/Kolkata":
+                    df["time"] = df["time"].dt.tz_convert('Asia/Kolkata')
+
+                # Convert to epoch timestamps (Unix time in seconds)
+                # This preserves the timezone info in the epoch value
+                timestamps = [int(t.timestamp()) for t in df["time"]]
+            else:
+                timestamps = []
+
             # Convert to dict format expected by spot_chart
             data = {
                 "open": df["open"].tolist(),
@@ -1766,13 +1866,28 @@ class SimpleChartWidget(QWidget):
                 "low": df["low"].tolist(),
                 "close": df["close"].tolist(),
                 "volume": df["volume"].tolist() if "volume" in df.columns else [],
-                "timestamp": df["time"].tolist() if "time" in df.columns else [],
+                "timestamp": timestamps,  # Use converted timestamps
             }
 
             self.spot_chart.update_data(data)
 
+        except TokenExpiredError as e:
+            logger.error(f"[SimpleChartWidget] Token expired while fetching data: {e}")
+            self._handle_token_expired(str(e))
         except Exception as e:
             logger.error(f"[SimpleChartWidget._reload_from_store] Failed: {e}", exc_info=True)
+
+    def _handle_token_expired(self, message: str):
+        """Handle token expiry by emitting signal"""
+        try:
+            logger.warning(f"[SimpleChartWidget] Token expired: {message}")
+            self.token_expired.emit(message)
+        except Exception as e:
+            logger.error(f"[SimpleChartWidget._handle_token_expired] Failed: {e}")
+
+    def _on_spot_chart_token_expired(self, message: str):
+        """Handle token expired signal from spot chart"""
+        self._handle_token_expired(message)
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -1819,6 +1934,9 @@ class SimpleChartWidget(QWidget):
 
                 self.spot_chart.update_chart(spot_data)
 
+        except TokenExpiredError as e:
+            logger.error(f"[SimpleChartWidget] Token expired in update_charts: {e}")
+            self._handle_token_expired(str(e))
         except Exception as e:
             logger.error(f"[SimpleChartWidget.update_charts] Failed: {e}")
 
@@ -1848,6 +1966,7 @@ class SimpleChartWidget(QWidget):
             self._config = None
             self._signal_engine = None
             self._tf_buttons.clear()
+            logger.info("[SimpleChartWidget] Cleanup completed")
         except Exception as e:
             logger.error(f"[SimpleChartWidget.cleanup] Error: {e}")
 

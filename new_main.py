@@ -895,26 +895,34 @@ class TradingApp:
                     if self.detector:
                         try:
                             state.derivative_trend = self.detector.detect(
-                                deriv_df, state, derivative
+                                deriv_df, derivative, state.current_position
                             )
                         except Exception as e:
                             logger.error(f"Derivative trend detection failed: {e}", exc_info=True)
 
                         try:
-                            call_store = candle_store_manager.get_store(state.call_option)
-                            df_call = call_store.resample(target_minutes) if not call_store.is_empty() else None
-                            state.call_trend = self.detector.detect(
-                                df_call, state, state.call_option
-                            )
+                            call_opt_sym = state.call_option
+                            if call_opt_sym:
+                                call_store = candle_store_manager.get_store(call_opt_sym)
+                                df_call = call_store.resample(target_minutes) if not call_store.is_empty() else None
+                                state.call_trend = self.detector.detect(
+                                    df_call, call_opt_sym, state.current_position
+                                )
+                            else:
+                                logger.debug("call_option not yet set — skipping call trend detection")
                         except Exception as e:
                             logger.error(f"Call trend detection failed: {e}", exc_info=True)
 
                         try:
-                            put_store = candle_store_manager.get_store(state.put_option)
-                            df_put = put_store.resample(target_minutes) if not put_store.is_empty() else None
-                            state.put_trend = self.detector.detect(
-                                df_put, state, state.put_option
-                            )
+                            put_opt_sym = state.put_option
+                            if put_opt_sym:
+                                put_store = candle_store_manager.get_store(put_opt_sym)
+                                df_put = put_store.resample(target_minutes) if not put_store.is_empty() else None
+                                state.put_trend = self.detector.detect(
+                                    df_put, put_opt_sym, state.current_position
+                                )
+                            else:
+                                logger.debug("put_option not yet set — skipping put trend detection")
                         except Exception as e:
                             logger.error(f"Put trend detection failed: {e}", exc_info=True)
 
@@ -1009,15 +1017,32 @@ class TradingApp:
                 elif state.should_wait:
                     logger.debug("WAIT signal - no entry")
 
-            # === RESET Condition ===
             elif current_pos is None and previous_pos in {BaseEnums.CALL, BaseEnums.PUT}:
+                # Opposite signal (reversal) → always reset
                 if previous_pos == BaseEnums.CALL and signal_value in ['BUY_PUT', 'EXIT_PUT']:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
-                    logger.info("Reset previous CALL trade flag - opposite signal detected")
+                    logger.info("Reset previous CALL trade flag - opposite/reversal signal detected")
 
                 elif previous_pos == BaseEnums.PUT and signal_value in ['BUY_CALL', 'EXIT_CALL']:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
-                    logger.info("Reset previous PUT trade flag - opposite signal detected")
+                    logger.info("Reset previous PUT trade flag - opposite/reversal signal detected")
+
+                # Same-direction signal continues → also reset so re-entry is allowed
+                elif previous_pos == BaseEnums.CALL and signal_value == 'BUY_CALL':
+                    trend = BaseEnums.RESET_PREVIOUS_TRADE
+                    logger.info("Reset previous CALL trade flag - same-direction BUY_CALL signal (re-entry allowed)")
+
+                elif previous_pos == BaseEnums.PUT and signal_value == 'BUY_PUT':
+                    trend = BaseEnums.RESET_PREVIOUS_TRADE
+                    logger.info("Reset previous PUT trade flag - same-direction BUY_PUT signal (re-entry allowed)")
+
+                # Neutral signal (HOLD/WAIT) → reset to unblock fresh entry
+                elif signal_value in ['HOLD', 'WAIT']:
+                    trend = BaseEnums.RESET_PREVIOUS_TRADE
+                    logger.info(
+                        f"Reset previous {previous_pos} trade flag - neutral {signal_value} signal "
+                        "(unblocking entry)"
+                    )
 
             if trend:
                 logger.info(f"📈 Determined trend: {trend} | Reason: {state.reason_to_exit}")

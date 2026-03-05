@@ -408,6 +408,13 @@ class TradingModeSetting:
 
                 self._loaded = True
                 logger.debug("Trading mode settings loaded from database")
+
+                # Bug #3 fix: apply loaded settings to TradeState so state.is_paper_mode
+                # and state.trading_mode reflect the persisted mode immediately after load.
+                # save() calls _apply_to_state() but load() previously did not, creating
+                # an asymmetry that left state stale on any runtime settings reload.
+                self._apply_to_state()
+
                 return True
             else:
                 # No data found, use defaults

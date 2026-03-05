@@ -222,9 +222,8 @@ class TradeState:
                 # __setattr__ references _lock before the instance is ready.
                 object.__setattr__(self, "_lock", threading.RLock())
 
-                # ── Trading mode (runtime configuration) ─────────────────────────
-                self._trading_mode: str = BaseEnums.PAPER  # Default to LIVE
-                self._is_paper_mode: bool = True  # True = LIVE, False = PAPER/BACKTEST
+                self._trading_mode: str = BaseEnums.PAPER   # default: paper (safe)
+                self._is_paper_mode: bool = True             # True = paper/sim, False = live
 
                 # ── Trend dicts ─────────────────────────────────────────────
                 self._option_trend: Dict[str, Any] = _default_trend_dict()
@@ -335,6 +334,10 @@ class TradeState:
 
                 # ── Callback (set once at startup, not lock-protected) ────────
                 self.cancel_pending_trade: Optional[Callable] = None
+
+                # ── Session tracking ─────────────────────────────────────────────
+                self._session_id: Optional[str] = None
+                self._session_start_time: Optional[datetime] = None
 
                 # ── Startup validation ────────────────────────────────────────
                 try:
@@ -1651,6 +1654,38 @@ class TradeState:
         self._set("_current_pcr_vol", value)
 
     # ------------------------------------------------------------------
+    # Session tracking
+    # ------------------------------------------------------------------
+
+    @property
+    def session_id(self) -> Optional[str]:
+        """
+        Current application session ID.
+
+        This ID is generated at application startup and persists for the
+        entire session. It can be used for:
+        - Log correlation across components
+        - Tracking trading sessions in logs/database
+        - Identifying unique application runs
+        """
+        return self._get("_session_id")
+
+    @session_id.setter
+    def session_id(self, value: Optional[str]) -> None:
+        """Set session ID."""
+        self._set("_session_id", value)
+
+    @property
+    def session_start_time(self) -> Optional[datetime]:
+        """Session start timestamp."""
+        return self._get("_session_start_time")
+
+    @session_start_time.setter
+    def session_start_time(self, value: Optional[datetime]) -> None:
+        """Set session start time."""
+        self._set("_session_start_time", value)
+
+    # ------------------------------------------------------------------
     # Option chain
     # ------------------------------------------------------------------
 
@@ -1991,6 +2026,8 @@ class TradeState:
                     "signal_conflict": bool(r and r.get("conflict", False)),
                     # FEATURE 2 fields
                     "last_slippage": self._last_slippage,
+                    "session_id": self._session_id,
+                    "session_start_time": self._session_start_time,
                     # FEATURE 6 fields
                     "last_mtf_summary": self._last_mtf_summary,
                     "mtf_allowed": self._mtf_allowed,
@@ -2157,6 +2194,9 @@ class TradeState:
                     "current_put_data": _df_repr(self._current_put_data),
                     "current_call_data": _df_repr(self._current_call_data),
                     "current_index_data": str(self._current_index_data) if self._current_index_data else "None",
+
+                    "session_id": self._session_id,
+                    "session_start_time": self._session_start_time,
                 }
         except Exception as e:
             logger.error(f"[get_snapshot] Failed: {e}", exc_info=True)
@@ -2346,6 +2386,8 @@ class TradeState:
                 }
 
                 # ── Reset all trade-lifecycle fields atomically ───────────
+                session_id = self._session_id
+                session_start_time = self._session_start_time
                 self._previous_position = current_position
                 self._orders = []
                 self._confirmed_orders = []
@@ -2381,7 +2423,8 @@ class TradeState:
                 # Restore trading mode settings
                 self._trading_mode = trading_mode
                 self._is_paper_mode = is_paper_mode
-
+                self._session_id = session_id
+                self._session_start_time = session_start_time
                 # NOTE: option_signal_result is refreshed every bar — do NOT clear here
 
             # ── Log outside the lock so no I/O is done while holding it ──

@@ -1169,13 +1169,30 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                 QMessageBox.critical(self, "Error", "Failed to save settings to file")
                 return False
 
-            # Update trading app if running
-            if self.app is not None and hasattr(self.app, 'refresh_trading_mode'):
+            # Update trading app if running.
+            # Bug #1 fix: the correct method name is refresh_settings_live(), not the
+            # non-existent refresh_trading_mode().  The old hasattr() guard returned
+            # False silently — the mode was saved to the DB but executor.paper_mode,
+            # broker.paper_mode, and state.is_paper_mode were never updated, so all
+            # orders continued to be simulated even after switching to LIVE.
+            if self.app is not None:
                 try:
-                    self.app.refresh_trading_mode()
-                    logger.debug("Trading app refreshed")
+                    self.app.refresh_settings_live()
+                    logger.info(
+                        "[TradingModeSettingGUI] Trading app refreshed after mode change "
+                        f"(mode={getattr(self.trading_mode_setting, 'mode', 'N/A')})"
+                    )
+                except AttributeError:
+                    # Warn explicitly instead of swallowing silently via hasattr
+                    logger.warning(
+                        "[TradingModeSettingGUI] trading_app.refresh_settings_live() not found — "
+                        "executor paper_mode may be stale until restart"
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to refresh trading app: {e}", exc_info=True)
+                    logger.error(
+                        f"[TradingModeSettingGUI] Failed to refresh trading app: {e}",
+                        exc_info=True
+                    )
 
             return True
 
