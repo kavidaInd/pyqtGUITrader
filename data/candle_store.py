@@ -217,11 +217,6 @@ class CandleStore:
         The DataFrame must have columns: time, open, high, low, close, volume
         (volume may be 0 if unavailable).
 
-        FIX: Added ``max_bars`` parameter so callers can pass a custom limit
-        that is honoured during the initial ``_ingest()`` call.  Previously,
-        ``CandleStoreManager.create_from_dataframe()`` set ``store.max_bars``
-        AFTER construction, meaning ``_ingest()`` had already run with the
-        default 2000-bar limit and the custom limit was silently ignored.
         """
         store = cls(symbol=symbol, broker=None, max_bars=max_bars)
         store._ingest(df)
@@ -398,10 +393,12 @@ class CandleStore:
                 return None
 
             if minutes <= 1:
-                df_copy = self._df.reset_index().copy()
-                if df_copy["time"].dt.tz is None:
-                    df_copy["time"] = df_copy["time"].dt.tz_localize(IST)
-                return df_copy
+                if 1 not in self._resample_cache:
+                    df_1min = self._df.reset_index().copy()
+                    if df_1min["time"].dt.tz is None:
+                        df_1min["time"] = df_1min["time"].dt.tz_localize(IST)
+                    self._resample_cache[1] = df_1min
+                return self._resample_cache[1].copy()
 
             if minutes in self._resample_cache:
                 return self._resample_cache[minutes].copy()

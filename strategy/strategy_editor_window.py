@@ -1268,8 +1268,8 @@ class _RuleRow(QWidget, ThemedMixin):
 
             self._param_editors = {}
 
-            self.setMinimumHeight(320)
-            self.setMaximumHeight(560)  # extra room for sub_col row
+            self.setMinimumHeight(200)
+            self.setMaximumHeight(300)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Main vertical layout

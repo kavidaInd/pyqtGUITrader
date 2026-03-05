@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Any
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView, QDialog, QFrame, QHBoxLayout, QLabel,
@@ -790,28 +790,115 @@ class StrategyPickerSidebar(QDialog, ThemedMixin):
             logger.error(f"[StrategyPickerSidebar._on_activate] Failed: {e}", exc_info=True)
 
     def _activate(self, slug: str):
-        """Activate a strategy by slug"""
+        """Activate a strategy by slug - with deadlock prevention"""
         try:
             c = self._c
             if not slug:
                 logger.warning("Cannot activate: empty slug")
                 return
 
-            ok = strategy_manager.activate(slug)
-            if ok:
-                self.refresh()
-                self.strategy_activated.emit(slug)
-
+            # First, check if this is already the active strategy
+            current_active = strategy_manager.get_active_slug()
+            if current_active == slug:
+                logger.debug(f"Strategy {slug} is already active")
+                # Still show success message
                 strategy_data = strategy_manager.get(slug) or {}
                 name = strategy_data.get("name", slug)
 
                 if self._status_lbl:
                     self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt;")
-                    self._status_lbl.setText(f"✓ Activated: {name}")
+                    self._status_lbl.setText(f"✓ Already active: {name}")
                     QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
+                return
+
+            # Use a timer to perform the activation to prevent UI freezing
+            def do_activation():
+                try:
+                    # Perform the activation
+                    ok = strategy_manager.activate(slug)
+
+                    if ok:
+                        # Update UI on the main thread
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_on_activation_success",
+                            Qt.QueuedConnection,
+                            Q_ARG(str, slug)
+                        )
+                    else:
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_on_activation_failure",
+                            Qt.QueuedConnection,
+                            Q_ARG(str, slug)
+                        )
+                except Exception as e:
+                    logger.error(f"[StrategyPickerSidebar.do_activation] Failed: {e}", exc_info=True)
+                    QMetaObject.invokeMethod(
+                        self,
+                        "_on_activation_error",
+                        Qt.QueuedConnection,
+                        Q_ARG(str, str(e))
+                    )
+
+            # Run activation in a thread pool to avoid blocking
+            from concurrent.futures import ThreadPoolExecutor
+            executor = ThreadPoolExecutor(max_workers=1)
+            executor.submit(do_activation)
+            executor.shutdown(wait=False)
+
+            # Show loading state
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{self._ty.SIZE_XS}pt;")
+                self._status_lbl.setText(f"⏳ Activating strategy...")
 
         except Exception as e:
             logger.error(f"[StrategyPickerSidebar._activate] Failed for {slug}: {e}", exc_info=True)
+
+    @pyqtSlot(str)
+    def _on_activation_success(self, slug: str):
+        """Handle successful activation on UI thread"""
+        try:
+            c = self._c
+            self.refresh()
+
+            # Emit signal with a delay to prevent recursion
+            QTimer.singleShot(100, lambda: self.strategy_activated.emit(slug))
+
+            strategy_data = strategy_manager.get(slug) or {}
+            name = strategy_data.get("name", slug)
+
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt;")
+                self._status_lbl.setText(f"✓ Activated: {name}")
+                QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
+
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._on_activation_success] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(str)
+    def _on_activation_failure(self, slug: str):
+        """Handle activation failure on UI thread"""
+        try:
+            c = self._c
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt;")
+                self._status_lbl.setText(f"✗ Failed to activate {slug}")
+                QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._on_activation_failure] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(str)
+    def _on_activation_error(self, error: str):
+        """Handle activation error on UI thread"""
+        try:
+            c = self._c
+            if self._status_lbl:
+                self._status_lbl.setStyleSheet(f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt;")
+                self._status_lbl.setText(f"✗ Error: {error[:50]}...")
+                QTimer.singleShot(5000, lambda: self._status_lbl.clear() if self._status_lbl else None)
+        except Exception as e:
+            logger.error(f"[StrategyPickerSidebar._on_activation_error] Failed: {e}", exc_info=True)
 
     def _on_open_editor(self):
         """Emit signal to open editor"""

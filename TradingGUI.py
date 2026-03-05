@@ -2996,18 +2996,89 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._on_strategy_editor_closed] Failed: {e}", exc_info=True)
 
     def _on_strategy_changed(self, slug: str):
-        """Handle strategy change"""
+        """Handle strategy change - with deadlock prevention"""
         try:
             # Skip if closing
             if self._closing:
                 return
 
-            self._apply_active_strategy()
-            if self.strategy_picker and self.strategy_picker.isVisible():
-                self.strategy_picker.refresh()
-            self.strategy_changed.emit(slug)
+            # Use a timer to defer the application to avoid recursion
+            QTimer.singleShot(100, self._apply_active_strategy_deferred)
+
+            logger.info(f"[TradingGUI._on_strategy_changed] Strategy changed to: {slug}")
+
         except Exception as e:
             logger.error(f"[TradingGUI._on_strategy_changed] Failed: {e}", exc_info=True)
+
+    def _apply_active_strategy_deferred(self):
+        """Apply active strategy with proper error handling and thread safety"""
+        try:
+            # Skip if closing
+            if self._closing:
+                return
+
+            if not self.strategy_manager:
+                logger.warning("[TradingGUI._apply_active_strategy_deferred] No strategy manager available")
+                return
+
+            # Get active strategy data
+            active_slug = self.strategy_manager.get_active_slug()
+            if not active_slug:
+                logger.warning("[TradingGUI._apply_active_strategy_deferred] No active strategy")
+                return
+
+            # Get strategy parameters
+            indicator_params = self.strategy_manager.get_active_indicator_params()
+            engine_config = self.strategy_manager.get_active_engine_config()
+
+            # Update config object safely
+            for key, value in indicator_params.items():
+                if hasattr(self.config, key):
+                    setattr(self.config, key, value)
+
+            # Update signal engine - check if trading app exists and is initialized
+            if self.trading_app and hasattr(self.trading_app, "detector"):
+                try:
+                    if hasattr(self.trading_app.detector, "signal_engine"):
+                        engine = self.trading_app.detector.signal_engine
+                        if engine is not None:
+                            # Use a timer to load strategy to avoid blocking
+                            QTimer.singleShot(0, lambda: self._load_strategy_to_engine(active_slug))
+                except Exception as e:
+                    logger.error(f"[TradingGUI._apply_active_strategy_deferred] Failed to update engine: {e}")
+
+            # Update label
+            name = self.strategy_manager.get_active_name()
+            logger.info(f"[TradingGUI._apply_active_strategy_deferred] Applied strategy: {name}")
+
+            # Update chart config - do this last
+            QTimer.singleShot(200, self._update_chart_config)
+
+        except Exception as e:
+            logger.error(f"[TradingGUI._apply_active_strategy_deferred] Failed: {e}", exc_info=True)
+
+    def _load_strategy_to_engine(self, slug: str):
+        """Load strategy to engine in a separate call"""
+        try:
+            if (self.trading_app and
+                    hasattr(self.trading_app, "detector") and
+                    hasattr(self.trading_app.detector, "signal_engine") and
+                    self.trading_app.detector.signal_engine is not None):
+                self.trading_app.detector.signal_engine.load_from_strategy(slug)
+                logger.info(f"[TradingGUI._load_strategy_to_engine] Loaded strategy {slug} to engine")
+        except Exception as e:
+            logger.error(f"[TradingGUI._load_strategy_to_engine] Failed: {e}", exc_info=True)
+
+    def _update_chart_config(self):
+        """Update chart configuration"""
+        try:
+            if hasattr(self, 'chart_widget') and self.chart_widget:
+                engine = (self.trading_app.detector.signal_engine
+                          if self.trading_app and hasattr(self.trading_app, 'detector')
+                          else None)
+                self.chart_widget.set_config(self.config, engine)
+        except Exception as e:
+            logger.warning(f"[TradingGUI._update_chart_config] Failed: {e}")
 
     def _apply_active_strategy(self):
         """Apply the active strategy to the trading app"""
