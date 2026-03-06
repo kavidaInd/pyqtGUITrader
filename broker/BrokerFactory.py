@@ -49,6 +49,7 @@ UPDATED: Added support for state_manager integration in broker instances.
 
 import logging
 
+from Utils.safe_getattr import safe_getattr
 # Import all broker implementations
 from broker.AliceBlueBroker import AliceBlueBroker
 from broker.AngelOneBroker import AngelOneBroker
@@ -217,7 +218,7 @@ class BrokerFactory:
         """
         broker_type = "fyers"
         if broker_setting is not None:
-            broker_type = getattr(broker_setting, 'broker_type', 'fyers') or 'fyers'
+            broker_type = safe_getattr(broker_setting, 'broker_type', 'fyers') or 'fyers'
         broker_type = broker_type.strip().lower()
 
         logger.info(f"BrokerFactory: creating broker '{broker_type}'")

@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
     QCompleter,
     QStackedWidget, QFileDialog, QDoubleSpinBox, QSpinBox, QGroupBox, QSplitter, QTreeWidget, QTreeWidgetItem)
 
+from Utils.safe_getattr import safe_hasattr
 from strategy.indicator_registry import (
     ALL_INDICATORS, get_indicator_params,
     get_param_type, get_param_description, get_indicator_category,
@@ -1838,7 +1839,7 @@ class _RuleRow(QWidget, ThemedMixin):
                     # Force _on_params_changed so get_params() returns
                     # the populated values even if the user never edits a field.
                     self.lhs_params._on_params_changed()
-                    if hasattr(self.lhs_params, '_param_widgets') and not params:
+                    if safe_hasattr(self.lhs_params, '_param_widgets') and not params:
                         for pname, (widget, ptype) in self.lhs_params._param_widgets.items():
                             if pname in params:
                                 try:
@@ -1892,7 +1893,7 @@ class _RuleRow(QWidget, ThemedMixin):
                     # Force _on_params_changed so get_params() returns
                     # the populated values even if the user never edits a field.
                     self.rhs_params._on_params_changed()
-                    if hasattr(self.rhs_params, '_param_widgets') and not params:
+                    if safe_hasattr(self.rhs_params, '_param_widgets') and not params:
                         for pname, (widget, ptype) in self.rhs_params._param_widgets.items():
                             if pname in params:
                                 try:
@@ -2614,7 +2615,7 @@ class _SignalRulesTab(QWidget, ThemedMixin):
         try:
             total = 0
             for panel in self._panels.values():
-                total += len(panel._rule_rows) if hasattr(panel, '_rule_rows') else 0
+                total += len(panel._rule_rows) if safe_hasattr(panel, '_rule_rows') else 0
             if self._total_rules_lbl:
                 self._total_rules_lbl.setText(f"📊 Total Rules: {total}")
         except Exception as e:
@@ -2623,7 +2624,7 @@ class _SignalRulesTab(QWidget, ThemedMixin):
     def _toggle_all_enabled(self):
         try:
             for panel in self._panels.values():
-                if hasattr(panel, 'enabled_chk') and panel.enabled_chk:
+                if safe_hasattr(panel, 'enabled_chk') and panel.enabled_chk:
                     panel.enabled_chk.setChecked(True)
         except Exception as e:
             logger.error(f"[_SignalRulesTab._toggle_all_enabled] Failed: {e}", exc_info=True)
@@ -2631,7 +2632,7 @@ class _SignalRulesTab(QWidget, ThemedMixin):
     def _toggle_all_disabled(self):
         try:
             for panel in self._panels.values():
-                if hasattr(panel, 'enabled_chk') and panel.enabled_chk:
+                if safe_hasattr(panel, 'enabled_chk') and panel.enabled_chk:
                     panel.enabled_chk.setChecked(False)
         except Exception as e:
             logger.error(f"[_SignalRulesTab._toggle_all_disabled] Failed: {e}", exc_info=True)
@@ -3760,9 +3761,9 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
     def _connect_dirty_watchers(self):
         """Connect dirty state watchers to info tab widgets"""
         try:
-            if self._info_tab and hasattr(self._info_tab, 'name_edit') and self._info_tab.name_edit:
+            if self._info_tab and safe_hasattr(self._info_tab, 'name_edit') and self._info_tab.name_edit:
                 self._info_tab.name_edit.textChanged.connect(lambda: self._set_dirty(True))
-            if self._info_tab and hasattr(self._info_tab, 'desc_edit') and self._info_tab.desc_edit:
+            if self._info_tab and safe_hasattr(self._info_tab, 'desc_edit') and self._info_tab.desc_edit:
                 self._info_tab.desc_edit.textChanged.connect(lambda: self._set_dirty(True))
         except RuntimeError as e:
             logger.warning(f"Failed to connect dirty watchers: {e}")

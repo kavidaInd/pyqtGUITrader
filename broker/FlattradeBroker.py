@@ -46,6 +46,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -134,15 +135,15 @@ class FlattradeBroker(BaseBroker):
                 raise ValueError("BrokerageSetting must be provided for FlattradeBroker.")
 
             # Parse "user_id|api_key" from client_id
-            client_raw = getattr(broker_setting, 'client_id', '') or ''
+            client_raw = safe_getattr(broker_setting, 'client_id', '') or ''
             if "|" in client_raw:
                 self.user_id, self.api_key = client_raw.split("|", 1)
             else:
                 self.user_id = client_raw
                 self.api_key = client_raw
 
-            self.api_secret   = getattr(broker_setting, 'secret_key', '') or ''
-            self.redirect_uri = getattr(broker_setting, 'redirect_uri', '') or ''
+            self.api_secret   = safe_getattr(broker_setting, 'secret_key', '') or ''
+            self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', '') or ''
 
             if not self.user_id:
                 raise ValueError("Flattrade user_id is required.")
@@ -776,7 +777,7 @@ class FlattradeBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_api, "close_websocket"):
+                        if safe_hasattr(self._ws_api, "close_websocket"):
                             self._ws_api.close_websocket()
                             logger.debug("[FlattradeBroker] close_websocket called")
                     except Exception as e:
@@ -967,7 +968,7 @@ class FlattradeBroker(BaseBroker):
 
             api = ws_obj.get("__ft_api__") if isinstance(ws_obj, dict) else self.api
 
-            if api and hasattr(api, "close_websocket"):
+            if api and safe_hasattr(api, "close_websocket"):
                 # Run close in separate thread with timeout
                 disconnect_complete = threading.Event()
 
@@ -1069,7 +1070,7 @@ class FlattradeBroker(BaseBroker):
         Results are cached for the session.
         """
         try:
-            cache = getattr(self, "_ft_sym_cache", {})
+            cache = safe_getattr(self, "_ft_sym_cache", {})
             if symbol in cache:
                 return cache[symbol]
 

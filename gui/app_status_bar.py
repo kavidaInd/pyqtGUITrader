@@ -3,9 +3,9 @@ Application Status Bar Module
 ==============================
 Enhanced status bar component for the PyQt5 trading dashboard.
 
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 This module provides a comprehensive status bar that displays real-time information
-about the application state, ongoing operations, and performance metrics. It features
-animated indicators, tooltips, and visual feedback for various system states.
+about the application state, ongoing operations, and performance metrics.
 
 UPDATED: Added connection details, system metrics, and trading statistics.
 """
@@ -19,6 +19,7 @@ import os
 from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer, Qt
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QFrame, QProgressBar, QWidget
 
+from Utils.safe_getattr import safe_hasattr
 # Import state manager for accessing trading state
 from data.trade_state_manager import state_manager
 
@@ -29,7 +30,129 @@ from gui.theme_manager import theme_manager
 logger = logging.getLogger(__name__)
 
 
-class AnimatedLabel(QLabel):
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class StatusBadge(QLabel):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="neutral"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(60)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        if status == "success":
+            color = c.GREEN
+            bg = c.GREEN + "20"
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        elif status == "info":
+            color = c.BLUE
+            bg = c.BLUE + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class ValueLabel(QLabel):
+    """Value label with consistent styling."""
+
+    def __init__(self, text="--", parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("valueLabel")
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setMinimumWidth(50)
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        self.setStyleSheet(f"""
+            QLabel#valueLabel {{
+                color: {c.TEXT_MAIN};
+                background: {c.BG_HOVER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class AnimatedLabel(QLabel, ThemedMixin):
     """
     Label with blinking and pulsing animations for active states.
     """
@@ -62,6 +185,10 @@ class AnimatedLabel(QLabel):
             self._pulse_animation.setLoopCount(-1)
             self._pulse_animation.setEasingCurve(QEasingCurve.InOutQuad)
 
+            # Rule 13.2: Connect to theme and density signals
+            theme_manager.theme_changed.connect(self.apply_theme)
+            theme_manager.density_changed.connect(self.apply_theme)
+
         except Exception as e:
             logger.error(f"[AnimatedLabel.__init__] Failed: {e}", exc_info=True)
             super().__init__(text, parent)
@@ -79,21 +206,6 @@ class AnimatedLabel(QLabel):
         self._pulsing = False
         self._animation_type = self.BLINK
         self._color_token = "GREEN_BRIGHT"
-
-    # =========================================================================
-    # Shorthand properties for theme tokens
-    # =========================================================================
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
 
     def get_opacity(self) -> float:
         return self._opacity
@@ -188,7 +300,7 @@ class AnimatedLabel(QLabel):
             logger.error(f"[AnimatedLabel.apply_theme] Failed: {e}", exc_info=True)
 
 
-class StatusToolTip(QLabel):
+class StatusToolTip(QLabel, ThemedMixin):
     """Custom tooltip for showing detailed status information."""
 
     def __init__(self, parent=None):
@@ -209,18 +321,6 @@ class StatusToolTip(QLabel):
     def _safe_defaults_init(self):
         pass
 
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
-
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to tooltip"""
         try:
@@ -232,7 +332,7 @@ class StatusToolTip(QLabel):
                 QLabel {{
                     background: {c.BG_PANEL};
                     color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border: 1px solid {c.BORDER};
                     border-radius: {sp.RADIUS_MD}px;
                     padding: {sp.PAD_SM}px;
                     font-size: {ty.SIZE_SM}pt;
@@ -251,10 +351,11 @@ class StatusToolTip(QLabel):
             logger.error(f"[StatusToolTip.show_at_position] Failed: {e}", exc_info=True)
 
 
-class AppStatusBar(QFrame):
+class AppStatusBar(QFrame, ThemedMixin):
     """
     Enhanced status bar showing application state, operations, and performance metrics.
 
+    MODERN MINIMALIST DESIGN - Matches other dialogs.
     UPDATED: Shows connection status, system metrics, and trading statistics.
     """
 
@@ -310,14 +411,14 @@ class AppStatusBar(QFrame):
     def _safe_defaults_init(self):
         self.status_icon = None
         self.status_label = None
-        self.mode_label = None
+        self.mode_badge = None
         self.timestamp_label = None
         self.op_fetch = None
         self.op_process = None
         self.op_order = None
         self.op_position = None
-        self.op_connection = None
-        self.op_market = None
+        self.op_connection_badge = None
+        self.op_market_badge = None
         self.progress_bar = None
         self.blink_label = None
         self.metrics_container = None
@@ -345,38 +446,31 @@ class AppStatusBar(QFrame):
         self._last_snapshot_time = None
         self._snapshot_cache_duration = 0.1
         self.trading_app = None
-
-    # =========================================================================
-    # Shorthand properties for theme tokens
-    # =========================================================================
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
+        self.main_card = None
 
     def _build_ui(self):
         """Build the UI structure (without hardcoded styles)"""
         try:
-            # Rule 3: No fixed heights - use tokens in apply_theme
-            layout = QHBoxLayout(self)
-            layout.setObjectName("mainLayout")
-            # Margins and spacing will be set in apply_theme
+            # Main container with card styling
+            self.main_card = ModernCard(self)
+            main_layout = QHBoxLayout(self.main_card)
+            main_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_XS,
+                                          self._sp.PAD_MD, self._sp.PAD_XS)
+            main_layout.setSpacing(self._sp.GAP_MD)
 
-            # Left section - Status + Timestamp
-            self._create_status_section(layout)
+            # Left section - Status
+            self._create_status_section(main_layout)
 
-            # Middle section - Operations + Market + Connection
-            self._create_operations_section(layout)
+            # Middle section - Operations
+            self._create_operations_section(main_layout)
 
             # Right section - System + Trading Metrics
-            self._create_metrics_section(layout)
+            self._create_metrics_section(main_layout)
+
+            # Main layout for the status bar
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(self.main_card)
 
         except Exception as e:
             logger.error(f"[AppStatusBar._build_ui] Failed: {e}", exc_info=True)
@@ -388,112 +482,62 @@ class AppStatusBar(QFrame):
         """
         try:
             c = self._c
-            ty = self._ty
             sp = self._sp
 
             # =============================================================
-            # 1. Update layout margins and spacing
+            # 1. Update main card style
             # =============================================================
-            layout = self.layout()
-            if layout:
-                layout.setContentsMargins(sp.PAD_MD, sp.PAD_XS, sp.PAD_MD, sp.PAD_XS)
-                layout.setSpacing(sp.GAP_MD)
+            if hasattr(self, 'main_card') and self.main_card:
+                self.main_card._apply_style()
 
             # =============================================================
-            # 2. Update height (Rule 3: no fixed heights)
-            # =============================================================
-            self.setMinimumHeight(sp.STATUS_BAR_H - 8)
-            self.setMaximumHeight(sp.STATUS_BAR_H + 8)
-
-            # =============================================================
-            # 3. Main frame stylesheet
-            # =============================================================
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background: {c.BAR_BG};
-                    border: {sp.SEPARATOR}px solid {c.BAR_BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                }}
-                QLabel {{
-                    color: {c.TEXT_DIM};
-                    font-size: {ty.SIZE_SM}pt;
-                }}
-                QLabel[cssClass="status"] {{
-                    color: {c.BLUE};
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-                QLabel[cssClass="mode"] {{
-                    color: {c.TEXT_MAIN};
-                    font-weight: {ty.WEIGHT_BOLD};
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    border-radius: {sp.RADIUS_PILL}px;
-                }}
-                QLabel[cssClass="timestamp"] {{
-                    color: {c.TEXT_DISABLED};
-                    font-size: {ty.SIZE_XS}pt;
-                    padding: {sp.PAD_XS}px {sp.PAD_XS}px;
-                }}
-                QLabel[cssClass="metric"] {{
-                    color: {c.BLUE};
-                    font-size: {ty.SIZE_XS}pt;
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    background: {c.BG_HOVER};
-                    border-radius: {sp.RADIUS_SM}px;
-                }}
-                QLabel[cssClass="market"] {{
-                    font-size: {ty.SIZE_XS}pt;
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    border-radius: {sp.RADIUS_PILL}px;
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-                QProgressBar {{
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    text-align: center;
-                    color: {c.TEXT_MAIN};
-                    background: {c.BG_INPUT};
-                    max-height: {sp.PROGRESS_SM}px;
-                    min-height: {sp.PROGRESS_SM}px;
-                }}
-                QProgressBar::chunk {{
-                    background: {c.GREEN};
-                    border-radius: {sp.RADIUS_SM}px;
-                }}
-                QFrame#separator {{
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    max-width: {sp.SEPARATOR}px;
-                    min-width: {sp.SEPARATOR}px;
-                }}
-            """)
-
-            # =============================================================
-            # 4. Update status icon
+            # 2. Update status icon
             # =============================================================
             if self.status_icon:
                 self._update_status_icon_color()
 
             # =============================================================
-            # 5. Update mode label
+            # 3. Update mode badge
             # =============================================================
-            if self.mode_label:
+            if self.mode_badge:
                 self._update_mode_display()
 
             # =============================================================
-            # 6. Update operation indicators
+            # 4. Update operation indicators
             # =============================================================
             self._update_all_op_indicators()
 
             # =============================================================
-            # 7. Update tooltip theme
+            # 5. Update tooltip theme
             # =============================================================
-            if hasattr(self, '_tooltip') and self._tooltip:
+            if safe_hasattr(self, '_tooltip') and self._tooltip:
                 self._tooltip.apply_theme()
 
             # =============================================================
-            # 8. Update blink label theme
+            # 6. Update blink label theme
             # =============================================================
-            if self.blink_label:
+            if self.blink_label and safe_hasattr(self.blink_label, 'apply_theme'):
                 self.blink_label.apply_theme()
+
+            # =============================================================
+            # 7. Update progress bar style
+            # =============================================================
+            if self.progress_bar:
+                self.progress_bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        border: 1px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_SM}px;
+                        text-align: center;
+                        color: {c.TEXT_MAIN};
+                        background: {c.BG_INPUT};
+                        max-height: {sp.PROGRESS_SM}px;
+                        min-height: {sp.PROGRESS_SM}px;
+                    }}
+                    QProgressBar::chunk {{
+                        background: {c.BLUE};
+                        border-radius: {sp.RADIUS_SM}px;
+                    }}
+                """)
 
             logger.debug(f"[AppStatusBar.apply_theme] Applied theme")
 
@@ -509,14 +553,15 @@ class AppStatusBar(QFrame):
             status_layout.setSpacing(self._sp.GAP_SM)
 
             self.status_icon = QLabel("●")
+            self.status_icon.setFixedWidth(20)
             status_layout.addWidget(self.status_icon)
 
             self.status_label = QLabel("Ready")
-            self.status_label.setProperty("cssClass", "status")
+            self.status_label.setStyleSheet(f"color: {self._c.TEXT_MAIN}; font-weight: {self._ty.WEIGHT_BOLD};")
             status_layout.addWidget(self.status_label)
 
             self.timestamp_label = QLabel()
-            self.timestamp_label.setProperty("cssClass", "timestamp")
+            self.timestamp_label.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
             status_layout.addWidget(self.timestamp_label)
 
             layout.addWidget(status_container)
@@ -533,32 +578,38 @@ class AppStatusBar(QFrame):
             ops_layout.setContentsMargins(0, 0, 0, 0)
             ops_layout.setSpacing(self._sp.GAP_MD)
 
-            # Mode indicator
-            self.mode_label = QLabel("MODE: ALGO")
-            self.mode_label.setProperty("cssClass", "mode")
-            ops_layout.addWidget(self.mode_label)
+            # Mode badge
+            self.mode_badge = StatusBadge("ALGO", "info")
+            ops_layout.addWidget(self.mode_badge)
 
             # Operation indicators
             self.op_fetch = self._create_op_indicator("📊", "Fetching history")
             self.op_process = self._create_op_indicator("⚙️", "Processing")
             self.op_order = self._create_op_indicator("📝", "Order pending")
             self.op_position = self._create_op_indicator("💰", "Position active")
-            self.op_connection = self._create_op_indicator("🔌", "Connection status")
-            self.op_market = self._create_op_indicator("📈", "Market status")
+
+            # Connection badge
+            self.op_connection_badge = StatusBadge("●", "error")
+            self.op_connection_badge.setToolTip("Connection status")
+            ops_layout.addWidget(self.op_connection_badge)
+
+            # Market badge
+            self.op_market_badge = StatusBadge("📈", "neutral")
+            self.op_market_badge.setToolTip("Market status")
 
             ops_layout.addWidget(self.op_fetch)
             ops_layout.addWidget(self.op_process)
             ops_layout.addWidget(self.op_order)
             ops_layout.addWidget(self.op_position)
-            ops_layout.addWidget(self.op_connection)
-            ops_layout.addWidget(self.op_market)
+            ops_layout.addWidget(self.op_connection_badge)
+            ops_layout.addWidget(self.op_market_badge)
 
             # Progress bar
             self.progress_bar = QProgressBar()
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(False)
-            self.progress_bar.setFixedWidth(150)
+            self.progress_bar.setFixedWidth(120)
             ops_layout.addWidget(self.progress_bar)
 
             # Blinking animation
@@ -581,28 +632,23 @@ class AppStatusBar(QFrame):
             metrics_layout.setSpacing(self._sp.GAP_SM)
 
             # CPU Usage
-            self.cpu_label = QLabel()
-            self.cpu_label.setProperty("cssClass", "metric")
+            self.cpu_label = ValueLabel("💾 0%")
             metrics_layout.addWidget(self.cpu_label)
 
             # Memory Usage
-            self.memory_label = QLabel()
-            self.memory_label.setProperty("cssClass", "metric")
+            self.memory_label = ValueLabel("📀 0%")
             metrics_layout.addWidget(self.memory_label)
 
             # P&L
-            self.pnl_label = QLabel()
-            self.pnl_label.setProperty("cssClass", "metric")
+            self.pnl_label = ValueLabel("💰 ₹0")
             metrics_layout.addWidget(self.pnl_label)
 
             # Queue Size
-            self.queue_label = QLabel()
-            self.queue_label.setProperty("cssClass", "metric")
+            self.queue_label = ValueLabel("📥 0")
             metrics_layout.addWidget(self.queue_label)
 
             # Message Rate
-            self.msg_rate_label = QLabel()
-            self.msg_rate_label.setProperty("cssClass", "metric")
+            self.msg_rate_label = ValueLabel("📨 0/s")
             metrics_layout.addWidget(self.msg_rate_label)
 
             layout.addWidget(self.metrics_container, 1)
@@ -612,14 +658,17 @@ class AppStatusBar(QFrame):
 
     def _create_separator(self) -> QFrame:
         sep = QFrame()
-        sep.setObjectName("separator")
         sep.setFrameShape(QFrame.VLine)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background: {self._c.BORDER};")
         return sep
 
     def _create_op_indicator(self, icon: str, tooltip: str) -> QLabel:
         try:
             label = QLabel(icon)
             label.setToolTip(tooltip)
+            label.setFixedWidth(24)
+            label.setAlignment(Qt.AlignCenter)
 
             label.setMouseTracking(True)
             label.enterEvent = lambda e: self._show_op_tooltip(label, tooltip)
@@ -663,17 +712,7 @@ class AppStatusBar(QFrame):
                     if pnl:
                         tooltip_text += f"\nP&L: ₹{pnl:.2f}"
 
-            elif op_name == "market":
-                tooltip_text += f"\nStatus: {self._market_status}"
-
-            elif op_name == "connection":
-                tooltip_text += f"\nStatus: {self._connection_status}"
-                # Add WebSocket stats if available
-                if hasattr(self, '_ws_stats'):
-                    tooltip_text += f"\nMessages: {self._ws_stats.get('message_count', 0)}"
-                    tooltip_text += f"\nReconnects: {self._ws_stats.get('reconnect_count', 0)}"
-
-            if not hasattr(self, '_tooltip') or not self._tooltip:
+            if not safe_hasattr(self, '_tooltip') or not self._tooltip:
                 self._tooltip = StatusToolTip(self)
 
             pos = label.mapToGlobal(label.rect().topLeft())
@@ -683,7 +722,7 @@ class AppStatusBar(QFrame):
             logger.error(f"[AppStatusBar._show_op_tooltip] Failed: {e}")
 
     def _hide_op_tooltip(self):
-        if hasattr(self, '_tooltip') and self._tooltip:
+        if safe_hasattr(self, '_tooltip') and self._tooltip:
             self._tooltip.hide()
 
     def _get_cached_snapshot(self) -> Dict[str, Any]:
@@ -734,54 +773,36 @@ class AppStatusBar(QFrame):
         try:
             self._market_status = status
 
-            if self.op_market is None:
+            if self.op_market_badge is None:
                 return
 
             if status == "OPEN":
-                self.op_market.setText("📈")
-                self._update_op_indicator(self.op_market, True, "GREEN_BRIGHT")
-                self.op_market.setToolTip("Market: OPEN")
+                self.op_market_badge.setText("📈")
+                self.op_market_badge.set_status("success")
+                self.op_market_badge.setToolTip("Market: OPEN")
             elif status == "CLOSED":
-                self.op_market.setText("📉")
-                self._update_op_indicator(self.op_market, True, "RED_BRIGHT")
-                self.op_market.setToolTip("Market: CLOSED")
+                self.op_market_badge.setText("📉")
+                self.op_market_badge.set_status("error")
+                self.op_market_badge.setToolTip("Market: CLOSED")
             else:
-                self.op_market.setText("📊")
-                self._update_op_indicator(self.op_market, False, "TEXT_DISABLED")
-                self.op_market.setToolTip("Market: UNKNOWN")
+                self.op_market_badge.setText("📊")
+                self.op_market_badge.set_status("neutral")
+                self.op_market_badge.setToolTip("Market: UNKNOWN")
 
         except Exception as e:
             logger.error(f"[AppStatusBar.update_market_status] Failed: {e}", exc_info=True)
 
     def _update_mode_display(self):
-        if self.mode_label is None:
+        if self.mode_badge is None:
             return
 
         try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
             if self._current_mode == "algo":
-                self.mode_label.setText("MODE: ALGO")
-                self.mode_label.setStyleSheet(f"""
-                    background: {c.BLUE_DARK}; 
-                    color: {c.TEXT_INVERSE}; 
-                    border-radius: {sp.RADIUS_PILL}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                """)
+                self.mode_badge.setText("ALGO")
+                self.mode_badge.set_status("info")
             else:
-                self.mode_label.setText("MODE: MANUAL")
-                self.mode_label.setStyleSheet(f"""
-                    background: {c.YELLOW}; 
-                    color: {c.TEXT_INVERSE}; 
-                    border-radius: {sp.RADIUS_PILL}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                """)
+                self.mode_badge.setText("MANUAL")
+                self.mode_badge.set_status("warning")
         except Exception as e:
             logger.error(f"Failed to update mode label: {e}")
 
@@ -793,9 +814,9 @@ class AppStatusBar(QFrame):
                 return
 
             if self._app_running:
-                self.status_icon.setStyleSheet(f"color: {c.GREEN_BRIGHT}; font-size: {self._ty.SIZE_MD}pt;")
+                self.status_icon.setStyleSheet(f"color: {c.GREEN}; font-size: {self._ty.SIZE_MD}pt;")
             else:
-                self.status_icon.setStyleSheet(f"color: {c.RED_BRIGHT}; font-size: {self._ty.SIZE_MD}pt;")
+                self.status_icon.setStyleSheet(f"color: {c.RED}; font-size: {self._ty.SIZE_MD}pt;")
         except Exception as e:
             logger.error(f"[AppStatusBar._update_status_icon_color] Failed: {e}")
 
@@ -822,13 +843,13 @@ class AppStatusBar(QFrame):
                 elif status_info.get('processing', False):
                     self.status_icon.setStyleSheet(f"color: {c.BLUE}; font-size: {self._ty.SIZE_MD}pt;")
                 elif status_info.get('order_pending', False):
-                    self.status_icon.setStyleSheet(f"color: {c.YELLOW_BRIGHT}; font-size: {self._ty.SIZE_MD}pt;")
+                    self.status_icon.setStyleSheet(f"color: {c.YELLOW}; font-size: {self._ty.SIZE_MD}pt;")
                 elif snapshot.get('current_position') is not None:
-                    self.status_icon.setStyleSheet(f"color: {c.GREEN_BRIGHT}; font-size: {self._ty.SIZE_MD}pt;")
+                    self.status_icon.setStyleSheet(f"color: {c.GREEN}; font-size: {self._ty.SIZE_MD}pt;")
                 else:
-                    self.status_icon.setStyleSheet(f"color: {c.GREEN_BRIGHT}; font-size: {self._ty.SIZE_MD}pt;")
+                    self.status_icon.setStyleSheet(f"color: {c.GREEN}; font-size: {self._ty.SIZE_MD}pt;")
             else:
-                self.status_icon.setStyleSheet(f"color: {c.RED_BRIGHT}; font-size: {self._ty.SIZE_MD}pt;")
+                self.status_icon.setStyleSheet(f"color: {c.RED}; font-size: {self._ty.SIZE_MD}pt;")
 
         except Exception as e:
             logger.error(f"Failed to update status display: {e}")
@@ -844,10 +865,6 @@ class AppStatusBar(QFrame):
                 self._update_op_indicator(self.op_order, False, "TEXT_DISABLED")
             if self.op_position:
                 self._update_op_indicator(self.op_position, False, "TEXT_DISABLED")
-            if self.op_connection:
-                self._update_op_indicator(self.op_connection, False, "TEXT_DISABLED")
-            if self.op_market:
-                self._update_op_indicator(self.op_market, False, "TEXT_DISABLED")
         except Exception as e:
             logger.error(f"[AppStatusBar._update_all_op_indicators] Failed: {e}")
 
@@ -855,8 +872,8 @@ class AppStatusBar(QFrame):
         operations = [
             ('fetching_history', self.op_fetch, "ORANGE"),
             ('processing', self.op_process, "BLUE"),
-            ('order_pending', self.op_order, "YELLOW_BRIGHT"),
-            ('has_position', self.op_position, "GREEN_BRIGHT")
+            ('order_pending', self.op_order, "YELLOW"),
+            ('has_position', self.op_position, "GREEN")
         ]
 
         for key, label, color_token in operations:
@@ -875,18 +892,20 @@ class AppStatusBar(QFrame):
             self._update_op_indicator(label, active, color_token)
 
     def _update_connection_status(self, status_info: Dict[str, Any]):
-        if self.op_connection is None:
+        if self.op_connection_badge is None:
             return
 
         try:
             is_connected = status_info.get('connection_status') == "Connected"
 
             if is_connected:
-                self._update_op_indicator(self.op_connection, True, "GREEN_BRIGHT")
-                self.op_connection.setToolTip("Connected to broker")
+                self.op_connection_badge.set_status("success")
+                self.op_connection_badge.setText("●")
+                self.op_connection_badge.setToolTip("Connected to broker")
             else:
-                self._update_op_indicator(self.op_connection, False, "TEXT_DISABLED")
-                self.op_connection.setToolTip("Disconnected from broker")
+                self.op_connection_badge.set_status("error")
+                self.op_connection_badge.setText("●")
+                self.op_connection_badge.setToolTip("Disconnected from broker")
 
             self._connection_status = "Connected" if is_connected else "Disconnected"
 
@@ -927,9 +946,9 @@ class AppStatusBar(QFrame):
                     self.blink_label.setVisible(True)
 
                     if status_info.get('order_pending', False):
-                        self.blink_label.start_animation(AnimatedLabel.PULSE, "YELLOW_BRIGHT")
+                        self.blink_label.start_animation(AnimatedLabel.PULSE, "YELLOW")
                     elif snapshot.get('signal_conflict', False):
-                        self.blink_label.start_animation(AnimatedLabel.PULSE, "RED_BRIGHT")
+                        self.blink_label.start_animation(AnimatedLabel.PULSE, "RED")
                     elif status_info.get('processing', False):
                         self.blink_label.start_animation(AnimatedLabel.BLINK, "BLUE")
                     elif status_info.get('fetching_history', False):
@@ -956,7 +975,7 @@ class AppStatusBar(QFrame):
                     QLabel {{
                         color: {color};
                         font-size: {self._ty.SIZE_MD}pt;
-                        padding: {sp.PAD_XS}px {sp.PAD_XS}px;
+                        padding: {sp.PAD_XS}px;
                         font-weight: {self._ty.WEIGHT_BOLD};
                     }}
                     QLabel:hover {{
@@ -969,7 +988,7 @@ class AppStatusBar(QFrame):
                     QLabel {{
                         color: {c.TEXT_DISABLED};
                         font-size: {self._ty.SIZE_MD}pt;
-                        padding: {sp.PAD_XS}px {sp.PAD_XS}px;
+                        padding: {sp.PAD_XS}px;
                     }}
                     QLabel:hover {{
                         background: {c.BG_HOVER};
@@ -990,44 +1009,45 @@ class AppStatusBar(QFrame):
             snapshot = self._get_cached_snapshot()
             pos_snapshot = state_manager.get_position_snapshot()
             c = self._c
-            sp = self._sp
 
             # System metrics
             try:
                 # CPU
                 cpu_percent = psutil.cpu_percent(interval=0.1)
                 if cpu_percent > 90:
-                    cpu_color = c.RED_BRIGHT
+                    cpu_color = c.RED
                 elif cpu_percent > 70:
-                    cpu_color = c.YELLOW_BRIGHT
+                    cpu_color = c.YELLOW
                 else:
-                    cpu_color = c.BLUE
+                    cpu_color = c.GREEN
 
                 self.cpu_label.setText(f"💾 {cpu_percent:.0f}%")
                 self.cpu_label.setStyleSheet(f"""
-                    color: {cpu_color}; 
-                    background: {c.BG_HOVER}; 
-                    border-radius: {sp.RADIUS_SM}px; 
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    color: {cpu_color};
+                    background: {c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
                     font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 """)
 
                 # Memory
                 mem = psutil.virtual_memory()
                 if mem.percent > 90:
-                    mem_color = c.RED_BRIGHT
+                    mem_color = c.RED
                 elif mem.percent > 80:
-                    mem_color = c.YELLOW_BRIGHT
+                    mem_color = c.YELLOW
                 else:
-                    mem_color = c.BLUE
+                    mem_color = c.GREEN
 
                 self.memory_label.setText(f"📀 {mem.percent:.0f}%")
                 self.memory_label.setStyleSheet(f"""
-                    color: {mem_color}; 
-                    background: {c.BG_HOVER}; 
-                    border-radius: {sp.RADIUS_SM}px; 
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    color: {mem_color};
+                    background: {c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
                     font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 """)
             except Exception as e:
                 logger.debug(f"Failed to get system metrics: {e}")
@@ -1036,71 +1056,75 @@ class AppStatusBar(QFrame):
             # P&L
             pnl = pos_snapshot.get('current_pnl', 0)
             if pnl:
-                pnl_color = c.GREEN_BRIGHT if pnl > 0 else c.RED_BRIGHT
+                pnl_color = c.GREEN if pnl > 0 else c.RED
                 self.pnl_label.setText(f"💰 ₹{pnl:,.0f}")
                 self.pnl_label.setStyleSheet(f"""
-                    color: {pnl_color}; 
-                    background: {c.BG_HOVER}; 
-                    border-radius: {sp.RADIUS_SM}px; 
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    color: {pnl_color};
+                    background: {c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
                     font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 """)
             else:
                 self.pnl_label.setText("💰 ₹0")
                 self.pnl_label.setStyleSheet(f"""
-                    color: {c.BLUE}; 
-                    background: {c.BG_HOVER}; 
-                    border-radius: {sp.RADIUS_SM}px; 
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    color: {c.BLUE};
+                    background: {c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
                     font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 """)
 
             # Queue size
-            if hasattr(self, 'trading_app') and self.trading_app and hasattr(self.trading_app, '_tick_queue'):
+            if safe_hasattr(self, 'trading_app') and self.trading_app and safe_hasattr(self.trading_app, '_tick_queue'):
                 qsize = self.trading_app._tick_queue.qsize()
                 if qsize > 100:
-                    queue_color = c.RED_BRIGHT
+                    queue_color = c.RED
                 elif qsize > 50:
-                    queue_color = c.YELLOW_BRIGHT
+                    queue_color = c.YELLOW
                 else:
                     queue_color = c.BLUE
 
                 self.queue_label.setText(f"📥 {qsize}")
                 self.queue_label.setStyleSheet(f"""
-                    color: {queue_color}; 
-                    background: {c.BG_HOVER}; 
-                    border-radius: {sp.RADIUS_SM}px; 
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    color: {queue_color};
+                    background: {c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
                     font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
                 """)
 
             # Message rate
-            if hasattr(self, 'trading_app') and self.trading_app and hasattr(self.trading_app, 'ws') and self.trading_app.ws:
+            if safe_hasattr(self, 'trading_app') and self.trading_app and safe_hasattr(self.trading_app, 'ws') and self.trading_app.ws:
                 ws = self.trading_app.ws
-                if hasattr(ws, 'get_statistics'):
+                if safe_hasattr(ws, 'get_statistics'):
                     stats = ws.get_statistics()
                     msg_count = stats.get('message_count', 0)
 
                     # Calculate rate
-                    if hasattr(self, '_last_msg_count'):
+                    if safe_hasattr(self, '_last_msg_count'):
                         rate = msg_count - self._last_msg_count
                         if rate > self._peak_rate:
                             self._peak_rate = rate
 
                         if rate > 100:
-                            rate_color = c.RED_BRIGHT
+                            rate_color = c.RED
                         elif rate > 50:
-                            rate_color = c.YELLOW_BRIGHT
+                            rate_color = c.YELLOW
                         else:
-                            rate_color = c.BLUE
+                            rate_color = c.GREEN
 
                         self.msg_rate_label.setText(f"📨 {rate}/s")
                         self.msg_rate_label.setStyleSheet(f"""
-                            color: {rate_color}; 
-                            background: {c.BG_HOVER}; 
-                            border-radius: {sp.RADIUS_SM}px; 
-                            padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                            color: {rate_color};
+                            background: {c.BG_HOVER};
+                            border-radius: {self._sp.RADIUS_SM}px;
+                            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
                             font-size: {self._ty.SIZE_XS}pt;
+                            font-weight: {self._ty.WEIGHT_BOLD};
                         """)
 
                     self._last_msg_count = msg_count
@@ -1207,20 +1231,20 @@ class AppStatusBar(QFrame):
                     except Exception as e:
                         logger.warning(f"Error stopping timer: {e}")
 
-            if hasattr(self, '_tooltip') and self._tooltip:
+            if safe_hasattr(self, '_tooltip') and self._tooltip:
                 self._tooltip.hide()
 
             # Nullify references
             self.status_icon = None
             self.status_label = None
-            self.mode_label = None
+            self.mode_badge = None
             self.timestamp_label = None
             self.op_fetch = None
             self.op_process = None
             self.op_order = None
             self.op_position = None
-            self.op_connection = None
-            self.op_market = None
+            self.op_connection_badge = None
+            self.op_market_badge = None
             self.progress_bar = None
             self.blink_label = None
             self.metrics_container = None
@@ -1233,6 +1257,7 @@ class AppStatusBar(QFrame):
             self._safety_timer = None
             self._last_snapshot = {}
             self._last_snapshot_time = None
+            self.main_card = None
 
             logger.info("[AppStatusBar] Cleanup completed")
 

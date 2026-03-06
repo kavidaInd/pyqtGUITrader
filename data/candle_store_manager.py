@@ -1,3 +1,4 @@
+# candle_store_manager.py (fixed)
 """
 data/candle_store_manager.py
 ============================
@@ -17,6 +18,7 @@ from typing import Dict, Optional, List, Any
 
 import pandas as pd
 
+from Utils.safe_getattr import safe_hasattr
 from broker.BaseBroker import TokenExpiredError
 # Use the existing CandleStore implementation
 from data.candle_store import CandleStore, resample_df
@@ -69,9 +71,6 @@ class CandleStoreManager:
                 # Dictionary of symbol -> CandleStore
                 self._stores: Dict[str, CandleStore] = {}
 
-                # Weak references to track store usage (for cleanup)
-                self._store_refs: Dict[str, weakref.ref] = {}
-
                 # Broker instance (shared across all stores)
                 self._broker = None
 
@@ -83,6 +82,9 @@ class CandleStoreManager:
 
                 # Default max bars for new stores
                 self._default_max_bars = 2000
+
+                # Bug #17 fix: Remove unused weak references
+                # self._store_refs: Dict[str, weakref.ref] = {}
 
                 self._initialized = True
                 logger.info("CandleStoreManager initialized")
@@ -149,7 +151,7 @@ class CandleStoreManager:
 
                 logger.info(f"Creating new CandleStore for {symbol} with max_bars={max_bars}")
 
-                # Use the existing CandleStore constructor
+                # Bug #1 fix: Pass max_bars to constructor consistently
                 store = CandleStore(
                     symbol=symbol,
                     broker=self._broker if not self._backtest_mode else None,
@@ -157,7 +159,6 @@ class CandleStoreManager:
                 )
 
                 self._stores[symbol] = store
-                self._store_refs[symbol] = weakref.ref(store)
 
                 return store
         except TokenExpiredError as e:
@@ -187,16 +188,15 @@ class CandleStoreManager:
                 if not self._backtest_mode and self._broker is not None:
                     logger.warning("Creating store from DataFrame in non-backtest mode - this may indicate an issue")
 
-                # Use the existing from_dataframe class method
-                store = CandleStore.from_dataframe(df, symbol=symbol)
+                # Bug #1 fix: Pass max_bars to from_dataframe constructor
+                if max_bars is None:
+                    max_bars = self._default_max_bars
 
-                # Override max_bars if provided
-                if max_bars is not None:
-                    store.max_bars = max_bars
+                # Use the existing from_dataframe class method with max_bars
+                store = CandleStore.from_dataframe(df, symbol=symbol, max_bars=max_bars)
 
                 # Store it
                 self._stores[symbol] = store
-                self._store_refs[symbol] = weakref.ref(store)
                 self._last_access[symbol] = datetime.now()
 
                 logger.info(f"Created CandleStore for {symbol} from DataFrame with {len(df)} bars")
@@ -224,8 +224,6 @@ class CandleStoreManager:
             with self._lock:
                 if symbol in self._stores:
                     del self._stores[symbol]
-                    if symbol in self._store_refs:
-                        del self._store_refs[symbol]
                     if symbol in self._last_access:
                         del self._last_access[symbol]
                     logger.info(f"Removed CandleStore for {symbol}")
@@ -292,7 +290,7 @@ class CandleStoreManager:
 
         return results
 
-    def push_tick(self, symbol: str, ltp: float, timestamp: Optional[datetime] = None) -> bool:
+    def push_tick(self, symbol: str, ltp: float, volume: float = 0.0, timestamp: Optional[datetime] = None) -> bool:
         """
         Push a tick to the store for a symbol.
 
@@ -301,6 +299,7 @@ class CandleStoreManager:
         Args:
             symbol: Trading symbol
             ltp: Last traded price
+            volume: Traded quantity for this tick
             timestamp: Tick timestamp (defaults to now)
 
         Returns:
@@ -308,7 +307,7 @@ class CandleStoreManager:
         """
         try:
             store = self.get_store(symbol)
-            return store.push_tick(ltp, timestamp)
+            return store.push_tick(ltp, volume, timestamp)
         except TokenExpiredError:
             raise
         except Exception as e:
@@ -428,15 +427,7 @@ class CandleStoreManager:
 
                 for symbol, last_access in self._last_access.items():
                     if last_access < cutoff:
-                        # Check if store still has weak reference
-                        if symbol in self._store_refs:
-                            ref = self._store_refs[symbol]
-                            if ref() is None:  # Store was garbage collected
-                                to_remove.append(symbol)
-                            else:
-                                # Store still exists but is idle - optional: keep or remove
-                                # For now, we'll keep it but log a warning
-                                logger.debug(f"Store for {symbol} idle for {max_idle_minutes}+ minutes")
+                        to_remove.append(symbol)
 
                 for symbol in to_remove:
                     self.remove_store(symbol)
@@ -459,7 +450,6 @@ class CandleStoreManager:
         with self._lock:
             store_count = len(self._stores)
             self._stores.clear()
-            self._store_refs.clear()
             self._last_access.clear()
             logger.info(f"Cleared all {store_count} stores")
 
@@ -482,7 +472,7 @@ class CandleStoreManager:
                 'last_bar_time': store.last_bar_time(),
                 'is_empty': store.is_empty(),
                 'max_bars': store.max_bars,
-                'cached_timeframes': list(store._resample_cache.keys()) if hasattr(store, '_resample_cache') else []
+                'cached_timeframes': list(store._resample_cache.keys()) if safe_hasattr(store, '_resample_cache') else []
             }
         except TokenExpiredError:
             raise

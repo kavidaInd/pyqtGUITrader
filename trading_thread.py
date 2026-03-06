@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import TokenExpiredError
 
 # Import state manager for cleanup
@@ -87,7 +88,7 @@ class TradingThread(QThread):
         """FEATURE 1: Connect risk manager signals to thread signals"""
         try:
             if (self.trading_app and
-                    hasattr(self.trading_app, 'risk_manager') and
+                    safe_hasattr(self.trading_app, 'risk_manager') and
                     self.trading_app.risk_manager):
                 # Connect risk breach signal to our own signal
                 self.trading_app.risk_manager.risk_breach.connect(self.risk_breach.emit)
@@ -115,7 +116,7 @@ class TradingThread(QThread):
             logger.info("Trading thread started")
 
             # FEATURE 6: Check MTF filter status
-            if hasattr(self.trading_app, 'config'):
+            if safe_hasattr(self.trading_app, 'config'):
                 self._mtf_enabled = self.trading_app.config.get('use_mtf_filter', False)
                 if self._mtf_enabled:
                     self.status_update.emit("Multi-Timeframe Filter enabled")
@@ -215,11 +216,11 @@ class TradingThread(QThread):
                 return
 
             # Access state safely (if thread-safe)
-            state = getattr(self.trading_app, "state", None)
+            state = safe_getattr(self.trading_app, "state", None)
 
             # Check if there's an open position to exit
             current_position = None
-            if state and hasattr(state, "current_position"):
+            if state and safe_hasattr(state, "current_position"):
                 current_position = state.current_position
 
             if current_position:
@@ -227,7 +228,7 @@ class TradingThread(QThread):
                 logger.info(f"Exiting position during shutdown: {current_position}")
 
                 # Execute position exit
-                if hasattr(self.trading_app, "executor") and self.trading_app.executor:
+                if safe_hasattr(self.trading_app, "executor") and self.trading_app.executor:
                     try:
                         # This would ideally be a non-blocking call or run in thread
                         pnl = self.trading_app.executor.exit_position(
@@ -252,9 +253,9 @@ class TradingThread(QThread):
 
             # Unsubscribe from WebSocket
             self.status_update.emit("Disconnecting from WebSocket...")
-            if hasattr(self.trading_app, "ws") and self.trading_app.ws:
+            if safe_hasattr(self.trading_app, "ws") and self.trading_app.ws:
                 try:
-                    if hasattr(self.trading_app.ws, "unsubscribe"):
+                    if safe_hasattr(self.trading_app.ws, "unsubscribe"):
                         self.trading_app.ws.unsubscribe()
                         logger.info("WebSocket unsubscribed")
                 except AttributeError as e:
@@ -272,7 +273,7 @@ class TradingThread(QThread):
 
             # Additional cleanup
             self.status_update.emit("Cleaning up resources...")
-            if hasattr(self.trading_app, "cleanup"):
+            if safe_hasattr(self.trading_app, "cleanup"):
                 try:
                     self.trading_app.cleanup()
                     logger.info("Trading app cleanup completed")
@@ -307,7 +308,7 @@ class TradingThread(QThread):
         """FEATURE 1: Log risk summary on shutdown"""
         try:
             if (self.trading_app and
-                    hasattr(self.trading_app, 'risk_manager') and
+                    safe_hasattr(self.trading_app, 'risk_manager') and
                     self.trading_app.risk_manager):
                 risk_summary = self.trading_app.risk_manager.get_risk_summary(self.trading_app.config)
                 logger.info(f"Risk summary at shutdown: {risk_summary}")
@@ -324,13 +325,13 @@ class TradingThread(QThread):
         """FEATURE 4: Send shutdown notification via Telegram"""
         try:
             if (self.trading_app and
-                    hasattr(self.trading_app, 'notifier') and
+                    safe_hasattr(self.trading_app, 'notifier') and
                     self.trading_app.notifier):
 
                 # Get final P&L
                 pnl = 0.0
-                state = getattr(self.trading_app, 'state', None)
-                if state and hasattr(state, 'current_pnl') and state.current_pnl:
+                state = safe_getattr(self.trading_app, 'state', None)
+                if state and safe_hasattr(state, 'current_pnl') and state.current_pnl:
                     pnl = state.current_pnl
 
                 emoji = '✅' if pnl >= 0 else '❌'
@@ -404,7 +405,7 @@ class TradingThread(QThread):
         a 'should_stop' flag periodically.
         """
         try:
-            if self.trading_app and hasattr(self.trading_app, 'should_stop'):
+            if self.trading_app and safe_hasattr(self.trading_app, 'should_stop'):
                 self.trading_app.should_stop = True
                 self.status_update.emit("Stop requested")
                 logger.info("Stop requested via should_stop flag")
@@ -427,7 +428,7 @@ class TradingThread(QThread):
         """FEATURE 4: Send stop request notification"""
         try:
             if (self.trading_app and
-                    hasattr(self.trading_app, 'notifier') and
+                    safe_hasattr(self.trading_app, 'notifier') and
                     self.trading_app.notifier):
                 msg = "🛑 *STOP REQUESTED*\nBot is shutting down gracefully..."
                 self.trading_app.notifier._pool.submit(
@@ -487,7 +488,7 @@ class TradingThread(QThread):
             logger.info("[TradingThread] Starting cleanup")
 
             # Stop timer if running
-            if hasattr(self, '_stop_timer') and self._stop_timer:
+            if safe_hasattr(self, '_stop_timer') and self._stop_timer:
                 try:
                     if self._stop_timer.isActive():
                         self._stop_timer.stop()
@@ -662,7 +663,7 @@ class CooperativeTradingApp:
         try:
             if self.ws:
                 try:
-                    if hasattr(self.ws, "unsubscribe"):
+                    if safe_hasattr(self.ws, "unsubscribe"):
                         self.ws.unsubscribe()
                     logger.info("WebSocket cleaned up")
                 except Exception as e:

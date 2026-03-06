@@ -933,7 +933,7 @@ class MultiTimeframeFilter:
                     elif key == 'max_base_cache_size':
                         self.MAX_BASE_CACHE_SIZE = value
                     else:
-                        setattr(self, f"_{key}", value)
+                        safe_setattr(self, f"_{key}", value)
 
                     logger.info(f"Updated config: {key} = {value}")
 

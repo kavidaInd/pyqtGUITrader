@@ -65,6 +65,7 @@ DARK_TOKENS: Dict[str, str] = {
 
     # Borders
     "BORDER":        "#30363d",
+    "BORDER_DIM":   "#30363d",
     "BORDER_FOCUS":  "#58a6ff",
     "BORDER_STRONG": "#484f58",
 
@@ -112,6 +113,7 @@ LIGHT_TOKENS: Dict[str, str] = {
 
     # Borders
     "BORDER":        "#d0d7de",
+    "BORDER_DIM":   "#d0d7de",
     "BORDER_FOCUS":  "#0969da",
     "BORDER_STRONG": "#8c959f",
 

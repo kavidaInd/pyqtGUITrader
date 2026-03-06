@@ -60,6 +60,8 @@ Version: 2.0.0 (with FEATURE 3 enhancements)
 import logging.handlers
 from typing import Dict, List, Any, Optional
 
+from Utils.safe_getattr import safe_getattr
+
 try:
     import pandas_ta as ta
 
@@ -92,7 +94,7 @@ def get_all_indicators() -> List[str]:
             logger.warning("pandas_ta not available")
             return []
 
-        indicators = [name for name in dir(ta) if not name.startswith('_') and callable(getattr(ta, name))]
+        indicators = [name for name in dir(ta) if not name.startswith('_') and callable(safe_getattr(ta, name))]
         return sorted(indicators)
     except Exception as e:
         logger.error(f"[get_all_indicators] Failed: {e}", exc_info=True)

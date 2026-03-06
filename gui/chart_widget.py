@@ -10,6 +10,7 @@ Simplified chart widget with:
 - Integrated with CandleStoreManager for centralized data access
 - Token expiry handling with re-authentication propagation
 - Fixed timezone handling (IST/GMT+5:30)
+- MODERN MINIMALIST DESIGN - Matches other dialogs
 """
 
 from __future__ import annotations
@@ -26,14 +27,15 @@ from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from PyQt5.QtCore import QSize, QTimer, pyqtSignal, Qt
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile, QWebEnginePage
 from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget, QLabel, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
-    QGroupBox, QFileDialog, QMessageBox, QProgressBar, QTabWidget
+    QGroupBox, QFileDialog, QMessageBox, QProgressBar, QTabWidget, QFrame
 )
 
+from Utils.safe_getattr import safe_hasattr
 # Import CandleStoreManager for centralized data access
 from data.candle_store_manager import candle_store_manager
 
@@ -54,7 +56,165 @@ UTC = timezone('UTC')
 
 
 # =============================================================================
-# ENUMS AND DATA CLASSES
+# THEMED WIDGETS
+# =============================================================================
+
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class StatusBadge(QLabel, ThemedMixin):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="neutral"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(60)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
+        if status == "success":
+            color = c.GREEN
+            bg = c.GREEN + "20"
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        elif status == "info":
+            color = c.BLUE
+            bg = c.BLUE + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class ModernButton(QPushButton, ThemedMixin):
+    """Modern styled button."""
+
+    def __init__(self, text="", primary=False, icon=""):
+        super().__init__(f"{icon} {text}" if icon else text)
+        self.setCursor(Qt.PointingHandCursor)
+        self._primary = primary
+        self._apply_style()
+
+    def _apply_style(self):
+        c = self._c
+        sp = self._sp
+        ty = self._ty
+
+        if self._primary:
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    min-width: 80px;
+                    min-height: 32px;
+                }}
+                QPushButton:hover {{
+                    background: {c.BORDER};
+                    border-color: {c.BORDER_FOCUS};
+                }}
+            """)
+
+    def set_primary(self, primary):
+        """Update primary state."""
+        self._primary = primary
+        self._apply_style()
+
+
+# =============================================================================
+# ENUMS AND DATA CLASSES (unchanged)
 # =============================================================================
 
 class TimeFrame(Enum):
@@ -282,10 +442,10 @@ class MarketStructureAnalyzer:
 
 
 # =============================================================================
-# SPOT CHART WIDGET
+# SPOT CHART WIDGET (Themed)
 # =============================================================================
 
-class SpotChartWidget(QWebEngineView):
+class SpotChartWidget(QWebEngineView, ThemedMixin):
     """
     Simplified chart widget focusing on Spot market structure:
     - Candlestick/Line chart
@@ -406,21 +566,6 @@ class SpotChartWidget(QWebEngineView):
         self._web_profile = None
         self._web_page = None
 
-    # =========================================================================
-    # Shorthand properties for theme tokens
-    # =========================================================================
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
-
     def apply_theme(self, _: str = None) -> None:
         """
         Rule 13.2: Apply theme colors to the chart widget.
@@ -454,12 +599,12 @@ class SpotChartWidget(QWebEngineView):
             "volume_down": f"rgba({int(c.RED[1:3], 16)}, {int(c.RED[3:5], 16)}, {int(c.RED[5:7], 16)}, 0.45)",
             "pivot_high": c.ORANGE,
             "pivot_low": c.BLUE,
-            "hh": c.GREEN_BRIGHT,
+            "hh": c.GREEN,
             "hl": c.BLUE,
-            "lh": c.RED_BRIGHT,
+            "lh": c.RED,
             "ll": c.ORANGE,
-            "trend_up": c.GREEN_BRIGHT,
-            "trend_down": c.RED_BRIGHT,
+            "trend_up": c.GREEN,
+            "trend_down": c.RED,
             "support": c.BLUE,
             "resistance": c.ORANGE,
         }
@@ -496,10 +641,10 @@ class SpotChartWidget(QWebEngineView):
             # Fallback: try to find parent with token expiry handling
             parent = self.parent()
             while parent:
-                if hasattr(parent, '_handle_token_expired'):
+                if safe_hasattr(parent, '_handle_token_expired'):
                     parent._handle_token_expired(message)
                     break
-                if hasattr(parent, 'token_expired') and hasattr(parent.token_expired, 'emit'):
+                if safe_hasattr(parent, 'token_expired') and safe_hasattr(parent.token_expired, 'emit'):
                     parent.token_expired.emit(message)
                     break
                 parent = parent.parent()
@@ -507,7 +652,7 @@ class SpotChartWidget(QWebEngineView):
             logger.error(f"[SpotChartWidget._handle_token_expired] Failed: {e}")
 
     # =========================================================================
-    # PUBLIC API
+    # PUBLIC API (unchanged but with theme integration)
     # =========================================================================
 
     def set_config(self, config, signal_engine=None) -> None:
@@ -611,9 +756,9 @@ class SpotChartWidget(QWebEngineView):
             if isinstance(ts, (int, float)):
                 return float(ts)
             # pandas Timestamp and datetime both expose .timestamp()
-            if hasattr(ts, "timestamp"):
+            if safe_hasattr(ts, "timestamp"):
                 # Ensure we get UTC timestamp
-                if hasattr(ts, 'tz') and ts.tz is not None:
+                if safe_hasattr(ts, 'tz') and ts.tz is not None:
                     # Convert to UTC first to get correct epoch
                     ts_utc = ts.astimezone(UTC)
                     return ts_utc.timestamp()
@@ -747,7 +892,7 @@ class SpotChartWidget(QWebEngineView):
                 self._update_timer.start(50)
 
     # =========================================================================
-    # PRIVATE METHODS
+    # PRIVATE METHODS (with theme integration)
     # =========================================================================
 
     def _fingerprint(self, data: Dict) -> str:
@@ -818,6 +963,14 @@ class SpotChartWidget(QWebEngineView):
 
             # Get today's date in IST
             import datetime as dt
+
+            # NSE market session boundaries (exact times, not just hours)
+            # BUG-11 FIX: original used `9 <= dt_obj.hour <= 15` which accepts
+            # bars at 15:31–15:59 because their hour is still 15. We now compare
+            # the full time object so only 09:15–15:30 bars are kept.
+            _MARKET_OPEN_T = dt.time(9, 15)
+            _MARKET_CLOSE_T = dt.time(15, 30)
+
             now_ist = dt.datetime.now(IST)
             today_start_ist = dt.datetime(now_ist.year, now_ist.month, now_ist.day,
                                           tzinfo=IST)
@@ -828,16 +981,18 @@ class SpotChartWidget(QWebEngineView):
             for i, ts in enumerate(timestamps):
                 epoch = self._to_epoch(ts)
                 if epoch is not None and epoch >= today_start_epoch:
-                    # Verify it's within market hours (optional)
                     dt_obj = dt.datetime.fromtimestamp(epoch, tz=IST)
-                    if 9 <= dt_obj.hour <= 15:  # Market hours roughly
+                    # BUG-11 FIX: compare full time, not just .hour
+                    if _MARKET_OPEN_T <= dt_obj.time() <= _MARKET_CLOSE_T:
                         today_indices.append(i)
 
             if not today_indices:
-                # If no timestamps from today, take last 50 bars as fallback
-                logger.warning("No today's data found, using last 50 bars")
+                # Fallback: show last 375 bars (= one full trading day of 1-min bars)
+                # so the user always sees a meaningful amount of data.
+                # Old fallback was 50 bars which was the cause of the 2:45–3:30 symptom.
+                logger.warning("No today's data found, using last 375 bars as fallback")
                 n = len(timestamps)
-                start_idx = max(0, n - 50)
+                start_idx = max(0, n - 375)
                 today_indices = list(range(start_idx, n))
 
             # Filter all arrays to keep only today's indices
@@ -1296,6 +1451,8 @@ class SpotChartWidget(QWebEngineView):
     def _get_custom_css(self, c) -> str:
         """Get custom CSS for HTML"""
         colors = self._get_chart_colors()
+        sp = self._sp
+        ty = self._ty
 
         return f"""
         <style>
@@ -1306,6 +1463,7 @@ class SpotChartWidget(QWebEngineView):
                 height: 100%;
                 overflow: hidden;
                 background-color: {c.CHART_BG};
+                font-family: '{ty.FONT_UI}', sans-serif;
             }}
             .plotly-graph-div, .js-plotly-plot {{
                 width: 100%;
@@ -1319,18 +1477,23 @@ class SpotChartWidget(QWebEngineView):
             }}
             .legend .bg {{
                 fill: {c.BG_PANEL} !important;
+                stroke: {c.BORDER} !important;
+                stroke-width: {sp.SEPARATOR}px !important;
             }}
             .modebar {{
                 background: {c.BG_PANEL} !important;
-                border: {self._sp.SEPARATOR}px solid {c.BORDER} !important;
-                border-radius: {self._sp.RADIUS_MD}px !important;
-                padding: {self._sp.PAD_XS}px !important;
+                border: {sp.SEPARATOR}px solid {c.BORDER} !important;
+                border-radius: {sp.RADIUS_MD}px !important;
+                padding: {sp.PAD_XS}px !important;
             }}
             .modebar-btn {{
                 color: {c.TEXT_MAIN} !important;
             }}
             .modebar-btn:hover {{
                 color: {colors["pivot_low"]} !important;
+            }}
+            .modebar-btn.active {{
+                color: {c.GREEN} !important;
             }}
         </style>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1380,6 +1543,8 @@ class SpotChartWidget(QWebEngineView):
         try:
             c = self._c
             colors = self._get_chart_colors()
+            sp = self._sp
+            ty = self._ty
 
             html = f"""<!DOCTYPE html>
             <html>
@@ -1392,24 +1557,29 @@ class SpotChartWidget(QWebEngineView):
                         justify-content: center;
                         height: 100vh;
                         margin: 0;
-                        font-family: '{self._ty.FONT_UI}', sans-serif;
+                        font-family: '{ty.FONT_UI}', sans-serif;
                     }}
                     .container {{
                         text-align: center;
+                        background: {c.BG_PANEL};
+                        border: 1px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_LG}px;
+                        padding: {sp.PAD_XL}px;
+                        max-width: 400px;
                     }}
                     .msg {{
                         color: {c.TEXT_DIM};
-                        font-size: {self._ty.SIZE_BODY}pt;
-                        margin: {self._sp.PAD_LG}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        margin: {sp.PAD_LG}px;
                     }}
                     .spinner {{
-                        border: 3px solid {c.BG_PANEL};
+                        border: 3px solid {c.BG_HOVER};
                         border-top: 3px solid {colors["pivot_low"]};
                         border-radius: 50%;
                         width: 40px;
                         height: 40px;
                         animation: spin 1s linear infinite;
-                        margin: {self._sp.PAD_LG}px auto;
+                        margin: {sp.PAD_LG}px auto;
                     }}
                     @keyframes spin {{
                         0% {{ transform: rotate(0deg); }}
@@ -1433,6 +1603,8 @@ class SpotChartWidget(QWebEngineView):
         try:
             c = self._c
             colors = self._get_chart_colors()
+            sp = self._sp
+            ty = self._ty
 
             html = f"""<!DOCTYPE html>
             <html>
@@ -1445,22 +1617,23 @@ class SpotChartWidget(QWebEngineView):
                         justify-content: center;
                         height: 100vh;
                         margin: 0;
-                        font-family: '{self._ty.FONT_UI}', sans-serif;
+                        font-family: '{ty.FONT_UI}', sans-serif;
                     }}
                     .error {{
-                        color: {c.RED_BRIGHT};
-                        font-size: {self._ty.SIZE_BODY}pt;
+                        color: {c.RED};
+                        font-size: {ty.SIZE_BODY}pt;
                         text-align: center;
-                        padding: {self._sp.PAD_XL}px;
-                        border: {self._sp.SEPARATOR}px solid {c.RED_BRIGHT};
-                        border-radius: {self._sp.RADIUS_LG}px;
-                        background: rgba({int(c.RED_BRIGHT[1:3], 16)}, {int(c.RED_BRIGHT[3:5], 16)}, {int(c.RED_BRIGHT[5:7], 16)}, 0.1);
+                        padding: {sp.PAD_XL}px;
+                        border: 1px solid {c.RED};
+                        border-radius: {sp.RADIUS_LG}px;
+                        background: {c.BG_PANEL};
                         max-width: 400px;
                     }}
                     .error-title {{
-                        font-size: {self._ty.SIZE_LG}pt;
-                        font-weight: {self._ty.WEIGHT_BOLD};
-                        margin-bottom: {self._sp.PAD_MD}px;
+                        font-size: {ty.SIZE_LG}pt;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        margin-bottom: {sp.PAD_MD}px;
+                        color: {c.RED};
                     }}
                 </style>
             </head>
@@ -1537,11 +1710,11 @@ def get_signal_colors() -> Dict[str, str]:
     """Get signal colors based on current theme"""
     c = theme_manager.palette
     return {
-        "BUY_CALL": c.GREEN_BRIGHT,
+        "BUY_CALL": c.GREEN,
         "BUY_PUT": c.BLUE,
-        "EXIT_CALL": c.RED_BRIGHT,
+        "EXIT_CALL": c.RED,
         "EXIT_PUT": c.ORANGE,
-        "HOLD": c.YELLOW_BRIGHT,
+        "HOLD": c.YELLOW,
         "WAIT": c.TEXT_DISABLED,
     }
 
@@ -1557,7 +1730,8 @@ def mk_table_style() -> str:
             background: {c.BG_MAIN};
             alternate-background-color: {c.BG_PANEL};
             color: {c.TEXT_MAIN};
-            border: none;
+            border: 1px solid {c.BORDER};
+            border-radius: {sp.RADIUS_MD}px;
             gridline-color: {c.BORDER};
             font-family: "{ty.FONT_MONO}";
             font-size: {ty.SIZE_SM}pt;
@@ -1565,29 +1739,32 @@ def mk_table_style() -> str:
             selection-color: {c.TEXT_MAIN};
         }}
         QHeaderView::section {{
-            background: {c.BG_PANEL};
-            color: {c.TEXT_DIM};
+            background: {c.BG_HOVER};
+            color: {c.TEXT_MAIN};
             border: none;
-            border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-            padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-            font-size: {ty.SIZE_XS}pt;
+            border-bottom: 1px solid {c.BORDER};
+            border-right: 1px solid {c.BORDER};
+            padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+            font-size: {ty.SIZE_SM}pt;
             font-weight: {ty.WEIGHT_BOLD};
-            letter-spacing: {ty.LETTER_WIDE};
-            text-transform: uppercase;
         }}
         QTableWidget::item {{
-            padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-            border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+            padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+            border-bottom: 1px solid {c.BORDER};
         }}
         QScrollBar:vertical {{
             background: {c.BG_PANEL};
             width: {sp.ICON_SM}px;
             border-radius: {sp.RADIUS_SM}px;
+            margin: 0px;
         }}
         QScrollBar::handle:vertical {{
             background: {c.BORDER};
             border-radius: {sp.RADIUS_SM}px;
             min-height: {sp.BTN_HEIGHT_SM}px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background: {c.BORDER_STRONG};
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     """
@@ -1603,21 +1780,23 @@ def mk_group_style(accent_token: str = "BORDER") -> str:
     return f"""
         QGroupBox {{
             background: {c.BG_PANEL};
-            border: {sp.SEPARATOR}px solid {accent};
+            border: 1px solid {accent};
             border-radius: {sp.RADIUS_MD}px;
-            margin-top: {sp.PAD_SM}px;
-            padding: {sp.PAD_MD}px {sp.PAD_XS}px {sp.PAD_XS}px {sp.PAD_XS}px;
+            margin-top: {sp.PAD_MD}px;
+            padding: {sp.PAD_MD}px;
             color: {c.TEXT_MAIN};
+            font-size: {ty.SIZE_BODY}pt;
+            font-weight: {ty.WEIGHT_BOLD};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
             left: {sp.PAD_MD}px;
-            padding: 0 {sp.PAD_XS}px;
+            padding: 0 {sp.PAD_SM}px;
             color: {c.TEXT_DIM};
             font-size: {ty.SIZE_XS}pt;
             font-weight: {ty.WEIGHT_NORMAL};
-            letter-spacing: {ty.LETTER_WIDE};
             text-transform: uppercase;
+            letter-spacing: 0.5px;
         }}
     """
 
@@ -1626,7 +1805,7 @@ def mk_group_style(accent_token: str = "BORDER") -> str:
 # SIMPLE CHART WIDGET (Spot) - UPDATED WITH CANDLE_STORE_MANAGER
 # =============================================================================
 
-class SimpleChartWidget(QWidget):
+class SimpleChartWidget(QWidget, ThemedMixin):
     """
     Chart widget with:
     - Timeframe selector toolbar (1m, 3m, 5m, 15m, 30m, 1h)
@@ -1635,6 +1814,7 @@ class SimpleChartWidget(QWidget):
     - Live reload from CandleStoreManager on TF change
     - Token expiry handling with re-authentication propagation
     - Fixed timezone handling (IST/GMT+5:30)
+    - MODERN MINIMALIST DESIGN
     """
 
     # Emitted when user picks a new timeframe (minutes as int)
@@ -1668,8 +1848,33 @@ class SimpleChartWidget(QWidget):
             self._config = None
             self._signal_engine = None
 
+            # Main layout
             root = QVBoxLayout(self)
-            # Margins and spacing will be set in apply_theme
+            root.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD,
+                                    self._sp.PAD_MD, self._sp.PAD_MD)
+            root.setSpacing(self._sp.GAP_MD)
+
+            # ── Header Card ───────────────────────────────────────────────────
+            header_card = ModernCard()
+            header_layout = QHBoxLayout(header_card)
+            header_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM,
+                                             self._sp.PAD_MD, self._sp.PAD_SM)
+
+            header_icon = QLabel("📊")
+            header_icon.setStyleSheet(f"font-size: {self._ty.SIZE_LG}pt;")
+
+            header_title = QLabel("Market Chart")
+            header_title.setStyleSheet(f"""
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            """)
+
+            header_layout.addWidget(header_icon)
+            header_layout.addWidget(header_title)
+            header_layout.addStretch()
+
+            root.addWidget(header_card)
 
             # ── Timeframe toolbar ──────────────────────────────────────────────
             toolbar = self._build_tf_toolbar()
@@ -1703,21 +1908,6 @@ class SimpleChartWidget(QWidget):
         self._btn_ss_active = ""
         self.spot_chart = None
 
-    # =========================================================================
-    # Shorthand properties for theme tokens
-    # =========================================================================
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
-
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the widget"""
         try:
@@ -1728,37 +1918,39 @@ class SimpleChartWidget(QWidget):
             # Update root layout margins
             layout = self.layout()
             if layout:
-                layout.setContentsMargins(sp.PAD_XS, sp.PAD_XS, sp.PAD_XS, sp.PAD_XS)
-                layout.setSpacing(sp.GAP_XS)
+                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+                layout.setSpacing(sp.GAP_MD)
 
             # Update button styles for timeframe toolbar
             self._btn_ss_normal = f"""
                 QPushButton {{
-                    background: {c.BG_HOVER}; 
+                    background: {c.BG_HOVER};
                     color: {c.TEXT_DIM};
-                    border: {sp.SEPARATOR}px solid {c.BORDER}; 
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_MD}px; 
-                    font-size: {ty.SIZE_XS}pt; 
-                    font-weight: {ty.WEIGHT_BOLD};
-                    min-height: {sp.BTN_HEIGHT_SM - 6}px;
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    font-size: {ty.SIZE_SM}pt;
+                    font-weight: {ty.WEIGHT_NORMAL};
+                    min-width: 50px;
+                    min-height: 32px;
                 }}
-                QPushButton:hover {{ 
-                    background: {c.BORDER}; 
-                    color: {c.TEXT_MAIN}; 
+                QPushButton:hover {{
+                    background: {c.BORDER};
+                    color: {c.TEXT_MAIN};
                 }}
             """
 
             self._btn_ss_active = f"""
                 QPushButton {{
-                    background: {c.BLUE_DARK}; 
-                    color: {c.TEXT_INVERSE};
-                    border: {sp.SEPARATOR}px solid {c.BLUE}; 
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_MD}px; 
-                    font-size: {ty.SIZE_XS}pt; 
+                    background: {c.BLUE};
+                    color: white;
+                    border: 1px solid {c.BLUE};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    font-size: {ty.SIZE_SM}pt;
                     font-weight: {ty.WEIGHT_BOLD};
-                    min-height: {sp.BTN_HEIGHT_SM - 6}px;
+                    min-width: 50px;
+                    min-height: 32px;
                 }}
             """
 
@@ -1766,6 +1958,10 @@ class SimpleChartWidget(QWidget):
             for minutes, btn in self._tf_buttons.items():
                 if btn:
                     btn.setStyleSheet(self._btn_ss_active if minutes == self._current_tf else self._btn_ss_normal)
+
+            # Update spot chart theme
+            if self.spot_chart and safe_hasattr(self.spot_chart, 'apply_theme'):
+                self.spot_chart.apply_theme()
 
             logger.debug("[SimpleChartWidget.apply_theme] Applied theme")
 
@@ -1776,15 +1972,14 @@ class SimpleChartWidget(QWidget):
 
     def _build_tf_toolbar(self) -> QWidget:
         """Build the timeframe selector row above the chart."""
-        bar = QWidget()
-        bar.setObjectName("tfToolbar")
-
+        bar = ModernCard()
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_XS, self._sp.PAD_SM, self._sp.PAD_XS)
-        layout.setSpacing(self._sp.GAP_XS)
+        layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM,
+                                  self._sp.PAD_MD, self._sp.PAD_SM)
+        layout.setSpacing(self._sp.GAP_SM)
 
         lbl = QLabel("Timeframe:")
-        lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+        lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_SM}pt;")
         layout.addWidget(lbl)
 
         self._tf_buttons: Dict[int, QPushButton] = {}
@@ -1847,14 +2042,31 @@ class SimpleChartWidget(QWidget):
             if "time" in df.columns:
                 # Ensure time is timezone-aware IST
                 if df["time"].dt.tz is None:
-                    from pytz import timezone
-                    IST = timezone('Asia/Kolkata')
-                    df["time"] = df["time"].dt.tz_localize(IST)
-                elif df["time"].dt.tz.zone != "Asia/Kolkata":
-                    df["time"] = df["time"].dt.tz_convert('Asia/Kolkata')
+                    from pytz import timezone as _tz
+                    _IST = _tz('Asia/Kolkata')
+                    df["time"] = df["time"].dt.tz_localize(_IST)
+                else:
+                    # BUG-12 FIX: .tz.zone is a pytz-only attribute; any broker SDK
+                    # using zoneinfo or dateutil tzinfo raises AttributeError here,
+                    # which is silently swallowed by the outer try/except, so
+                    # timestamps ends up empty and the chart shows nothing.
+                    # Use a safe zone-name helper that works with any tzinfo.
+                    def _safe_tz_name(tzinfo):
+                        if tzinfo is None:
+                            return ""
+                        # pytz
+                        if hasattr(tzinfo, 'zone'):
+                            return tzinfo.zone
+                        # zoneinfo (Python 3.9+)
+                        if hasattr(tzinfo, 'key'):
+                            return tzinfo.key
+                        return str(tzinfo)
 
-                # Convert to epoch timestamps (Unix time in seconds)
-                # This preserves the timezone info in the epoch value
+                    if _safe_tz_name(df["time"].dt.tz) != "Asia/Kolkata":
+                        df["time"] = df["time"].dt.tz_convert('Asia/Kolkata')
+
+                # Convert to epoch integers (Unix seconds, UTC-based)
+                # int(t.timestamp()) works correctly for any tz-aware Timestamp.
                 timestamps = [int(t.timestamp()) for t in df["time"]]
             else:
                 timestamps = []

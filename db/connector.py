@@ -75,6 +75,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Any, Dict, List
 
+from Utils.safe_getattr import safe_hasattr
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ class DatabaseConnector:
                 - Foreign key constraints enabled
                 - Busy timeout of 5 seconds
         """
-        if not hasattr(self._local, "conn") or self._local.conn is None:
+        if not safe_hasattr(self._local, "conn") or self._local.conn is None:
             try:
                 conn = sqlite3.connect(
                     self.db_path,
@@ -624,7 +626,7 @@ class DatabaseConnector:
             It's safe to call this method multiple times. After closing,
             the connection will be recreated if needed.
         """
-        if hasattr(self._local, "conn") and self._local.conn:
+        if safe_hasattr(self._local, "conn") and self._local.conn:
             try:
                 self._local.conn.close()
                 self._local.conn = None

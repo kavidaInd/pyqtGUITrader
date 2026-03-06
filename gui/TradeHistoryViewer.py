@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QGroupBox, QGridLayout, QMessageBox, QWidget
 )
 
+from Utils.safe_getattr import safe_hasattr
 from db.connector import get_db
 from db.crud import orders as orders_crud
 
@@ -158,7 +159,7 @@ class TradeHistoryViewer(QDialog):
             if self._export_btn:
                 self._export_btn.setStyleSheet(self._get_button_style("primary"))
 
-            if hasattr(self, 'close_btn') and self.close_btn:
+            if safe_hasattr(self, 'close_btn') and self.close_btn:
                 self.close_btn.setStyleSheet(self._get_button_style("danger"))
 
             # Update stats labels with proper colors
@@ -508,7 +509,7 @@ class TradeHistoryViewer(QDialog):
         try:
             # Note: This assumes state_manager has a trade_closed signal
             # If not, we'll need to create a signal in the manager
-            if hasattr(state_manager, 'trade_closed'):
+            if safe_hasattr(state_manager, 'trade_closed'):
                 state_manager.trade_closed.connect(self._on_trade_closed)
                 logger.debug("Connected to state_manager.trade_closed signal")
         except Exception as e:

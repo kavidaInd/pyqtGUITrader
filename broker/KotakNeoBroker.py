@@ -41,6 +41,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -106,9 +107,9 @@ class KotakNeoBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for KotakNeoBroker.")
 
-            self.consumer_key    = getattr(broker_setting, 'client_id', None)
-            self.consumer_secret = getattr(broker_setting, 'secret_key', None)
-            self.totp_secret     = getattr(broker_setting, 'redirect_uri', None)
+            self.consumer_key    = safe_getattr(broker_setting, 'client_id', None)
+            self.consumer_secret = safe_getattr(broker_setting, 'secret_key', None)
+            self.totp_secret     = safe_getattr(broker_setting, 'redirect_uri', None)
 
             if not self.consumer_key:
                 raise ValueError("Kotak Neo consumer_key (client_id) is required.")
@@ -703,7 +704,7 @@ class KotakNeoBroker(BaseBroker):
 
                 def _do_cleanup():
                     try:
-                        if hasattr(self._ws_client, "un_subscribe_all"):
+                        if safe_hasattr(self._ws_client, "un_subscribe_all"):
                             self._ws_client.un_subscribe_all()
                             logger.debug("[KotakNeoBroker] un_subscribe_all called")
                     except Exception as e:
@@ -770,7 +771,7 @@ class KotakNeoBroker(BaseBroker):
         FIXED: Added state tracking and stored callbacks.
         """
         try:
-            if not hasattr(self, 'client') or self.client is None:
+            if not safe_hasattr(self, 'client') or self.client is None:
                 logger.error("KotakNeoBroker.create_websocket: client not initialized — login first")
                 return None
 
@@ -884,7 +885,7 @@ class KotakNeoBroker(BaseBroker):
 
             client = ws_obj.get("__neo_client__") if isinstance(ws_obj, dict) else self.client
 
-            if client and hasattr(client, "un_subscribe_all"):
+            if client and safe_hasattr(client, "un_subscribe_all"):
                 # Run unsubscribe in separate thread with timeout
                 disconnect_complete = threading.Event()
 
@@ -974,12 +975,12 @@ class KotakNeoBroker(BaseBroker):
     def _resolve_neo_token(self, symbol: str) -> Optional[str]:
         """Map generic NSE:SYMBOL → Kotak Neo instrument_token."""
         try:
-            cache = getattr(self, "_neo_token_cache", {})
+            cache = safe_getattr(self, "_neo_token_cache", {})
             if symbol in cache:
                 return cache[symbol]
 
             # Try to look up from instrument master
-            if hasattr(self, '_instruments_df') and self._instruments_df is not None:
+            if safe_hasattr(self, '_instruments_df') and self._instruments_df is not None:
                 clean = symbol.split(":")[-1].replace("-EQ", "")
                 match = self._instruments_df[
                     (self._instruments_df['tradingsymbol'].str.contains(clean)) &

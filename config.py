@@ -1,3 +1,4 @@
+# config.py (fixed)
 """
 Configuration Management Module
 ===============================
@@ -24,9 +25,6 @@ from typing import Any, Dict, Optional
 
 from db.config_crud import config_crud
 from db.connector import get_db
-
-# Import state manager for configuration sync
-from data.trade_state_manager import state_manager
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +86,7 @@ class Config:
         """
         self._config_crud = config_crud
         self._ensure_defaults()
-        logger.info("Config (database) initialized with state_manager integration")
+        logger.info("Config (database) initialized")
 
     def _ensure_defaults(self) -> None:
         """
@@ -269,9 +267,9 @@ class Config:
             value: New value
         """
         try:
+            from data.trade_state_manager import state_manager
             state = state_manager.get_state()
 
-            # Map configuration keys to state attributes
             config_to_state = {
                 'max_daily_loss': 'max_daily_loss',
                 'max_trades_per_day': 'max_trades_per_day',
@@ -284,7 +282,7 @@ class Config:
 
             if key in config_to_state:
                 state_attr = config_to_state[key]
-                setattr(state, state_attr, value)
+                safe_setattr(state, state_attr, value)
                 logger.debug(f"Synced config {key}={value} to state.{state_attr}")
 
         except Exception as e:

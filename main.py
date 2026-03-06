@@ -4,11 +4,9 @@ Application entry point with splash screen and first-time onboarding.
 Fully integrated with ThemeManager for consistent theming.
 """
 
-import logging
 import logging.handlers
 import os
 import sys
-import traceback
 from datetime import datetime
 from typing import Optional
 
@@ -431,7 +429,7 @@ def _launch_main_window(qt_app, splash=None, update_info=None) -> int:
         window = TradingGUI()
 
         # Inject optional update banner
-        if update_info and hasattr(update_info, 'available') and update_info.available:
+        if update_info and safe_hasattr(update_info, 'available') and update_info.available:
             _inject_update_banner(window, update_info)
 
         _inject_trial_banner(window)

@@ -48,6 +48,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QProgressBar, QGroupBox
 )
 
+from Utils.safe_getattr import safe_hasattr
 from strategy.strategy_manager import strategy_manager
 
 # Import state manager
@@ -532,12 +533,12 @@ class StrategyPickerSidebar(QDialog, ThemedMixin):
                 self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_XS}pt;")
 
             # Update card
-            if self._card and hasattr(self._card, 'apply_theme'):
+            if self._card and safe_hasattr(self._card, 'apply_theme'):
                 self._card.apply_theme()
 
             # Update confidence bars
             for bar in self._confidence_bars.values():
-                if hasattr(bar, 'apply_theme'):
+                if safe_hasattr(bar, 'apply_theme'):
                     bar.apply_theme()
 
             # Refresh list items to update colors

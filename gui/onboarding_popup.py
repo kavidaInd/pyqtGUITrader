@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QMessageBox, QButtonGroup, QTextEdit, QWidget
 )
 
+from Utils.safe_getattr import safe_hasattr
 # Import your existing setting classes
 from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
 from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
@@ -1228,7 +1229,7 @@ class BrokerConfigPage(QWizardPage, ThemedPageMixin):
                 self.secret_key.setStyleSheet(self._get_lineedit_style())
             if self.redirect_uri:
                 self.redirect_uri.setStyleSheet(self._get_lineedit_style(
-                    disabled_color=self._c.TEXT_DISABLED if hasattr(self, '_c') else None
+                    disabled_color=self._c.TEXT_DISABLED if safe_hasattr(self, '_c') else None
                 ))
             if self.save_creds:
                 self.save_creds.setStyleSheet(self._get_checkbox_style())
@@ -3108,7 +3109,7 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
             for page in [self.disclaimer_page, self.welcome_page, self.broker_page,
                          self.preferences_page, self.risk_page, self.notification_page,
                          self.completion_page]:
-                if page and hasattr(page, 'cleanup'):
+                if page and safe_hasattr(page, 'cleanup'):
                     try:
                         page.cleanup()
                     except Exception as e:

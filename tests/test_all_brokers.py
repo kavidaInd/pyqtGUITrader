@@ -78,7 +78,7 @@ class BrokerTester:
         ]
 
         for method in required:
-            if not hasattr(self.broker, method):
+            if not safe_hasattr(self.broker, method):
                 logger.error(f"❌ Missing method: {method}")
                 return False
 
@@ -91,12 +91,12 @@ class BrokerTester:
             return False
 
         # Check side constants
-        assert hasattr(self.broker, 'SIDE_BUY')
-        assert hasattr(self.broker, 'SIDE_SELL')
+        assert safe_hasattr(self.broker, 'SIDE_BUY')
+        assert safe_hasattr(self.broker, 'SIDE_SELL')
 
         # Check order type constants
-        assert hasattr(self.broker, 'MARKET_ORDER_TYPE')
-        assert hasattr(self.broker, 'LIMIT_ORDER_TYPE')
+        assert safe_hasattr(self.broker, 'MARKET_ORDER_TYPE')
+        assert safe_hasattr(self.broker, 'LIMIT_ORDER_TYPE')
 
         logger.info(f"✅ Constants present")
         return True

@@ -39,6 +39,7 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from data.trade_state_manager import state_manager
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
@@ -195,9 +196,9 @@ def time_to_expiry_years(current_dt: datetime, expiry_dt: datetime) -> float:
     Uses trading-day fraction: 252 trading days / year.
     """
     # Normalise: both must be tz-naive
-    if hasattr(current_dt, "tzinfo") and current_dt.tzinfo is not None:
+    if safe_hasattr(current_dt, "tzinfo") and current_dt.tzinfo is not None:
         current_dt = current_dt.replace(tzinfo=None)
-    if hasattr(expiry_dt, "tzinfo") and expiry_dt.tzinfo is not None:
+    if safe_hasattr(expiry_dt, "tzinfo") and expiry_dt.tzinfo is not None:
         expiry_dt = expiry_dt.replace(tzinfo=None)
     delta = (expiry_dt - current_dt).total_seconds()
     if delta <= 0:
@@ -230,12 +231,12 @@ def _broker_type(broker) -> str:
     """
     try:
         # Try to get from broker object first
-        bt = getattr(getattr(broker, "broker_setting", None), "broker_type", None)
+        bt = safe_getattr(safe_getattr(broker, "broker_setting", None), "broker_type", None)
         if bt:
             return str(bt).lower()
 
         # Try to get broker_type directly from broker
-        bt = getattr(broker, "broker_type", None)
+        bt = safe_getattr(broker, "broker_type", None)
         if bt:
             return str(bt).lower()
 
@@ -488,7 +489,7 @@ def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
         # Ensure we return a datetime object
         if isinstance(expiry_dt, datetime):
             return expiry_dt
-        elif hasattr(expiry_dt, 'to_pydatetime'):
+        elif safe_hasattr(expiry_dt, 'to_pydatetime'):
             return expiry_dt.to_pydatetime()
         else:
             # Fallback to string parsing if needed
@@ -678,7 +679,7 @@ class OptionPricer:
                  If None, rounds spot_close to nearest ATM.
         """
         # Strip tz so expiry arithmetic never raises
-        if hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
+        if safe_hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
             timestamp = timestamp.replace(tzinfo=None)
 
         # Use the caller-supplied strike (entry strike) when available;

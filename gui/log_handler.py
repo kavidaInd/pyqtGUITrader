@@ -25,6 +25,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer, Qt
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import QTextEdit, QPlainTextEdit, QApplication
 
+from Utils.safe_getattr import safe_hasattr
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
@@ -385,7 +386,7 @@ class ColoredLogWidget(QTextEdit):
                 level = logging.INFO
 
             # Ensure level colors are fresh
-            if not hasattr(self, 'LEVEL_COLORS'):
+            if not safe_hasattr(self, 'LEVEL_COLORS'):
                 self._refresh_level_colors()
 
             # Update counters
@@ -476,7 +477,7 @@ class ColoredLogWidget(QTextEdit):
                 return
 
             # Ensure level colors are fresh
-            if not hasattr(self, 'LEVEL_COLORS'):
+            if not safe_hasattr(self, 'LEVEL_COLORS'):
                 self._refresh_level_colors()
 
             self._batch_update_in_progress = True
@@ -683,10 +684,10 @@ class QtLogHandler(logging.Handler):
 
             if self.signaller is not None:
                 # Connect signals based on widget capabilities
-                if hasattr(log_widget, 'append_colored'):
+                if safe_hasattr(log_widget, 'append_colored'):
                     self.signaller.log_message.connect(log_widget.append_colored)
 
-                if hasattr(log_widget, 'append_batch'):
+                if safe_hasattr(log_widget, 'append_batch'):
                     self.signaller.log_batch.connect(log_widget.append_batch)
 
                 logger.debug("Log widget connected")
@@ -750,9 +751,9 @@ class QtLogHandler(logging.Handler):
             source = ""
             if self.track_source:
                 # Try to get source from record
-                if hasattr(record, 'source'):
+                if safe_hasattr(record, 'source'):
                     source = record.source
-                elif hasattr(record, 'name'):
+                elif safe_hasattr(record, 'name'):
                     source = record.name
                 else:
                     # Parse from module name
@@ -886,7 +887,7 @@ class SimpleLogHandler(logging.Handler):
             msg = self.format(record)
 
             # FIXED: Check if widget has append_colored method and is not deleted
-            if hasattr(self.log_widget, 'append_colored'):
+            if safe_hasattr(self.log_widget, 'append_colored'):
                 try:
                     self.log_widget.append_colored(msg, record.levelno)
                 except RuntimeError as e:
@@ -1129,7 +1130,7 @@ class ColoredPlainTextWidget(QPlainTextEdit):
                 level = logging.INFO
 
             # Ensure level colors are fresh
-            if not hasattr(self, 'LEVEL_COLORS'):
+            if not safe_hasattr(self, 'LEVEL_COLORS'):
                 self._refresh_level_colors()
 
             # Update counters
@@ -1193,7 +1194,7 @@ class ColoredPlainTextWidget(QPlainTextEdit):
                 return
 
             # Ensure level colors are fresh
-            if not hasattr(self, 'LEVEL_COLORS'):
+            if not safe_hasattr(self, 'LEVEL_COLORS'):
                 self._refresh_level_colors()
 
             html_parts = []

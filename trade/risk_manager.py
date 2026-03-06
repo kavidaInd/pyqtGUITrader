@@ -123,7 +123,7 @@ class RiskManager(QObject):
         if isinstance(config, dict):
             return config.get(key, default)
         # dataclass / object / namedtuple
-        return getattr(config, key, default)
+        return safe_getattr(config, key, default)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 

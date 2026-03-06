@@ -4,7 +4,7 @@ stats_popup.py
 Comprehensive statistics dashboard with multiple tabs.
 Single widget handling all stats-related functionality.
 
-VISUAL ENHANCEMENT: Modern dark theme with cards, gradients, and responsive design.
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 UPDATED: Now uses state_manager for all data access.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QPushButton, QLabel,
                              QSizePolicy)
 from PyQt5.QtGui import QFont, QColor, QPalette
 
+from Utils.safe_getattr import safe_hasattr
 from data.trade_state_manager import state_manager
 
 # Rule 13.1: Import theme manager
@@ -46,82 +47,63 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
-class ModernCard(QFrame, ThemedMixin):
-    """Custom card widget with hover effect"""
-    def __init__(self, title="", parent=None):
-        self._safe_defaults_init()
-        try:
-            super().__init__(parent)
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
 
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
 
-            self.setObjectName("modernCard")
-            self.setFrameStyle(QFrame.NoFrame)
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
 
-            self.layout = QVBoxLayout(self)
-            # Margins and spacing will be set in apply_theme
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
 
-            if title:
-                title_label = QLabel(title)
-                title_label.setObjectName("cardTitle")
-                title_label.setAlignment(Qt.AlignLeft)
-                self.layout.addWidget(title_label)
-                self.title_label = title_label
-            else:
-                self.title_label = None
-
-            self.title_text = title
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[ModernCard.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        self.title_label = None
-        self.title_text = ""
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the card"""
-        try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
-            # Update layout margins and spacing
-            self.layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
-            self.layout.setSpacing(sp.GAP_XS)
-
-            # Update stylesheet
-            self.setStyleSheet(f"""
+        if self.elevated:
+            base_style += f"""
                 QFrame#modernCard {{
-                    background-color: {c.BG_PANEL};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_LG}px;
-                    padding: {sp.PAD_SM}px;
-                    margin: {sp.PAD_XS}px;
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
                 }}
-                QFrame#modernCard:hover {{
-                    border: {sp.SEPARATOR}px solid {c.BLUE};
-                    background-color: {c.BG_HOVER};
-                }}
-                QLabel#cardTitle {{
-                    color: {c.BLUE};
-                    font-size: {ty.SIZE_BODY}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    padding: {sp.PAD_XS}px 0px {sp.PAD_XS}px 0px;
-                    border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-                }}
-            """)
+            """
 
-            if self.title_label and self.title_text:
-                self.title_label.setText(self.title_text)
+        self.setStyleSheet(base_style)
 
-        except Exception as e:
-            logger.error(f"[ModernCard.apply_theme] Failed: {e}", exc_info=True)
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
 
 
 class StatsWidget(QWidget, ThemedMixin):
@@ -217,18 +199,13 @@ class StatsWidget(QWidget, ThemedMixin):
         """Apply theme colors to the widget"""
         try:
             c = self._c
-            ty = self._ty
             sp = self._sp
 
-            # Update main stylesheet
+            # Apply main stylesheet
             self.setStyleSheet(self._get_style_sheet())
 
-            # Update header if present
-            if not self._embedded and hasattr(self, 'time_label') and self.time_label:
-                self.time_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_BODY}pt;")
-
-            # Update all labels and progress bars will be updated in refresh()
-            # as they need current values
+            # Update all progress bars will be updated in refresh() with current values
+            # They'll get proper styling there
 
             logger.debug("[StatsWidget.apply_theme] Applied theme")
 
@@ -245,40 +222,35 @@ class StatsWidget(QWidget, ThemedMixin):
             QWidget {{
                 background-color: {c.BG_MAIN};
                 color: {c.TEXT_MAIN};
-                font-family: '{ty.FONT_UI}', 'Inter', -apple-system, sans-serif;
+                font-family: '{ty.FONT_UI}';
                 font-size: {ty.SIZE_SM}pt;
             }}
             QTabWidget::pane {{
                 border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
+                border-radius: {sp.RADIUS_MD}px;
                 background: {c.BG_PANEL};
-                margin-bottom: -1px;
+                margin-top: {sp.PAD_SM}px;
             }}
             QTabBar::tab {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {c.BG_HOVER}, stop:1 {c.BG_PANEL});
+                background: {c.BG_HOVER};
                 color: {c.TEXT_DIM};
+                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                min-width: 100px;
                 border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-top: none;
-                border-bottom-left-radius: {sp.RADIUS_MD}px;
-                border-bottom-right-radius: {sp.RADIUS_MD}px;
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                margin-right: {sp.GAP_XS}px;
-                font-size: {ty.SIZE_SM}pt;
-                font-weight: 500;
-                min-width: 70px;
+                border-bottom: none;
+                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
+                font-size: {ty.SIZE_BODY}pt;
+                margin-right: {sp.PAD_XS}px;
+                font-weight: {ty.WEIGHT_NORMAL};
             }}
             QTabBar::tab:selected {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {c.BLUE_DARK}, stop:1 {c.BLUE});
-                color: {c.TEXT_INVERSE};
-                border: {sp.SEPARATOR}px solid {c.BLUE};
-                border-top: none;
+                background: {c.BG_PANEL};
+                color: {c.TEXT_MAIN};
                 border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+                font-weight: {ty.WEIGHT_BOLD};
             }}
             QTabBar::tab:hover:!selected {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {c.BORDER}, stop:1 {c.BG_HOVER});
+                background: {c.BORDER};
                 color: {c.TEXT_MAIN};
             }}
             QGroupBox {{
@@ -304,18 +276,30 @@ class StatsWidget(QWidget, ThemedMixin):
             QLabel#value {{
                 color: {c.TEXT_MAIN};
                 font-weight: 600;
+                background: {c.BG_HOVER};
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                border-radius: {sp.RADIUS_SM}px;
             }}
             QLabel#positive {{
-                color: {c.GREEN_BRIGHT};
+                color: {c.GREEN};
                 font-weight: 700;
+                background: {c.GREEN}20;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                border-radius: {sp.RADIUS_SM}px;
             }}
             QLabel#negative {{
-                color: {c.RED_BRIGHT};
+                color: {c.RED};
                 font-weight: 700;
+                background: {c.RED}20;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                border-radius: {sp.RADIUS_SM}px;
             }}
             QLabel#warning {{
                 color: {c.YELLOW};
                 font-weight: 700;
+                background: {c.YELLOW}20;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                border-radius: {sp.RADIUS_SM}px;
             }}
             QLabel#header {{
                 color: {c.BLUE};
@@ -325,7 +309,7 @@ class StatsWidget(QWidget, ThemedMixin):
             QProgressBar {{
                 border: {sp.SEPARATOR}px solid {c.BORDER};
                 border-radius: {sp.RADIUS_SM}px;
-                background: {c.BG_PANEL};
+                background: {c.BG_HOVER};
                 text-align: center;
                 color: {c.TEXT_MAIN};
                 font-size: {ty.SIZE_XS}pt;
@@ -333,8 +317,7 @@ class StatsWidget(QWidget, ThemedMixin):
                 max-height: {sp.PROGRESS_MD}px;
             }}
             QProgressBar::chunk {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {c.BLUE}, stop:1 {c.BLUE});
+                background: {c.BLUE};
                 border-radius: {sp.RADIUS_SM}px;
             }}
             QScrollArea {{
@@ -345,6 +328,29 @@ class StatsWidget(QWidget, ThemedMixin):
                 background: {c.BORDER};
                 max-height: {sp.SEPARATOR}px;
                 min-height: {sp.SEPARATOR}px;
+            }}
+            QHeaderView::section {{
+                background-color: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                font-weight: {ty.WEIGHT_BOLD};
+                padding: {sp.PAD_SM}px;
+                border: none;
+                border-right: 1px solid {c.BORDER};
+            }}
+            QTableCornerButton::section {{
+                background-color: {c.BG_HOVER};
+                border: none;
+            }}
+            QTableWidget {{
+                alternate-background-color: {c.BG_ROW_B}; 
+                background: {c.BG_ROW_A};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XS}pt;
+            }}
+            QTableWidget::item {{
+                padding: {sp.PAD_XS}px;
             }}
         """
 
@@ -372,7 +378,7 @@ class StatsWidget(QWidget, ThemedMixin):
 
     def _update_time(self):
         """Update the time label"""
-        if hasattr(self, 'time_label') and self.time_label:
+        if safe_hasattr(self, 'time_label') and self.time_label:
             current_time = datetime.now().strftime("%H:%M:%S")
             self.time_label.setText(f"🕒 {current_time}")
 
@@ -426,8 +432,8 @@ class StatsWidget(QWidget, ThemedMixin):
         sp = self._sp
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(sp.PAD_XS, sp.PAD_XS, sp.PAD_XS, sp.PAD_XS)
-        layout.setSpacing(sp.GAP_XS)
+        layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        layout.setSpacing(sp.GAP_MD)
 
         # Optional header (hide when embedded)
         if not self._embedded:
@@ -440,6 +446,7 @@ class StatsWidget(QWidget, ThemedMixin):
 
             self.time_label = QLabel()
             self.time_label.setAlignment(Qt.AlignRight)
+            self.time_label.setStyleSheet(f"color: {self._c.TEXT_DIM};")
 
             header_layout.addWidget(title_label)
             header_layout.addStretch()
@@ -487,53 +494,76 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         cards_layout = QVBoxLayout()
-        cards_layout.setSpacing(sp.GAP_SM)
+        cards_layout.setSpacing(sp.GAP_LG)
 
         # Card 1: Position Status
-        status_card = ModernCard("POSITION STATUS")
-        status_layout = QGridLayout()
-        status_layout.setVerticalSpacing(sp.GAP_SM)
-        status_layout.setHorizontalSpacing(sp.PAD_MD)
+        status_card = ModernCard()
+        status_layout = QVBoxLayout(status_card)
+        status_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(status_layout, 0, "Position:", "current_position")
-        self._create_metric_row(status_layout, 1, "Confirmed:", "current_trade_confirmed")
-        self._create_metric_row(status_layout, 2, "Pending:", "order_pending")
-        self._create_metric_row(status_layout, 3, "Size:", "positions_hold")
+        status_header = QLabel("📊 POSITION STATUS")
+        status_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        status_layout.addWidget(status_header)
 
-        status_card.layout.addLayout(status_layout)
+        status_grid = QGridLayout()
+        status_grid.setVerticalSpacing(sp.GAP_SM)
+        status_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(status_grid, 0, "Position:", "current_position")
+        self._create_metric_row(status_grid, 1, "Confirmed:", "current_trade_confirmed")
+        self._create_metric_row(status_grid, 2, "Pending:", "order_pending")
+        self._create_metric_row(status_grid, 3, "Size:", "positions_hold")
+
+        status_layout.addLayout(status_grid)
         cards_layout.addWidget(status_card)
 
         # Card 2: Price Levels
-        price_card = ModernCard("PRICE LEVELS")
-        price_layout = QGridLayout()
-        price_layout.setVerticalSpacing(sp.GAP_SM)
-        price_layout.setHorizontalSpacing(sp.PAD_MD)
+        price_card = ModernCard()
+        price_layout = QVBoxLayout(price_card)
+        price_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(price_layout, 0, "Entry:", "current_buy_price", "₹")
-        self._create_metric_row(price_layout, 1, "Current:", "current_price", "₹")
-        self._create_metric_row(price_layout, 2, "High:", "highest_current_price", "₹")
+        price_header = QLabel("💰 PRICE LEVELS")
+        price_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        price_layout.addWidget(price_header)
 
-        price_card.layout.addLayout(price_layout)
+        price_grid = QGridLayout()
+        price_grid.setVerticalSpacing(sp.GAP_SM)
+        price_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(price_grid, 0, "Entry:", "current_buy_price", "₹")
+        self._create_metric_row(price_grid, 1, "Current:", "current_price", "₹")
+        self._create_metric_row(price_grid, 2, "High:", "highest_current_price", "₹")
+
+        price_layout.addLayout(price_grid)
         cards_layout.addWidget(price_card)
 
         # Card 3: P&L
-        pnl_card = ModernCard("PROFIT & LOSS")
-        pnl_layout = QGridLayout()
-        pnl_layout.setVerticalSpacing(sp.GAP_SM)
-        pnl_layout.setHorizontalSpacing(sp.PAD_MD)
+        pnl_card = ModernCard()
+        pnl_layout = QVBoxLayout(pnl_card)
+        pnl_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(pnl_layout, 0, "P&L:", "current_pnl", "₹")
-        self._create_metric_row(pnl_layout, 1, "Change %:", "percentage_change", "%")
-        self._create_metric_row(pnl_layout, 2, "Exit:", "reason_to_exit")
+        pnl_header = QLabel("📈 PROFIT & LOSS")
+        pnl_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        pnl_layout.addWidget(pnl_header)
 
-        pnl_card.layout.addLayout(pnl_layout)
+        pnl_grid = QGridLayout()
+        pnl_grid.setVerticalSpacing(sp.GAP_SM)
+        pnl_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(pnl_grid, 0, "P&L:", "current_pnl", "₹")
+        self._create_metric_row(pnl_grid, 1, "Change %:", "percentage_change", "%")
+        self._create_metric_row(pnl_grid, 2, "Exit:", "reason_to_exit")
+
+        pnl_layout.addLayout(pnl_grid)
         cards_layout.addWidget(pnl_card)
 
         main_layout.addLayout(cards_layout)
@@ -557,48 +587,65 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         cards_layout = QVBoxLayout()
-        cards_layout.setSpacing(sp.GAP_SM)
+        cards_layout.setSpacing(sp.GAP_LG)
 
         # Card 1: Account Overview
-        account_card = ModernCard("ACCOUNT OVERVIEW")
-        account_layout = QGridLayout()
-        account_layout.setVerticalSpacing(sp.GAP_SM)
-        account_layout.setHorizontalSpacing(sp.PAD_MD)
+        account_card = ModernCard()
+        account_layout = QVBoxLayout(account_card)
+        account_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(account_layout, 0, "Balance:", "account_balance", "₹")
-        self._create_metric_row(account_layout, 1, "Lot Size:", "lot_size")
-        self._create_metric_row(account_layout, 2, "Reserve:", "capital_reserve", "₹")
-        self._create_metric_row(account_layout, 3, "Max Opt:", "max_num_of_option")
+        account_header = QLabel("💰 ACCOUNT OVERVIEW")
+        account_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        account_layout.addWidget(account_header)
 
-        account_card.layout.addLayout(account_layout)
+        account_grid = QGridLayout()
+        account_grid.setVerticalSpacing(sp.GAP_SM)
+        account_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(account_grid, 0, "Balance:", "account_balance", "₹")
+        self._create_metric_row(account_grid, 1, "Lot Size:", "lot_size")
+        self._create_metric_row(account_grid, 2, "Reserve:", "capital_reserve", "₹")
+        self._create_metric_row(account_grid, 3, "Max Opt:", "max_num_of_option")
+
+        account_layout.addLayout(account_grid)
         cards_layout.addWidget(account_card)
 
         # Card 2: Trade Timing
-        timing_card = ModernCard("TRADE TIMING")
-        timing_layout = QGridLayout()
-        timing_layout.setVerticalSpacing(sp.GAP_SM)
-        timing_layout.setHorizontalSpacing(sp.PAD_MD)
+        timing_card = ModernCard()
+        timing_layout = QVBoxLayout(timing_card)
+        timing_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(timing_layout, 0, "Started:", "current_trade_started_time")
-        self._create_metric_row(timing_layout, 1, "Duration:", "trade_duration")
+        timing_header = QLabel("⏱️ TRADE TIMING")
+        timing_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        timing_layout.addWidget(timing_header)
 
-        timing_card.layout.addLayout(timing_layout)
+        timing_grid = QGridLayout()
+        timing_grid.setVerticalSpacing(sp.GAP_SM)
+        timing_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(timing_grid, 0, "Started:", "current_trade_started_time")
+        self._create_metric_row(timing_grid, 1, "Duration:", "trade_duration")
+
+        timing_layout.addLayout(timing_grid)
         cards_layout.addWidget(timing_card)
 
         # Card 3: Position Utilization
-        progress_card = ModernCard("POSITION UTILIZATION")
-        progress_layout = QVBoxLayout()
-        progress_layout.setSpacing(sp.GAP_XS)
+        progress_card = ModernCard()
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setSpacing(sp.GAP_MD)
 
-        pos_label = QLabel("Position Size")
-        pos_label.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+        progress_header = QLabel("📊 POSITION UTILIZATION")
+        progress_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        progress_layout.addWidget(progress_header)
 
         self.pos_progress = QProgressBar()
         self.pos_progress.setRange(0, 100)
@@ -606,11 +653,8 @@ class StatsWidget(QWidget, ThemedMixin):
         self.pos_progress.setFormat("%v%")
         self.pos_progress.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._add_progress("position_progress", self.pos_progress)
-
-        progress_layout.addWidget(pos_label)
         progress_layout.addWidget(self.pos_progress)
 
-        progress_card.layout.addLayout(progress_layout)
         cards_layout.addWidget(progress_card)
 
         main_layout.addLayout(cards_layout)
@@ -634,143 +678,166 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Card 1: Daily Risk Limits
-        limits_card = ModernCard("DAILY RISK LIMITS")
-        limits_layout = QGridLayout()
-        limits_layout.setVerticalSpacing(sp.GAP_SM)
-        limits_layout.setHorizontalSpacing(sp.PAD_MD)
+        limits_card = ModernCard()
+        limits_layout = QVBoxLayout(limits_card)
+        limits_layout.setSpacing(sp.GAP_MD)
+
+        limits_header = QLabel("⚠️ DAILY RISK LIMITS")
+        limits_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        limits_layout.addWidget(limits_header)
+
+        limits_grid = QGridLayout()
+        limits_grid.setVerticalSpacing(sp.GAP_SM)
+        limits_grid.setHorizontalSpacing(sp.PAD_MD)
 
         # Max daily loss
-        limits_layout.addWidget(QLabel("Max Daily Loss:"), 0, 0)
+        limits_grid.addWidget(QLabel("Max Daily Loss:"), 0, 0)
         max_loss_label = QLabel("₹-5,000")
         max_loss_label.setObjectName("value")
-        limits_layout.addWidget(max_loss_label, 0, 1)
+        limits_grid.addWidget(max_loss_label, 0, 1)
         self.risk_labels['max_loss'] = max_loss_label
         self._add_label("risk_max_loss", max_loss_label)
 
         # Current P&L
-        limits_layout.addWidget(QLabel("Current P&L:"), 1, 0)
+        limits_grid.addWidget(QLabel("Current P&L:"), 1, 0)
         pnl_label = QLabel("₹0.00")
         pnl_label.setObjectName("value")
-        limits_layout.addWidget(pnl_label, 1, 1)
+        limits_grid.addWidget(pnl_label, 1, 1)
         self.risk_labels['current_pnl'] = pnl_label
         self._add_label("risk_current_pnl", pnl_label)
 
         # Loss remaining
-        limits_layout.addWidget(QLabel("Loss Remaining:"), 2, 0)
+        limits_grid.addWidget(QLabel("Loss Remaining:"), 2, 0)
         remaining_label = QLabel("₹5,000")
         remaining_label.setObjectName("value")
-        limits_layout.addWidget(remaining_label, 2, 1)
+        limits_grid.addWidget(remaining_label, 2, 1)
         self.risk_labels['loss_remaining'] = remaining_label
         self._add_label("risk_loss_remaining", remaining_label)
 
         # Loss utilization bar
-        limits_layout.addWidget(QLabel("Loss Used:"), 3, 0)
+        limits_grid.addWidget(QLabel("Loss Used:"), 3, 0)
         self.loss_progress = QProgressBar()
         self.loss_progress.setRange(0, 100)
         self.loss_progress.setValue(0)
         self.loss_progress.setFormat("%v%")
-        limits_layout.addWidget(self.loss_progress, 3, 1)
+        limits_grid.addWidget(self.loss_progress, 3, 1)
         self._add_progress("loss_progress", self.loss_progress)
 
-        limits_card.layout.addLayout(limits_layout)
+        limits_layout.addLayout(limits_grid)
         main_layout.addWidget(limits_card)
 
         # Card 2: Trade Limits
-        trade_card = ModernCard("TRADE LIMITS")
-        trade_layout = QGridLayout()
-        trade_layout.setVerticalSpacing(sp.GAP_SM)
-        trade_layout.setHorizontalSpacing(sp.PAD_MD)
+        trade_card = ModernCard()
+        trade_layout = QVBoxLayout(trade_card)
+        trade_layout.setSpacing(sp.GAP_MD)
+
+        trade_header = QLabel("📊 TRADE LIMITS")
+        trade_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        trade_layout.addWidget(trade_header)
+
+        trade_grid = QGridLayout()
+        trade_grid.setVerticalSpacing(sp.GAP_SM)
+        trade_grid.setHorizontalSpacing(sp.PAD_MD)
 
         # Max trades
-        trade_layout.addWidget(QLabel("Max Trades/Day:"), 0, 0)
+        trade_grid.addWidget(QLabel("Max Trades/Day:"), 0, 0)
         max_trades_label = QLabel("10")
         max_trades_label.setObjectName("value")
-        trade_layout.addWidget(max_trades_label, 0, 1)
+        trade_grid.addWidget(max_trades_label, 0, 1)
         self.risk_labels['max_trades'] = max_trades_label
         self._add_label("risk_max_trades", max_trades_label)
 
         # Trades today
-        trade_layout.addWidget(QLabel("Trades Today:"), 1, 0)
+        trade_grid.addWidget(QLabel("Trades Today:"), 1, 0)
         trades_today_label = QLabel("0")
         trades_today_label.setObjectName("value")
-        trade_layout.addWidget(trades_today_label, 1, 1)
+        trade_grid.addWidget(trades_today_label, 1, 1)
         self.risk_labels['trades_today'] = trades_today_label
         self._add_label("risk_trades_today", trades_today_label)
 
         # Trades remaining
-        trade_layout.addWidget(QLabel("Trades Remaining:"), 2, 0)
+        trade_grid.addWidget(QLabel("Trades Remaining:"), 2, 0)
         trades_rem_label = QLabel("10")
         trades_rem_label.setObjectName("value")
-        trade_layout.addWidget(trades_rem_label, 2, 1)
+        trade_grid.addWidget(trades_rem_label, 2, 1)
         self.risk_labels['trades_remaining'] = trades_rem_label
         self._add_label("risk_trades_remaining", trades_rem_label)
 
         # Trade utilization bar
-        trade_layout.addWidget(QLabel("Trade Usage:"), 3, 0)
+        trade_grid.addWidget(QLabel("Trade Usage:"), 3, 0)
         self.trade_progress = QProgressBar()
         self.trade_progress.setRange(0, 100)
         self.trade_progress.setValue(0)
         self.trade_progress.setFormat("%v%")
-        trade_layout.addWidget(self.trade_progress, 3, 1)
+        trade_grid.addWidget(self.trade_progress, 3, 1)
         self._add_progress("trade_progress", self.trade_progress)
 
         # Risk blocked status
-        trade_layout.addWidget(QLabel("Risk Blocked:"), 4, 0)
+        trade_grid.addWidget(QLabel("Risk Blocked:"), 4, 0)
         blocked_label = QLabel("No")
         blocked_label.setObjectName("positive")
-        trade_layout.addWidget(blocked_label, 4, 1)
+        trade_grid.addWidget(blocked_label, 4, 1)
         self.risk_labels['risk_blocked'] = blocked_label
         self._add_label("risk_blocked", blocked_label)
 
-        trade_card.layout.addLayout(trade_layout)
+        trade_layout.addLayout(trade_grid)
         main_layout.addWidget(trade_card)
 
         # Card 3: Stop Loss & Take Profit
-        sltp_card = ModernCard("STOP LOSS & TAKE PROFIT")
-        sltp_layout = QGridLayout()
-        sltp_layout.setVerticalSpacing(sp.GAP_SM)
-        sltp_layout.setHorizontalSpacing(sp.PAD_MD)
+        sltp_card = ModernCard()
+        sltp_layout = QVBoxLayout(sltp_card)
+        sltp_layout.setSpacing(sp.GAP_MD)
+
+        sltp_header = QLabel("🛑 STOP LOSS & TAKE PROFIT")
+        sltp_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        sltp_layout.addWidget(sltp_header)
+
+        sltp_grid = QGridLayout()
+        sltp_grid.setVerticalSpacing(sp.GAP_SM)
+        sltp_grid.setHorizontalSpacing(sp.PAD_MD)
 
         # Stop Loss
-        sltp_layout.addWidget(QLabel("Stop Loss:"), 0, 0)
+        sltp_grid.addWidget(QLabel("Stop Loss:"), 0, 0)
         sl_label = QLabel("None")
         sl_label.setObjectName("negative")
-        sltp_layout.addWidget(sl_label, 0, 1)
+        sltp_grid.addWidget(sl_label, 0, 1)
         self.risk_labels['stop_loss'] = sl_label
         self._add_label("stop_loss", sl_label)
 
         # Stop Loss %
-        sltp_layout.addWidget(QLabel("SL %:"), 1, 0)
+        sltp_grid.addWidget(QLabel("SL %:"), 1, 0)
         sl_pct_label = QLabel("0.0%")
         sl_pct_label.setObjectName("negative")
-        sltp_layout.addWidget(sl_pct_label, 1, 1)
+        sltp_grid.addWidget(sl_pct_label, 1, 1)
         self.risk_labels['stoploss_percentage'] = sl_pct_label
         self._add_label("stoploss_percentage", sl_pct_label)
 
         # Take Profit
-        sltp_layout.addWidget(QLabel("Take Profit:"), 2, 0)
+        sltp_grid.addWidget(QLabel("Take Profit:"), 2, 0)
         tp_label = QLabel("None")
         tp_label.setObjectName("positive")
-        sltp_layout.addWidget(tp_label, 2, 1)
+        sltp_grid.addWidget(tp_label, 2, 1)
         self.risk_labels['tp_point'] = tp_label
         self._add_label("tp_point", tp_label)
 
         # TP %
-        sltp_layout.addWidget(QLabel("TP %:"), 3, 0)
+        sltp_grid.addWidget(QLabel("TP %:"), 3, 0)
         tp_pct_label = QLabel("0.0%")
         tp_pct_label.setObjectName("positive")
-        sltp_layout.addWidget(tp_pct_label, 3, 1)
+        sltp_grid.addWidget(tp_pct_label, 3, 1)
         self.risk_labels['tp_percentage'] = tp_pct_label
         self._add_label("tp_percentage", tp_pct_label)
 
-        sltp_card.layout.addLayout(sltp_layout)
+        sltp_layout.addLayout(sltp_grid)
         main_layout.addWidget(sltp_card)
 
         main_layout.addStretch()
@@ -792,53 +859,76 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         cards_layout = QVBoxLayout()
-        cards_layout.setSpacing(sp.GAP_SM)
+        cards_layout.setSpacing(sp.GAP_LG)
 
         # Card 1: Instruments
-        inst_card = ModernCard("INSTRUMENTS")
-        inst_layout = QGridLayout()
-        inst_layout.setVerticalSpacing(sp.GAP_SM)
-        inst_layout.setHorizontalSpacing(sp.PAD_MD)
+        inst_card = ModernCard()
+        inst_layout = QVBoxLayout(inst_card)
+        inst_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(inst_layout, 0, "Derivative:", "derivative")
-        self._create_metric_row(inst_layout, 1, "Call:", "call_option")
-        self._create_metric_row(inst_layout, 2, "Put:", "put_option")
-        self._create_metric_row(inst_layout, 3, "Expiry:", "expiry")
+        inst_header = QLabel("📈 INSTRUMENTS")
+        inst_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        inst_layout.addWidget(inst_header)
 
-        inst_card.layout.addLayout(inst_layout)
+        inst_grid = QGridLayout()
+        inst_grid.setVerticalSpacing(sp.GAP_SM)
+        inst_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(inst_grid, 0, "Derivative:", "derivative")
+        self._create_metric_row(inst_grid, 1, "Call:", "call_option")
+        self._create_metric_row(inst_grid, 2, "Put:", "put_option")
+        self._create_metric_row(inst_grid, 3, "Expiry:", "expiry")
+
+        inst_layout.addLayout(inst_grid)
         cards_layout.addWidget(inst_card)
 
         # Card 2: Prices
-        price_card = ModernCard("PRICES")
-        price_layout = QGridLayout()
-        price_layout.setVerticalSpacing(sp.GAP_SM)
-        price_layout.setHorizontalSpacing(sp.PAD_MD)
+        price_card = ModernCard()
+        price_layout = QVBoxLayout(price_card)
+        price_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(price_layout, 0, "Derivative:", "derivative_current_price", "₹")
-        self._create_metric_row(price_layout, 1, "Call Close:", "call_current_close", "₹")
-        self._create_metric_row(price_layout, 2, "Put Close:", "put_current_close", "₹")
+        price_header = QLabel("💰 PRICES")
+        price_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        price_layout.addWidget(price_header)
 
-        price_card.layout.addLayout(price_layout)
+        price_grid = QGridLayout()
+        price_grid.setVerticalSpacing(sp.GAP_SM)
+        price_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(price_grid, 0, "Derivative:", "derivative_current_price", "₹")
+        self._create_metric_row(price_grid, 1, "Call Close:", "call_current_close", "₹")
+        self._create_metric_row(price_grid, 2, "Put Close:", "put_current_close", "₹")
+
+        price_layout.addLayout(price_grid)
         cards_layout.addWidget(price_card)
 
         # Card 3: Indicators
-        ind_card = ModernCard("INDICATORS")
-        ind_layout = QGridLayout()
-        ind_layout.setVerticalSpacing(sp.GAP_SM)
-        ind_layout.setHorizontalSpacing(sp.PAD_MD)
+        ind_card = ModernCard()
+        ind_layout = QVBoxLayout(ind_card)
+        ind_layout.setSpacing(sp.GAP_MD)
 
-        self._create_metric_row(ind_layout, 0, "PCR:", "current_pcr")
-        self._create_metric_row(ind_layout, 1, "PCR Vol:", "current_pcr_vol")
-        self._create_metric_row(ind_layout, 2, "Trend:", "market_trend")
+        ind_header = QLabel("📊 INDICATORS")
+        ind_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        ind_layout.addWidget(ind_header)
 
-        ind_card.layout.addLayout(ind_layout)
+        ind_grid = QGridLayout()
+        ind_grid.setVerticalSpacing(sp.GAP_SM)
+        ind_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        self._create_metric_row(ind_grid, 0, "PCR:", "current_pcr")
+        self._create_metric_row(ind_grid, 1, "PCR Vol:", "current_pcr_vol")
+        self._create_metric_row(ind_grid, 2, "Trend:", "market_trend")
+
+        ind_layout.addLayout(ind_grid)
         cards_layout.addWidget(ind_card)
 
         main_layout.addLayout(cards_layout)
@@ -862,40 +952,56 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Card 1: MTF Status
-        status_card = ModernCard("MTF FILTER STATUS")
-        status_layout = QGridLayout()
-        status_layout.setVerticalSpacing(sp.GAP_SM)
-        status_layout.setHorizontalSpacing(sp.PAD_MD)
+        status_card = ModernCard()
+        status_layout = QVBoxLayout(status_card)
+        status_layout.setSpacing(sp.GAP_MD)
 
-        status_layout.addWidget(QLabel("Enabled:"), 0, 0)
+        status_header = QLabel("📊 MTF FILTER STATUS")
+        status_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        status_layout.addWidget(status_header)
+
+        status_grid = QGridLayout()
+        status_grid.setVerticalSpacing(sp.GAP_SM)
+        status_grid.setHorizontalSpacing(sp.PAD_MD)
+
+        status_grid.addWidget(QLabel("Enabled:"), 0, 0)
         enabled_label = QLabel("No")
         enabled_label.setObjectName("value")
-        status_layout.addWidget(enabled_label, 0, 1)
+        status_grid.addWidget(enabled_label, 0, 1)
         self.mtf_labels['enabled'] = enabled_label
         self._add_label("mtf_enabled", enabled_label)
 
-        status_layout.addWidget(QLabel("Signal:"), 1, 0)
+        status_grid.addWidget(QLabel("Signal:"), 1, 0)
         signal_label = QLabel("WAIT")
         signal_label.setObjectName("value")
-        status_layout.addWidget(signal_label, 1, 1)
+        status_grid.addWidget(signal_label, 1, 1)
         self.mtf_labels['signal'] = signal_label
         self._add_label("option_signal", signal_label)
 
-        status_card.layout.addLayout(status_layout)
+        status_layout.addLayout(status_grid)
         main_layout.addWidget(status_card)
 
         # Card 2: Timeframe Analysis
-        tf_card = ModernCard("TIMEFRAME ANALYSIS")
-        tf_layout = QGridLayout()
-        tf_layout.setVerticalSpacing(sp.GAP_MD)
-        tf_layout.setHorizontalSpacing(sp.PAD_XL)
+        tf_card = ModernCard()
+        tf_layout = QVBoxLayout(tf_card)
+        tf_layout.setSpacing(sp.GAP_MD)
+
+        tf_header = QLabel("⏱️ TIMEFRAME ANALYSIS")
+        tf_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        tf_layout.addWidget(tf_header)
+
+        tf_grid = QGridLayout()
+        tf_grid.setVerticalSpacing(sp.GAP_MD)
+        tf_grid.setHorizontalSpacing(sp.PAD_XL)
 
         timeframes = [
             ("1 MINUTE", "1m", "⚡"),
@@ -904,36 +1010,41 @@ class StatsWidget(QWidget, ThemedMixin):
         ]
 
         for i, (label, key, icon) in enumerate(timeframes):
-            tf_layout.addWidget(QLabel(f"{icon} {label}:"), i, 0)
+            tf_grid.addWidget(QLabel(f"{icon} {label}:"), i, 0)
             dir_label = QLabel("NEUTRAL")
             dir_label.setObjectName("value")
             dir_label.setAlignment(Qt.AlignCenter)
             dir_label.setMinimumWidth(80)
-            tf_layout.addWidget(dir_label, i, 1)
+            tf_grid.addWidget(dir_label, i, 1)
             self.mtf_labels[key] = dir_label
             self._add_label(f"mtf_{key}", dir_label)
 
-        tf_layout.addWidget(QLabel("✓ Agreement:"), 3, 0)
+        tf_grid.addWidget(QLabel("✓ Agreement:"), 3, 0)
         agree_label = QLabel("0/3")
         agree_label.setObjectName("value")
         agree_label.setAlignment(Qt.AlignCenter)
-        tf_layout.addWidget(agree_label, 3, 1)
+        tf_grid.addWidget(agree_label, 3, 1)
         self.mtf_labels['agreement'] = agree_label
         self._add_label("mtf_agreement", agree_label)
 
-        tf_card.layout.addLayout(tf_layout)
+        tf_layout.addLayout(tf_grid)
         main_layout.addWidget(tf_card)
 
         # Card 3: Last Decision
-        decision_card = ModernCard("LATEST DECISION")
-        decision_layout = QVBoxLayout()
+        decision_card = ModernCard()
+        decision_layout = QVBoxLayout(decision_card)
+        decision_layout.setSpacing(sp.GAP_MD)
+
+        decision_header = QLabel("📝 LATEST DECISION")
+        decision_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        decision_layout.addWidget(decision_header)
 
         self.mtf_labels['decision'] = QLabel("No MTF evaluation yet")
         self.mtf_labels['decision'].setWordWrap(True)
+        self.mtf_labels['decision'].setStyleSheet(f"color: {self._c.TEXT_DIM}; background: {self._c.BG_HOVER}; padding: {sp.PAD_MD}px; border-radius: {sp.RADIUS_MD}px;")
         self._add_label("mtf_summary", self.mtf_labels['decision'])
 
         decision_layout.addWidget(self.mtf_labels['decision'])
-        decision_card.layout.addLayout(decision_layout)
         main_layout.addWidget(decision_card)
 
         main_layout.addStretch()
@@ -957,11 +1068,13 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Signal cards
         signal_groups = [
@@ -973,9 +1086,14 @@ class StatsWidget(QWidget, ThemedMixin):
         ]
 
         for display_name, signal_key, icon in signal_groups:
-            signal_card = ModernCard(f"{icon} {display_name}")
-            signal_layout = QVBoxLayout()
-            signal_layout.setSpacing(sp.GAP_SM)
+            signal_card = ModernCard()
+            signal_layout = QVBoxLayout(signal_card)
+            signal_layout.setSpacing(sp.GAP_MD)
+
+            # Header
+            signal_header = QLabel(f"{icon} {display_name}")
+            signal_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+            signal_layout.addWidget(signal_header)
 
             # Confidence bar
             bar_layout = QHBoxLayout()
@@ -1005,22 +1123,26 @@ class StatsWidget(QWidget, ThemedMixin):
 
             signal_layout.addLayout(threshold_layout)
 
-            signal_card.layout.addLayout(signal_layout)
             main_layout.addWidget(signal_card)
 
             self.conf_bars[signal_key] = bar
             self.conf_labels[signal_key] = threshold_value
 
         # Explanation card
-        exp_card = ModernCard("📝 SIGNAL EXPLANATION")
-        exp_layout = QVBoxLayout()
+        exp_card = ModernCard()
+        exp_layout = QVBoxLayout(exp_card)
+        exp_layout.setSpacing(sp.GAP_MD)
+
+        exp_header = QLabel("📝 SIGNAL EXPLANATION")
+        exp_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        exp_layout.addWidget(exp_header)
 
         self.conf_explanation = QLabel("No signal evaluation yet")
         self.conf_explanation.setWordWrap(True)
+        self.conf_explanation.setStyleSheet(f"color: {self._c.TEXT_DIM}; background: {self._c.BG_HOVER}; padding: {sp.PAD_MD}px; border-radius: {sp.RADIUS_MD}px;")
         self._add_label("signal_explanation", self.conf_explanation)
 
         exp_layout.addWidget(self.conf_explanation)
-        exp_card.layout.addLayout(exp_layout)
         main_layout.addWidget(exp_card)
 
         main_layout.addStretch()
@@ -1042,17 +1164,26 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         main_layout = QVBoxLayout(container)
-        main_layout.setSpacing(sp.GAP_SM)
-        main_layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
+        main_layout.setSpacing(sp.GAP_LG)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Card 1: Trading Metrics
-        metrics_card = ModernCard("📊 TRADING METRICS")
-        metrics_layout = QGridLayout()
-        metrics_layout.setVerticalSpacing(sp.GAP_SM)
-        metrics_layout.setHorizontalSpacing(sp.PAD_MD)
+        metrics_card = ModernCard()
+        metrics_layout = QVBoxLayout(metrics_card)
+        metrics_layout.setSpacing(sp.GAP_MD)
+
+        metrics_header = QLabel("📊 TRADING METRICS")
+        metrics_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        metrics_layout.addWidget(metrics_header)
+
+        metrics_grid = QGridLayout()
+        metrics_grid.setVerticalSpacing(sp.GAP_SM)
+        metrics_grid.setHorizontalSpacing(sp.PAD_MD)
 
         metrics = [
             ("Avg Win:", "avg_win", "₹0.00"),
@@ -1069,21 +1200,28 @@ class StatsWidget(QWidget, ThemedMixin):
             row = i // 2
             col = (i % 2) * 2
 
-            metrics_layout.addWidget(QLabel(label), row, col)
+            metrics_grid.addWidget(QLabel(label), row, col)
             value_label = QLabel(default)
             value_label.setObjectName("value")
-            metrics_layout.addWidget(value_label, row, col + 1)
+            metrics_grid.addWidget(value_label, row, col + 1)
             self.adv_labels[key] = value_label
             self._add_label(f"adv_{key}", value_label)
 
-        metrics_card.layout.addLayout(metrics_layout)
+        metrics_layout.addLayout(metrics_grid)
         main_layout.addWidget(metrics_card)
 
         # Card 2: Session Stats
-        session_card = ModernCard("⏰ SESSION STATISTICS")
-        session_layout = QGridLayout()
-        session_layout.setVerticalSpacing(sp.GAP_SM)
-        session_layout.setHorizontalSpacing(sp.PAD_MD)
+        session_card = ModernCard()
+        session_layout = QVBoxLayout(session_card)
+        session_layout.setSpacing(sp.GAP_MD)
+
+        session_header = QLabel("⏰ SESSION STATISTICS")
+        session_header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        session_layout.addWidget(session_header)
+
+        session_grid = QGridLayout()
+        session_grid.setVerticalSpacing(sp.GAP_SM)
+        session_grid.setHorizontalSpacing(sp.PAD_MD)
 
         session_stats = [
             ("Trading Since:", "session_start", "--:--"),
@@ -1094,14 +1232,14 @@ class StatsWidget(QWidget, ThemedMixin):
         ]
 
         for i, (label, key, default) in enumerate(session_stats):
-            session_layout.addWidget(QLabel(label), i, 0)
+            session_grid.addWidget(QLabel(label), i, 0)
             value_label = QLabel(default)
             value_label.setObjectName("value")
-            session_layout.addWidget(value_label, i, 1)
+            session_grid.addWidget(value_label, i, 1)
             self.adv_labels[key] = value_label
             self._add_label(f"adv_{key}", value_label)
 
-        session_card.layout.addLayout(session_layout)
+        session_layout.addLayout(session_grid)
         main_layout.addWidget(session_card)
 
         main_layout.addStretch()
@@ -1136,8 +1274,10 @@ class StatsWidget(QWidget, ThemedMixin):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         scroll_content = QWidget()
+        scroll_content.setStyleSheet("background: transparent;")
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(self._sp.GAP_XS)
         scroll_layout.setContentsMargins(self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS)
@@ -1152,7 +1292,7 @@ class StatsWidget(QWidget, ThemedMixin):
 
     def _update_debug_tab(self, snapshot):
         """Update debug tab with current snapshot"""
-        if not hasattr(self, 'debug_scroll_layout') or not self.debug_scroll_layout:
+        if not safe_hasattr(self, 'debug_scroll_layout') or not self.debug_scroll_layout:
             return
 
         c = self._c
@@ -1167,6 +1307,7 @@ class StatsWidget(QWidget, ThemedMixin):
         for key, value in sorted(snapshot.items()):
             if value is not None and not key.endswith('_df'):
                 row_widget = QWidget()
+                row_widget.setStyleSheet("background: transparent;")
                 row_layout = QHBoxLayout(row_widget)
                 row_layout.setContentsMargins(self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS)
                 row_layout.setSpacing(self._sp.GAP_XS)
@@ -1352,18 +1493,27 @@ class StatsWidget(QWidget, ThemedMixin):
                 self.loss_progress.setValue(loss_used_pct)
                 if loss_used_pct > 80:
                     self.loss_progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                            stop:0 {c.RED}, stop:1 {c.RED_BRIGHT}); border-radius: {self._sp.RADIUS_SM}px; }}
+                        QProgressBar::chunk {{ 
+                            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 {c.RED}, stop:1 {c.RED_BRIGHT});
+                            border-radius: {self._sp.RADIUS_SM}px; 
+                        }}
                     """)
                 elif loss_used_pct > 50:
                     self.loss_progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                            stop:0 {c.YELLOW}, stop:1 {c.ORANGE}); border-radius: {self._sp.RADIUS_SM}px; }}
+                        QProgressBar::chunk {{ 
+                            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 {c.YELLOW}, stop:1 {c.ORANGE});
+                            border-radius: {self._sp.RADIUS_SM}px; 
+                        }}
                     """)
                 else:
                     self.loss_progress.setStyleSheet(f"""
-                        QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                            stop:0 {c.BLUE}, stop:1 {c.BLUE}); border-radius: {self._sp.RADIUS_SM}px; }}
+                        QProgressBar::chunk {{ 
+                            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 {c.BLUE}, stop:1 {c.BLUE});
+                            border-radius: {self._sp.RADIUS_SM}px; 
+                        }}
                     """)
 
             if self.trade_progress:
@@ -1539,14 +1689,6 @@ class StatsWidget(QWidget, ThemedMixin):
                 label.setText(f"{threshold_pct}%")
 
             if self.conf_explanation:
-                self.conf_explanation.setStyleSheet(f"""
-                    color: {c.TEXT_DIM};
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    padding: {self._sp.PAD_MD}px;
-                    background: {c.BG_ROW_A};
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    min-height: 60px;
-                """)
                 self.conf_explanation.setText(explanation)
 
         except Exception as e:
@@ -1631,7 +1773,7 @@ class StatsWidget(QWidget, ThemedMixin):
             logger.info("[StatsWidget] Starting cleanup")
 
             # Stop timers
-            if hasattr(self, 'time_timer') and self.time_timer:
+            if safe_hasattr(self, 'time_timer') and self.time_timer:
                 if self.time_timer.isActive():
                     self.time_timer.stop()
                 self.time_timer = None
@@ -1659,6 +1801,7 @@ class StatsPopup(QDialog, ThemedMixin):
     """
     Popup window for displaying statistics.
     Wraps StatsWidget in a dialog with close button.
+    MODERN MINIMALIST DESIGN - Matches other dialogs.
     """
 
     def __init__(self, parent=None):
@@ -1671,34 +1814,62 @@ class StatsPopup(QDialog, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self.setWindowTitle("📊 Trading Statistics Dashboard")
-            self.resize(1100, 800)
-            self.setMinimumSize(400, 500)
-            self.setWindowFlags(Qt.Window)
 
-            # Main layout
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(0)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            self.resize(1100, 800)
+            self.setMinimumSize(500, 600)
+
+            # Root layout with margins for shadow effect
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+            root.setSpacing(0)
+
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
+
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
+
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
+
+            # Content area
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                             self._sp.PAD_XL, self._sp.PAD_XL)
+            content_layout.setSpacing(self._sp.GAP_LG)
+
+            # Header
+            header = ModernHeader("Trading Statistics Dashboard")
+            content_layout.addWidget(header)
 
             # Add the main stats widget (embedded=False to show header)
-            self.stats_widget = StatsWidget(self, embedded=False)
-            layout.addWidget(self.stats_widget, 1)
+            self.stats_widget = StatsWidget(self, embedded=True)  # Set embedded=True to hide duplicate header
+            content_layout.addWidget(self.stats_widget, 1)
 
-            # Button bar
+            # Close button
+            close_btn = self._create_modern_button("Close", primary=True, icon="✕")
+            close_btn.clicked.connect(self.accept)
+            close_btn.setMinimumWidth(100)
+
             button_layout = QHBoxLayout()
-            button_layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM, self._sp.PAD_SM)
-            button_layout.setSpacing(self._sp.GAP_SM)
-
             button_layout.addStretch()
+            button_layout.addWidget(close_btn)
+            content_layout.addLayout(button_layout)
 
-            self.close_btn = QPushButton("✕ Close")
-            self.close_btn.setObjectName("closeBtn")
-            self.close_btn.setMinimumHeight(self._sp.BTN_HEIGHT_MD)
-            self.close_btn.setMinimumWidth(100)
-            self.close_btn.clicked.connect(self.accept)
-            button_layout.addWidget(self.close_btn)
-
-            layout.addLayout(button_layout)
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
 
             self.apply_theme()
 
@@ -1706,38 +1877,144 @@ class StatsPopup(QDialog, ThemedMixin):
 
         except Exception as e:
             logger.critical(f"[StatsPopup.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         self.stats_widget = None
-        self.close_btn = None
+        self.main_card = None
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("📊 Trading Statistics Dashboard")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.accept)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
+
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Statistics Dashboard - ERROR")
+            self.setMinimumSize(400, 300)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+
+            error_label = QLabel("❌ Failed to initialize statistics dashboard.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = self._create_modern_button("Close", primary=False)
+            close_btn.clicked.connect(self.accept)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[StatsPopup._create_error_dialog] Failed: {e}", exc_info=True)
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the popup"""
         try:
             c = self._c
-            ty = self._ty
-            sp = self._sp
 
-            if self.close_btn:
-                self.close_btn.setStyleSheet(f"""
-                    QPushButton#closeBtn {{
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 {c.RED}, stop:1 {c.RED_BRIGHT});
-                        border: {sp.SEPARATOR}px solid {c.RED_BRIGHT};
-                        color: {c.TEXT_INVERSE};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: 500;
-                    }}
-                    QPushButton#closeBtn:hover {{
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 {c.RED_BRIGHT}, stop:1 {c.RED});
-                    }}
-                """)
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            if self.stats_widget and hasattr(self.stats_widget, 'apply_theme'):
+            if self.stats_widget and safe_hasattr(self.stats_widget, 'apply_theme'):
                 self.stats_widget.apply_theme()
 
             logger.debug("[StatsPopup.apply_theme] Applied theme")
@@ -1749,7 +2026,7 @@ class StatsPopup(QDialog, ThemedMixin):
     def refresh(self):
         """Forward refresh call to the stats widget"""
         try:
-            if hasattr(self, 'stats_widget') and self.stats_widget is not None:
+            if safe_hasattr(self, 'stats_widget') and self.stats_widget is not None:
                 self.stats_widget.refresh()
         except Exception as e:
             logger.error(f"[StatsPopup.refresh] Failed: {e}", exc_info=True)
@@ -1757,18 +2034,18 @@ class StatsPopup(QDialog, ThemedMixin):
     def closeEvent(self, event):
         """Handle close event - Rule 7"""
         try:
-            if hasattr(self, 'stats_widget') and self.stats_widget is not None:
+            if safe_hasattr(self, 'stats_widget') and self.stats_widget is not None:
                 self.stats_widget.cleanup()
                 self.stats_widget = None
-            event.accept()
+            super().closeEvent(event)
         except Exception as e:
             logger.error(f"[StatsPopup.closeEvent] Failed: {e}")
-            event.accept()
+            super().closeEvent(event)
 
     def accept(self):
         """Handle accept"""
         try:
-            if hasattr(self, 'stats_widget') and self.stats_widget is not None:
+            if safe_hasattr(self, 'stats_widget') and self.stats_widget is not None:
                 self.stats_widget.cleanup()
                 self.stats_widget = None
             super().accept()

@@ -37,6 +37,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -109,9 +110,9 @@ class UpstoxBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for UpstoxBroker.")
 
-            self.api_key = getattr(broker_setting, 'client_id', None)
-            self.api_secret = getattr(broker_setting, 'secret_key', None)
-            self.redirect_uri = getattr(broker_setting, 'redirect_uri', None)
+            self.api_key = safe_getattr(broker_setting, 'client_id', None)
+            self.api_secret = safe_getattr(broker_setting, 'secret_key', None)
+            self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', None)
 
             # Load saved token
             access_token = self._load_token_from_db()
@@ -270,7 +271,7 @@ class UpstoxBroker(BaseBroker):
 
     @staticmethod
     def _load_upstox_instruments():
-        if not hasattr(UpstoxBroker, '_instruments_df') or UpstoxBroker._instruments_df is None:
+        if not safe_hasattr(UpstoxBroker, '_instruments_df') or UpstoxBroker._instruments_df is None:
             try:
                 nse_url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz"
                 nfo_url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE_FO.csv.gz"
@@ -414,23 +415,23 @@ class UpstoxBroker(BaseBroker):
             )
             if result and result.data:
                 q = list(result.data.values())[0]
-                depth = getattr(q, 'depth', None)
+                depth = safe_getattr(q, 'depth', None)
                 bid = ask = None
                 if depth:
-                    bids = getattr(depth, 'buy', [])
-                    asks = getattr(depth, 'sell', [])
+                    bids = safe_getattr(depth, 'buy', [])
+                    asks = safe_getattr(depth, 'sell', [])
                     bid = bids[0].price if bids else None
                     ask = asks[0].price if asks else None
-                ohlc = getattr(q, 'ohlc', None)
+                ohlc = safe_getattr(q, 'ohlc', None)
                 return {
-                    "ltp": getattr(q, 'last_price', None),
+                    "ltp": safe_getattr(q, 'last_price', None),
                     "bid": bid, "ask": ask,
-                    "high": getattr(ohlc, 'high', None) if ohlc else None,
-                    "low": getattr(ohlc, 'low', None) if ohlc else None,
-                    "open": getattr(ohlc, 'open', None) if ohlc else None,
-                    "close": getattr(ohlc, 'close', None) if ohlc else None,
-                    "volume": getattr(q, 'volume', None),
-                    "oi": getattr(q, 'oi', None),
+                    "high": safe_getattr(ohlc, 'high', None) if ohlc else None,
+                    "low": safe_getattr(ohlc, 'low', None) if ohlc else None,
+                    "open": safe_getattr(ohlc, 'open', None) if ohlc else None,
+                    "close": safe_getattr(ohlc, 'close', None) if ohlc else None,
+                    "volume": safe_getattr(q, 'volume', None),
+                    "oi": safe_getattr(q, 'oi', None),
                 }
             return None
         except TokenExpiredError:
@@ -458,19 +459,19 @@ class UpstoxBroker(BaseBroker):
             if result and result.data:
                 for ikey, q in result.data.items():
                     clean = ikey.split("|")[-1]
-                    depth = getattr(q, 'depth', None)
+                    depth = safe_getattr(q, 'depth', None)
                     bid = ask = None
                     if depth:
-                        bids = getattr(depth, 'buy', [])
-                        asks = getattr(depth, 'sell', [])
+                        bids = safe_getattr(depth, 'buy', [])
+                        asks = safe_getattr(depth, 'sell', [])
                         bid = bids[0].price if bids else None
                         ask = asks[0].price if asks else None
                     out[clean] = {
-                        "ltp": getattr(q, 'last_price', None),
+                        "ltp": safe_getattr(q, 'last_price', None),
                         "bid": bid,
                         "ask": ask,
-                        "volume": getattr(q, 'volume', None),
-                        "oi": getattr(q, 'oi', None),
+                        "volume": safe_getattr(q, 'volume', None),
+                        "oi": safe_getattr(q, 'oi', None),
                     }
             return out
         except TokenExpiredError:
@@ -606,13 +607,13 @@ class UpstoxBroker(BaseBroker):
             if result and result.data:
                 for p in result.data:
                     positions.append({
-                        "instrument_key": getattr(p, 'instrument_key', ''),
-                        "quantity": getattr(p, 'quantity', 0),
-                        "average_price": getattr(p, 'average_price', 0.0),
-                        "last_price": getattr(p, 'last_price', 0.0),
-                        "pnl": getattr(p, 'pnl', 0.0),
-                        "product": getattr(p, 'product', ''),
-                        "exchange": getattr(p, 'exchange', ''),
+                        "instrument_key": safe_getattr(p, 'instrument_key', ''),
+                        "quantity": safe_getattr(p, 'quantity', 0),
+                        "average_price": safe_getattr(p, 'average_price', 0.0),
+                        "last_price": safe_getattr(p, 'last_price', 0.0),
+                        "pnl": safe_getattr(p, 'pnl', 0.0),
+                        "product": safe_getattr(p, 'product', ''),
+                        "exchange": safe_getattr(p, 'exchange', ''),
                     })
             return positions
         except TokenExpiredError:
@@ -633,17 +634,17 @@ class UpstoxBroker(BaseBroker):
             if result and result.data:
                 for o in result.data:
                     orders.append({
-                        "order_id": getattr(o, 'order_id', ''),
-                        "instrument_key": getattr(o, 'instrument_key', ''),
-                        "quantity": getattr(o, 'quantity', 0),
-                        "filled_quantity": getattr(o, 'filled_quantity', 0),
-                        "status": getattr(o, 'status', ''),
-                        "average_price": getattr(o, 'average_price', 0.0),
-                        "price": getattr(o, 'price', 0.0),
-                        "trigger_price": getattr(o, 'trigger_price', 0.0),
-                        "order_type": getattr(o, 'order_type', ''),
-                        "transaction_type": getattr(o, 'transaction_type', ''),
-                        "product": getattr(o, 'product', ''),
+                        "order_id": safe_getattr(o, 'order_id', ''),
+                        "instrument_key": safe_getattr(o, 'instrument_key', ''),
+                        "quantity": safe_getattr(o, 'quantity', 0),
+                        "filled_quantity": safe_getattr(o, 'filled_quantity', 0),
+                        "status": safe_getattr(o, 'status', ''),
+                        "average_price": safe_getattr(o, 'average_price', 0.0),
+                        "price": safe_getattr(o, 'price', 0.0),
+                        "trigger_price": safe_getattr(o, 'trigger_price', 0.0),
+                        "order_type": safe_getattr(o, 'order_type', ''),
+                        "transaction_type": safe_getattr(o, 'transaction_type', ''),
+                        "product": safe_getattr(o, 'product', ''),
                     })
             return orders
         except TokenExpiredError:
@@ -671,7 +672,7 @@ class UpstoxBroker(BaseBroker):
             if not result or not result.data:
                 return None
 
-            status_str = str(getattr(result.data, 'status', '')).lower()
+            status_str = str(safe_getattr(result.data, 'status', '')).lower()
             if status_str in ("complete", "filled", "traded", "executed"):
                 return 2
             if status_str in ("rejected", "cancelled", "canceled", "expired"):
@@ -701,7 +702,7 @@ class UpstoxBroker(BaseBroker):
             )
 
             if result and result.data:
-                avg = getattr(result.data, 'average_price', None)
+                avg = safe_getattr(result.data, 'average_price', None)
                 if avg:
                     return float(avg)
             return None
@@ -802,7 +803,7 @@ class UpstoxBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_streamer, "disconnect"):
+                        if safe_hasattr(self._ws_streamer, "disconnect"):
                             self._ws_streamer.disconnect()
                             logger.debug("[UpstoxBroker] disconnect called")
                     except Exception as e:
@@ -879,7 +880,7 @@ class UpstoxBroker(BaseBroker):
             import upstox_client  # type: ignore
             from upstox_client import MarketDataStreamer  # type: ignore
 
-            access_token = getattr(self.state, "token", None) if self.state else None
+            access_token = safe_getattr(self.state, "token", None) if self.state else None
             if not access_token:
                 logger.error("UpstoxBroker.create_websocket: no access_token — call login first")
                 return None
@@ -1001,7 +1002,7 @@ class UpstoxBroker(BaseBroker):
 
             def _do_disconnect():
                 try:
-                    if hasattr(ws_obj, "disconnect"):
+                    if safe_hasattr(ws_obj, "disconnect"):
                         ws_obj.disconnect()
                         logger.debug("[UpstoxBroker] disconnect completed")
                 except Exception as e:
@@ -1108,7 +1109,7 @@ class UpstoxBroker(BaseBroker):
         Fallback: return "NSE_EQ|<bare_symbol>" for unknown symbols.
         """
         try:
-            cache = getattr(self, "_upstox_key_cache", {})
+            cache = safe_getattr(self, "_upstox_key_cache", {})
             if symbol in cache:
                 return cache[symbol]
 

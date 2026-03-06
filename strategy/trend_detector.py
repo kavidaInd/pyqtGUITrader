@@ -314,7 +314,7 @@ class TrendDetector:
             try:
                 if "time" in df.columns and not df["time"].empty:
                     results["timestamps"] = df["time"].tolist()
-                elif df.index.name == "time" or hasattr(df.index, 'to_list'):
+                elif df.index.name == "time" or safe_hasattr(df.index, 'to_list'):
                     try:
                         results["timestamps"] = df.index.to_list()
                     except Exception as e:
@@ -334,7 +334,7 @@ class TrendDetector:
                     _debug_signal_result(option_signal_result)
                     # ─────────────────────────────────────────────────────────
 
-                    if hasattr(self.signal_engine, '_last_cache'):
+                    if safe_hasattr(self.signal_engine, '_last_cache'):
                         try:
                             cache = self.signal_engine.last_cache
                             if cache is not None:
@@ -396,7 +396,7 @@ class TrendDetector:
                 return {"active": False, "message": "No signal engine configured"}
 
             # Get strategy slug from engine if available
-            slug = getattr(self.signal_engine, 'strategy_slug', None)
+            slug = safe_getattr(self.signal_engine, 'strategy_slug', None)
             if slug:
                 return {
                     "active": True,

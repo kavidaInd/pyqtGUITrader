@@ -3,6 +3,7 @@ trade_history_popup.py
 ======================
 Pure PyQt5 popup for displaying trade history from database.
 
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 FEATURE 7: Rebuilt as pure PyQt5 QDialog with period filtering and CSV export.
 UPDATED: Connected to state_manager for real-time trade updates.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
@@ -19,9 +20,10 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QLabel, QPushButton, QComboBox, QHeaderView, QFileDialog,
-    QAbstractItemView, QGroupBox, QGridLayout, QMessageBox
+    QAbstractItemView, QGroupBox, QGridLayout, QMessageBox, QFrame, QWidget
 )
 
+from Utils.safe_getattr import safe_hasattr
 from db.connector import get_db
 from db.crud import orders as orders_crud
 
@@ -66,6 +68,92 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
+class ValueLabel(QLabel):
+    """Value label with consistent styling."""
+
+    def __init__(self, text="--", parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("valueLabel")
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setMinimumWidth(80)
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        self.setStyleSheet(f"""
+            QLabel#valueLabel {{
+                color: {c.TEXT_MAIN};
+                background: {c.BG_HOVER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_SM}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
 class TradeHistoryPopup(QDialog, ThemedMixin):
     """
     FEATURE 7: Pure PyQt5 trade history viewer.
@@ -73,6 +161,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
     Displays trade history with period filtering, summary statistics,
     and CSV export functionality.
 
+    MODERN MINIMALIST DESIGN - Matches other dialogs.
     UPDATED: Listens to state_manager for trade closed signals to auto-refresh.
     FULLY INTEGRATED with ThemeManager for dynamic theming.
     """
@@ -92,11 +181,15 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self.setWindowTitle('📊 Trade History')
-            self.setMinimumSize(1100, 520)
-            self.resize(1200, 600)
-            self.setWindowFlags(Qt.Window)
 
-            # Build UI (without hardcoded styles)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            self.setMinimumSize(1200, 700)
+            self.resize(1300, 750)
+
+            # Build UI
             self._build_ui()
 
             # Apply theme initially
@@ -129,6 +222,53 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         self._refresh_timer = None
         self._auto_refresh = True
         self._last_load_time = None
+        self.main_card = None
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -137,18 +277,35 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         """
         try:
             c = self._c
-            ty = self._ty
             sp = self._sp
 
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            # Update button styles
-            if self._auto_refresh_btn:
-                self._auto_refresh_btn.setStyleSheet(self._get_button_style("warning"))
-
-            if self._export_btn:
-                self._export_btn.setStyleSheet(self._get_button_style("primary"))
+            # Update table header styles
+            if self._table:
+                self._table.horizontalHeader().setStyleSheet(f"""
+                    QHeaderView::section {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_MAIN};
+                        padding: {sp.PAD_SM}px;
+                        border: none;
+                        border-right: 1px solid {c.BORDER};
+                        border-bottom: 1px solid {c.BORDER};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        font-size: {self._ty.SIZE_SM}pt;
+                    }}
+                """)
+                self._table.verticalHeader().setStyleSheet(f"""
+                    QHeaderView::section {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_DIM};
+                        padding: {sp.PAD_XS}px;
+                        border: none;
+                        border-bottom: 1px solid {c.BORDER};
+                    }}
+                """)
 
             # Update stats labels with proper colors
             self._update_stats_colors()
@@ -157,155 +314,6 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
 
         except Exception as e:
             logger.error(f"[TradeHistoryPopup.apply_theme] Failed: {e}", exc_info=True)
-
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog {{
-                background: {c.BG_MAIN};
-                color: {c.TEXT_MAIN};
-            }}
-            QTableWidget {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                gridline-color: {c.BORDER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                font-size: {ty.SIZE_SM}pt;
-                selection-background-color: {c.BG_SELECTED};
-            }}
-            QTableWidget::item {{
-                padding: {sp.PAD_XS}px;
-            }}
-            QTableWidget::item:selected {{
-                background-color: {c.BG_SELECTED};
-            }}
-            QHeaderView::section {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_XS}px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                font-weight: {ty.WEIGHT_BOLD};
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QHeaderView::section:horizontal {{
-                border-top: none;
-                border-left: none;
-                border-right: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-            }}
-            QHeaderView::section:vertical {{
-                border-left: none;
-                border-right: none;
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-            }}
-            QComboBox, QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                font-size: {ty.SIZE_SM}pt;
-                min-width: 100px;
-            }}
-            QComboBox:hover, QPushButton:hover {{
-                background: {c.BORDER};
-                border-color: {c.BORDER_STRONG};
-            }}
-            QComboBox::drop-down {{
-                border: none;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
-                margin-right: {sp.PAD_XS}px;
-            }}
-            QComboBox QAbstractItemView {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                selection-background-color: {c.BG_SELECTED};
-            }}
-            QGroupBox {{
-                background: {c.BG_PANEL};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_SM}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
-                color: {c.TEXT_DIM};
-            }}
-            QLabel {{
-                color: {c.TEXT_DIM};
-                font-size: {ty.SIZE_SM}pt;
-            }}
-            QLabel#value {{
-                color: {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QLabel#positive {{
-                color: {c.GREEN};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QLabel#negative {{
-                color: {c.RED};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-        """
-
-    def _get_button_style(self, button_type: str) -> str:
-        """Get styled button for specific types"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
-        if button_type == "primary":
-            bg = c.GREEN
-            bg_hover = c.GREEN_BRIGHT
-            border = c.GREEN_BRIGHT
-        elif button_type == "danger":
-            bg = c.RED
-            bg_hover = c.RED_BRIGHT
-            border = c.RED_BRIGHT
-        elif button_type == "warning":
-            bg = c.YELLOW
-            bg_hover = c.YELLOW_BRIGHT
-            border = c.YELLOW_BRIGHT
-        else:
-            bg = c.BG_HOVER
-            bg_hover = c.BORDER
-            border = c.BORDER
-
-        return f"""
-            QPushButton {{
-                background: {bg};
-                color: {c.TEXT_INVERSE};
-                border: {sp.SEPARATOR}px solid {border};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                font-size: {ty.SIZE_SM}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QPushButton:hover {{
-                background: {bg_hover};
-            }}
-            QPushButton:disabled {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DISABLED};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-            }}
-        """
 
     def _update_stats_colors(self):
         """Update statistics labels with proper colors"""
@@ -316,29 +324,79 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
                     # Color will be set in _update_statistics
                     continue
                 elif key in ['winners', 'win_rate', 'avg_win', 'max_win']:
-                    label.setStyleSheet(f"color: {c.GREEN}; font-weight: {self._ty.WEIGHT_BOLD};")
+                    label.setStyleSheet(f"""
+                        QLabel {{
+                            color: {c.GREEN};
+                            font-weight: {self._ty.WEIGHT_BOLD};
+                            background: {c.GREEN}20;
+                            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                            border-radius: {self._sp.RADIUS_SM}px;
+                        }}
+                    """)
                 elif key in ['losers', 'avg_loss', 'max_loss']:
-                    label.setStyleSheet(f"color: {c.RED}; font-weight: {self._ty.WEIGHT_BOLD};")
+                    label.setStyleSheet(f"""
+                        QLabel {{
+                            color: {c.RED};
+                            font-weight: {self._ty.WEIGHT_BOLD};
+                            background: {c.RED}20;
+                            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                            border-radius: {self._sp.RADIUS_SM}px;
+                        }}
+                    """)
                 else:
-                    label.setStyleSheet(f"color: {c.BLUE}; font-weight: {self._ty.WEIGHT_BOLD};")
+                    label.setStyleSheet(f"""
+                        QLabel {{
+                            color: {c.BLUE};
+                            font-weight: {self._ty.WEIGHT_BOLD};
+                            background: {c.BLUE}20;
+                            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                            border-radius: {self._sp.RADIUS_SM}px;
+                        }}
+                    """)
         except Exception as e:
             logger.error(f"[TradeHistoryPopup._update_stats_colors] Failed: {e}", exc_info=True)
 
     def _build_ui(self):
         """Build the user interface"""
-        sp = self._sp
+        # Root layout with margins for shadow effect
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(0)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        layout.setSpacing(sp.GAP_MD)
+        # Main container card
+        self.main_card = ModernCard(self, elevated=True)
+        main_layout = QVBoxLayout(self.main_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom title bar
+        title_bar = self._create_title_bar()
+        main_layout.addWidget(title_bar)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        main_layout.addWidget(separator)
+
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                         self._sp.PAD_XL, self._sp.PAD_XL)
+        content_layout.setSpacing(self._sp.GAP_LG)
+
+        # Header
+        header = ModernHeader("Trade History")
+        content_layout.addWidget(header)
 
         # Top controls
         controls = self._build_controls()
-        layout.addLayout(controls)
+        content_layout.addLayout(controls)
 
         # Statistics summary
         self._stats_group = self._build_stats_group()
-        layout.addWidget(self._stats_group)
+        content_layout.addWidget(self._stats_group)
 
         # Trade table
         self._table = QTableWidget(0, len(COLUMNS))
@@ -350,38 +408,129 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         self._table.verticalHeader().setVisible(False)
         self._table.setSortingEnabled(True)
 
-        # Set column widths (design requirements, can stay as integers)
+        # Set column widths
         for i, (_, _, width) in enumerate(COLUMNS):
             self._table.setColumnWidth(i, width)
 
         # Make Reason column stretch
         self._table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
 
-        layout.addWidget(self._table, 1)
+        # Style the table
+        self._table.setStyleSheet(f"""
+            QTableWidget {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                gridline-color: {self._c.BORDER};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                font-size: {self._ty.SIZE_SM}pt;
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+            QTableWidget::item {{
+                padding: {self._sp.PAD_SM}px;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {self._c.BG_SELECTED};
+            }}
+        """)
+
+        content_layout.addWidget(self._table, 1)
 
         # Bottom button bar
         button_bar = self._build_button_bar()
-        layout.addLayout(button_bar)
+        content_layout.addLayout(button_bar)
+
+        main_layout.addWidget(content)
+        root.addWidget(self.main_card)
 
         # Auto-refresh timer
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(lambda: self.load_trades(self._period_combo.currentData()))
         self._refresh_timer.start(30000)  # Refresh every 30 seconds
 
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("📊 Trade History")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.accept)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
     def _build_controls(self):
         """Build top control bar"""
-        sp = self._sp
-
         controls = QHBoxLayout()
-        controls.setSpacing(sp.GAP_MD)
+        controls.setSpacing(self._sp.GAP_MD)
 
         # Period selector
-        controls.addWidget(QLabel("📅 Period:"))
+        period_label = QLabel("📅 Period:")
+        period_label.setStyleSheet(f"color: {self._c.TEXT_DIM};")
+        controls.addWidget(period_label)
+
         self._period_combo = QComboBox()
         self._period_combo.addItem("Today", "today")
         self._period_combo.addItem("This Week", "this_week")
         self._period_combo.addItem("All Time", "all")
         self._period_combo.currentIndexChanged.connect(self._on_period_changed)
+        self._period_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                min-width: 120px;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """)
         controls.addWidget(self._period_combo)
 
         controls.addStretch()
@@ -391,27 +540,53 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         self._auto_refresh_btn.setCheckable(True)
         self._auto_refresh_btn.setChecked(True)
         self._auto_refresh_btn.toggled.connect(self._toggle_auto_refresh)
+        self._auto_refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.GREEN};
+                color: white;
+                border: none;
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                min-width: 160px;
+                min-height: 36px;
+            }}
+            QPushButton:hover {{
+                background: {self._c.GREEN_BRIGHT};
+            }}
+            QPushButton:checked {{
+                background: {self._c.YELLOW};
+            }}
+        """)
         controls.addWidget(self._auto_refresh_btn)
 
         # Action buttons
-        self._refresh_btn = QPushButton("⟳ Refresh")
+        self._refresh_btn = self._create_modern_button("Refresh", primary=False, icon="⟳")
         self._refresh_btn.clicked.connect(lambda: self.load_trades(self._period_combo.currentData()))
         controls.addWidget(self._refresh_btn)
 
-        self._export_btn = QPushButton("📥 Export CSV")
+        self._export_btn = self._create_modern_button("Export CSV", primary=False, icon="📥")
         self._export_btn.clicked.connect(self._export_csv)
         controls.addWidget(self._export_btn)
 
         return controls
 
     def _build_stats_group(self):
-        """Build statistics summary group"""
-        sp = self._sp
+        """Build statistics summary group with modern card styling"""
+        group = ModernCard()
+        layout = QVBoxLayout(group)
+        layout.setSpacing(self._sp.GAP_MD)
 
-        group = QGroupBox("📈 Summary Statistics")
-        layout = QGridLayout(group)
-        layout.setVerticalSpacing(sp.GAP_XS)
-        layout.setHorizontalSpacing(sp.GAP_MD)
+        # Header
+        header = QLabel("📈 Summary Statistics")
+        header.setStyleSheet(f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+        layout.addWidget(header)
+
+        # Stats grid
+        grid_layout = QGridLayout()
+        grid_layout.setVerticalSpacing(self._sp.GAP_SM)
+        grid_layout.setHorizontalSpacing(self._sp.GAP_MD)
 
         stats_items = [
             ("Total Trades:", "total_trades", "0"),
@@ -432,37 +607,37 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
 
             label = QLabel(label_text)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            layout.addWidget(label, row, col)
+            label.setStyleSheet(f"color: {self._c.TEXT_DIM};")
+            grid_layout.addWidget(label, row, col)
 
             value_label = QLabel(default)
-            value_label.setObjectName("value")
+            value_label.setObjectName("valueLabel")
             value_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            layout.addWidget(value_label, row, col + 1)
+            grid_layout.addWidget(value_label, row, col + 1)
 
             self._stats_labels[key] = value_label
 
+        layout.addLayout(grid_layout)
         return group
 
     def _build_button_bar(self):
         """Build bottom button bar"""
-        sp = self._sp
-
         button_bar = QHBoxLayout()
-        button_bar.setSpacing(sp.GAP_MD)
+        button_bar.setSpacing(self._sp.GAP_MD)
 
         # Select All / Clear Selection buttons
-        select_all_btn = QPushButton("✓ Select All")
+        select_all_btn = self._create_modern_button("Select All", primary=False, icon="✓")
         select_all_btn.clicked.connect(self._select_all)
         button_bar.addWidget(select_all_btn)
 
-        clear_sel_btn = QPushButton("✗ Clear Selection")
+        clear_sel_btn = self._create_modern_button("Clear", primary=False, icon="✗")
         clear_sel_btn.clicked.connect(self._clear_selection)
         button_bar.addWidget(clear_sel_btn)
 
         button_bar.addStretch()
 
         # Close button
-        close_btn = QPushButton("Close")
+        close_btn = self._create_modern_button("Close", primary=True, icon="✕")
         close_btn.clicked.connect(self.accept)
         button_bar.addWidget(close_btn)
 
@@ -470,25 +645,36 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
 
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Trade History - ERROR")
+            self.setMinimumSize(400, 300)
 
-        super().__init__(parent)
-        self.setWindowTitle("Trade History - ERROR")
-        self.resize(400, 300)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
 
-        error_label = QLabel("❌ Failed to initialize trade history popup.\nPlease check the logs.")
-        error_label.setWordWrap(True)
-        error_label.setStyleSheet(f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;")
-        layout.addWidget(error_label)
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
 
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+            error_label = QLabel("❌ Failed to initialize trade history popup.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = self._create_modern_button("Close", primary=False)
+            close_btn.clicked.connect(self.accept)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[TradeHistoryPopup._create_error_dialog] Failed: {e}", exc_info=True)
 
     def _connect_state_manager(self):
         """
@@ -496,7 +682,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         """
         try:
             # Try to connect to the state manager's trade_closed signal
-            if hasattr(state_manager, 'trade_closed'):
+            if safe_hasattr(state_manager, 'trade_closed'):
                 state_manager.trade_closed.connect(self._on_trade_closed)
                 logger.debug("Connected to state_manager.trade_closed signal")
         except Exception as e:
@@ -523,8 +709,40 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             self._auto_refresh = checked
             if checked:
                 self._auto_refresh_btn.setText("🔄 Auto-refresh On")
+                self._auto_refresh_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {self._c.GREEN};
+                        color: white;
+                        border: none;
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        min-width: 160px;
+                        min-height: 36px;
+                    }}
+                    QPushButton:hover {{
+                        background: {self._c.GREEN_BRIGHT};
+                    }}
+                """)
             else:
                 self._auto_refresh_btn.setText("🔄 Auto-refresh Off")
+                self._auto_refresh_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {self._c.YELLOW};
+                        color: black;
+                        border: none;
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        min-width: 160px;
+                        min-height: 36px;
+                    }}
+                    QPushButton:hover {{
+                        background: {self._c.YELLOW_BRIGHT};
+                    }}
+                """)
             logger.debug(f"Auto-refresh toggled: {checked}")
         except Exception as e:
             logger.error(f"[TradeHistoryPopup._toggle_auto_refresh] Failed: {e}", exc_info=True)
@@ -612,8 +830,10 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
                             pnl = float(order.get('pnl', 0) or 0)
                             if pnl > 0:
                                 item.setForeground(QColor(c.GREEN))
+                                item.setBackground(QColor(c.GREEN + "20"))
                             elif pnl < 0:
                                 item.setForeground(QColor(c.RED))
+                                item.setBackground(QColor(c.RED + "20"))
                         except (ValueError, TypeError):
                             pass
 
@@ -698,11 +918,35 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             total_pnl_label = self._stats_labels['total_pnl']
             total_pnl_label.setText(f'₹{total_pnl:.2f}')
             if total_pnl > 0:
-                total_pnl_label.setStyleSheet(f"color: {c.GREEN}; font-weight: {self._ty.WEIGHT_BOLD};")
+                total_pnl_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {c.GREEN};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        background: {c.GREEN}20;
+                        padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                        border-radius: {self._sp.RADIUS_SM}px;
+                    }}
+                """)
             elif total_pnl < 0:
-                total_pnl_label.setStyleSheet(f"color: {c.RED}; font-weight: {self._ty.WEIGHT_BOLD};")
+                total_pnl_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {c.RED};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        background: {c.RED}20;
+                        padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                        border-radius: {self._sp.RADIUS_SM}px;
+                    }}
+                """)
             else:
-                total_pnl_label.setStyleSheet(f"color: {c.BLUE}; font-weight: {self._ty.WEIGHT_BOLD};")
+                total_pnl_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        background: {c.BLUE}20;
+                        padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                        border-radius: {self._sp.RADIUS_SM}px;
+                    }}
+                """)
 
         except Exception as e:
             logger.error(f"[TradeHistoryPopup._update_statistics] Failed: {e}", exc_info=True)
@@ -838,6 +1082,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             self._auto_refresh_btn = None
             self._stats_group = None
             self._summary_lbl = None
+            self.main_card = None
 
             self._cleanup_done = True
             logger.info("[TradeHistoryPopup] Cleanup completed")

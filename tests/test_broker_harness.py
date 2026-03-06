@@ -125,7 +125,7 @@ class BrokerTestHarness:
 
         all_present = True
         for method in required_methods:
-            if hasattr(self.broker, method):
+            if safe_hasattr(self.broker, method):
                 logger.debug(f"  ✅ {method} present")
             else:
                 logger.error(f"  ❌ {method} missing")
@@ -201,7 +201,7 @@ class TestAllBrokers(unittest.TestCase):
                 broker = harness.broker
 
                 # Test _format_symbol if available
-                if hasattr(broker, '_format_symbol'):
+                if safe_hasattr(broker, '_format_symbol'):
                     for sym in test_symbols:
                         try:
                             formatted = broker._format_symbol(sym)
@@ -210,7 +210,7 @@ class TestAllBrokers(unittest.TestCase):
                             logger.warning(f"{broker_type} format error: {e}")
 
                 # Test _clean_symbol if available
-                if hasattr(broker, '_clean_symbol'):
+                if safe_hasattr(broker, '_clean_symbol'):
                     for sym in test_symbols:
                         try:
                             cleaned = broker._clean_symbol(sym)
@@ -234,7 +234,7 @@ class TestAllBrokers(unittest.TestCase):
             with self.subTest(broker=broker_type):
                 broker = harness.broker
 
-                if hasattr(broker, '_exchange_from_symbol'):
+                if safe_hasattr(broker, '_exchange_from_symbol'):
                     for sym, expected in test_symbols.items():
                         try:
                             exchange = broker._exchange_from_symbol(sym)
@@ -252,9 +252,9 @@ class TestAllBrokers(unittest.TestCase):
                 broker = harness.broker
 
                 # Check if broker has order type mapping methods
-                if hasattr(broker, '_to_alice_order_type'):
+                if safe_hasattr(broker, '_to_alice_order_type'):
                     logger.info(f"{broker_type} has AliceBlue order mapping")
-                if hasattr(broker, '_to_kite_interval'):
+                if safe_hasattr(broker, '_to_kite_interval'):
                     logger.info(f"{broker_type} has Zerodha interval mapping")
-                if hasattr(broker, '_to_upstox_side'):
+                if safe_hasattr(broker, '_to_upstox_side'):
                     logger.info(f"{broker_type} has Upstox side mapping")

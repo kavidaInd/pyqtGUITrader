@@ -12,6 +12,8 @@ correct column regardless of parameter changes.
 import logging
 from typing import Dict, Any, Optional
 
+from Utils.safe_getattr import safe_getattr
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +72,7 @@ class IndicatorColumnGenerator:
 
         # Try specific handlers first
         handler_name = f"_handle_{indicator_lower}"
-        handler = getattr(cls, handler_name, None)
+        handler = safe_getattr(cls, handler_name, None)
         if handler:
             try:
                 return handler(params, column_type)

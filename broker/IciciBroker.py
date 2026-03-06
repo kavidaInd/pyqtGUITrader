@@ -45,6 +45,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -122,8 +123,8 @@ class IciciBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for IciciBroker.")
 
-            self.api_key    = getattr(broker_setting, 'client_id', None)
-            self.api_secret = getattr(broker_setting, 'secret_key', None)
+            self.api_key    = safe_getattr(broker_setting, 'client_id', None)
+            self.api_secret = safe_getattr(broker_setting, 'secret_key', None)
 
             if not self.api_key:
                 raise ValueError("ICICI Breeze api_key (client_id) is required.")
@@ -850,7 +851,7 @@ class IciciBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_breeze, "ws_disconnect"):
+                        if safe_hasattr(self._ws_breeze, "ws_disconnect"):
                             self._ws_breeze.ws_disconnect()
                             logger.debug("[IciciBroker] ws_disconnect called")
                     except Exception as e:
@@ -1036,7 +1037,7 @@ class IciciBroker(BaseBroker):
 
             breeze = ws_obj.get("__breeze__") if isinstance(ws_obj, dict) else self.breeze
 
-            if breeze and hasattr(breeze, "ws_disconnect"):
+            if breeze and safe_hasattr(breeze, "ws_disconnect"):
                 # Run disconnect in separate thread with timeout
                 disconnect_complete = threading.Event()
 

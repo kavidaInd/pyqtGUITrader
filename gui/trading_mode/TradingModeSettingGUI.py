@@ -2,6 +2,7 @@
 TradingModeSettingGUI.py
 ========================
 PyQt5 GUI for trading mode settings with support for new features.
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
@@ -17,6 +18,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
+from Utils.safe_getattr import safe_getattr
 from gui.trading_mode.TradingModeSetting import TradingMode, TradingModeSetting
 
 # Rule 13.1: Import theme manager
@@ -42,6 +44,65 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
 class TradingModeSettingGUI(QDialog, ThemedMixin):
     def __init__(self, parent=None, trading_mode_setting=None, app=None):
         # Rule 2: Safe defaults first
@@ -63,56 +124,85 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
             self.setWindowTitle("Trading Mode Settings")
             self.setModal(True)
-            self.setMinimumSize(750, 700)  # Increased size for new tabs
-            self.resize(750, 700)
+            self.setMinimumSize(850, 750)
+            self.resize(850, 750)
 
-            # Root layout
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
-            # Margins and spacing will be set in apply_theme
+            root.setContentsMargins(20, 20, 20, 20)
+            root.setSpacing(0)
+
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
+
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
+
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
+
+            # Content area
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                             self._sp.PAD_XL, self._sp.PAD_XL)
+            content_layout.setSpacing(self._sp.GAP_LG)
 
             # Header
-            header = QLabel("⚙️ Trading Mode Settings")
-            header.setObjectName("header")
-            header.setAlignment(Qt.AlignCenter)
-            root.addWidget(header)
+            header = ModernHeader("Trading Mode Configuration")
+            content_layout.addWidget(header)
 
-            # Tabs
-            self.tabs = QTabWidget()
-            root.addWidget(self.tabs)
+            # Tabs with consistent styling
+            self.tabs = self._create_tabs()
+            content_layout.addWidget(self.tabs)
 
-            # Add tabs
-            self.tabs.addTab(self._build_mode_tab(), "🎮 Mode")
-            self.tabs.addTab(self._build_risk_tab(), "⚠️ Risk")  # FEATURE 1
-            self.tabs.addTab(self._build_mtf_tab(), "📈 MTF Filter")  # FEATURE 6
-            self.tabs.addTab(self._build_signal_tab(), "🎯 Signal")  # FEATURE 3
-            self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
-
-            # Status + Buttons layout
-            bottom_layout = QVBoxLayout()
-            bottom_layout.setSpacing(self._sp.GAP_SM)
-
+            # Status label
             self.status_label = QLabel("")
-            self.status_label.setAlignment(Qt.AlignCenter)
-            self.status_label.setObjectName("status")
-            bottom_layout.addWidget(self.status_label)
+            self.status_label.setAlignment(Qt.AlignLeft)
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
+            content_layout.addWidget(self.status_label)
 
             # Buttons
             button_layout = QHBoxLayout()
+            button_layout.setSpacing(self._sp.GAP_MD)
             button_layout.addStretch()
 
-            self.save_btn = QPushButton("💾 Save Settings")
+            self.save_btn = self._create_modern_button("Save Settings", primary=True, icon="💾")
             self.save_btn.clicked.connect(self._save_settings)
-            self.apply_btn = QPushButton("✅ Apply")
+
+            self.apply_btn = self._create_modern_button("Apply", primary=False, icon="✅")
             self.apply_btn.clicked.connect(self._apply_settings)
-            self.cancel_btn = QPushButton("✕ Cancel")
+
+            self.cancel_btn = self._create_modern_button("✕ Cancel", primary=False)
             self.cancel_btn.clicked.connect(self.reject)
 
             button_layout.addWidget(self.save_btn)
             button_layout.addWidget(self.apply_btn)
             button_layout.addWidget(self.cancel_btn)
 
-            bottom_layout.addLayout(button_layout)
-            root.addLayout(bottom_layout)
+            content_layout.addLayout(button_layout)
+
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
 
             # Apply theme initially
             self.apply_theme()
@@ -123,6 +213,142 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.critical(f"[TradingModeSettingGUI.__init__] Failed: {e}", exc_info=True)
             self._create_error_dialog(parent)
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("🎮 Trading Mode Settings")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
+    def _create_tabs(self):
+        """Create tabs with consistent styling matching other dialogs."""
+        tabs = QTabWidget()
+
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
+
+        # Add tabs
+        tabs.addTab(self._build_mode_tab(), "🎮 Mode")
+        tabs.addTab(self._build_risk_tab(), "⚠️ Risk")
+        tabs.addTab(self._build_mtf_tab(), "📈 MTF")
+        tabs.addTab(self._build_signal_tab(), "🎯 Signal")
+        tabs.addTab(self._build_info_tab(), "ℹ️ Info")
+
+        return tabs
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 140px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:pressed {{
+                    background: {self._c.BLUE};
+                    opacity: 0.8;
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -160,6 +386,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         self.apply_btn = None
         self.status_label = None
         self._save_in_progress = False
+        self.main_card = None
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -167,27 +394,57 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         Called on theme change, density change, and initial render.
         """
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            # Update root layout margins and spacing
-            layout = self.layout()
-            if layout:
-                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-                layout.setSpacing(sp.GAP_MD)
-
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
-
-            # Update header
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;")
+            # Update title bar
+            if hasattr(self, 'title_bar'):
+                self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
 
             # Update status label
             if self.status_label:
-                self.status_label.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
+
+            # Update tabs
+            if self.tabs:
+                self.tabs.setStyleSheet(f"""
+                    QTabWidget::pane {{
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        background: {self._c.BG_PANEL};
+                        margin-top: {self._sp.PAD_SM}px;
+                    }}
+                    QTabBar::tab {{
+                        background: {self._c.BG_HOVER};
+                        color: {self._c.TEXT_DIM};
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        min-width: 130px;
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-bottom: none;
+                        border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        margin-right: {self._sp.PAD_XS}px;
+                    }}
+                    QTabBar::tab:selected {{
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_MAIN};
+                        border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                    }}
+                    QTabBar::tab:hover:!selected {{
+                        background: {self._c.BORDER};
+                        color: {self._c.TEXT_MAIN};
+                    }}
+                """)
 
             # Update button styles
             self._update_button_styles()
@@ -195,8 +452,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             # Update safety warning if visible
             self._update_safety_warning()
 
-            # Update all hint labels will be handled in individual tabs
-            # when they are recreated, but we need to refresh the UI
+            # Update UI state
             self._update_ui_state()
 
             logger.debug("[TradingModeSettingGUI.apply_theme] Applied theme")
@@ -204,315 +460,292 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog {{ background:{c.BG_PANEL}; color:{c.TEXT_MAIN}; }}
-            QLabel  {{ color:{c.TEXT_DIM}; font-size:{ty.SIZE_SM}pt; }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                background: {c.BG_PANEL};
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                min-width: 130px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:hover:!selected {{ background:{c.BORDER}; color:{c.TEXT_MAIN}; }}
-            QGroupBox {{
-                background:{c.BG_HOVER};
-                color:{c.TEXT_MAIN};
-                border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_MD}px;
-                margin-top:{sp.PAD_MD}px;
-                font-weight:{ty.WEIGHT_BOLD};
-                font-size:{ty.SIZE_BODY}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
-            }}
-            QComboBox, QDoubleSpinBox, QSpinBox, QLineEdit {{
-                background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px; font-size:{ty.SIZE_BODY}pt;
-                min-height:{sp.BTN_HEIGHT_SM}px;
-            }}
-            QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus {{ 
-                border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS}; 
-            }}
-            QComboBox::drop-down {{ border:none; }}
-            QComboBox::down-arrow {{ 
-                image: none; 
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
-                margin-right: {sp.PAD_XS}px;
-            }}
-            QCheckBox {{ color:{c.TEXT_MAIN}; spacing:{sp.GAP_SM}px; font-size:{ty.SIZE_BODY}pt; }}
-            QCheckBox::indicator {{ width:{sp.ICON_MD}px; height:{sp.ICON_MD}px; }}
-            QCheckBox::indicator:unchecked {{ 
-                border:{sp.SEPARATOR}px solid {c.BORDER}; 
-                background:{c.BG_HOVER}; 
-                border-radius:{sp.RADIUS_SM}px; 
-            }}
-            QCheckBox::indicator:checked {{ 
-                background:{c.GREEN}; 
-                border:{sp.SEPARATOR}px solid {c.GREEN_BRIGHT}; 
-                border-radius:{sp.RADIUS_SM}px; 
-            }}
-            QScrollArea {{ border:none; background:transparent; }}
-            QFrame#infoCard {{
-                background:{c.BG_HOVER};
-                border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_MD}px;
-            }}
-        """
-
     def _update_button_styles(self):
         """Update button styles with theme tokens"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
         # Save button
         if self.save_btn:
             self.save_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background:{c.GREEN}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt; min-width:100px;
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 140px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover    {{ background:{c.GREEN_BRIGHT}; }}
-                QPushButton:pressed  {{ background:{c.GREEN}; }}
-                QPushButton:disabled {{ background:{c.BG_HOVER}; color:{c.TEXT_DISABLED}; }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
             """)
 
         # Apply button
         if self.apply_btn:
             self.apply_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background:{c.BLUE_DARK}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt; min-width:100px;
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover    {{ background:{c.BLUE}; }}
-                QPushButton:pressed  {{ background:{c.BLUE_DARK}; }}
-                QPushButton:disabled {{ background:{c.BG_HOVER}; color:{c.TEXT_DISABLED}; }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
             """)
 
         # Cancel button
         if self.cancel_btn:
             self.cancel_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background:{c.RED}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt; min-width:100px;
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover {{ background:{c.RED_BRIGHT}; }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                }}
             """)
 
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             super().__init__(parent)
             self.setWindowTitle("Trading Mode Settings - ERROR")
             self.setMinimumSize(400, 200)
 
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
 
             error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;")
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
             layout.addWidget(error_label)
 
-            close_btn = QPushButton("Close")
+            close_btn = self._create_modern_button("Close", primary=False)
             close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
 
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
 
     # ── Mode Tab (Original) ───────────────────────────────────────────────────
     def _build_mode_tab(self):
-        """Build the mode selection tab"""
+        """Build the mode selection tab with modern card layout"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
-            container.setStyleSheet("background:transparent;")
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_MD)
-            layout.setSpacing(sp.GAP_MD)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            # Mode Selection Group with description
-            mode_group = QGroupBox("Trading Mode")
-            mode_layout = QVBoxLayout(mode_group)
-            mode_layout.setSpacing(sp.GAP_SM)
+            # Mode Selection Card
+            mode_card = ModernCard()
+            mode_layout = QVBoxLayout(mode_card)
+            mode_layout.setSpacing(self._sp.GAP_MD)
 
-            # Mode combo with form layout for better alignment
-            mode_form = QFormLayout()
-            mode_form.setSpacing(sp.GAP_XS)
-            mode_form.setLabelAlignment(Qt.AlignRight)
+            mode_header = QLabel("🎮 Trading Mode")
+            mode_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            mode_layout.addWidget(mode_header)
 
             self.mode_combo = QComboBox()
             self.mode_combo.addItem("🖥️ Simulation (Paper Trading)", TradingMode.PAPER.value)
             self.mode_combo.addItem("💰 Live Trading", TradingMode.LIVE.value)
             self.mode_combo.addItem("📊 Backtest", TradingMode.BACKTEST.value)
             self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+            self.mode_combo.setStyleSheet(self._get_combobox_style())
+            mode_layout.addWidget(self.mode_combo)
 
-            mode_form.addRow("Select Mode:", self.mode_combo)
-            mode_layout.addLayout(mode_form)
-
-            # Mode description
             mode_desc = QLabel(
                 "• Simulation: Test strategies with virtual money\n"
                 "• Live: Real trading with actual funds (requires safety checks)\n"
                 "• Backtest: Run strategy on historical data"
             )
-            mode_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding:{sp.PAD_SM}px; background:{c.BG_PANEL}; border-radius:{sp.RADIUS_SM}px;")
             mode_desc.setWordWrap(True)
+            mode_desc.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
             mode_layout.addWidget(mode_desc)
 
             # Safety warning
-            self.safety_warning = QLabel("⚠️ LIVE MODE - Real money will be used!")
+            self.safety_warning = ModernCard()
             self.safety_warning.setVisible(False)
-            self.safety_warning.setWordWrap(True)
+            warning_layout = QHBoxLayout(self.safety_warning)
+            warning_layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_SM,
+                                             self._sp.PAD_SM, self._sp.PAD_SM)
+
+            warning_icon = QLabel("⚠️")
+            warning_icon.setFont(QFont(self._ty.FONT_UI, self._ty.SIZE_LG))
+            warning_layout.addWidget(warning_icon)
+
+            self.safety_warning_label = QLabel("⚠️ LIVE MODE - Real money will be used!")
+            self.safety_warning_label.setWordWrap(True)
+            warning_layout.addWidget(self.safety_warning_label, 1)
+
             mode_layout.addWidget(self.safety_warning)
 
-            layout.addWidget(mode_group)
+            layout.addWidget(mode_card)
 
-            # Safety Settings Group with descriptions
-            safety_group = QGroupBox("Safety Settings")
-            safety_layout = QVBoxLayout(safety_group)
-            safety_layout.setSpacing(sp.GAP_SM)
+            # Safety Settings Card
+            safety_card = ModernCard()
+            safety_layout = QVBoxLayout(safety_card)
+            safety_layout.setSpacing(self._sp.GAP_MD)
+
+            safety_header = QLabel("🛡️ Safety Settings")
+            safety_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            safety_layout.addWidget(safety_header)
 
             self.allow_live_check = QCheckBox("✅ Enable live trading (off by default for safety)")
             self.allow_live_check.setToolTip("Must be checked to allow any live trades")
             self.allow_live_check.stateChanged.connect(self._update_ui_state)
+            self.allow_live_check.setStyleSheet(self._get_checkbox_style())
             safety_layout.addWidget(self.allow_live_check)
 
             allow_desc = QLabel(
                 "Safety switch for live trading. Must be explicitly enabled "
                 "to prevent accidental real-money trades."
             )
-            allow_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             allow_desc.setWordWrap(True)
+            allow_desc.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt; padding-left: {self._sp.PAD_XL}px;")
             safety_layout.addWidget(allow_desc)
 
             self.confirm_live_check = QCheckBox("⚠️ Confirm each live trade before execution")
             self.confirm_live_check.setChecked(True)
+            self.confirm_live_check.setStyleSheet(self._get_checkbox_style())
             safety_layout.addWidget(self.confirm_live_check)
 
             confirm_desc = QLabel(
                 "When enabled, you'll be prompted to approve each trade before it's sent to the exchange. "
                 "Recommended for beginners and when testing new strategies."
             )
-            confirm_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             confirm_desc.setWordWrap(True)
+            confirm_desc.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt; padding-left: {self._sp.PAD_XL}px;")
             safety_layout.addWidget(confirm_desc)
 
-            layout.addWidget(safety_group)
+            layout.addWidget(safety_card)
 
-            # Simulation Settings Group with descriptions
-            self.sim_group = QGroupBox("Simulation Settings")
-            sim_layout = QVBoxLayout(self.sim_group)
-            sim_layout.setSpacing(sp.GAP_SM)
+            # Simulation Settings Card
+            self.sim_card = ModernCard()
+            sim_layout = QVBoxLayout(self.sim_card)
+            sim_layout.setSpacing(self._sp.GAP_MD)
+
+            sim_header = QLabel("📊 Simulation Settings")
+            sim_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            sim_layout.addWidget(sim_header)
+
+            sim_form = QFormLayout()
+            sim_form.setSpacing(self._sp.GAP_MD)
+            sim_form.setLabelAlignment(Qt.AlignRight)
 
             # Paper balance
-            balance_form = QFormLayout()
-            balance_form.setSpacing(sp.GAP_XS)
-            balance_form.setLabelAlignment(Qt.AlignRight)
-
             self.paper_balance_spin = QDoubleSpinBox()
             self.paper_balance_spin.setRange(1000, 10000000)
             self.paper_balance_spin.setSingleStep(10000)
             self.paper_balance_spin.setPrefix("₹ ")
             self.paper_balance_spin.setValue(100000)
-            balance_form.addRow("Initial Balance:", self.paper_balance_spin)
-            sim_layout.addLayout(balance_form)
+            self.paper_balance_spin.setStyleSheet(self._get_spinbox_style())
+            sim_form.addRow("Initial Balance:", self.paper_balance_spin)
 
             balance_desc = QLabel(
                 "Starting virtual capital for paper trading. Used to simulate position sizing "
                 "and track performance metrics."
             )
-            balance_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
             balance_desc.setWordWrap(True)
-            sim_layout.addWidget(balance_desc)
+            balance_desc.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
 
             # Slippage
             self.slippage_check = QCheckBox("📉 Simulate slippage")
-            sim_layout.addWidget(self.slippage_check)
-
-            slippage_form = QFormLayout()
-            slippage_form.setSpacing(sp.GAP_XS)
-            slippage_form.setLabelAlignment(Qt.AlignRight)
+            self.slippage_check.setStyleSheet(self._get_checkbox_style())
+            sim_form.addRow("", self.slippage_check)
 
             self.slippage_spin = QDoubleSpinBox()
             self.slippage_spin.setRange(0, 1)
             self.slippage_spin.setSingleStep(0.01)
             self.slippage_spin.setSuffix(" %")
             self.slippage_spin.setValue(0.05)
-            slippage_form.addRow("Slippage:", self.slippage_spin)
-            sim_layout.addLayout(slippage_form)
+            self.slippage_spin.setStyleSheet(self._get_spinbox_style())
+            sim_form.addRow("Slippage:", self.slippage_spin)
 
             slippage_desc = QLabel(
                 "Simulates the difference between expected and actual fill price. "
                 "0.05% = 5 paise per ₹100. Helps make backtests more realistic."
             )
-            slippage_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             slippage_desc.setWordWrap(True)
-            sim_layout.addWidget(slippage_desc)
+            slippage_desc.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt; padding-left: {self._sp.PAD_XL}px;")
 
             # Delay
             self.delay_check = QCheckBox("⏱️ Simulate order delay")
-            sim_layout.addWidget(self.delay_check)
-
-            delay_form = QFormLayout()
-            delay_form.setSpacing(sp.GAP_XS)
-            delay_form.setLabelAlignment(Qt.AlignRight)
+            self.delay_check.setStyleSheet(self._get_checkbox_style())
+            sim_form.addRow("", self.delay_check)
 
             self.delay_spin = QSpinBox()
             self.delay_spin.setRange(0, 5000)
             self.delay_spin.setSingleStep(100)
             self.delay_spin.setSuffix(" ms")
             self.delay_spin.setValue(500)
-            delay_form.addRow("Delay:", self.delay_spin)
-            sim_layout.addLayout(delay_form)
+            self.delay_spin.setStyleSheet(self._get_spinbox_style())
+            sim_form.addRow("Delay:", self.delay_spin)
 
             delay_desc = QLabel(
                 "Simulates network latency and exchange processing time. "
                 "Higher values = more realistic but slower execution."
             )
-            delay_desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
             delay_desc.setWordWrap(True)
+            delay_desc.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt; padding-left: {self._sp.PAD_XL}px;")
+
+            sim_layout.addLayout(sim_form)
+            sim_layout.addWidget(balance_desc)
+            sim_layout.addWidget(slippage_desc)
             sim_layout.addWidget(delay_desc)
 
-            layout.addWidget(self.sim_group)
+            layout.addWidget(self.sim_card)
             layout.addStretch()
 
             scroll.setWidget(container)
@@ -522,41 +755,149 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[TradingModeSettingGUI._build_mode_tab] Failed: {e}", exc_info=True)
             return self._create_error_scroll(f"Error building mode tab: {e}")
 
+    def _get_combobox_style(self):
+        """Get consistent combobox styling."""
+        return f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """
+
+    def _get_spinbox_style(self):
+        """Get consistent spinbox styling."""
+        return f"""
+            QSpinBox, QDoubleSpinBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QSpinBox:focus, QDoubleSpinBox:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                background: {self._c.BG_HOVER};
+                border: none;
+                width: {self._sp.ICON_MD}px;
+            }}
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                background: {self._c.BORDER};
+            }}
+        """
+
+    def _get_checkbox_style(self):
+        """Get consistent checkbox styling."""
+        return f"""
+            QCheckBox {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_BODY}pt;
+                spacing: {self._sp.GAP_SM}px;
+            }}
+            QCheckBox::indicator {{
+                width: {self._sp.ICON_MD}px;
+                height: {self._sp.ICON_MD}px;
+                border: 2px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_SM}px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {self._c.BLUE};
+                border-color: {self._c.BLUE};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
+
+    def _get_lineedit_style(self):
+        """Get consistent line edit styling."""
+        return f"""
+            QLineEdit {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QLineEdit:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
+
     def _update_safety_warning(self):
         """Update safety warning styles based on current state"""
-        if not self.safety_warning:
+        if not self.safety_warning or not hasattr(self, 'safety_warning_label'):
             return
 
-        c = self._c
-        sp = self._sp
-
         if self.safety_warning.isVisible():
-            self.safety_warning.setStyleSheet(
-                f"color: {c.RED}; font-weight: {self._ty.WEIGHT_BOLD}; padding: {sp.PAD_SM}px; background:{c.BG_ROW_B}; border-radius:{sp.RADIUS_SM}px;"
-            )
+            self.safety_warning.setStyleSheet(f"""
+                QFrame#modernCard {{
+                    background: {self._c.BG_ROW_B};
+                    border: 1px solid {self._c.RED};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px;
+                }}
+            """)
+            self.safety_warning_label.setStyleSheet(f"color: {self._c.RED}; font-weight: {self._ty.WEIGHT_BOLD};")
 
     # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
     def _build_risk_tab(self):
-        """Build risk management tab"""
+        """Build risk management tab with modern card layout"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            # Risk Limits Group
-            limits_group = QGroupBox("Daily Risk Limits")
-            limits_layout = QFormLayout(limits_group)
-            limits_layout.setSpacing(sp.GAP_SM)
-            limits_layout.setLabelAlignment(Qt.AlignRight)
+            # Risk Limits Card
+            risk_card = ModernCard()
+            risk_layout = QVBoxLayout(risk_card)
+            risk_layout.setSpacing(self._sp.GAP_MD)
+
+            risk_header = QLabel("⚠️ Daily Risk Limits")
+            risk_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            risk_layout.addWidget(risk_header)
+
+            risk_form = QFormLayout()
+            risk_form.setSpacing(self._sp.GAP_MD)
+            risk_form.setLabelAlignment(Qt.AlignRight)
 
             # Max Daily Loss
             self.max_loss_spin = QDoubleSpinBox()
@@ -565,11 +906,13 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.max_loss_spin.setPrefix("₹ ")
             self.max_loss_spin.setToolTip("Maximum daily loss before bot stops trading (negative value)")
             self.max_loss_spin.setValue(-5000)
-            limits_layout.addRow("Max Daily Loss:", self.max_loss_spin)
+            self.max_loss_spin.setStyleSheet(self._get_spinbox_style())
+            risk_form.addRow("Max Daily Loss:", self.max_loss_spin)
 
             loss_hint = QLabel("Trading stops when daily P&L reaches this level (negative number)")
-            loss_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            limits_layout.addRow("", loss_hint)
+            loss_hint.setWordWrap(True)
+            loss_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            risk_form.addRow("", loss_hint)
 
             # Max Trades Per Day
             self.max_trades_spin = QSpinBox()
@@ -577,11 +920,13 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.max_trades_spin.setSuffix(" trades")
             self.max_trades_spin.setToolTip("Maximum number of trades per day")
             self.max_trades_spin.setValue(10)
-            limits_layout.addRow("Max Trades/Day:", self.max_trades_spin)
+            self.max_trades_spin.setStyleSheet(self._get_spinbox_style())
+            risk_form.addRow("Max Trades/Day:", self.max_trades_spin)
 
             trades_hint = QLabel("Hard limit on number of entries per day")
-            trades_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            limits_layout.addRow("", trades_hint)
+            trades_hint.setWordWrap(True)
+            trades_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            risk_form.addRow("", trades_hint)
 
             # Daily Profit Target
             self.daily_target_spin = QDoubleSpinBox()
@@ -590,17 +935,20 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.daily_target_spin.setPrefix("₹ ")
             self.daily_target_spin.setToolTip("Daily profit target for progress tracking")
             self.daily_target_spin.setValue(5000)
-            limits_layout.addRow("Daily Target:", self.daily_target_spin)
+            self.daily_target_spin.setStyleSheet(self._get_spinbox_style())
+            risk_form.addRow("Daily Target:", self.daily_target_spin)
 
             target_hint = QLabel("Profit target for the day (for display purposes only)")
-            target_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            limits_layout.addRow("", target_hint)
+            target_hint.setWordWrap(True)
+            target_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            risk_form.addRow("", target_hint)
 
-            layout.addWidget(limits_group)
+            risk_layout.addLayout(risk_form)
+            layout.addWidget(risk_card)
 
             # Info Card
             info_card = self._create_info_card(
-                "📘 About Risk Management:",
+                "📘 About Risk Management",
                 "• **Max Daily Loss**: When daily P&L reaches this negative value, "
                 "the bot stops trading automatically.\n\n"
                 "• **Max Trades/Day**: Hard limit on the number of entries per day.\n\n"
@@ -619,81 +967,112 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
     # ── FEATURE 6: Multi-Timeframe Filter Tab ────────────────────────────────
     def _build_mtf_tab(self):
-        """Build Multi-Timeframe Filter settings tab"""
+        """Build Multi-Timeframe Filter settings tab with modern card layout"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            # Enable/Disable Group
-            enable_group = QGroupBox("MTF Filter Status")
-            enable_layout = QVBoxLayout(enable_group)
+            # Enable MTF Card
+            enable_card = ModernCard()
+            enable_layout = QVBoxLayout(enable_card)
+            enable_layout.setSpacing(self._sp.GAP_MD)
+
+            enable_header = QLabel("📈 Multi-Timeframe Filter")
+            enable_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            enable_layout.addWidget(enable_header)
 
             self.mtf_check = QCheckBox("Enable Multi-Timeframe Filter")
             self.mtf_check.setToolTip("When enabled, requires agreement across multiple timeframes before entry")
+            self.mtf_check.setStyleSheet(self._get_checkbox_style())
             enable_layout.addWidget(self.mtf_check)
 
             enable_hint = QLabel("Requires at least 2 of 3 timeframes to agree with trade direction")
-            enable_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
+            enable_hint.setWordWrap(True)
+            enable_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt; padding-left: {self._sp.PAD_XL}px;")
             enable_layout.addWidget(enable_hint)
 
-            layout.addWidget(enable_group)
+            layout.addWidget(enable_card)
 
-            # Timeframe Configuration Group
-            tf_group = QGroupBox("Timeframe Configuration")
-            tf_layout = QFormLayout(tf_group)
-            tf_layout.setSpacing(sp.GAP_SM)
-            tf_layout.setLabelAlignment(Qt.AlignRight)
+            # Configuration Card
+            config_card = ModernCard()
+            config_layout = QVBoxLayout(config_card)
+            config_layout.setSpacing(self._sp.GAP_MD)
+
+            config_header = QLabel("⚙️ Timeframe Configuration")
+            config_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            config_layout.addWidget(config_header)
+
+            config_form = QFormLayout()
+            config_form.setSpacing(self._sp.GAP_MD)
+            config_form.setLabelAlignment(Qt.AlignRight)
 
             # Timeframes
             self.mtf_timeframes_edit = QLineEdit()
             self.mtf_timeframes_edit.setPlaceholderText("1,5,15")
             self.mtf_timeframes_edit.setToolTip("Comma-separated list of timeframes in minutes")
-            tf_layout.addRow("Timeframes:", self.mtf_timeframes_edit)
+            self.mtf_timeframes_edit.setStyleSheet(self._get_lineedit_style())
+            config_form.addRow("Timeframes:", self.mtf_timeframes_edit)
 
             tf_hint = QLabel("Example: 1,5,15 for 1min, 5min, and 15min")
-            tf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            tf_layout.addRow("", tf_hint)
+            tf_hint.setWordWrap(True)
+            tf_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            config_form.addRow("", tf_hint)
 
             # Fast EMA
             self.mtf_ema_fast_spin = QSpinBox()
             self.mtf_ema_fast_spin.setRange(1, 50)
             self.mtf_ema_fast_spin.setSuffix(" periods")
             self.mtf_ema_fast_spin.setToolTip("Fast EMA period for trend detection")
-            tf_layout.addRow("Fast EMA:", self.mtf_ema_fast_spin)
+            self.mtf_ema_fast_spin.setStyleSheet(self._get_spinbox_style())
+            config_form.addRow("Fast EMA:", self.mtf_ema_fast_spin)
 
             # Slow EMA
             self.mtf_ema_slow_spin = QSpinBox()
             self.mtf_ema_slow_spin.setRange(5, 200)
             self.mtf_ema_slow_spin.setSuffix(" periods")
             self.mtf_ema_slow_spin.setToolTip("Slow EMA period for trend detection")
-            tf_layout.addRow("Slow EMA:", self.mtf_ema_slow_spin)
+            self.mtf_ema_slow_spin.setStyleSheet(self._get_spinbox_style())
+            config_form.addRow("Slow EMA:", self.mtf_ema_slow_spin)
 
             # Agreement Required
             self.mtf_agreement_spin = QSpinBox()
             self.mtf_agreement_spin.setRange(1, 3)
             self.mtf_agreement_spin.setSuffix(" timeframes")
             self.mtf_agreement_spin.setToolTip("Number of timeframes that must agree")
-            tf_layout.addRow("Agreement Required:", self.mtf_agreement_spin)
+            self.mtf_agreement_spin.setStyleSheet(self._get_spinbox_style())
+            config_form.addRow("Agreement Required:", self.mtf_agreement_spin)
 
             agree_hint = QLabel("How many timeframes must agree before allowing entry")
-            agree_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            tf_layout.addRow("", agree_hint)
+            agree_hint.setWordWrap(True)
+            agree_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            config_form.addRow("", agree_hint)
 
-            layout.addWidget(tf_group)
+            config_layout.addLayout(config_form)
+            layout.addWidget(config_card)
 
             # Info Card
             info_card = self._create_info_card(
-                "📘 How Multi-Timeframe Filter Works:",
+                "📘 How Multi-Timeframe Filter Works",
                 "1. For each timeframe, calculates EMA9 and EMA21\n"
                 "2. Determines trend: BULLISH (EMA9 > EMA21 > LTP) or BEARISH (EMA9 < EMA21 < LTP)\n"
                 "3. Requires at least N timeframes to agree (default: 2 of 3)\n"
@@ -712,26 +1091,37 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
     # ── FEATURE 3: Signal Confidence Tab ─────────────────────────────────────
     def _build_signal_tab(self):
-        """Build signal confidence settings tab"""
+        """Build signal confidence settings tab with modern card layout"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            # Confidence Group
-            conf_group = QGroupBox("Signal Confidence Settings")
-            conf_layout = QFormLayout(conf_group)
-            conf_layout.setSpacing(sp.GAP_SM)
-            conf_layout.setLabelAlignment(Qt.AlignRight)
+            # Confidence Card
+            conf_card = ModernCard()
+            conf_layout = QVBoxLayout(conf_card)
+            conf_layout.setSpacing(self._sp.GAP_MD)
+
+            conf_header = QLabel("🎯 Signal Confidence")
+            conf_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            conf_layout.addWidget(conf_header)
+
+            conf_form = QFormLayout()
+            conf_form.setSpacing(self._sp.GAP_MD)
+            conf_form.setLabelAlignment(Qt.AlignRight)
 
             # Min Confidence
             self.min_confidence_spin = QDoubleSpinBox()
@@ -739,17 +1129,20 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.min_confidence_spin.setSingleStep(0.05)
             self.min_confidence_spin.setDecimals(2)
             self.min_confidence_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
-            conf_layout.addRow("Min Confidence:", self.min_confidence_spin)
+            self.min_confidence_spin.setStyleSheet(self._get_spinbox_style())
+            conf_form.addRow("Min Confidence:", self.min_confidence_spin)
 
             conf_hint = QLabel("Signals below this confidence are suppressed (0.0-1.0)")
-            conf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            conf_layout.addRow("", conf_hint)
+            conf_hint.setWordWrap(True)
+            conf_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            conf_form.addRow("", conf_hint)
 
-            layout.addWidget(conf_group)
+            conf_layout.addLayout(conf_form)
+            layout.addWidget(conf_card)
 
             # Info Card
             info_card = self._create_info_card(
-                "📘 About Signal Confidence:",
+                "📘 About Signal Confidence",
                 "• **Confidence Score**: Weighted average of rule results\n"
                 "• **Min Confidence**: Signals below this threshold are ignored\n"
                 "• **Rule Weights**: Configured in Strategy Editor\n\n"
@@ -770,21 +1163,20 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
     def _build_info_tab(self):
         """Build the information tab with help content"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_MD)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_MD)
 
             infos = [
                 (
-                    "🖥️  Simulation Mode",
+                    "🖥️ Simulation Mode",
                     "Paper trading environment where no real money is at risk.\n\n"
                     "• Uses virtual balance defined in settings.\n"
                     "• Perfect for testing strategies and learning.\n"
@@ -792,7 +1184,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     "• All order executions are virtual - no actual trades placed."
                 ),
                 (
-                    "💰  Live Mode",
+                    "💰 Live Mode",
                     "Real trading with actual capital - USE WITH EXTREME CAUTION.\n\n"
                     "• Requires explicit 'Enable live trading' checkbox.\n"
                     "• Real orders sent to exchange via broker API.\n"
@@ -801,7 +1193,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     "• Start with small capital and gradually increase."
                 ),
                 (
-                    "📊  Backtest Mode",
+                    "📊 Backtest Mode",
                     "Run strategy on historical data to evaluate performance.\n\n"
                     "• No live orders - purely analytical.\n"
                     "• Uses historical price data for simulation.\n"
@@ -810,7 +1202,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     "• Results depend on data quality and assumptions."
                 ),
                 (
-                    "🛡️  Safety Features",
+                    "🛡️ Safety Features",
                     "Multiple layers of protection against accidental losses.\n\n"
                     "• Live Mode requires explicit enable checkbox.\n"
                     "• Per-trade confirmation option for extra safety.\n"
@@ -819,7 +1211,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     "• Settings are saved with safety checks."
                 ),
                 (
-                    "📈  Simulation Realism",
+                    "📈 Simulation Realism",
                     "Options to make paper trading more realistic:\n\n"
                     "• Slippage: Simulates price movement between order and fill.\n"
                     "• Delay: Adds artificial latency like real exchanges.\n"
@@ -828,28 +1220,28 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     "• More realistic simulations = better strategy validation."
                 ),
                 (
-                    "⚠️  Risk Management",
+                    "⚠️ Risk Management",
                     "Daily loss limits and trade counts to protect capital.\n\n"
                     "• **Max Daily Loss**: Stop trading when daily P&L hits this level.\n"
                     "• **Max Trades/Day**: Hard limit on number of entries.\n"
                     "• **Daily Target**: Visual progress indicator for profit goals."
                 ),
                 (
-                    "📈  Multi-Timeframe Filter",
+                    "📈 Multi-Timeframe Filter",
                     "Confirms trend direction across multiple timeframes.\n\n"
                     "• Uses EMA 9/21 crossovers on multiple timeframes.\n"
                     "• Requires configurable number of timeframes to agree.\n"
                     "• Reduces false entries during conflicting trends."
                 ),
                 (
-                    "🎯  Signal Confidence",
+                    "🎯 Signal Confidence",
                     "Weighted voting system for signal groups.\n\n"
                     "• Each rule can have a weight (default 1.0).\n"
                     "• Confidence = passed_weight / total_weight.\n"
                     "• Signals below min_confidence are suppressed."
                 ),
                 (
-                    "📁  Settings Storage",
+                    "📁 Settings Storage",
                     "Trading mode settings are saved locally to:\n\n"
                     "    config/trading_mode_setting.json\n\n"
                     "The file is written atomically to prevent corruption. "
@@ -875,23 +1267,22 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
     def _create_info_card(self, title: str, body: str) -> QFrame:
         """Create an information card with themed styling"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        card = QFrame()
-        card.setObjectName("infoCard")
+        card = ModernCard()
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        card_layout.setSpacing(sp.GAP_XS)
+        card_layout.setSpacing(self._sp.GAP_SM)
 
         title_lbl = QLabel(title)
-        title_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-        title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN};")
+        title_lbl.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
 
         body_lbl = QLabel(body)
         body_lbl.setWordWrap(True)
-        body_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+        body_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
 
         card_layout.addWidget(title_lbl)
         card_layout.addWidget(body_lbl)
@@ -899,16 +1290,14 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
     def _create_error_scroll(self, error_msg):
         """Create a scroll area with error message"""
-        c = self._c
-        sp = self._sp
-
         scroll = QScrollArea()
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+        layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                 self._sp.PAD_XL, self._sp.PAD_XL)
 
         error_label = QLabel(f"❌ {error_msg}")
-        error_label.setStyleSheet(f"color: {c.RED}; padding: {sp.PAD_XL}px;")
+        error_label.setStyleSheet(f"color: {self._c.RED}; padding: {self._sp.PAD_XL}px;")
         error_label.setWordWrap(True)
         layout.addWidget(error_label)
         scroll.setWidget(container)
@@ -996,10 +1385,14 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
             if self.safety_warning is not None:
                 self.safety_warning.setVisible(is_live)
+                if is_live and self.allow_live_check is not None and not self.allow_live_check.isChecked():
+                    self.safety_warning_label.setText("⚠️ Check 'Enable live trading' to save LIVE mode")
+                else:
+                    self.safety_warning_label.setText("⚠️ LIVE MODE - Real money will be used!")
                 self._update_safety_warning()
 
-            if self.sim_group is not None:
-                self.sim_group.setEnabled(not is_live)
+            if self.sim_card is not None:
+                self.sim_card.setEnabled(not is_live)
 
             # Button enable logic
             buttons_enabled = True
@@ -1007,11 +1400,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             if is_live:
                 if self.allow_live_check is not None and not self.allow_live_check.isChecked():
                     buttons_enabled = False
-                    if self.safety_warning is not None:
-                        self.safety_warning.setText("⚠️ Check 'Enable live trading' to save LIVE mode")
-                else:
-                    if self.safety_warning is not None:
-                        self.safety_warning.setText("⚠️ LIVE MODE - Real money will be used!")
 
             # Apply button states
             if self.save_btn is not None:
@@ -1032,20 +1420,56 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
             self._save_in_progress = True
             self.status_label.setText("⏳ Applying settings...")
-            self.status_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.BLUE};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
 
             if self._validate_and_save():
                 self.status_label.setText("✓ Settings applied successfully!")
-                self.status_label.setStyleSheet(f"color:{self._c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.GREEN};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
                 logger.info("Settings applied successfully")
             else:
                 self.status_label.setText("✗ Failed to apply settings")
-                self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.RED};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
 
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._apply_settings] Failed: {e}", exc_info=True)
             self.status_label.setText(f"✗ Error: {e}")
-            self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.RED};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
         finally:
             self._save_in_progress = False
 
@@ -1058,22 +1482,58 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
             self._save_in_progress = True
             self.status_label.setText("⏳ Saving settings...")
-            self.status_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.BLUE};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
 
             if self._validate_and_save():
                 self.status_label.setText("✓ Settings saved successfully!")
-                self.status_label.setStyleSheet(f"color:{self._c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.GREEN};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
                 logger.info("Settings saved successfully, closing dialog")
                 QTimer.singleShot(1000, self.accept)
             else:
                 self.status_label.setText("✗ Failed to save settings")
-                self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.RED};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
                 self._save_in_progress = False
 
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._save_settings] Failed: {e}", exc_info=True)
             self.status_label.setText(f"✗ Error: {e}")
-            self.status_label.setStyleSheet(f"color:{self._c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.RED};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
             self._save_in_progress = False
 
     def _validate_and_save(self) -> bool:
@@ -1169,21 +1629,14 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                 QMessageBox.critical(self, "Error", "Failed to save settings to file")
                 return False
 
-            # Update trading app if running.
-            # Bug #1 fix: the correct method name is refresh_settings_live(), not the
-            # non-existent refresh_trading_mode().  The old hasattr() guard returned
-            # False silently — the mode was saved to the DB but executor.paper_mode,
-            # broker.paper_mode, and state.is_paper_mode were never updated, so all
-            # orders continued to be simulated even after switching to LIVE.
             if self.app is not None:
                 try:
                     self.app.refresh_settings_live()
                     logger.info(
                         "[TradingModeSettingGUI] Trading app refreshed after mode change "
-                        f"(mode={getattr(self.trading_mode_setting, 'mode', 'N/A')})"
+                        f"(mode={safe_getattr(self.trading_mode_setting, 'mode', 'N/A')})"
                     )
                 except AttributeError:
-                    # Warn explicitly instead of swallowing silently via hasattr
                     logger.warning(
                         "[TradingModeSettingGUI] trading_app.refresh_settings_live() not found — "
                         "executor paper_mode may be stale until restart"
@@ -1215,7 +1668,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.safety_warning = None
             self.allow_live_check = None
             self.confirm_live_check = None
-            self.sim_group = None
+            self.sim_card = None
             self.paper_balance_spin = None
             self.slippage_check = None
             self.slippage_spin = None
@@ -1234,6 +1687,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.cancel_btn = None
             self.apply_btn = None
             self.status_label = None
+            self.main_card = None
 
             logger.info("[TradingModeSettingGUI] Cleanup completed")
 
@@ -1243,8 +1697,10 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
     def closeEvent(self, event):
         """Handle close event with cleanup"""
         try:
+            if self._save_in_progress:
+                logger.warning("Closing while save in progress")
             self.cleanup()
-            event.accept()
+            super().closeEvent(event)
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI.closeEvent] Failed: {e}", exc_info=True)
-            event.accept()
+            super().closeEvent(event)

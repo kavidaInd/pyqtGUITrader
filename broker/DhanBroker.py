@@ -33,6 +33,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -108,9 +109,9 @@ class DhanBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for DhanBroker.")
 
-            self.client_id = getattr(broker_setting, 'client_id', None)
+            self.client_id = safe_getattr(broker_setting, 'client_id', None)
             # For Dhan the "secret_key" field carries the access token
-            access_token = getattr(broker_setting, 'secret_key', None)
+            access_token = safe_getattr(broker_setting, 'secret_key', None)
 
             # Also check the DB for a fresher token (in case it was updated)
             db_token = self._load_token_from_db()
@@ -231,7 +232,7 @@ class DhanBroker(BaseBroker):
     @staticmethod
     def _load_dhan_instruments():
         """Load Dhan instrument master CSV. Caches in-memory for the session."""
-        if not hasattr(DhanBroker, '_instruments_df') or DhanBroker._instruments_df is None:
+        if not safe_hasattr(DhanBroker, '_instruments_df') or DhanBroker._instruments_df is None:
             try:
                 url = "https://images.dhan.co/api-data/api-scrip-master.csv"
                 DhanBroker._instruments_df = pd.read_csv(url, low_memory=False)
@@ -716,7 +717,7 @@ class DhanBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_feed, "disconnect"):
+                        if safe_hasattr(self._ws_feed, "disconnect"):
                             self._ws_feed.disconnect()
                             logger.debug("[DhanBroker] DhanFeed disconnect called")
                     except Exception as e:
@@ -799,9 +800,9 @@ class DhanBroker(BaseBroker):
         try:
             from dhanhq import marketfeed  # type: ignore
 
-            client_id    = getattr(self, 'client_id', None) or \
-                           getattr(self, 'dhan_client_id', None)
-            access_token = getattr(self.state, "token", None) if self.state else None
+            client_id    = safe_getattr(self, 'client_id', None) or \
+                           safe_getattr(self, 'dhan_client_id', None)
+            access_token = safe_getattr(self.state, "token", None) if self.state else None
             if not client_id or not access_token:
                 logger.error("DhanBroker.create_websocket: missing client_id or token")
                 return None
@@ -919,7 +920,7 @@ class DhanBroker(BaseBroker):
 
             feed = ws_obj.get("__feed__") if isinstance(ws_obj, dict) else self._ws_feed
 
-            if feed and hasattr(feed, "disconnect"):
+            if feed and safe_hasattr(feed, "disconnect"):
                 # Run disconnect in separate thread with timeout
                 disconnect_complete = threading.Event()
 
@@ -1006,7 +1007,7 @@ class DhanBroker(BaseBroker):
         """
         try:
             from dhanhq import marketfeed  # type: ignore
-            cache = getattr(self, "_dhan_sec_cache", {})
+            cache = safe_getattr(self, "_dhan_sec_cache", {})
             if symbol in cache:
                 return cache[symbol]
 

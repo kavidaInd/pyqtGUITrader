@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 
 # Import Utils for market status
 from Utils.Utils import Utils
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 
 # Import state manager
 from data.trade_state_manager import state_manager
@@ -404,7 +405,7 @@ class StatusPanel(QWidget):
 
             # Update all cards
             for card in self.cards.values():
-                if hasattr(card, 'apply_theme'):
+                if safe_hasattr(card, 'apply_theme'):
                     card.apply_theme()
 
             # Update button styles
@@ -489,7 +490,7 @@ class StatusPanel(QWidget):
         """Get cached position snapshot (always in sync with _get_cached_snapshot)"""
         # Ensure the cache is populated first
         self._get_cached_snapshot()
-        return getattr(self, '_last_position_snapshot', {})
+        return safe_getattr(self, '_last_position_snapshot', {})
 
     def _update_market_status(self):
         """Update market status using Utils"""
@@ -795,11 +796,11 @@ class StatusPanel(QWidget):
                         self.cards[key].set_dimmed(not trade_active)
 
                 # Update button states
-                if hasattr(self, 'exit_btn') and self.exit_btn:
+                if safe_hasattr(self, 'exit_btn') and self.exit_btn:
                     self.exit_btn.setEnabled(trade_active)
-                if hasattr(self, 'modify_sl_btn') and self.modify_sl_btn:
+                if safe_hasattr(self, 'modify_sl_btn') and self.modify_sl_btn:
                     self.modify_sl_btn.setEnabled(trade_active)
-                if hasattr(self, 'modify_tp_btn') and self.modify_tp_btn:
+                if safe_hasattr(self, 'modify_tp_btn') and self.modify_tp_btn:
                     self.modify_tp_btn.setEnabled(trade_active)
 
             # Update signal card

@@ -14,6 +14,7 @@ import threading
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
+from Utils.safe_getattr import safe_getattr
 from db.connector import get_db
 from db.strategy_crud import strategy_crud
 
@@ -597,6 +598,7 @@ class StrategyManager:
         except Exception as e:
             logger.error(f"[StrategyManager.cleanup] Error: {e}", exc_info=True)
 
+
 _strategy_manager_instance: Optional["StrategyManager"] = None
 _strategy_manager_lock = threading.Lock()
 
@@ -618,8 +620,10 @@ def get_strategy_manager() -> "StrategyManager":
 
 class _LazyStrategyManagerProxy:
     """Transparent proxy that defers StrategyManager construction until first use."""
+
     def __getattr__(self, name):
-        return getattr(get_strategy_manager(), name)
+        return safe_getattr(get_strategy_manager(), name)
+
     def __repr__(self):
         return repr(get_strategy_manager())
 

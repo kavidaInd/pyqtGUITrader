@@ -94,6 +94,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 import pandas as pd
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
+
 logger = logging.getLogger(__name__)
 
 
@@ -319,7 +321,7 @@ class CandleDebugger:
 
         # ── Position context ──────────────────────────────────────────────────
         import BaseEnums  # noqa: F401 — import inside function to avoid circular imports at module level
-        _cur = getattr(state, "current_position", None)
+        _cur = safe_getattr(state, "current_position", None)
         if _cur == BaseEnums.CALL:
             cur_str = "CALL"
         elif _cur == BaseEnums.PUT:
@@ -329,12 +331,12 @@ class CandleDebugger:
 
         position = {
             "current":       cur_str,
-            "entry_time":    _dt_str(getattr(state, "_bt_entry_time", None)),
-            "entry_spot":    _r(getattr(state, "_bt_spot_entry", None)),
-            "entry_option":  _r(getattr(state, "_bt_entry_price", None)),
-            "strike":        getattr(state, "_bt_strike", None),
+            "entry_time":    _dt_str(safe_getattr(state, "_bt_entry_time", None)),
+            "entry_spot":    _r(safe_getattr(state, "_bt_spot_entry", None)),
+            "entry_option":  _r(safe_getattr(state, "_bt_entry_price", None)),
+            "strike":        safe_getattr(state, "_bt_strike", None),
             "bars_in_trade": bars_in_trade,
-            "buy_price":     _r(getattr(state, "current_buy_price", None)),
+            "buy_price":     _r(safe_getattr(state, "current_buy_price", None)),
             "trailing_high": _r(trailing_sl_high),
         }
 
@@ -398,7 +400,7 @@ def _dt_str(dt) -> Optional[str]:
         return None
     try:
         # If datetime is timezone-aware, keep the timezone info in the string
-        if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+        if safe_hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
             # Format with timezone offset
             return dt.strftime("%Y-%m-%d %H:%M:%S%z")
         else:
@@ -417,7 +419,7 @@ def _json_default(obj):
         return obj.isoformat()
 
     # Handle Enum types (like PriceSource)
-    if hasattr(obj, 'value'):
+    if safe_hasattr(obj, 'value'):
         return obj.value
 
     # Handle pandas Series/DataFrame
@@ -425,7 +427,7 @@ def _json_default(obj):
         return obj.to_dict()
 
     # Handle custom objects with __dict__
-    if hasattr(obj, '__dict__'):
+    if safe_hasattr(obj, '__dict__'):
         return str(obj)
 
     try:

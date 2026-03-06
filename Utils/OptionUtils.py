@@ -1,6 +1,3 @@
-# OptionUtils.py - All option-related methods consolidated here
-# Updated: Full broker-aware symbol generation and interval translation
-
 import calendar
 import logging.handlers
 from datetime import datetime, timedelta
@@ -9,7 +6,7 @@ from typing import Optional, List, Any, Dict, Tuple
 import BaseEnums
 from Utils.common import (
     is_holiday, is_market_closed_for_the_day, get_market_end_time,
-    get_time_of_day, to_date_str, get_epoch
+    get_time_of_day
 )
 
 logger = logging.getLogger(__name__)
@@ -296,37 +293,24 @@ class OptionUtils:
         try:
             broker_key = broker_type.lower()
 
-            # ── Idempotency guard ─────────────────────────────────────────────
-            # Strip any existing exchange prefix so that symbols which have
-            # already been formatted (e.g. "NSE:NIFTY25021CE" coming from
-            # build_option_symbol, or "NSE:NIFTY50-INDEX" stored in state) are
-            # not double-prefixed when passed through ws_subscribe or any other
-            # path that calls _format_symbol a second time.
-            # We detect a prefix as a known exchange identifier followed by
-            # ":" or "|".
+
             core_symbol = symbol
-            known_prefixes = ("NSE:", "NFO:", "BSE:", "NSE_INDEX|", "NSE_FO|",
-                              "NFO|", "BSE|", "MCX:", "MCX|", "CDS:")
+            known_prefixes = (
+                "NSE:", "NFO:", "BSE:", "NSE_INDEX|", "NSE_FO|",
+                "NFO|", "BSE|", "MCX:", "MCX|", "CDS:", "BSE_INDEX|"
+            )
             for pfx in known_prefixes:
                 if symbol.startswith(pfx):
                     core_symbol = symbol[len(pfx):]
                     break
 
             # ── Index path ────────────────────────────────────────────────────
-            # Resolve core_symbol to its canonical exchange name.
-            # If it maps to a known index canonical (NIFTY, BANKNIFTY, …),
-            # return the full broker-specific index string from _INDEX_SYMBOL_MAP.
+
             canonical = cls.get_exchange_symbol(core_symbol)
             broker_index_map = cls._INDEX_SYMBOL_MAP.get(broker_key, {})
             if canonical in broker_index_map:
                 return broker_index_map[canonical]
 
-            # ── Already-translated index guard ────────────────────────────────
-            # If the symbol was already the broker's own index string (e.g.
-            # Upstox's "NSE_INDEX|Nifty 50" or Zerodha's "NSE:NIFTY 50"),
-            # after prefix-stripping the core won't match SYMBOL_MAP but it
-            # IS valid for this broker — check all broker index maps to see if
-            # the original symbol is already a canonical broker value.
             for _broker_map in cls._INDEX_SYMBOL_MAP.values():
                 if symbol in _broker_map.values():
                     return symbol  # already a valid broker index string
@@ -424,7 +408,8 @@ class OptionUtils:
                 return None
 
             if broker_type:
-                return cls.get_option_symbol_for_broker(core, broker_type)
+                # Bug #29 fix: Call get_symbol_for_broker directly
+                return cls.get_symbol_for_broker(core, broker_type)
             return core
 
         except Exception as e:
@@ -482,10 +467,11 @@ class OptionUtils:
             lot = cls.LOT_SIZE_MAP.get(exchange_symbol)
             if lot is not None:
                 return lot
+            # Bug #28 fix: Log warning but still return fallback
             logger.warning(
                 f"[OptionUtils.get_lot_size] No lot size entry for "
                 f"\'{symbol}\' (canonical=\'{exchange_symbol}\'). "
-                f"Using fallback={fallback}."
+                f"Using fallback={fallback}. This may cause order issues."
             )
             return fallback
         except Exception as e:
@@ -832,8 +818,9 @@ class OptionUtils:
                             exchange_symbol, current_strike, putorcall, expiry
                         )
                     if core:
+                        # Bug #29 fix: Call get_symbol_for_broker directly
                         option = (
-                            cls.get_option_symbol_for_broker(core, broker_type)
+                            cls.get_symbol_for_broker(core, broker_type)
                             if broker_type else core
                         )
                         options.append(option)
@@ -880,7 +867,7 @@ class OptionUtils:
                 return None
 
             if broker_type:
-                return cls.get_option_symbol_for_broker(core, broker_type)
+                return cls.get_symbol_for_broker(core, broker_type)
             return core
 
         except Exception as e:
@@ -1160,3 +1147,27 @@ class OptionUtils:
                 exc_info=True,
             )
             return [total_shares]
+
+    @classmethod
+    def has_weekly_expiry(cls, symbol: str) -> bool:
+        """
+        Check if the given derivative has weekly expiry contracts.
+        Args:
+            symbol: Any form of the derivative name (canonical, broker-prefixed, or aliased)
+
+        Returns:
+            True if the symbol has weekly expiries, False if monthly-only
+        """
+        try:
+            # Resolve to canonical exchange symbol
+            exchange_symbol = cls.get_exchange_symbol(symbol)
+
+            weekly_indices = {"NIFTY", "SENSEX"}
+            return exchange_symbol in weekly_indices
+
+        except Exception as e:
+            logger.error(
+                f"[OptionUtils.has_weekly_expiry] Failed for {symbol}: {e}",
+                exc_info=True
+            )
+            return True

@@ -1,3 +1,4 @@
+# OptionSymbolBuilder.py (fixed)
 """
 Utils/OptionSymbolBuilder.py
 ============================
@@ -315,6 +316,13 @@ class OptionSymbolBuilder:
             If the target date coincides with the monthly expiry, the
             monthly date-code format will be used automatically.
         """
+        if weeks_offset < 0:
+            logger.warning(f"Negative weeks_offset {weeks_offset} - using 0")
+            weeks_offset = 0
+        if weeks_offset > 52:
+            logger.warning(f"weeks_offset {weeks_offset} > 52 (1 year) - limiting to 52")
+            weeks_offset = 52
+
         sym = cls.canonical(underlying)
         if not cls.has_weekly_expiry(sym):
             # Monthly-only index
@@ -359,8 +367,8 @@ class OptionSymbolBuilder:
         option_type     : "CE" or "PE".
         weeks_offset    : Which expiry week/month (0 = current).
         lookback_strikes: Number of strikes to move away from ATM.
-                          Positive = OTM for CE / ITM for PE.
-                          Negative = ITM for CE / OTM for PE.
+                          For CE: Positive = OTM, Negative = ITM.
+                          For PE: Positive = ITM, Negative = OTM.
 
         Returns
         -------
@@ -375,11 +383,11 @@ class OptionSymbolBuilder:
                 opt = "CE"
 
             atm = cls.nearest_strike(spot_price, sym)
-            # Move by lookback_strikes from ATM
             if opt == "CE":
-                strike = atm - lookback_strikes * mult
-            else:
                 strike = atm + lookback_strikes * mult
+            else:
+                # For PE: Positive lookback = ITM (higher strike), Negative = OTM (lower strike)
+                strike = atm - lookback_strikes * mult
 
             exp = cls.expiry_date(sym, weeks_offset)
             is_monthly = (

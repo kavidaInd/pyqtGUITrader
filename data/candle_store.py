@@ -1,3 +1,4 @@
+# candle_store.py (fixed)
 """
 data/candle_store.py
 ====================
@@ -94,6 +95,7 @@ from pytz import timezone
 
 from Utils.OptionUtils import OptionUtils
 from Utils.common import MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE
+from Utils.safe_getattr import safe_hasattr
 from broker.BaseBroker import TokenExpiredError
 
 logger = logging.getLogger(__name__)
@@ -127,10 +129,10 @@ def _tz_name(tzinfo) -> str:
     if tzinfo is None:
         return ""
     # pytz
-    if hasattr(tzinfo, "zone"):
+    if safe_hasattr(tzinfo, "zone"):
         return tzinfo.zone
     # zoneinfo (Python 3.9+)
-    if hasattr(tzinfo, "key"):
+    if safe_hasattr(tzinfo, "key"):
         return tzinfo.key
     # dateutil / stdlib — use string representation as last resort
     return str(tzinfo)
@@ -269,7 +271,7 @@ class CandleStore:
                 )
 
             # Fallback: get_history with estimated length
-            if df is None or (hasattr(df, "empty") and df.empty):
+            if df is None or (safe_hasattr(df, "empty") and df.empty):
                 try:
                     length = min(days * 375 + 50, 5000)  # 375 bars/day
                     df = self.broker.get_history(
@@ -283,7 +285,7 @@ class CandleStore:
                     logger.error(f"[CandleStore] get_history fallback also failed: {e}")
                     return False
 
-            if df is None or (hasattr(df, "empty") and df.empty):
+            if df is None or (safe_hasattr(df, "empty") and df.empty):
                 logger.warning(f"[CandleStore] Broker returned empty 1-min data for '{broker_sym}'")
                 return False
 
@@ -341,8 +343,9 @@ class CandleStore:
                 self._tick_close = ltp
                 self._tick_volume = float(volume)
 
-            elif bar_start > self._tick_bar_start:
-                # Minute rolled — flush the completed candle
+            # Bug #5 fix: Use >= and check time difference to handle clock jumps
+            elif bar_start > self._tick_bar_start or (bar_start - self._tick_bar_start).total_seconds() >= 60:
+                # Minute rolled or clock jumped forward — flush the completed candle
                 self._flush_tick_bar()
                 bar_completed = True
                 self._tick_bar_start = bar_start
@@ -447,8 +450,6 @@ class CandleStore:
             return False
         return (now - last) > timedelta(minutes=max_gap_minutes)
 
-    # Add this method to candle_store.py in the CandleStore class
-
     def needs_update(self, interval_minutes: int, max_gap_minutes: int = 1) -> bool:
         """
         Check if the store needs to fetch updated history.
@@ -475,10 +476,11 @@ class CandleStore:
             if not (_MARKET_OPEN <= now_t <= _MARKET_CLOSE):
                 return False
 
-            # Calculate time since last bar in minutes
-            time_since_last = (now - last_bar).total_seconds() / 60
+            next_bar_time = last_bar + timedelta(minutes=interval_minutes)
+            time_until_next = (next_bar_time - now).total_seconds() / 60
 
-            return time_since_last > max_gap_minutes
+            # If we're past the next expected bar time, we need an update
+            return time_until_next < -max_gap_minutes
 
     def get_data_in_timezone(self, minutes: int,
                              tz: str = "Asia/Kolkata") -> Optional[pd.DataFrame]:
@@ -605,7 +607,6 @@ class CandleStore:
         Indian trading session (09:15) regardless of the requested interval.
         This means a 5-min bar always starts at :15, :20, :25 … and a 15-min
         bar at :15, :30, :45 … matching NSE exchange candle boundaries.
-        Removed.
         """
         try:
             df = df_1min.copy()
@@ -634,13 +635,17 @@ class CandleStore:
             # Drop bars with no data (gaps / holidays)
             ohlcv = ohlcv.dropna(subset=["open", "close"])
 
-            # Drop bars outside market open
             ohlcv = ohlcv[ohlcv.index.time >= _MARKET_OPEN]
-            last_full_bar_label = (
-                    datetime.combine(datetime.today(), _MARKET_CLOSE)
-                    - timedelta(minutes=minutes - 1)
-            ).time()
-            ohlcv = ohlcv[ohlcv.index.time <= last_full_bar_label]
+
+            def bar_ends_after_close(bar_time):
+                bar_date = bar_time.date()
+                close_time = datetime.combine(bar_date, _MARKET_CLOSE, tzinfo=IST)
+                bar_end = bar_time + timedelta(minutes=minutes - 1)
+                return bar_end <= close_time
+
+            # Apply the filter using a mask
+            mask = [bar_ends_after_close(idx) for idx in ohlcv.index]
+            ohlcv = ohlcv[mask]
 
             ohlcv = ohlcv.reset_index()
 

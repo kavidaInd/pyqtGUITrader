@@ -36,6 +36,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -108,9 +109,9 @@ class AngelOneBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for AngelOneBroker.")
 
-            self.client_code = getattr(broker_setting, 'client_id', None)
-            self.api_key     = getattr(broker_setting, 'secret_key', None)
-            self.totp_secret = getattr(broker_setting, 'redirect_uri', None)  # TOTP base32 secret
+            self.client_code = safe_getattr(broker_setting, 'client_id', None)
+            self.api_key     = safe_getattr(broker_setting, 'secret_key', None)
+            self.totp_secret = safe_getattr(broker_setting, 'redirect_uri', None)  # TOTP base32 secret
 
             if not self.client_code or not self.api_key:
                 raise ValueError("AngelOne client_code and api_key are required.")
@@ -260,7 +261,7 @@ class AngelOneBroker(BaseBroker):
 
     @staticmethod
     def _load_angel_instruments():
-        if not hasattr(AngelOneBroker, '_instruments_df') or AngelOneBroker._instruments_df is None:
+        if not safe_hasattr(AngelOneBroker, '_instruments_df') or AngelOneBroker._instruments_df is None:
             try:
                 url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
                 AngelOneBroker._instruments_df = pd.read_json(url)
@@ -748,7 +749,7 @@ class AngelOneBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_obj, "close_connection"):
+                        if safe_hasattr(self._ws_obj, "close_connection"):
                             self._ws_obj.close_connection()
                             logger.debug("[AngelOneBroker] WebSocket close_connection called")
                     except Exception as e:
@@ -825,10 +826,10 @@ class AngelOneBroker(BaseBroker):
         try:
             from SmartApi.SmartWebSocketV2 import SmartWebSocketV2  # type: ignore
 
-            auth_token   = getattr(self.state, "token", None) if self.state else None
-            feed_token   = getattr(self, "_feed_token", None)
-            api_key      = getattr(self, "api_key", None)
-            client_code  = getattr(self, "client_code", None)
+            auth_token   = safe_getattr(self.state, "token", None) if self.state else None
+            feed_token   = safe_getattr(self, "_feed_token", None)
+            api_key      = safe_getattr(self, "api_key", None)
+            client_code  = safe_getattr(self, "client_code", None)
 
             if not auth_token or not feed_token or not api_key or not client_code:
                 logger.error(
@@ -979,7 +980,7 @@ class AngelOneBroker(BaseBroker):
             logger.info("[AngelOneBroker] Starting WebSocket disconnect")
             self._ws_closed = True
 
-            if hasattr(ws_obj, "close_connection"):
+            if safe_hasattr(ws_obj, "close_connection"):
                 # Run close in separate thread with timeout
                 disconnect_complete = threading.Event()
 
@@ -1032,7 +1033,7 @@ class AngelOneBroker(BaseBroker):
             token = raw_tick.get("token", "")
             exch_type = raw_tick.get("exchange_type", 1)
             exch_prefix = {1: "NSE", 2: "NFO", 3: "BSE", 4: "MCX"}.get(exch_type, "NSE")
-            reverse = getattr(self, "_token_to_symbol_cache", {})
+            reverse = safe_getattr(self, "_token_to_symbol_cache", {})
             if token in reverse:
                 symbol = reverse[token]
             else:
@@ -1071,7 +1072,7 @@ class AngelOneBroker(BaseBroker):
         JSON from AngelOne and build a proper cache.
         """
         try:
-            cache = getattr(self, "_angel_token_cache", {})
+            cache = safe_getattr(self, "_angel_token_cache", {})
             if symbol in cache:
                 return cache[symbol]
 

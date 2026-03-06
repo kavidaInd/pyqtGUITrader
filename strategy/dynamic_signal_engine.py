@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
+from Utils.safe_getattr import safe_hasattr, safe_getattr
+
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
@@ -619,7 +621,7 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
         ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
 
         try:
-            method = getattr(ta, ind_name, None)
+            method = safe_getattr(ta, ind_name, None)
             if not method:
                 logger.warning(f"Indicator method '{ind_name}' not found in pandas_ta")
                 return None
@@ -752,7 +754,7 @@ def _compute_indicator_normalised(
         params = _coerced
 
         ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
-        method = getattr(ta, ind_name, None)
+        method = safe_getattr(ta, ind_name, None)
         if not method:
             return {}
 
@@ -930,7 +932,7 @@ def _has_day_gap(df_index, bar_index: int = -1) -> bool:
         prev_time = df_index[bar_index - 1]
 
         # Check if they're on different days
-        if hasattr(last_time, 'date') and hasattr(prev_time, 'date'):
+        if safe_hasattr(last_time, 'date') and safe_hasattr(prev_time, 'date'):
             return last_time.date() != prev_time.date()
 
         return False
@@ -1709,9 +1711,9 @@ class DynamicSignalEngine:
                     try:
                         df_index = pd.DatetimeIndex(pd.to_datetime(df['time']))
                     except Exception:
-                        df_index = df.index if hasattr(df, 'index') else None
+                        df_index = df.index if safe_hasattr(df, 'index') else None
                 else:
-                    df_index = df.index if hasattr(df, 'index') else None
+                    df_index = df.index if safe_hasattr(df, 'index') else None
 
             cache = {}
             fired = {}

@@ -1,8 +1,7 @@
 """
 Connection Monitor Popup - Displays WebSocket and broker connection status
 
-UPDATED: Now uses state_manager instead of direct state access.
-FIXED: Removed P&L and MTF tabs as they're not required.
+UPDATED: Modern minimalist design with scrollbars to prevent cramped content
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 import logging
@@ -10,8 +9,10 @@ from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QTabWidget, \
-    QFrame
+    QFrame, QWidget, QScrollArea
+from PyQt5.QtGui import QFont
 
+from Utils.safe_getattr import safe_hasattr
 # Import state manager
 from data.trade_state_manager import state_manager
 # Rule 13.1: Import theme manager
@@ -20,8 +21,158 @@ from gui.theme_manager import theme_manager
 logger = logging.getLogger(__name__)
 
 
-class ConnectionMonitorPopup(QDialog):
-    """Popup window for monitoring connection status"""
+class ThemedMixin:
+    """Mixin class to provide theme token shortcuts."""
+
+    @property
+    def _c(self):
+        return theme_manager.palette
+
+    @property
+    def _ty(self):
+        return theme_manager.typography
+
+    @property
+    def _sp(self):
+        return theme_manager.spacing
+
+
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
+class StatusBadge(QLabel):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="disconnected"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(100)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        if status == "connected":
+            color = c.GREEN
+            bg = c.GREEN + "20"  # 20 = 12% opacity in hex
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class ScrollableTabWidget(QWidget):
+    """Tab widget with scrollable content area."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create scroll area
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Container widget for scrollable content
+        self.container = QWidget()
+        self.container_layout = QVBoxLayout(self.container)
+        self.container_layout.setContentsMargins(0, 0, 0, 0)
+        self.container_layout.setSpacing(theme_manager.spacing.GAP_LG)
+
+        self.scroll.setWidget(self.container)
+        self.layout.addWidget(self.scroll)
+
+    def add_widget(self, widget):
+        """Add a widget to the scrollable area."""
+        self.container_layout.addWidget(widget)
+
+    def add_stretch(self):
+        """Add stretch to the scrollable area."""
+        self.container_layout.addStretch()
+
+
+class ConnectionMonitorPopup(QDialog, ThemedMixin):
+    """Popup window for monitoring connection status with modern design"""
 
     def __init__(self, trading_app=None, parent=None):
         # Rule 2: Safe defaults first
@@ -36,13 +187,14 @@ class ConnectionMonitorPopup(QDialog):
 
             self.trading_app = trading_app
             self.setWindowTitle("Connection Monitor")
-            self.resize(700, 500)
-            self.setMinimumSize(650, 450)
+            self.resize(800, 700)
+            self.setMinimumSize(750, 600)
 
-            # Set window flags
-            self.setWindowFlags(Qt.Window)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
 
-            # Build UI (without hardcoded styles)
+            # Build UI
             self._init_ui()
 
             # Apply theme initially
@@ -55,7 +207,7 @@ class ConnectionMonitorPopup(QDialog):
 
         except Exception as e:
             logger.critical(f"[ConnectionMonitorPopup.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -67,12 +219,14 @@ class ConnectionMonitorPopup(QDialog):
 
         # Connection tab labels
         self.ws_status_label = None
+        self.ws_status_badge = None
         self.ws_connected_since = None
         self.ws_last_message = None
         self.ws_msg_count = None
         self.ws_reconnects = None
         self.ws_errors = None
         self.broker_status_label = None
+        self.broker_status_badge = None
         self.token_expiry_label = None
         self.last_api_call = None
         self.rate_limit = None
@@ -88,20 +242,40 @@ class ConnectionMonitorPopup(QDialog):
         self.conn_events = None
         self.last_disconnect = None
 
-    # =========================================================================
-    # Shorthand properties for theme tokens
-    # =========================================================================
-    @property
-    def _c(self):
-        return theme_manager.palette
+        self.main_card = None
 
-    @property
-    def _ty(self):
-        return theme_manager.typography
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Connection Monitor - ERROR")
+            self.setMinimumSize(400, 200)
 
-    @property
-    def _sp(self):
-        return theme_manager.spacing
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+
+            error_label = QLabel("❌ Failed to initialize connection monitor.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = self._create_modern_button("Close", primary=False)
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[ConnectionMonitorPopup._create_error_dialog] Failed: {e}", exc_info=True)
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -109,202 +283,122 @@ class ConnectionMonitorPopup(QDialog):
         Called on theme change, density change, and initial render.
         """
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
             # Update button styles
-            if self.reconnect_btn:
-                self.reconnect_btn.setStyleSheet(self._get_button_style("reconnect"))
+            self._update_button_styles()
 
-            if self.test_btn:
-                self.test_btn.setStyleSheet(self._get_button_style("test"))
+            # Update status badges based on current state
+            self._update_status_badges()
 
-            if self.refresh_btn:
-                self.refresh_btn.setStyleSheet(self._get_button_style("normal"))
-
-            # Update status labels based on current state (will be refreshed in refresh())
-            self._update_status_label_styles()
+            # Update scrollbar styles
+            self._update_scrollbar_styles()
 
             logger.debug("[ConnectionMonitorPopup.apply_theme] Applied theme")
 
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
+    def _update_scrollbar_styles(self):
+        """Update scrollbar styles with theme tokens."""
         c = self._c
-        ty = self._ty
         sp = self._sp
 
-        return f"""
-            QDialog {{ 
-                background: {c.BG_MAIN}; 
-                color: {c.TEXT_MAIN}; 
-            }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                background: {c.BG_MAIN};
-            }}
-            QTabBar::tab {{
+        scrollbar_style = f"""
+            QScrollBar:vertical {{
                 background: {c.BG_PANEL};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                font-size: {ty.SIZE_SM}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-            }}
-            QGroupBox {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
+                width: {sp.ICON_MD}px;
                 border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_SM}pt;
+                margin: 0px;
             }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
-            }}
-            QLabel {{ 
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_SM}pt;
-            }}
-            QLabel#section-header {{
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.BLUE};
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QLabel#value {{
-                color: {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QLabel#warning {{
-                color: {c.YELLOW_BRIGHT};
-            }}
-            QLabel#success {{
-                color: {c.GREEN};
-            }}
-            QLabel#error {{
-                color: {c.RED};
-            }}
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
+            QScrollBar::handle:vertical {{
+                background: {c.BORDER};
+                min-height: {sp.BTN_HEIGHT_SM}px;
                 border-radius: {sp.RADIUS_MD}px;
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                font-size: {ty.SIZE_SM}pt;
-                min-width: 120px;
             }}
-            QPushButton:hover {{ 
-                background: {c.BORDER}; 
+            QScrollBar::handle:vertical:hover {{
+                background: {c.BORDER_STRONG};
             }}
-            QFrame#separator {{
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar:horizontal {{
+                background: {c.BG_PANEL};
+                height: {sp.ICON_MD}px;
+                border-radius: {sp.RADIUS_MD}px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {c.BORDER};
+                min-width: {sp.BTN_HEIGHT_SM}px;
+                border-radius: {sp.RADIUS_MD}px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: {c.BORDER_STRONG};
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
             }}
         """
 
-    def _get_button_style(self, button_type: str) -> str:
-        """Get styled button for specific types"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
-        if button_type == "reconnect":
-            bg = c.GREEN
-            bg_hover = c.GREEN_BRIGHT
-            border = c.GREEN_BRIGHT
-        elif button_type == "test":
-            bg = c.BLUE_DARK
-            bg_hover = c.BLUE
-            border = c.BLUE
-        else:
-            bg = c.BG_HOVER
-            bg_hover = c.BORDER
-            border = c.BORDER
-
-        return f"""
-            QPushButton {{
-                background: {bg};
-                color: {c.TEXT_INVERSE};
-                border: {sp.SEPARATOR}px solid {border};
-                border-radius: {sp.RADIUS_MD}px;
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                font-size: {ty.SIZE_SM}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QPushButton:hover {{
-                background: {bg_hover};
-            }}
-            QPushButton:disabled {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DISABLED};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-            }}
-        """
-
-    def _update_status_label_styles(self):
-        """Update status label styles based on current connection state"""
-        try:
-            c = self._c
-
-            # WebSocket status
-            if self.ws_status_label:
-                is_connected = "Connected" in self.ws_status_label.text()
-                color = c.GREEN if is_connected else c.RED
-                self.ws_status_label.setStyleSheet(f"color: {color}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-            # Broker status
-            if self.broker_status_label:
-                is_connected = "Connected" in self.broker_status_label.text()
-                color = c.GREEN if is_connected else c.RED
-                self.broker_status_label.setStyleSheet(f"color: {color}; font-weight: {self._ty.WEIGHT_BOLD};")
-
-        except Exception as e:
-            logger.error(f"[ConnectionMonitorPopup._update_status_label_styles] Failed: {e}")
+        # Apply to all scroll areas in the dialog
+        for scroll_area in self.findChildren(QScrollArea):
+            scroll_area.setStyleSheet(scrollbar_style)
 
     def _init_ui(self):
-        """Initialize the user interface"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-        layout.setSpacing(self._sp.GAP_MD)
+        """Initialize the user interface with modern design"""
+        # Root layout with margins for shadow effect
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(0)
 
-        # Create tab widget
-        tabs = QTabWidget()
+        # Main container card
+        self.main_card = ModernCard(self, elevated=True)
+        main_layout = QVBoxLayout(self.main_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Tab 1: Connection Status
-        conn_tab = self._create_connection_tab()
-        tabs.addTab(conn_tab, "🔌 Connection")
+        # Custom title bar
+        title_bar = self._create_title_bar()
+        main_layout.addWidget(title_bar)
 
-        # Tab 2: Statistics
-        stats_tab = self._create_statistics_tab()
-        tabs.addTab(stats_tab, "📊 Statistics")
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        main_layout.addWidget(separator)
 
-        layout.addWidget(tabs)
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                         self._sp.PAD_XL, self._sp.PAD_XL)
+        content_layout.setSpacing(self._sp.GAP_LG)
+
+        # Header
+        header = ModernHeader("Connection Monitor")
+        content_layout.addWidget(header)
+
+        # Create tab widget with modern styling
+        tabs = self._create_modern_tabs()
+        content_layout.addWidget(tabs, 1)  # Give tabs stretch factor
 
         # Button row
         button_layout = QHBoxLayout()
         button_layout.setSpacing(self._sp.GAP_MD)
 
-        self.reconnect_btn = QPushButton("🔄 Reconnect WebSocket")
+        self.reconnect_btn = self._create_modern_button("🔄 Reconnect WebSocket", primary=False, icon="🔄")
         self.reconnect_btn.clicked.connect(self._reconnect)
 
-        self.test_btn = QPushButton("🧪 Test Connection")
+        self.test_btn = self._create_modern_button("🧪 Test Connection", primary=False, icon="🧪")
         self.test_btn.clicked.connect(self._test_connection)
 
-        self.refresh_btn = QPushButton("⟳ Refresh")
+        self.refresh_btn = self._create_modern_button("⟳ Refresh", primary=False, icon="⟳")
         self.refresh_btn.clicked.connect(self.refresh)
 
-        close_btn = QPushButton("Close")
+        close_btn = self._create_modern_button("✕ Close", primary=False)
         close_btn.clicked.connect(self.accept)
 
         button_layout.addWidget(self.reconnect_btn)
@@ -313,188 +407,438 @@ class ConnectionMonitorPopup(QDialog):
         button_layout.addStretch()
         button_layout.addWidget(close_btn)
 
-        layout.addLayout(button_layout)
+        content_layout.addLayout(button_layout)
 
-    def _create_connection_tab(self) -> QGroupBox:
-        """Create connection status tab"""
-        widget = QGroupBox("Connection Status")
-        layout = QGridLayout(widget)
-        layout.setVerticalSpacing(self._sp.GAP_SM)
-        layout.setHorizontalSpacing(self._sp.GAP_MD)
+        main_layout.addWidget(content)
+        root.addWidget(self.main_card)
 
-        row = 0
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
 
-        # WebSocket Connection Group
-        ws_label = QLabel("🌐 WebSocket")
-        ws_label.setObjectName("section-header")
-        layout.addWidget(ws_label, row, 0, 1, 2)
-        row += 1
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
 
-        # Status
-        layout.addWidget(self._create_label("Status:"), row, 0)
-        self.ws_status_label = self._create_label("Disconnected")
-        layout.addWidget(self.ws_status_label, row, 1)
-        row += 1
+        title = QLabel("🔌 Connection Monitor")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.accept)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
+    def _create_modern_tabs(self):
+        """Create modern-styled tab widget."""
+        tabs = QTabWidget()
+
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
+
+        # Tab 1: Connection Status (scrollable)
+        conn_tab = self._create_connection_tab()
+        tabs.addTab(conn_tab, "🔌 Connection")
+
+        # Tab 2: Statistics (scrollable)
+        stats_tab = self._create_statistics_tab()
+        tabs.addTab(stats_tab, "📊 Statistics")
+
+        return tabs
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 140px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 140px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
+
+    def _update_button_styles(self):
+        """Update button styles with theme tokens"""
+        # Reconnect button
+        if self.reconnect_btn:
+            self.reconnect_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 160px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+
+        # Test button
+        if self.test_btn:
+            self.test_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 140px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        # Refresh button
+        if self.refresh_btn:
+            self.refresh_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+    def _create_connection_tab(self) -> QWidget:
+        """Create connection status tab with scrollable content"""
+        scrollable = ScrollableTabWidget()
+
+        # WebSocket Card
+        ws_card = ModernCard()
+        ws_layout = QVBoxLayout(ws_card)
+        ws_layout.setSpacing(self._sp.GAP_MD)
+
+        ws_header = QLabel("🌐 WebSocket Connection")
+        ws_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        ws_layout.addWidget(ws_header)
+
+        ws_grid = QGridLayout()
+        ws_grid.setVerticalSpacing(self._sp.GAP_SM)
+        ws_grid.setHorizontalSpacing(self._sp.GAP_MD)
+
+        # Status with badge
+        ws_grid.addWidget(self._create_label("Status:"), 0, 0)
+        status_widget = QWidget()
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(self._sp.GAP_SM)
+        self.ws_status_badge = StatusBadge("Disconnected", "disconnected")
+        self.ws_status_label = self._create_label("")
+        status_layout.addWidget(self.ws_status_badge)
+        status_layout.addWidget(self.ws_status_label)
+        status_layout.addStretch()
+        ws_grid.addWidget(status_widget, 0, 1)
 
         # Connected since
-        layout.addWidget(self._create_label("Connected Since:"), row, 0)
+        ws_grid.addWidget(self._create_label("Connected Since:"), 1, 0)
         self.ws_connected_since = self._create_value_label("-")
-        layout.addWidget(self.ws_connected_since, row, 1)
-        row += 1
+        ws_grid.addWidget(self.ws_connected_since, 1, 1)
 
         # Last message
-        layout.addWidget(self._create_label("Last Message:"), row, 0)
+        ws_grid.addWidget(self._create_label("Last Message:"), 2, 0)
         self.ws_last_message = self._create_value_label("-")
-        layout.addWidget(self.ws_last_message, row, 1)
-        row += 1
+        ws_grid.addWidget(self.ws_last_message, 2, 1)
 
         # Messages received
-        layout.addWidget(self._create_label("Messages Received:"), row, 0)
+        ws_grid.addWidget(self._create_label("Messages Received:"), 3, 0)
         self.ws_msg_count = self._create_value_label("0")
-        layout.addWidget(self.ws_msg_count, row, 1)
-        row += 1
+        ws_grid.addWidget(self.ws_msg_count, 3, 1)
 
         # Reconnect count
-        layout.addWidget(self._create_label("Reconnects:"), row, 0)
+        ws_grid.addWidget(self._create_label("Reconnects:"), 4, 0)
         self.ws_reconnects = self._create_value_label("0")
-        layout.addWidget(self.ws_reconnects, row, 1)
-        row += 1
+        ws_grid.addWidget(self.ws_reconnects, 4, 1)
 
         # Error count
-        layout.addWidget(self._create_label("Errors:"), row, 0)
+        ws_grid.addWidget(self._create_label("Errors:"), 5, 0)
         self.ws_errors = self._create_value_label("0")
-        layout.addWidget(self.ws_errors, row, 1)
-        row += 1
+        ws_grid.addWidget(self.ws_errors, 5, 1)
 
-        # Separator
-        separator = self._create_separator()
-        layout.addWidget(separator, row, 0, 1, 2)
-        row += 1
+        ws_layout.addLayout(ws_grid)
+        scrollable.add_widget(ws_card)
 
-        # Broker API Connection Group
-        broker_label = QLabel("🏦 Broker API")
-        broker_label.setObjectName("section-header")
-        layout.addWidget(broker_label, row, 0, 1, 2)
-        row += 1
+        # Broker API Card
+        broker_card = ModernCard()
+        broker_layout = QVBoxLayout(broker_card)
+        broker_layout.setSpacing(self._sp.GAP_MD)
 
-        # Status
-        layout.addWidget(self._create_label("Status:"), row, 0)
-        self.broker_status_label = self._create_label("Disconnected")
-        layout.addWidget(self.broker_status_label, row, 1)
-        row += 1
+        broker_header = QLabel("🏦 Broker API")
+        broker_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        broker_layout.addWidget(broker_header)
+
+        broker_grid = QGridLayout()
+        broker_grid.setVerticalSpacing(self._sp.GAP_SM)
+        broker_grid.setHorizontalSpacing(self._sp.GAP_MD)
+
+        # Status with badge
+        broker_grid.addWidget(self._create_label("Status:"), 0, 0)
+        status_widget = QWidget()
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(self._sp.GAP_SM)
+        self.broker_status_badge = StatusBadge("Disconnected", "disconnected")
+        self.broker_status_label = self._create_label("")
+        status_layout.addWidget(self.broker_status_badge)
+        status_layout.addWidget(self.broker_status_label)
+        status_layout.addStretch()
+        broker_grid.addWidget(status_widget, 0, 1)
 
         # Token expiry
-        layout.addWidget(self._create_label("Token Expiry:"), row, 0)
+        broker_grid.addWidget(self._create_label("Token Expiry:"), 1, 0)
         self.token_expiry_label = self._create_value_label("-")
-        layout.addWidget(self.token_expiry_label, row, 1)
-        row += 1
+        broker_grid.addWidget(self.token_expiry_label, 1, 1)
 
         # Last API call
-        layout.addWidget(self._create_label("Last API Call:"), row, 0)
+        broker_grid.addWidget(self._create_label("Last API Call:"), 2, 0)
         self.last_api_call = self._create_value_label("-")
-        layout.addWidget(self.last_api_call, row, 1)
-        row += 1
+        broker_grid.addWidget(self.last_api_call, 2, 1)
 
         # Rate limit remaining
-        layout.addWidget(self._create_label("Rate Limit:"), row, 0)
+        broker_grid.addWidget(self._create_label("Rate Limit:"), 3, 0)
         self.rate_limit = self._create_value_label("-")
-        layout.addWidget(self.rate_limit, row, 1)
-        row += 1
+        broker_grid.addWidget(self.rate_limit, 3, 1)
 
-        # Separator
-        separator2 = self._create_separator()
-        layout.addWidget(separator2, row, 0, 1, 2)
-        row += 1
+        broker_layout.addLayout(broker_grid)
+        scrollable.add_widget(broker_card)
 
-        # Market Data Group
-        market_label = QLabel("📊 Market Data")
-        market_label.setObjectName("section-header")
-        layout.addWidget(market_label, row, 0, 1, 2)
-        row += 1
+        # Market Data Card
+        market_card = ModernCard()
+        market_layout = QVBoxLayout(market_card)
+        market_layout.setSpacing(self._sp.GAP_MD)
+
+        market_header = QLabel("📊 Market Data")
+        market_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        market_layout.addWidget(market_header)
+
+        market_grid = QGridLayout()
+        market_grid.setVerticalSpacing(self._sp.GAP_SM)
+        market_grid.setHorizontalSpacing(self._sp.GAP_MD)
 
         # Symbols subscribed
-        layout.addWidget(self._create_label("Subscribed Symbols:"), row, 0)
+        market_grid.addWidget(self._create_label("Subscribed Symbols:"), 0, 0)
         self.symbols_subscribed = self._create_value_label("0")
-        layout.addWidget(self.symbols_subscribed, row, 1)
-        row += 1
+        market_grid.addWidget(self.symbols_subscribed, 0, 1)
 
         # Active symbols
-        layout.addWidget(self._create_label("Active Symbols:"), row, 0)
+        market_grid.addWidget(self._create_label("Active Symbols:"), 1, 0)
         self.active_symbols = self._create_value_label("0")
-        layout.addWidget(self.active_symbols, row, 1)
-        row += 1
+        market_grid.addWidget(self.active_symbols, 1, 1)
 
         # Option chain size
-        layout.addWidget(self._create_label("Option Chain:"), row, 0)
+        market_grid.addWidget(self._create_label("Option Chain:"), 2, 0)
         self.option_chain_size = self._create_value_label("0")
-        layout.addWidget(self.option_chain_size, row, 1)
+        market_grid.addWidget(self.option_chain_size, 2, 1)
 
-        return widget
+        market_layout.addLayout(market_grid)
+        scrollable.add_widget(market_card)
 
-    def _create_statistics_tab(self) -> QGroupBox:
-        """Create statistics tab"""
-        widget = QGroupBox("Connection Statistics")
-        layout = QGridLayout(widget)
-        layout.setVerticalSpacing(self._sp.GAP_SM)
-        layout.setHorizontalSpacing(self._sp.GAP_MD)
+        scrollable.add_stretch()
+        return scrollable
 
-        row = 0
+    def _create_statistics_tab(self) -> QWidget:
+        """Create statistics tab with scrollable content"""
+        scrollable = ScrollableTabWidget()
+
+        # Statistics Card
+        stats_card = ModernCard()
+        stats_layout = QVBoxLayout(stats_card)
+        stats_layout.setSpacing(self._sp.GAP_MD)
+
+        stats_header = QLabel("📊 Connection Statistics")
+        stats_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        stats_layout.addWidget(stats_header)
+
+        stats_grid = QGridLayout()
+        stats_grid.setVerticalSpacing(self._sp.GAP_SM)
+        stats_grid.setHorizontalSpacing(self._sp.GAP_MD)
 
         # Uptime
-        layout.addWidget(self._create_label("Uptime:"), row, 0)
+        stats_grid.addWidget(self._create_label("Uptime:"), 0, 0)
         self.uptime_label = self._create_value_label("0s")
-        layout.addWidget(self.uptime_label, row, 1)
-        row += 1
+        stats_grid.addWidget(self.uptime_label, 0, 1)
 
         # Messages per second
-        layout.addWidget(self._create_label("Msg Rate:"), row, 0)
+        stats_grid.addWidget(self._create_label("Msg Rate:"), 1, 0)
         self.msg_rate = self._create_value_label("0/s")
-        layout.addWidget(self.msg_rate, row, 1)
-        row += 1
+        stats_grid.addWidget(self.msg_rate, 1, 1)
 
         # Peak messages
-        layout.addWidget(self._create_label("Peak Rate:"), row, 0)
+        stats_grid.addWidget(self._create_label("Peak Rate:"), 2, 0)
         self.peak_rate = self._create_value_label("0/s")
-        layout.addWidget(self.peak_rate, row, 1)
-        row += 1
+        stats_grid.addWidget(self.peak_rate, 2, 1)
 
         # Total bytes
-        layout.addWidget(self._create_label("Data Received:"), row, 0)
+        stats_grid.addWidget(self._create_label("Data Received:"), 3, 0)
         self.data_received = self._create_value_label("0 KB")
-        layout.addWidget(self.data_received, row, 1)
-        row += 1
+        stats_grid.addWidget(self.data_received, 3, 1)
 
         # Connection events
-        layout.addWidget(self._create_label("Connection Events:"), row, 0)
+        stats_grid.addWidget(self._create_label("Connection Events:"), 4, 0)
         self.conn_events = self._create_value_label("0")
-        layout.addWidget(self.conn_events, row, 1)
-        row += 1
+        stats_grid.addWidget(self.conn_events, 4, 1)
 
         # Last disconnect reason
-        layout.addWidget(self._create_label("Last Disconnect:"), row, 0)
+        stats_grid.addWidget(self._create_label("Last Disconnect:"), 5, 0)
         self.last_disconnect = self._create_value_label("-")
-        layout.addWidget(self.last_disconnect, row, 1)
+        stats_grid.addWidget(self.last_disconnect, 5, 1)
 
-        return widget
+        stats_layout.addLayout(stats_grid)
+        scrollable.add_widget(stats_card)
+
+        scrollable.add_stretch()
+        return scrollable
 
     def _create_label(self, text: str) -> QLabel:
         """Create a standard label"""
         label = QLabel(text)
+        label.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_SM}pt;")
         return label
 
     def _create_value_label(self, text: str) -> QLabel:
         """Create a value label with special styling"""
         label = QLabel(text)
-        label.setObjectName("value")
+        label.setStyleSheet(f"""
+            color: {self._c.TEXT_MAIN};
+            font-size: {self._ty.SIZE_SM}pt;
+            font-weight: {self._ty.WEIGHT_BOLD};
+            background: {self._c.BG_HOVER};
+            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+            border-radius: {self._sp.RADIUS_SM}px;
+        """)
         return label
-
-    def _create_separator(self) -> QFrame:
-        """Create a separator line"""
-        separator = QFrame()
-        separator.setObjectName("separator")
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFixedHeight(1)
-        return separator
 
     def _init_timer(self):
         """Initialize refresh timer"""
@@ -511,30 +855,54 @@ class ConnectionMonitorPopup(QDialog):
             self._refresh_connection_tab()
             self._refresh_statistics_tab()
 
-            # Update status label colors
-            self._update_status_label_styles()
+            # Update status badges
+            self._update_status_badges()
 
         except Exception as e:
             logger.error(f"[ConnectionMonitorPopup.refresh] Failed: {e}")
 
+    def _update_status_badges(self):
+        """Update status badges based on current connection state"""
+        try:
+            # WebSocket status
+            if self.ws_status_badge and self.ws_status_label:
+                is_connected = "Connected" in self.ws_status_label.text()
+                if is_connected:
+                    self.ws_status_badge.set_status("connected")
+                    self.ws_status_badge.setText("Connected")
+                else:
+                    self.ws_status_badge.set_status("error")
+                    self.ws_status_badge.setText("Disconnected")
+
+            # Broker status
+            if self.broker_status_badge and self.broker_status_label:
+                is_connected = "Connected" in self.broker_status_label.text()
+                if is_connected:
+                    self.broker_status_badge.set_status("connected")
+                    self.broker_status_badge.setText("Connected")
+                else:
+                    self.broker_status_badge.set_status("error")
+                    self.broker_status_badge.setText("Disconnected")
+
+        except Exception as e:
+            logger.error(f"[ConnectionMonitorPopup._update_status_badges] Failed: {e}")
+
     def _refresh_connection_tab(self):
         """Refresh connection tab data"""
         try:
-            c = self._c
-
             # Check WebSocket connection
-            if hasattr(self.trading_app, 'ws') and self.trading_app.ws:
+            if safe_hasattr(self.trading_app, 'ws') and self.trading_app.ws:
                 ws = self.trading_app.ws
 
                 # Update status
-                if hasattr(ws, 'is_connected') and ws.is_connected():
+                if safe_hasattr(ws, 'is_connected') and ws.is_connected():
                     self.ws_status_label.setText("Connected")
                 else:
                     self.ws_status_label.setText("Disconnected")
 
                 # Get statistics
                 stats = {}
-                if hasattr(ws, 'get_statistics'):
+                if safe_hasattr(ws, 'get_statistics'):
                     stats = ws.get_statistics()
 
                 self.ws_msg_count.setText(str(stats.get('message_count', 0)))
@@ -542,27 +910,27 @@ class ConnectionMonitorPopup(QDialog):
                 self.ws_errors.setText(str(stats.get('error_count', 0)))
 
                 # Last message time
-                if hasattr(ws, '_last_message_time') and ws._last_message_time:
+                if safe_hasattr(ws, '_last_message_time') and ws._last_message_time:
                     from datetime import datetime
                     dt = datetime.fromtimestamp(ws._last_message_time)
                     self.ws_last_message.setText(dt.strftime("%H:%M:%S"))
 
                 # Connected since
-                if hasattr(ws, '_connected_since') and ws._connected_since:
+                if safe_hasattr(ws, '_connected_since') and ws._connected_since:
                     self.ws_connected_since.setText(ws._connected_since.strftime("%H:%M:%S"))
 
             # Check broker connection
-            if hasattr(self.trading_app, 'broker') and self.trading_app.broker:
+            if safe_hasattr(self.trading_app, 'broker') and self.trading_app.broker:
                 broker = self.trading_app.broker
 
                 # Check if authenticated
-                if hasattr(broker, 'is_connected') and broker.is_connected():
+                if safe_hasattr(broker, 'is_connected') and broker.is_connected():
                     self.broker_status_label.setText("Connected")
                 else:
                     self.broker_status_label.setText("Disconnected")
 
                 # Token expiry
-                if hasattr(broker, 'token_expiry') and broker.token_expiry:
+                if safe_hasattr(broker, 'token_expiry') and broker.token_expiry:
                     self.token_expiry_label.setText(broker.token_expiry.strftime("%Y-%m-%d %H:%M"))
 
             # Get symbol counts from state manager
@@ -594,16 +962,16 @@ class ConnectionMonitorPopup(QDialog):
     def _refresh_statistics_tab(self):
         """Refresh statistics tab data"""
         try:
-            if not hasattr(self.trading_app, 'ws') or not self.trading_app.ws:
+            if not safe_hasattr(self.trading_app, 'ws') or not self.trading_app.ws:
                 return
 
             ws = self.trading_app.ws
             stats = {}
-            if hasattr(ws, 'get_statistics'):
+            if safe_hasattr(ws, 'get_statistics'):
                 stats = ws.get_statistics()
 
             # Calculate uptime
-            if hasattr(ws, '_connected_since') and ws._connected_since:
+            if safe_hasattr(ws, '_connected_since') and ws._connected_since:
                 uptime = datetime.now() - ws._connected_since
                 seconds = int(uptime.total_seconds())
                 hours = seconds // 3600
@@ -615,7 +983,7 @@ class ConnectionMonitorPopup(QDialog):
 
             # Message rate
             msg_count = stats.get('message_count', 0)
-            if hasattr(ws, '_connected_since') and ws._connected_since:
+            if safe_hasattr(ws, '_connected_since') and ws._connected_since:
                 uptime_seconds = max(1, (datetime.now() - ws._connected_since).total_seconds())
                 rate = msg_count / uptime_seconds
                 self.msg_rate.setText(f"{rate:.1f}/s")
@@ -635,15 +1003,15 @@ class ConnectionMonitorPopup(QDialog):
     def _reconnect(self):
         """Attempt to reconnect WebSocket"""
         try:
-            if self.trading_app and hasattr(self.trading_app, 'ws') and self.trading_app.ws:
+            if self.trading_app and safe_hasattr(self.trading_app, 'ws') and self.trading_app.ws:
                 ws = self.trading_app.ws
 
                 # Disconnect first
-                if hasattr(ws, 'disconnect'):
+                if safe_hasattr(ws, 'disconnect'):
                     ws.disconnect()
 
                 # Reconnect
-                if hasattr(ws, 'connect'):
+                if safe_hasattr(ws, 'connect'):
                     ws.connect()
 
                 self.reconnect_btn.setText("🔄 Reconnecting...")
@@ -657,14 +1025,14 @@ class ConnectionMonitorPopup(QDialog):
         try:
             from PyQt5.QtWidgets import QMessageBox
 
-            if not self.trading_app or not hasattr(self.trading_app, 'broker'):
+            if not self.trading_app or not safe_hasattr(self.trading_app, 'broker'):
                 QMessageBox.warning(self, "Test Failed", "Broker not available")
                 return
 
             broker = self.trading_app.broker
 
             # Try to get profile
-            if hasattr(broker, 'get_profile'):
+            if safe_hasattr(broker, 'get_profile'):
                 profile = broker.get_profile()
                 if profile:
                     QMessageBox.information(self, "Connection Test", "✅ Connection successful!")

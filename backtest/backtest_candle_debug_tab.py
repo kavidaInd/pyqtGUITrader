@@ -35,14 +35,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QSortFilterProxyModel, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont, QStandardItem, QStandardItemModel
 from PyQt5.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFrame, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QSizePolicy, QSplitter, QTabWidget,
-    QTableView, QTextEdit, QVBoxLayout, QWidget, QHeaderView,
-    QApplication, QMessageBox
+    QScrollArea, QTabWidget,
+    QTableView, QTextEdit, QVBoxLayout, QWidget, QApplication
 )
 
 # Rule 13.1: Import theme manager

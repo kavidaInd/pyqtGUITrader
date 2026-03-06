@@ -19,6 +19,7 @@ import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
 from Utils.notifier import Notifier
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import TokenExpiredError
 from broker.BrokerFactory import BrokerFactory
 from data.candle_store_manager import candle_store_manager
@@ -36,18 +37,6 @@ from trade.risk_manager import RiskManager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
-
-
-def safe_last(val):
-    """Return last element if val is list/tuple and not empty, else just val or None."""
-    try:
-        if isinstance(val, (list, tuple)) and val:
-            return val[-1]
-        return val
-    except Exception as e:
-        logger.error(f"[safe_last] Error processing {val!r}: {e}", exc_info=True)
-        return None
-
 
 class TradingApp:
 
@@ -138,7 +127,7 @@ class TradingApp:
             # Initialize option chain in state
             with self._option_chain_lock:
                 state = state_manager.get_state()
-                if not hasattr(state, "option_chain") or state.option_chain is None:
+                if not safe_hasattr(state, "option_chain") or state.option_chain is None:
                     state.option_chain = {}
 
             # Number of ITM and OTM strikes to subscribe on each side of ATM
@@ -216,7 +205,7 @@ class TradingApp:
             # Set executor paper mode
             self.executor.paper_mode = is_paper
 
-            if hasattr(self.broker, 'paper_mode'):
+            if safe_hasattr(self.broker, 'paper_mode'):
                 self.broker.paper_mode = is_paper
                 logger.info(
                     f"[TradingApp] Broker paper_mode set to: {is_paper}"
@@ -225,7 +214,7 @@ class TradingApp:
             logger.info(
                 f"[TradingApp] Trading mode applied to executor: "
                 f"{'PAPER' if is_paper else 'LIVE'} "
-                f"(mode={getattr(self.trading_mode_setting, 'mode', 'N/A')})"
+                f"(mode={safe_getattr(self.trading_mode_setting, 'mode', 'N/A')})"
             )
         except Exception as e:
             logger.error(f"[TradingApp._apply_trading_mode_to_executor] Failed: {e}", exc_info=True)
@@ -244,7 +233,7 @@ class TradingApp:
         """Check if we're in backtest mode."""
         if self.trading_mode_setting is None:
             return False
-        return getattr(self.trading_mode_setting, 'mode', '') == 'BACKTEST'
+        return safe_getattr(self.trading_mode_setting, 'mode', '') == 'BACKTEST'
 
     def _check_market_status(self) -> bool:
         """
@@ -263,7 +252,7 @@ class TradingApp:
                     now - self._last_market_status_check > self._market_status_check_interval):
 
                 # Use broker's market status check
-                if hasattr(self, 'broker') and self.broker:
+                if safe_hasattr(self, 'broker') and self.broker:
                     self._market_is_open = self.broker.is_market_open()
                 else:
                     # Fallback to Utils
@@ -311,7 +300,7 @@ class TradingApp:
             if new_config:
                 self.signal_engine.from_dict(new_config)
                 # Update trend detector's signal engine
-                if hasattr(self.detector, 'set_signal_engine') and self.detector:
+                if safe_hasattr(self.detector, 'set_signal_engine') and self.detector:
                     self.detector.set_signal_engine(self.signal_engine)
 
         except Exception as e:
@@ -358,7 +347,7 @@ class TradingApp:
             state = state_manager.get_state()
 
             # Get initial price for derivative
-            if self.broker and hasattr(self.broker, 'get_option_current_price'):
+            if self.broker and safe_hasattr(self.broker, 'get_option_current_price'):
                 try:
                     state.derivative_current_price = self.broker.get_option_current_price(
                         state.derivative
@@ -384,7 +373,7 @@ class TradingApp:
 
             # Calculate time until market opens
             now = datetime.now()
-            market_open = self.broker.get_market_start_time() if hasattr(self.broker, 'get_market_start_time') else None
+            market_open = self.broker.get_market_start_time() if safe_hasattr(self.broker, 'get_market_start_time') else None
 
             if market_open and market_open > now:
                 wait_seconds = (market_open - now).total_seconds()
@@ -635,7 +624,7 @@ class TradingApp:
             self._update_unrealized_pnl()
 
             # Run all monitoring and decision logic
-            if hasattr(self, 'monitor') and self.monitor:
+            if safe_hasattr(self, 'monitor') and self.monitor:
                 try:
                     self.monitor.update_trailing_sl_tp(self.broker, state_manager.get_state())
                 except TokenExpiredError:
@@ -724,7 +713,7 @@ class TradingApp:
                 return
 
             # --- Option chain tick ---
-            if self._option_chain_lock and hasattr(state, "option_chain"):
+            if self._option_chain_lock and safe_hasattr(state, "option_chain"):
                 with self._option_chain_lock:
                     # Check if symbol exists in option_chain (exact match)
                     if full_symbol in state.option_chain:
@@ -803,7 +792,7 @@ class TradingApp:
             state.trend = self.determine_trend_from_signals()
 
             # Execute based on trend (only for algo trading)
-            if hasattr(self, 'executor') and self.executor:
+            if safe_hasattr(self, 'executor') and self.executor:
                 self.execute_based_on_trend()
 
         except TokenExpiredError:
@@ -939,7 +928,7 @@ class TradingApp:
             logger.critical(f"Token expired in history fetch: {e}", exc_info=True)
             self._token_expired_error = e
             self.should_stop = True
-            if hasattr(self, '_stop_event') and self._stop_event:
+            if safe_hasattr(self, '_stop_event') and self._stop_event:
                 self._stop_event.set()
         except Exception as e:
             logger.error(f"Error in _fetch_history_and_detect: {e!r}", exc_info=True)
@@ -1096,7 +1085,7 @@ class TradingApp:
                     if state.current_position:
                         logger.info("Market close approaching. Exiting active position.")
                         state.reason_to_exit = "Auto-exit before market close."
-                        if hasattr(self, 'executor') and self.executor:
+                        if safe_hasattr(self, 'executor') and self.executor:
                             try:
                                 success = self.executor.exit_position()
                                 if not success:
@@ -1111,7 +1100,7 @@ class TradingApp:
                 if state.current_position == BaseEnums.PUT:
                     if state.should_sell_put or state.should_buy_call:
                         state.reason_to_exit = f"PUT exit: {state.option_signal}"
-                        if hasattr(self, 'executor') and self.executor:
+                        if safe_hasattr(self, 'executor') and self.executor:
                             try:
                                 success = self.executor.exit_position()
                                 if not success:
@@ -1123,7 +1112,7 @@ class TradingApp:
 
                     elif index_stop_loss is not None and current_derivative_price is not None and current_derivative_price >= index_stop_loss:
                         state.reason_to_exit = "PUT exit: Derivative crossed above ST (safety)"
-                        if hasattr(self, 'executor') and self.executor:
+                        if safe_hasattr(self, 'executor') and self.executor:
                             try:
                                 success = self.executor.exit_position()
                                 if not success:
@@ -1136,7 +1125,7 @@ class TradingApp:
                 elif state.current_position == BaseEnums.CALL:
                     if state.should_sell_call or state.should_buy_put:
                         state.reason_to_exit = f"CALL exit: {state.option_signal}"
-                        if hasattr(self, 'executor') and self.executor:
+                        if safe_hasattr(self, 'executor') and self.executor:
                             try:
                                 success = self.executor.exit_position()
                                 if not success:
@@ -1148,7 +1137,7 @@ class TradingApp:
 
                     elif index_stop_loss is not None and current_derivative_price is not None and current_derivative_price <= index_stop_loss:
                         state.reason_to_exit = "CALL exit: Derivative dropped below ST (safety)"
-                        if hasattr(self, 'executor') and self.executor:
+                        if safe_hasattr(self, 'executor') and self.executor:
                             try:
                                 success = self.executor.exit_position()
                                 if not success:
@@ -1198,7 +1187,7 @@ class TradingApp:
 
             if stop_loss is not None and current_price is not None and current_price <= stop_loss:
                 state.reason_to_exit = f"{state.current_position} exit: Option price below stop loss."
-                if hasattr(self, 'executor') and self.executor:
+                if safe_hasattr(self, 'executor') and self.executor:
                     try:
                         success = self.executor.exit_position()
                         if not success:
@@ -1210,7 +1199,7 @@ class TradingApp:
 
             elif tp_point is not None and current_price is not None and current_price >= tp_point:
                 state.reason_to_exit = f"{state.current_position} exit: Target profit hit."
-                if hasattr(self, 'executor') and self.executor:
+                if safe_hasattr(self, 'executor') and self.executor:
                     try:
                         success = self.executor.exit_position()
                         if not success:
@@ -1337,7 +1326,7 @@ class TradingApp:
                 order_id = order.get("id")
                 broker_id = order.get("broker_id")
                 try:
-                    if self.broker and broker_id and hasattr(self.broker, 'get_current_order_status'):
+                    if self.broker and broker_id and safe_hasattr(self.broker, 'get_current_order_status'):
                         status = self.broker.get_current_order_status(broker_id)
                         if status == BaseEnums.ORDER_STATUS_CONFIRMED:
                             confirmed_found = True
@@ -1349,7 +1338,7 @@ class TradingApp:
                         logger.debug(f"Paper order {order_id} — skipping broker cancel.")
                         continue
 
-                    if self.broker and hasattr(self.broker, 'cancel_order'):
+                    if self.broker and safe_hasattr(self.broker, 'cancel_order'):
                         self.broker.cancel_order(order_id=broker_id)
                         logger.info(f"Cancelled broker order {broker_id} (db_id={order_id})")
 
@@ -1361,7 +1350,7 @@ class TradingApp:
 
             state.orders = remaining_orders
 
-            if not hasattr(state, "confirmed_orders"):
+            if not safe_hasattr(state, "confirmed_orders"):
                 state.confirmed_orders = []
             if confirmed_orders:
                 state.confirmed_orders.extend(confirmed_orders)
@@ -1414,28 +1403,28 @@ class TradingApp:
 
             # Apply trade_config settings
             if self.trade_config:
-                state.capital_reserve = getattr(self.trade_config, "capital_reserve", 0)
-                state.derivative = self.symbol_full(getattr(self.trade_config, "derivative", ""))
-                state.expiry = getattr(self.trade_config, "week", "")
-                _config_lot_size = getattr(self.trade_config, "lot_size", 0)
+                state.capital_reserve = safe_getattr(self.trade_config, "capital_reserve", 0)
+                state.derivative = self.symbol_full(safe_getattr(self.trade_config, "derivative", ""))
+                state.expiry = safe_getattr(self.trade_config, "week", "")
+                _config_lot_size = safe_getattr(self.trade_config, "lot_size", 0)
                 state.lot_size = OptionUtils.get_lot_size(
                     state.derivative, fallback=_config_lot_size
                 )
-                state.call_lookback = getattr(self.trade_config, "call_lookback", 0)
-                state.put_lookback = getattr(self.trade_config, "put_lookback", 0)
+                state.call_lookback = safe_getattr(self.trade_config, "call_lookback", 0)
+                state.put_lookback = safe_getattr(self.trade_config, "put_lookback", 0)
                 state.original_call_lookback = state.call_lookback
                 state.original_put_lookback = state.put_lookback
-                state.interval = getattr(self.trade_config, "history_interval", "")
-                state.max_num_of_option = getattr(self.trade_config, "max_num_of_option", 0)
-                state.lower_percentage = getattr(self.trade_config, "lower_percentage", 0)
-                state.cancel_after = getattr(self.trade_config, "cancel_after", 0)
-                state.sideway_zone_trade = getattr(self.trade_config, "sideway_zone_trade", False)
+                state.interval = safe_getattr(self.trade_config, "history_interval", "")
+                state.max_num_of_option = safe_getattr(self.trade_config, "max_num_of_option", 0)
+                state.lower_percentage = safe_getattr(self.trade_config, "lower_percentage", 0)
+                state.cancel_after = safe_getattr(self.trade_config, "cancel_after", 0)
+                state.sideway_zone_trade = safe_getattr(self.trade_config, "sideway_zone_trade", False)
 
             # Get balance — paper mode uses the configured paper_balance from
             # TradingModeSetting instead of querying the real broker API.
             if self.trading_mode_setting and not self.trading_mode_setting.is_live():
                 # Paper / Simulation / Backtest: use the paper balance from settings
-                paper_bal = getattr(self.trading_mode_setting, 'paper_balance', 100000.0) or 100000.0
+                paper_bal = safe_getattr(self.trading_mode_setting, 'paper_balance', 100000.0) or 100000.0
                 state.account_balance = float(paper_bal)
                 logger.info(
                     f"[apply_settings_to_state] PAPER MODE — using paper balance: "
@@ -1458,13 +1447,13 @@ class TradingApp:
             # Apply profit/loss settings
             if self.profit_loss_config:
                 plc = self.profit_loss_config
-                state.tp_percentage = state.original_profit_per = getattr(plc, "tp_percentage", 0)
-                state.stoploss_percentage = state.original_stoploss_per = getattr(plc, "stoploss_percentage", 0)
-                state.trailing_first_profit = getattr(plc, "trailing_first_profit", 0)
-                state.max_profit = getattr(plc, "max_profit", 0)
-                state.profit_step = getattr(plc, "profit_step", 0)
-                state.loss_step = getattr(plc, "loss_step", 0)
-                state.take_profit_type = getattr(plc, "profit_type", "absolute")
+                state.tp_percentage = state.original_profit_per = safe_getattr(plc, "tp_percentage", 0)
+                state.stoploss_percentage = state.original_stoploss_per = safe_getattr(plc, "stoploss_percentage", 0)
+                state.trailing_first_profit = safe_getattr(plc, "trailing_first_profit", 0)
+                state.max_profit = safe_getattr(plc, "max_profit", 0)
+                state.profit_step = safe_getattr(plc, "profit_step", 0)
+                state.loss_step = safe_getattr(plc, "loss_step", 0)
+                state.take_profit_type = safe_getattr(plc, "profit_type", "absolute")
 
             logger.info(f"[Settings] Applied trade and P/L configs - Capital: {state.capital_reserve}, "
                         f"Lot size: {state.lot_size}, TP: {state.tp_percentage}%, "
@@ -1485,25 +1474,25 @@ class TradingApp:
 
             logger.info("Cleaning up TradingApp resources...")
             self.should_stop = True
-            if hasattr(self, '_stop_event') and self._stop_event:
+            if safe_hasattr(self, '_stop_event') and self._stop_event:
                 self._stop_event.set()  # Wake up the keep-alive loop immediately
 
             # Wait for stage 2 worker thread to finish (with timeout)
-            if hasattr(self, '_stage2_thread') and self._stage2_thread and self._stage2_thread.is_alive():
+            if safe_hasattr(self, '_stage2_thread') and self._stage2_thread and self._stage2_thread.is_alive():
                 logger.info("Waiting for stage 2 worker thread to finish...")
                 self._stage2_thread.join(timeout=2.0)
 
             # WebSocket cleanup
-            if hasattr(self, 'ws') and self.ws:
+            if safe_hasattr(self, 'ws') and self.ws:
                 try:
-                    if hasattr(self.ws, 'cleanup'):
+                    if safe_hasattr(self.ws, 'cleanup'):
                         self.ws.cleanup()
                     logger.info("WebSocket cleaned up")
                 except Exception as e:
                     logger.error(f"Error cleaning up WebSocket: {e}", exc_info=True)
 
             # Thread pool shutdown
-            if hasattr(self, '_fetch_executor') and self._fetch_executor:
+            if safe_hasattr(self, '_fetch_executor') and self._fetch_executor:
                 try:
                     self._fetch_executor.shutdown(wait=False)
                     logger.info("Thread pool shut down")
@@ -1511,34 +1500,34 @@ class TradingApp:
                     logger.error(f"Error shutting down thread pool: {e}", exc_info=True)
 
             # Feature cleanups
-            if hasattr(self, 'risk_manager') and self.risk_manager:
+            if safe_hasattr(self, 'risk_manager') and self.risk_manager:
                 try:
                     self.risk_manager.cleanup()
                 except Exception as e:
                     logger.error(f"RiskManager cleanup error: {e}", exc_info=True)
 
-            if hasattr(self, 'notifier') and self.notifier:
+            if safe_hasattr(self, 'notifier') and self.notifier:
                 try:
                     self.notifier.cleanup()
                 except Exception as e:
                     logger.error(f"Notifier cleanup error: {e}", exc_info=True)
 
-            if hasattr(self, 'mtf_filter') and self.mtf_filter:
+            if safe_hasattr(self, 'mtf_filter') and self.mtf_filter:
                 try:
                     self.mtf_filter.cleanup()
                 except Exception as e:
                     logger.error(f"MTF filter cleanup error: {e}", exc_info=True)
 
-            if hasattr(self, 'executor') and self.executor:
+            if safe_hasattr(self, 'executor') and self.executor:
                 try:
                     self.executor.cleanup()
                 except Exception as e:
                     logger.error(f"Executor cleanup error: {e}", exc_info=True)
 
             # Broker cleanup
-            if hasattr(self, 'broker') and self.broker:
+            if safe_hasattr(self, 'broker') and self.broker:
                 try:
-                    if hasattr(self.broker, 'cleanup'):
+                    if safe_hasattr(self.broker, 'cleanup'):
                         self.broker.cleanup()
                 except Exception as e:
                     logger.error(f"Broker cleanup error: {e}", exc_info=True)

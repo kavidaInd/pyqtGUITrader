@@ -1,3 +1,4 @@
+# websocket_manager.py (fixed)
 """
 websocket_manager.py
 ====================
@@ -91,6 +92,11 @@ class WebSocketManager:
             self.on_disconnected_callback = None
             self.on_reconnected_callback = None
 
+            # Bug #15 fix: Add stop events for monitoring threads
+            self._stop_heartbeat = threading.Event()
+            self._stop_network_monitor = threading.Event()
+            self._stop_reconnect = threading.Event()
+
             logger.info(f"WebSocketManager initialized for {broker!r}")
 
         except Exception as e:
@@ -112,6 +118,11 @@ class WebSocketManager:
         self._retries = 0
         self._manual_stop = False
         self._connection_lock = threading.RLock()
+
+        # Bug #15 fix: Add stop events
+        self._stop_heartbeat = threading.Event()
+        self._stop_network_monitor = threading.Event()
+        self._stop_reconnect = threading.Event()
 
         # Additional callbacks
         self.on_connected_callback = None
@@ -161,6 +172,10 @@ class WebSocketManager:
                     return
 
                 self._manual_stop = False
+                # Bug #15 fix: Clear stop events
+                self._stop_heartbeat.clear()
+                self._stop_network_monitor.clear()
+                self._stop_reconnect.clear()
                 self._state = ConnectionState.CONNECTING
 
                 for attempt in range(1, self.max_retries + 1):
@@ -271,6 +286,11 @@ class WebSocketManager:
             try:
                 logger.info("Initiating WebSocket disconnect...")
                 self._manual_stop = True
+                # Bug #7 & #15 fix: Signal threads to stop
+                self._stop_heartbeat.set()
+                self._stop_network_monitor.set()
+                self._stop_reconnect.set()
+
                 old_state = self._state
                 self._state = ConnectionState.CLOSING
 
@@ -309,11 +329,8 @@ class WebSocketManager:
                     finally:
                         self._ws_obj = None
 
-                # Don't wait for threads - just mark them for garbage collection
-                self._connect_thread = None
-                self._heartbeat_thread = None
-                self._network_monitor_thread = None
-                self._reconnect_thread = None
+                # Wait for monitoring threads to finish (with timeout)
+                self._join_threads()
 
                 self._state = ConnectionState.DISCONNECTED
                 logger.info(f"WebSocket disconnected — messages={self._message_count}, "
@@ -322,6 +339,19 @@ class WebSocketManager:
             except Exception as e:
                 logger.error(f"[WebSocketManager.disconnect] {e!r}", exc_info=True)
                 self._state = ConnectionState.DISCONNECTED
+
+    def _join_threads(self, timeout: float = 2.0):
+        """Helper to join monitoring threads with timeout."""
+        threads = [
+            (self._heartbeat_thread, "heartbeat"),
+            (self._network_monitor_thread, "network"),
+            (self._reconnect_thread, "reconnect"),
+        ]
+        for thread, name in threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logger.warning(f"{name} thread did not terminate within {timeout}s")
 
     # ── Broker WebSocket callbacks ─────────────────────────────────────────────
 
@@ -370,6 +400,8 @@ class WebSocketManager:
         with self._connection_lock:
             try:
                 logger.warning(f"WebSocket closed: {message}")
+
+                # Bug #3 fix: Only change state if not already CLOSING
                 if self._state != ConnectionState.CLOSING:
                     self._state = ConnectionState.DISCONNECTED
 
@@ -380,6 +412,7 @@ class WebSocketManager:
                     except Exception as e:
                         logger.error(f"on_disconnected_callback error: {e}", exc_info=True)
 
+                # Bug #3 fix: Only schedule reconnect if not manual stop and not CLOSING
                 if not self._manual_stop and self._state != ConnectionState.CLOSING:
                     if self.on_disconnect_callback:
                         try:
@@ -399,6 +432,8 @@ class WebSocketManager:
             try:
                 self._error_count += 1
                 logger.error(f"WebSocket error: {message}")
+
+                # Bug #3 fix: Only change state if not already CLOSING
                 if self._state != ConnectionState.CLOSING:
                     self._state = ConnectionState.DISCONNECTED
 
@@ -409,7 +444,7 @@ class WebSocketManager:
                     except Exception as e:
                         logger.error(f"on_disconnected_callback error: {e}", exc_info=True)
 
-                if not self._manual_stop:
+                if not self._manual_stop and self._state != ConnectionState.CLOSING:
                     if self.on_disconnect_callback:
                         try:
                             self.on_disconnect_callback()
@@ -457,7 +492,8 @@ class WebSocketManager:
 
     def _heartbeat_monitor(self):
         """Detect stale connections by watching message timestamps."""
-        while not self._manual_stop:
+        # Bug #15 fix: Use stop event
+        while not self._manual_stop and not self._stop_heartbeat.is_set():
             try:
                 if self._state == ConnectionState.CONNECTED:
                     age = time.time() - self._last_message_time
@@ -466,7 +502,11 @@ class WebSocketManager:
                         if age > self.heartbeat_interval * 2:
                             logger.error("Connection appears dead; triggering reconnect")
                             self._handle_stale_connection()
-                time.sleep(self.heartbeat_interval // 2)
+                # Bug #15 fix: Use shorter sleep to check stop event more frequently
+                for _ in range(self.heartbeat_interval // 2):
+                    if self._stop_heartbeat.is_set() or self._manual_stop:
+                        return
+                    time.sleep(1)
             except Exception as e:
                 logger.error(f"Heartbeat monitor error: {e!r}", exc_info=True)
                 time.sleep(5)
@@ -475,7 +515,8 @@ class WebSocketManager:
         """Detect network failures and trigger reconnect."""
         consecutive_failures = 0
         max_failures = 3
-        while not self._manual_stop:
+        # Bug #15 fix: Use stop event
+        while not self._manual_stop and not self._stop_network_monitor.is_set():
             try:
                 if self._state == ConnectionState.CONNECTED:
                     if self._check_network():
@@ -487,7 +528,11 @@ class WebSocketManager:
                             logger.error("Network down; triggering reconnect")
                             self._handle_network_disconnection()
                             consecutive_failures = 0
-                time.sleep(self._network_check_interval)
+                # Bug #15 fix: Use shorter sleep to check stop event
+                for _ in range(self._network_check_interval):
+                    if self._stop_network_monitor.is_set() or self._manual_stop:
+                        return
+                    time.sleep(1)
             except Exception as e:
                 logger.error(f"Network monitor error: {e!r}", exc_info=True)
                 time.sleep(5)
@@ -518,7 +563,9 @@ class WebSocketManager:
                             self.on_disconnect_callback()
                         except Exception:
                             pass
-                    self._schedule_reconnect()
+                    # Bug #13 fix: Check if reconnect already scheduled
+                    if not self._reconnect_thread or not self._reconnect_thread.is_alive():
+                        self._schedule_reconnect()
             except Exception as e:
                 logger.error(f"_handle_stale_connection: {e}", exc_info=True)
 
@@ -537,7 +584,9 @@ class WebSocketManager:
                             self.on_disconnect_callback()
                         except Exception:
                             pass
-                    self._schedule_reconnect()
+                    # Bug #13 fix: Check if reconnect already scheduled
+                    if not self._reconnect_thread or not self._reconnect_thread.is_alive():
+                        self._schedule_reconnect()
             except Exception as e:
                 logger.error(f"_handle_network_disconnection: {e}", exc_info=True)
 
@@ -548,8 +597,12 @@ class WebSocketManager:
                 return
             self._state = ConnectionState.RECONNECTING
 
+            # Bug #13 & #16 fix: Check if reconnect thread exists and is alive
             if self._reconnect_thread and self._reconnect_thread.is_alive():
+                logger.info("Reconnect thread already running")
                 return
+
+            self._stop_reconnect.clear()
 
             self._reconnect_thread = threading.Thread(
                 target=self._reconnect_with_backoff,
@@ -577,12 +630,15 @@ class WebSocketManager:
 
             delay = min(self.retry_delay * self._retries, 60)
             logger.info(f"Reconnecting in {delay}s (attempt {self._retries})...")
+
+            # Bug #15 fix: Check stop event during sleep
             for _ in range(int(delay)):
-                if self._manual_stop:
+                if self._manual_stop or self._stop_reconnect.is_set():
+                    logger.info("Reconnect cancelled by manual stop")
                     return
                 time.sleep(1)
 
-            if not self._manual_stop:
+            if not self._manual_stop and not self._stop_reconnect.is_set():
                 self.connect()
 
         except Exception as e:
@@ -595,7 +651,7 @@ class WebSocketManager:
             wait_step = 10
             waited = 0
             logger.info("Waiting for network recovery...")
-            while waited < max_wait and not self._manual_stop:
+            while waited < max_wait and not self._manual_stop and not self._stop_reconnect.is_set():
                 if self._check_network():
                     logger.info("Network restored")
                     return True
@@ -701,7 +757,6 @@ class WebSocketManager:
                 return
             logger.info("[WebSocketManager] Starting cleanup")
 
-            # Use a separate thread for disconnect with timeout
             disconnect_complete = threading.Event()
 
             def _do_cleanup():
@@ -719,7 +774,6 @@ class WebSocketManager:
             if not disconnect_complete.wait(timeout=timeout):
                 logger.warning(f"Cleanup timed out after {timeout}s, forcing completion")
 
-            # Clear all references
             self.broker = None
             self._ws_obj = None
             self._connect_thread = None

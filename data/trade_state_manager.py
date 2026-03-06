@@ -27,6 +27,8 @@ Usage:
 import threading
 import logging
 from typing import Optional, Dict, Any, List
+
+from Utils.safe_getattr import safe_setattr, safe_hasattr
 from data.trade_state import TradeState
 
 logger = logging.getLogger(__name__)
@@ -183,8 +185,8 @@ class TradeStateManager:
         """
         try:
             with self._lock:
-                if hasattr(self._state, key):
-                    setattr(self._state, key, value)
+                if safe_hasattr(self._state, key):
+                    safe_setattr(self._state, key, value)
                     return True
                 return False
         except Exception as e:

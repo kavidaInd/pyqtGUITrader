@@ -4,9 +4,7 @@ dynamic_signal_debug_popup_db.py
 A live-updating popup that shows every detail of the DynamicSignalEngine
 evaluation: indicator values, rule-by-rule results, group fired/not-fired
 status, conflict detection, confidence scores, and the final resolved signal.
-Works with database-backed signal engine.
-
-UPDATED: Now uses state_manager instead of direct state access.
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
@@ -17,7 +15,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QColor, QFont, QLinearGradient
+from PyQt5.QtGui import QColor, QFont, QLinearGradient, QBrush
 from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget,
@@ -25,6 +23,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QTabWidget, QTextEdit, QProgressBar,
 )
 
+from Utils.safe_getattr import safe_hasattr, safe_getattr
 # Import state manager
 from data.trade_state_manager import state_manager
 
@@ -70,6 +69,143 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
+class StatusBadge(QLabel):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="neutral"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(80)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        if status == "success":
+            color = c.GREEN
+            bg = c.GREEN + "20"
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        elif status == "info":
+            color = c.BLUE
+            bg = c.BLUE + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class ScrollableTabWidget(QWidget):
+    """Tab widget with scrollable content area."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create scroll area
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Container widget for scrollable content
+        self.container = QWidget()
+        self.container_layout = QVBoxLayout(self.container)
+        self.container_layout.setContentsMargins(0, 0, 0, 0)
+        self.container_layout.setSpacing(theme_manager.spacing.GAP_LG)
+
+        self.scroll.setWidget(self.container)
+        self.layout.addWidget(self.scroll)
+
+    def add_widget(self, widget):
+        """Add a widget to the scrollable area."""
+        self.container_layout.addWidget(widget)
+
+    def add_stretch(self):
+        """Add stretch to the scrollable area."""
+        self.container_layout.addStretch()
+
+
 def _header_label(text: str, color_token: str = "TEXT_DIM", size_token: str = "SIZE_XS") -> QLabel:
     try:
         c = theme_manager.palette
@@ -94,7 +230,14 @@ def _value_label(text: str, color_token: str = "TEXT_MAIN", size_token: str = "S
         size = ty.get(size_token, ty.SIZE_SM)
 
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"color: {color}; font-size: {size}pt; font-weight: {ty.WEIGHT_BOLD};")
+        lbl.setStyleSheet(f"""
+            color: {color}; 
+            font-size: {size}pt; 
+            font-weight: {ty.WEIGHT_BOLD};
+            background: {c.BG_HOVER};
+            padding: {theme_manager.spacing.PAD_XS}px {theme_manager.spacing.PAD_SM}px;
+            border-radius: {theme_manager.spacing.RADIUS_SM}px;
+        """)
         return lbl
     except Exception as e:
         logger.error(f"[_value_label] Failed: {e}", exc_info=True)
@@ -117,8 +260,8 @@ class _SignalBadge(QLabel, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self.setAlignment(Qt.AlignCenter)
-            self.setMinimumWidth(130)
-            self.setFixedHeight(36)
+            self.setMinimumWidth(150)
+            self.setFixedHeight(48)
             self._set("WAIT")
             self.apply_theme()
         except Exception as e:
@@ -150,11 +293,11 @@ class _SignalBadge(QLabel, ThemedMixin):
                 QLabel {{
                     background: {color}22;
                     color: {color};
-                    border: {self._sp.SEPARATOR}px solid {color};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    font-size: {self._ty.SIZE_LG}pt;
+                    border: 2px solid {color};
+                    border-radius: {self._sp.RADIUS_LG}px;
+                    font-size: {self._ty.SIZE_XL}pt;
                     font-weight: {self._ty.WEIGHT_BOLD};
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
                 }}
             """)
             self._last_signal = signal_value
@@ -223,7 +366,7 @@ class _RuleRow:
             logger.error(f"[_RuleRow.set] Failed: {e}", exc_info=True)
 
 
-class _ConfidenceBar(QLabel, ThemedMixin):
+class _ConfidenceBar(QWidget, ThemedMixin):
     """
     FEATURE 3: Progress bar showing confidence percentage.
     """
@@ -236,21 +379,54 @@ class _ConfidenceBar(QLabel, ThemedMixin):
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
 
-            self.setFixedHeight(16)
-            self.setMinimumWidth(80)
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_SM)
+
+            self._bar = QProgressBar()
+            self._bar.setRange(0, 100)
+            self._bar.setTextVisible(False)
+            self._bar.setFixedHeight(16)
+            self._bar.setMinimumWidth(150)
+
+            self._label = QLabel("0%")
+            self._label.setFixedWidth(50)
+
+            layout.addWidget(self._bar)
+            layout.addWidget(self._label)
+
             self.apply_theme()
         except Exception as e:
             logger.error(f"[_ConfidenceBar.__init__] Failed: {e}", exc_info=True)
             super().__init__(parent)
 
     def _safe_defaults_init(self):
-        pass
+        self._bar = None
+        self._label = None
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors"""
         try:
-            # Will be updated when set_confidence is called
-            pass
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            if self._bar:
+                self._bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_SM}px;
+                        background: {c.BG_HOVER};
+                        text-align: center;
+                    }}
+                    QProgressBar::chunk {{
+                        background: {c.BLUE};
+                        border-radius: {sp.RADIUS_SM}px;
+                    }}
+                """)
+
+            if self._label:
+                self._label.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XS}pt;")
         except Exception as e:
             logger.error(f"[_ConfidenceBar.apply_theme] Failed: {e}", exc_info=True)
 
@@ -260,9 +436,6 @@ class _ConfidenceBar(QLabel, ThemedMixin):
         """
         try:
             c = self._c
-            sp = self._sp
-            ty = self._ty
-
             percent = int(confidence * 100)
             threshold_pct = int(threshold * 100)
 
@@ -274,30 +447,30 @@ class _ConfidenceBar(QLabel, ThemedMixin):
             else:
                 color = c.RED
 
-            self.setStyleSheet(f"""
-                QLabel {{
-                    background: {c.BG_PANEL};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    color: {c.TEXT_MAIN};
-                    font-size: {ty.SIZE_XS}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    padding: {sp.PAD_XS}px {sp.PAD_XS}px;
-                }}
-            """)
+            if self._bar:
+                self._bar.setValue(percent)
+                self._bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        border: 1px solid {c.BORDER};
+                        border-radius: {self._sp.RADIUS_SM}px;
+                        background: {c.BG_HOVER};
+                        text-align: center;
+                    }}
+                    QProgressBar::chunk {{
+                        background: {color};
+                        border-radius: {self._sp.RADIUS_SM}px;
+                    }}
+                """)
 
-            # Create bar using Unicode block characters
-            bar_length = 20
-            filled = int(percent * bar_length / 100)
-            bar = "█" * filled + "░" * (bar_length - filled)
-
-            self.setText(f"{bar}  {percent}% (threshold: {threshold_pct}%)")
+            if self._label:
+                self._label.setText(f"{percent}%")
+                self._label.setStyleSheet(f"color: {color}; font-size: {self._ty.SIZE_XS}pt; font-weight: {self._ty.WEIGHT_BOLD};")
 
         except Exception as e:
             logger.error(f"[_ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
 
 
-class _GroupPanel(QGroupBox, ThemedMixin):
+class _GroupPanel(ModernCard, ThemedMixin):
     """
     Panel for one signal group (BUY_CALL, BUY_PUT, etc.).
     Shows logic mode, fired status, confidence score, and a per-rule table.
@@ -310,7 +483,7 @@ class _GroupPanel(QGroupBox, ThemedMixin):
 
         try:
             label = SIGNAL_LABELS.get(signal, signal)
-            super().__init__(f" {label} ", parent)
+            super().__init__(parent)
             self.signal = signal
 
             # Rule 13.2: Connect to theme and density signals
@@ -319,11 +492,11 @@ class _GroupPanel(QGroupBox, ThemedMixin):
 
             self._signal_colors = _get_signal_colors()
             self._color = self._signal_colors.get(signal, self._c.TEXT_DISABLED)
-            self._setup_ui()
+            self._setup_ui(label)
             self.apply_theme()
         except Exception as e:
             logger.error(f"[_GroupPanel.__init__] Failed: {e}", exc_info=True)
-            super().__init__(f" {signal} ", parent)
+            super().__init__(parent)
             self.signal = signal
             self._color = self._c.TEXT_DISABLED
 
@@ -332,9 +505,8 @@ class _GroupPanel(QGroupBox, ThemedMixin):
         self.signal = ""
         self._color = None
         self._logic_lbl = None
-        self._fired_lbl = None
-        self._enabled_lbl = None
-        self._confidence_lbl = None
+        self._fired_badge = None
+        self._enabled_badge = None
         self._confidence_bar = None
         self._table = None
         self._no_rules_lbl = None
@@ -351,7 +523,24 @@ class _GroupPanel(QGroupBox, ThemedMixin):
             # Update table style
             if self._table:
                 self._table.setStyleSheet(f"""
-                    QTableWidget {{ alternate-background-color: {c.BG_ROW_B}; background: {c.BG_ROW_A}; }}
+                    QTableWidget {{ 
+                        alternate-background-color: {c.BG_ROW_B}; 
+                        background: {c.BG_ROW_A};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_SM}px;
+                    }}
+                    QHeaderView::section {{
+                        background-color: {c.BG_HOVER};
+                        color: {c.TEXT_MAIN};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {sp.PAD_XS}px;
+                        border: none;
+                        border-right: 1px solid {c.BORDER};
+                    }}
+                    QTableCornerButton::section {{
+                        background-color: {c.BG_HOVER};
+                        border: none;
+                    }}
                 """)
 
             # Update no rules label
@@ -361,50 +550,70 @@ class _GroupPanel(QGroupBox, ThemedMixin):
         except Exception as e:
             logger.error(f"[_GroupPanel.apply_theme] Failed: {e}", exc_info=True)
 
-    def _setup_ui(self):
+    def _setup_ui(self, label):
         try:
             c = self._c
             sp = self._sp
             ty = self._ty
 
             root = QVBoxLayout(self)
-            root.setContentsMargins(sp.PAD_SM, sp.PAD_MD, sp.PAD_SM, sp.PAD_SM)
-            root.setSpacing(sp.GAP_XS)
+            root.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+            root.setSpacing(sp.GAP_MD)
 
-            # Top row: logic + fired indicator + confidence
-            top = QHBoxLayout()
-            top.setSpacing(sp.GAP_MD)
+            # Header row
+            header = QHBoxLayout()
+            header.setSpacing(sp.GAP_MD)
 
-            self._logic_lbl = _header_label("Logic: AND", "TEXT_DIM")
-            top.addWidget(self._logic_lbl)
-            top.addStretch()
+            # Title with color
+            title_lbl = QLabel(label)
+            title_lbl.setStyleSheet(f"""
+                color: {self._color};
+                font-size: {ty.SIZE_MD}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            """)
+            header.addWidget(title_lbl)
 
-            # FEATURE 3: Confidence display
-            confidence_container = QHBoxLayout()
-            self._confidence_lbl = _header_label("Confidence:", "TEXT_DIM", "SIZE_XS")
+            header.addStretch()
+
+            # Logic
+            self._logic_lbl = _header_label("AND", "TEXT_DIM")
+            header.addWidget(self._logic_lbl)
+
+            # Confidence bar
             self._confidence_bar = _ConfidenceBar()
-            confidence_container.addWidget(self._confidence_lbl)
-            confidence_container.addWidget(self._confidence_bar)
-            top.addLayout(confidence_container)
+            header.addWidget(self._confidence_bar)
 
-            top.addStretch()
+            # Fired badge
+            self._fired_badge = StatusBadge("NOT FIRED", "neutral")
+            header.addWidget(self._fired_badge)
 
-            self._fired_lbl = QLabel("⬤  NOT FIRED")
-            self._fired_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
-            top.addWidget(self._fired_lbl)
+            # Enabled badge
+            self._enabled_badge = StatusBadge("enabled", "success")
 
-            self._enabled_lbl = QLabel("enabled")
-            self._enabled_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt;")
-            top.addWidget(self._enabled_lbl)
-
-            root.addLayout(top)
+            root.addLayout(header)
 
             # Rule table
             self._table = QTableWidget(0, 5)
             self._table.setHorizontalHeaderLabels(["Rule Expression", "LHS Value", "Op", "RHS Value", "Result"])
-            self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+
+            # Style the table headers
+            header = self._table.horizontalHeader()
+            header.setStyleSheet(f"""
+                QHeaderView::section {{
+                    background-color: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    font-weight: {ty.WEIGHT_BOLD};
+                    padding: {sp.PAD_SM}px;
+                    border: none;
+                    border-right: 1px solid {c.BORDER};
+                }}
+            """)
+
+            # Set column resize modes
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
             for i in range(1, 5):
-                self._table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+
             self._table.verticalHeader().setVisible(False)
             self._table.setEditTriggers(QTableWidget.NoEditTriggers)
             self._table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -434,23 +643,23 @@ class _GroupPanel(QGroupBox, ThemedMixin):
             if self._logic_lbl is not None:
                 self._logic_lbl.setText(f"Logic: {logic}")
 
-            # Enabled
-            if self._enabled_lbl is not None:
+            # Enabled badge
+            if self._enabled_badge is not None:
                 if enabled:
-                    self._enabled_lbl.setText("✓ enabled")
-                    self._enabled_lbl.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt;")
+                    self._enabled_badge.setText("enabled")
+                    self._enabled_badge.set_status("success")
                 else:
-                    self._enabled_lbl.setText("✗ disabled")
-                    self._enabled_lbl.setStyleSheet(f"color: {c.RED}; font-size: {ty.SIZE_XS}pt;")
+                    self._enabled_badge.setText("disabled")
+                    self._enabled_badge.set_status("error")
 
-            # Fired
-            if self._fired_lbl is not None:
+            # Fired badge
+            if self._fired_badge is not None:
                 if fired:
-                    self._fired_lbl.setText("⬤  FIRED")
-                    self._fired_lbl.setStyleSheet(f"color: {self._color}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+                    self._fired_badge.setText("FIRED")
+                    self._fired_badge.set_status("success")
                 else:
-                    self._fired_lbl.setText("⬤  NOT FIRED")
-                    self._fired_lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+                    self._fired_badge.setText("NOT FIRED")
+                    self._fired_badge.set_status("neutral")
 
             # FEATURE 3: Update confidence bar
             if self._confidence_bar is not None:
@@ -631,7 +840,7 @@ def _lookup_cache(name: str, cache: Dict = None) -> str:
         return name
 
 
-class _IndicatorCachePanel(QWidget, ThemedMixin):
+class _IndicatorCachePanel(ModernCard, ThemedMixin):
     """Tab showing raw computed indicator values from the engine cache."""
 
     def __init__(self, parent=None):
@@ -646,16 +855,32 @@ class _IndicatorCachePanel(QWidget, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             layout = QVBoxLayout(self)
-            layout.setContentsMargins(self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS)
+            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+            layout.setSpacing(self._sp.GAP_MD)
 
-            lbl = _header_label("All computed indicator values during last evaluation:", "TEXT_DIM")
-            layout.addWidget(lbl)
+            header = _header_label("Indicator Values", "BLUE", "SIZE_MD")
+            layout.addWidget(header)
 
             self._table = QTableWidget(0, 3)
-            self._table.setHorizontalHeaderLabels(["Indicator (cache key)", "Latest Value", "Prev Value"])
-            self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-            self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self._table.setHorizontalHeaderLabels(["Indicator", "Latest Value", "Previous Value"])
+
+            # Style the table headers
+            header_view = self._table.horizontalHeader()
+            header_view.setStyleSheet(f"""
+                QHeaderView::section {{
+                    background-color: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    border: none;
+                    border-right: 1px solid {self._c.BORDER};
+                }}
+            """)
+
+            header_view.setSectionResizeMode(0, QHeaderView.Stretch)
+            header_view.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header_view.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
             self._table.verticalHeader().setVisible(False)
             self._table.setEditTriggers(QTableWidget.NoEditTriggers)
             self._table.setAlternatingRowColors(True)
@@ -675,9 +900,15 @@ class _IndicatorCachePanel(QWidget, ThemedMixin):
         """Apply theme colors to the panel"""
         try:
             c = self._c
+            sp = self._sp
             if self._table:
                 self._table.setStyleSheet(f"""
-                    QTableWidget {{ alternate-background-color: {c.BG_ROW_B}; background: {c.BG_ROW_A}; }}
+                    QTableWidget {{ 
+                        alternate-background-color: {c.BG_ROW_B}; 
+                        background: {c.BG_ROW_A};
+                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_SM}px;
+                    }}
                 """)
         except Exception as e:
             logger.error(f"[_IndicatorCachePanel.apply_theme] Failed: {e}", exc_info=True)
@@ -748,7 +979,7 @@ class _IndicatorCachePanel(QWidget, ThemedMixin):
             logger.error(f"[_IndicatorCachePanel._render_rows] Failed: {e}", exc_info=True)
 
 
-class _ConfidencePanel(QWidget, ThemedMixin):
+class _ConfidencePanel(ModernCard, ThemedMixin):
     """
     FEATURE 3: Tab showing confidence scores for all signal groups.
     """
@@ -766,38 +997,49 @@ class _ConfidencePanel(QWidget, ThemedMixin):
             layout.setSpacing(self._sp.GAP_LG)
 
             # Header
-            header = _header_label("Signal Group Confidence Scores", "BLUE", "SIZE_MD")
+            header = _header_label("Confidence Scores", "BLUE", "SIZE_MD")
             layout.addWidget(header)
 
-            # Explanation label
+            # Explanation card
+            self._explanation_card = ModernCard()
+            expl_layout = QVBoxLayout(self._explanation_card)
             self._explanation_lbl = QLabel("No signal evaluation yet")
             self._explanation_lbl.setWordWrap(True)
-            layout.addWidget(self._explanation_lbl)
+            expl_layout.addWidget(self._explanation_lbl)
+            layout.addWidget(self._explanation_card)
 
             # Confidence bars for each group
             self._confidence_bars = {}
             for sig in SIGNAL_GROUPS:
-                group_box = QGroupBox(SIGNAL_LABELS.get(sig, sig))
+                group_box = ModernCard()
                 group_layout = QVBoxLayout(group_box)
+                group_layout.setSpacing(self._sp.GAP_MD)
+
+                # Header with signal name and color
+                sig_header = QHBoxLayout()
+                sig_color = _get_signal_colors().get(sig, self._c.TEXT_DIM)
+                sig_lbl = QLabel(SIGNAL_LABELS.get(sig, sig))
+                sig_lbl.setStyleSheet(f"color: {sig_color}; font-size: {self._ty.SIZE_MD}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+                sig_header.addWidget(sig_lbl)
+                sig_header.addStretch()
 
                 # Confidence bar
-                bar_layout = QHBoxLayout()
-                bar_layout.addWidget(QLabel("Confidence:"))
                 bar = _ConfidenceBar()
-                bar.set_confidence(0.0)
-                bar_layout.addWidget(bar)
-                group_layout.addLayout(bar_layout)
+                self._confidence_bars[sig] = bar
+                sig_header.addWidget(bar)
+
+                group_layout.addLayout(sig_header)
 
                 # Threshold line
                 threshold_layout = QHBoxLayout()
                 threshold_layout.addWidget(QLabel("Threshold:"))
-                self._threshold_lbl = QLabel("0.60")
+                self._threshold_lbl = QLabel("60%")
+                self._threshold_lbl.setStyleSheet(f"color: {self._c.YELLOW}; font-weight: {self._ty.WEIGHT_BOLD};")
                 threshold_layout.addWidget(self._threshold_lbl)
                 threshold_layout.addStretch()
                 group_layout.addLayout(threshold_layout)
 
                 layout.addWidget(group_box)
-                self._confidence_bars[sig] = bar
 
             layout.addStretch()
             self.apply_theme()
@@ -807,6 +1049,7 @@ class _ConfidencePanel(QWidget, ThemedMixin):
             super().__init__(parent)
 
     def _safe_defaults_init(self):
+        self._explanation_card = None
         self._explanation_lbl = None
         self._threshold_lbl = None
         self._confidence_bars = {}
@@ -818,15 +1061,11 @@ class _ConfidencePanel(QWidget, ThemedMixin):
             sp = self._sp
             ty = self._ty
 
+            if self._explanation_card:
+                self._explanation_card._apply_style()
+
             if self._explanation_lbl:
-                self._explanation_lbl.setStyleSheet(f"""
-                    color: {c.TEXT_DIM};
-                    font-size: {ty.SIZE_XS}pt;
-                    padding: {sp.PAD_SM}px;
-                    background: {c.BG_PANEL};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                """)
+                self._explanation_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt;")
 
             if self._threshold_lbl:
                 self._threshold_lbl.setStyleSheet(f"color: {c.YELLOW}; font-weight: {ty.WEIGHT_BOLD};")
@@ -860,7 +1099,7 @@ class _ConfidencePanel(QWidget, ThemedMixin):
             logger.error(f"[_ConfidencePanel.update_confidence] Failed: {e}", exc_info=True)
 
 
-class _RawJsonPanel(QTextEdit, ThemedMixin):
+class _RawJsonPanel(ModernCard, ThemedMixin):
     """Tab showing the raw evaluate() result dict as JSON."""
 
     def __init__(self, parent=None):
@@ -871,7 +1110,16 @@ class _RawJsonPanel(QTextEdit, ThemedMixin):
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
 
-            self.setReadOnly(True)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+
+            header = _header_label("Raw JSON Data", "BLUE", "SIZE_MD")
+            layout.addWidget(header)
+
+            self._text_edit = QTextEdit()
+            self._text_edit.setReadOnly(True)
+            layout.addWidget(self._text_edit)
+
             self.apply_theme()
         except Exception as e:
             logger.error(f"[_RawJsonPanel.__init__] Failed: {e}", exc_info=True)
@@ -884,7 +1132,7 @@ class _RawJsonPanel(QTextEdit, ThemedMixin):
             sp = self._sp
             ty = self._ty
 
-            self.setStyleSheet(f"""
+            self._text_edit.setStyleSheet(f"""
                 QTextEdit {{
                     background: {c.BG_PANEL};
                     color: {c.TEXT_MAIN};
@@ -900,7 +1148,7 @@ class _RawJsonPanel(QTextEdit, ThemedMixin):
     def update_result(self, result: Dict):
         try:
             if result is None:
-                self.setPlainText("No data available")
+                self._text_edit.setPlainText("No data available")
                 return
 
             def _default(obj):
@@ -913,10 +1161,10 @@ class _RawJsonPanel(QTextEdit, ThemedMixin):
                 text = json.dumps(result, indent=2, default=_default)
             except Exception as e:
                 text = f"Serialisation error: {e}"
-            self.setPlainText(text)
+            self._text_edit.setPlainText(text)
         except Exception as e:
             logger.error(f"[_RawJsonPanel.update_result] Failed: {e}", exc_info=True)
-            self.setPlainText(f"Error updating: {e}")
+            self._text_edit.setPlainText(f"Error updating: {e}")
 
 
 class DynamicSignalDebugPopup(QDialog, ThemedMixin):
@@ -926,7 +1174,7 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
     Works with database-backed signal engine.
     FEATURE 3: Added confidence display tab.
     UPDATED: Now uses state_manager for state access.
-    FULLY INTEGRATED with ThemeManager for dynamic theming.
+    MODERN MINIMALIST DESIGN - Matches other dialogs.
     """
 
     def __init__(self, trading_app, parent=None):
@@ -941,9 +1189,14 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self.trading_app = trading_app
-            self.setWindowTitle("🔬 Dynamic Signal Engine — Live Debug")
-            self.resize(980, 750)
-            self.setMinimumSize(700, 500)
+            self.setWindowTitle("🔬 Signal Engine Debug")
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            self.resize(1000, 800)
+            self.setMinimumSize(800, 600)
 
             # Internal state
             self._last_signal_value: str = ""
@@ -965,20 +1218,7 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
 
         except Exception as e:
             logger.critical(f"[DynamicSignalDebugPopup.__init__] Failed: {e}", exc_info=True)
-            # Still try to create basic dialog
-            super().__init__(parent, Qt.Window)
-            self.trading_app = trading_app
-            self.setWindowTitle("Signal Debug - ERROR")
-            self.setMinimumSize(400, 300)
-
-            layout = QVBoxLayout(self)
-            error_label = QLabel(f"Failed to initialize debug popup:\n{e}")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.close)
-            layout.addWidget(close_btn)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -1007,6 +1247,57 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
         self._groups_layout = None
         self._status_lbl = None
         self._auto_chk = None
+        self.main_card = None
+
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent, Qt.Window)
+            self.setWindowTitle("Signal Debug - ERROR")
+            self.setMinimumSize(400, 300)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+
+            error_label = QLabel(f"❌ Failed to initialize debug popup:\n{e}")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = QPushButton("Close")
+            close_btn.setCursor(Qt.PointingHandCursor)
+            close_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+            """)
+            close_btn.clicked.connect(self.close)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[DynamicSignalDebugPopup._create_error_dialog] Failed: {e}", exc_info=True)
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -1017,24 +1308,25 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
             c = self._c
             sp = self._sp
 
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
             # Update all child widgets that have apply_theme methods
-            if self._signal_badge and hasattr(self._signal_badge, 'apply_theme'):
+            if self._signal_badge and safe_hasattr(self._signal_badge, 'apply_theme'):
                 self._signal_badge.apply_theme()
 
-            if self._cache_panel and hasattr(self._cache_panel, 'apply_theme'):
+            if self._cache_panel and safe_hasattr(self._cache_panel, 'apply_theme'):
                 self._cache_panel.apply_theme()
 
-            if self._confidence_panel and hasattr(self._confidence_panel, 'apply_theme'):
+            if self._confidence_panel and safe_hasattr(self._confidence_panel, 'apply_theme'):
                 self._confidence_panel.apply_theme()
 
-            if self._json_panel and hasattr(self._json_panel, 'apply_theme'):
+            if self._json_panel and safe_hasattr(self._json_panel, 'apply_theme'):
                 self._json_panel.apply_theme()
 
             for panel in self._group_panels.values():
-                if hasattr(panel, 'apply_theme'):
+                if safe_hasattr(panel, 'apply_theme'):
                     panel.apply_theme()
 
             # Update status label style
@@ -1046,265 +1338,345 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[DynamicSignalDebugPopup.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog, QWidget {{
-                background: {c.BG_MAIN};
-                color: {c.TEXT_MAIN};
-                font-family: '{ty.FONT_MONO}';
-            }}
-            QLabel {{ color: {c.TEXT_MAIN}; }}
-            QGroupBox {{
-                background: {c.BG_PANEL};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                padding: {sp.PAD_XS}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                font-size: {ty.SIZE_SM}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px;
-                color: {c.TEXT_MAIN};
-            }}
-            QTableWidget {{
-                background: {c.BG_PANEL};
-                gridline-color: {c.BORDER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QTableWidget::item {{ padding: {sp.PAD_XS}px {sp.PAD_SM}px; }}
-            QHeaderView::section {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                font-size: {ty.SIZE_XS}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QPushButton:hover {{ background: {c.BORDER}; }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                background: {c.BG_PANEL};
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-            }}
-            QScrollArea {{ border: none; background: transparent; }}
-            QCheckBox {{ color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; spacing: {sp.GAP_XS}px; }}
-        """
-
     # ── UI Construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
         try:
-            c = self._c
-            sp = self._sp
-
+            # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
-            root.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-            root.setSpacing(sp.GAP_SM)
+            root.setContentsMargins(20, 20, 20, 20)
+            root.setSpacing(0)
 
-            # ── Header ────────────────────────────────────────────────────────────
-            header = self._build_header()
-            root.addWidget(header)
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
 
-            # ── Tabs ─────────────────────────────────────────────────────────────
-            self._tabs = QTabWidget()
-            root.addWidget(self._tabs, 1)
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
 
-            # Tab 1: Group panels
-            groups_widget = self._build_groups_tab()
-            self._tabs.addTab(groups_widget, "📋  Signal Groups")
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
 
-            # Tab 2: Indicator cache
-            self._cache_panel = _IndicatorCachePanel()
-            self._tabs.addTab(self._cache_panel, "📊  Indicator Values")
+            # Content area
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                             self._sp.PAD_XL, self._sp.PAD_XL)
+            content_layout.setSpacing(self._sp.GAP_LG)
 
-            # FEATURE 3: Confidence tab
-            self._confidence_panel = _ConfidencePanel()
-            self._tabs.addTab(self._confidence_panel, "📈  Confidence Scores")
+            # Header
+            header = ModernHeader("Signal Engine Debug")
+            content_layout.addWidget(header)
 
-            # Tab 3: Raw JSON
-            self._json_panel = _RawJsonPanel()
-            self._tabs.addTab(self._json_panel, "{}  Raw JSON")
+            # Status header card
+            status_header = self._build_status_header()
+            content_layout.addWidget(status_header)
 
-            # ── Footer ───────────────────────────────────────────────────────────
+            # Tabs
+            self._tabs = self._create_modern_tabs()
+            content_layout.addWidget(self._tabs, 1)
+
+            # Footer
             footer = self._build_footer()
-            root.addWidget(footer)
+            content_layout.addWidget(footer)
+
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
 
         except Exception as e:
             logger.error(f"[DynamicSignalDebugPopup._build_ui] Failed: {e}", exc_info=True)
             raise
 
-    def _build_header(self) -> QWidget:
-        try:
-            c = self._c
-            sp = self._sp
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
 
-            frame = QFrame()
-            frame.setStyleSheet(f"QFrame {{ background: {c.BG_PANEL}; border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px; }}")
-            layout = QHBoxLayout(frame)
-            layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-            layout.setSpacing(sp.GAP_XL)
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
 
-            # Signal badge (large)
-            sig_col = QVBoxLayout()
-            sig_col.addWidget(_header_label("FINAL SIGNAL", "TEXT_DIM", "SIZE_XS"))
-            self._signal_badge = _SignalBadge()
-            sig_col.addWidget(self._signal_badge)
-            layout.addLayout(sig_col)
+        title = QLabel("🔬 Signal Engine Debug")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
 
-            sep = QFrame()
-            sep.setFrameShape(QFrame.VLine)
-            sep.setStyleSheet(f"QFrame {{ border: {sp.SEPARATOR}px solid {c.BORDER}; }}")
-            layout.addWidget(sep)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.close)
 
-            # Grid of quick-status labels
-            grid = QGridLayout()
-            grid.setHorizontalSpacing(sp.PAD_XL)
-            grid.setVerticalSpacing(sp.GAP_XS)
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
 
-            self._lbl_conflict = self._make_status_pair(grid, 0, 0, "CONFLICT")
-            self._lbl_available = self._make_status_pair(grid, 0, 2, "RULES AVAILABLE")
-            self._lbl_symbol = self._make_status_pair(grid, 1, 0, "SYMBOL")
-            self._lbl_last_close = self._make_status_pair(grid, 1, 2, "LAST CLOSE")
-            self._lbl_bars = self._make_status_pair(grid, 2, 0, "BARS IN DF")
-            self._lbl_timestamp = self._make_status_pair(grid, 2, 2, "LAST REFRESH")
-            self._lbl_strategy = self._make_status_pair(grid, 3, 0, "ACTIVE STRATEGY")
+        return title_bar
 
-            layout.addLayout(grid, 1)
-            layout.addStretch()
+    def _create_modern_tabs(self):
+        """Create modern-styled tab widget."""
+        tabs = QTabWidget()
 
-            # Fired group indicators (5 small pills)
-            fired_col = QVBoxLayout()
-            fired_col.addWidget(_header_label("GROUP FIRED", "TEXT_DIM", "SIZE_XS"))
-            fired_inner = QHBoxLayout()
-            self._fired_pills = {}
-            for sig in SIGNAL_GROUPS:
-                lbl = QLabel(sig.replace("_", "\n"))
-                lbl.setAlignment(Qt.AlignCenter)
-                lbl.setFixedSize(64, 42)
-                self._fired_pills[sig] = lbl
-                fired_inner.addWidget(lbl)
-            fired_col.addLayout(fired_inner)
-            layout.addLayout(fired_col)
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
 
-            return frame
+        # Tab 1: Group panels (scrollable)
+        groups_widget = self._build_groups_tab()
+        tabs.addTab(groups_widget, "📋 Signal Groups")
 
-        except Exception as e:
-            logger.error(f"[_build_header] Failed: {e}", exc_info=True)
-            return QFrame()
+        # Tab 2: Indicator cache
+        self._cache_panel = _IndicatorCachePanel()
+        tabs.addTab(self._cache_panel, "📊 Indicators")
 
-    def _make_status_pair(self, grid: QGridLayout, row: int, col: int, title: str) -> QLabel:
-        try:
-            grid.addWidget(_header_label(title, "TEXT_DIM", "SIZE_XS"), row, col)
-            val_lbl = _value_label("—", "TEXT_MAIN", "SIZE_XS")
-            grid.addWidget(val_lbl, row, col + 1)
-            return val_lbl
-        except Exception as e:
-            logger.error(f"[_make_status_pair] Failed: {e}", exc_info=True)
-            lbl = QLabel("—")
-            return lbl
+        # FEATURE 3: Confidence tab
+        self._confidence_panel = _ConfidencePanel()
+        tabs.addTab(self._confidence_panel, "📈 Confidence")
 
-    def _build_groups_tab(self) -> QScrollArea:
-        try:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Tab 3: Raw JSON
+        self._json_panel = _RawJsonPanel()
+        tabs.addTab(self._json_panel, "{} Raw JSON")
 
-            container = QWidget()
-            self._groups_layout = QVBoxLayout(container)
-            self._groups_layout.setContentsMargins(self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS, self._sp.PAD_XS)
-            self._groups_layout.setSpacing(self._sp.GAP_SM)
+        return tabs
 
-            self._group_panels = {}
-            for sig in SIGNAL_GROUPS:
-                panel = _GroupPanel(sig)
-                self._group_panels[sig] = panel
-                self._groups_layout.addWidget(panel)
+    def _build_status_header(self) -> ModernCard:
+        """Build status header card."""
+        card = ModernCard()
+        layout = QHBoxLayout(card)
+        layout.setSpacing(self._sp.GAP_XL)
 
-            self._groups_layout.addStretch()
-            scroll.setWidget(container)
-            return scroll
+        # Signal badge (large)
+        sig_col = QVBoxLayout()
+        sig_col.addWidget(_header_label("FINAL SIGNAL", "TEXT_DIM", "SIZE_XS"), 0, Qt.AlignCenter)
+        self._signal_badge = _SignalBadge()
+        sig_col.addWidget(self._signal_badge)
+        layout.addLayout(sig_col)
 
-        except Exception as e:
-            logger.error(f"[_build_groups_tab] Failed: {e}", exc_info=True)
-            scroll = QScrollArea()
-            container = QWidget()
-            layout = QVBoxLayout(container)
-            error_lbl = QLabel(f"Error building groups tab: {e}")
-            layout.addWidget(error_lbl)
-            scroll.setWidget(container)
-            return scroll
+        # Vertical separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background: {self._c.BORDER};")
+        layout.addWidget(sep)
 
-    def _build_footer(self) -> QWidget:
-        try:
-            c = self._c
-            sp = self._sp
+        # Grid of status labels
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(self._sp.PAD_XL)
+        grid.setVerticalSpacing(self._sp.GAP_SM)
 
-            frame = QFrame()
-            frame.setStyleSheet(f"QFrame {{ background: {c.BG_PANEL}; border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; }}")
-            layout = QHBoxLayout(frame)
-            layout.setContentsMargins(sp.PAD_MD, sp.PAD_XS, sp.PAD_MD, sp.PAD_XS)
-            layout.setSpacing(sp.GAP_MD)
+        row = 0
+        # Conflict
+        grid.addWidget(_header_label("CONFLICT", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_conflict = _value_label("No", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_conflict, row, 1)
+        row += 1
 
-            self._auto_chk = QCheckBox("Auto-refresh (1 s)")
-            self._auto_chk.setChecked(True)
-            self._auto_chk.toggled.connect(self._on_auto_toggle)
-            layout.addWidget(self._auto_chk)
+        # Rules Available
+        grid.addWidget(_header_label("RULES AVAILABLE", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_available = _value_label("—", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_available, row, 1)
+        row += 1
 
-            layout.addStretch()
+        # Symbol
+        grid.addWidget(_header_label("SYMBOL", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_symbol = _value_label("—", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_symbol, row, 1)
+        row += 1
 
-            self._status_lbl = QLabel("Waiting for data…")
-            self._status_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
-            layout.addWidget(self._status_lbl)
+        # Last Close
+        grid.addWidget(_header_label("LAST CLOSE", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_last_close = _value_label("—", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_last_close, row, 1)
+        row += 1
 
-            layout.addStretch()
+        # Bars
+        grid.addWidget(_header_label("BARS", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_bars = _value_label("—", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_bars, row, 1)
+        row += 1
 
-            refresh_btn = QPushButton("⟳  Refresh Now")
-            refresh_btn.clicked.connect(self.refresh)
-            layout.addWidget(refresh_btn)
+        # Last Refresh
+        grid.addWidget(_header_label("LAST REFRESH", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_timestamp = _value_label("—", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_timestamp, row, 1)
+        row += 1
 
-            close_btn = QPushButton("✕  Close")
-            close_btn.clicked.connect(self.close)
-            layout.addWidget(close_btn)
+        # Strategy
+        grid.addWidget(_header_label("STRATEGY", "TEXT_DIM", "SIZE_XS"), row, 0)
+        self._lbl_strategy = _value_label("—", "TEXT_MAIN", "SIZE_XS")
+        grid.addWidget(self._lbl_strategy, row, 1)
 
-            return frame
+        layout.addLayout(grid, 1)
 
-        except Exception as e:
-            logger.error(f"[_build_footer] Failed: {e}", exc_info=True)
-            return QFrame()
+        # Fired group indicators
+        fired_col = QVBoxLayout()
+        fired_col.addWidget(_header_label("FIRED GROUPS", "TEXT_DIM", "SIZE_XS"), 0, Qt.AlignCenter)
+        fired_inner = QHBoxLayout()
+        fired_inner.setSpacing(self._sp.GAP_SM)
+
+        self._fired_pills = {}
+        signal_colors = _get_signal_colors()
+        for sig in SIGNAL_GROUPS:
+            lbl = QLabel(sig.replace("_", "\n"))
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setFixedSize(70, 50)
+            color = signal_colors.get(sig, self._c.TEXT_DISABLED)
+            lbl.setStyleSheet(f"""
+                QLabel {{
+                    color: {color};
+                    border: 1px solid {color};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                    font-size: {self._ty.SIZE_XS}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_XS}px;
+                }}
+            """)
+            self._fired_pills[sig] = lbl
+            fired_inner.addWidget(lbl)
+
+        fired_col.addLayout(fired_inner)
+        layout.addLayout(fired_col)
+
+        return card
+
+    def _build_groups_tab(self) -> ScrollableTabWidget:
+        """Build groups tab with scrollable content."""
+        scrollable = ScrollableTabWidget()
+
+        self._group_panels = {}
+        for sig in SIGNAL_GROUPS:
+            panel = _GroupPanel(sig)
+            self._group_panels[sig] = panel
+            scrollable.add_widget(panel)
+
+        scrollable.add_stretch()
+        return scrollable
+
+    def _build_footer(self) -> ModernCard:
+        """Build footer with controls."""
+        card = ModernCard()
+        layout = QHBoxLayout(card)
+        layout.setSpacing(self._sp.GAP_MD)
+
+        self._auto_chk = QCheckBox("Auto-refresh (1s)")
+        self._auto_chk.setChecked(True)
+        self._auto_chk.toggled.connect(self._on_auto_toggle)
+        self._auto_chk.setStyleSheet(f"""
+            QCheckBox {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_SM}pt;
+                spacing: {self._sp.GAP_SM}px;
+            }}
+            QCheckBox::indicator {{
+                width: {self._sp.ICON_MD}px;
+                height: {self._sp.ICON_MD}px;
+                border: 2px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_SM}px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {self._c.BLUE};
+                border-color: {self._c.BLUE};
+            }}
+        """)
+        layout.addWidget(self._auto_chk)
+
+        layout.addStretch()
+
+        self._status_lbl = QLabel("Waiting for data…")
+        self._status_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+        layout.addWidget(self._status_lbl)
+
+        layout.addStretch()
+
+        refresh_btn = QPushButton("⟳ Refresh Now")
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_LG}px;
+                font-size: {self._ty.SIZE_SM}pt;
+                min-width: 120px;
+            }}
+            QPushButton:hover {{
+                background: {self._c.BORDER};
+            }}
+        """)
+        refresh_btn.clicked.connect(self.refresh)
+        layout.addWidget(refresh_btn)
+
+        close_btn = QPushButton("✕ Close")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.RED};
+                color: white;
+                border: none;
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_LG}px;
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED_BRIGHT};
+            }}
+        """)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+
+        return card
 
     # ── Refresh logic ────────────────────────────────────────────────────────
 
@@ -1342,7 +1714,7 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
                 return
 
             # Get trend data (derivative_trend holds the last detect() result)
-            trend_data = getattr(state, "derivative_trend", None) or {}
+            trend_data = safe_getattr(state, "derivative_trend", None) or {}
             option_signal = trend_data.get("option_signal")
 
             if option_signal is None:
@@ -1366,12 +1738,26 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
 
             conflict = option_signal.get("conflict", False)
             if self._lbl_conflict is not None:
-                self._lbl_conflict.setText("⚠ YES" if conflict else "No")
-                self._lbl_conflict.setStyleSheet(f"color: {c.RED if conflict else c.GREEN}; font-weight: {ty.WEIGHT_BOLD}; font-size: {ty.SIZE_XS}pt;")
+                self._lbl_conflict.setText("YES" if conflict else "No")
+                self._lbl_conflict.setStyleSheet(f"""
+                    color: {c.RED if conflict else c.GREEN};
+                    font-size: {ty.SIZE_XS}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    background: {c.BG_HOVER};
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                    border-radius: {self._sp.RADIUS_SM}px;
+                """)
 
             if self._lbl_available is not None:
                 self._lbl_available.setText("Yes")
-                self._lbl_available.setStyleSheet(f"color: {c.GREEN}; font-weight: {ty.WEIGHT_BOLD}; font-size: {ty.SIZE_XS}pt;")
+                self._lbl_available.setStyleSheet(f"""
+                    color: {c.GREEN};
+                    font-size: {ty.SIZE_XS}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    background: {c.BG_HOVER};
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                    border-radius: {self._sp.RADIUS_SM}px;
+                """)
 
             # Symbol & price from trend_data
             symbol = trend_data.get("name", "—")
@@ -1393,11 +1779,11 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
             # Active strategy - new in database version
             if self._lbl_strategy is not None:
                 try:
-                    if hasattr(self.trading_app, "detector") and \
-                       hasattr(self.trading_app.detector, "signal_engine") and \
+                    if safe_hasattr(self.trading_app, "detector") and \
+                       safe_hasattr(self.trading_app.detector, "signal_engine") and \
                        self.trading_app.detector.signal_engine is not None:
                         engine = self.trading_app.detector.signal_engine
-                        strategy_slug = getattr(engine, "strategy_slug", None)
+                        strategy_slug = safe_getattr(engine, "strategy_slug", None)
                         if strategy_slug:
                             self._lbl_strategy.setText(strategy_slug)
                             if strategy_slug != self._current_strategy_slug:
@@ -1419,12 +1805,13 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
                     color = signal_colors.get(sig, c.TEXT_DISABLED) if is_fired else c.TEXT_DISABLED
                     pill.setStyleSheet(f"""
                         QLabel {{
-                            background: {color}33;
                             color: {color};
-                            border: {self._sp.SEPARATOR}px solid {color};
+                            border: 2px solid {color if is_fired else c.BORDER};
                             border-radius: {self._sp.RADIUS_SM}px;
                             font-size: {ty.SIZE_XS}pt;
                             font-weight: {ty.WEIGHT_BOLD};
+                            background: {color}22 if is_fired else transparent;
+                            padding: {self._sp.PAD_XS}px;
                         }}
                     """)
                 except Exception as e:
@@ -1446,12 +1833,12 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
             # Try to get engine's indicator cache for richer display
             indicator_cache = {}
             try:
-                if hasattr(self.trading_app, "detector") and \
-                        hasattr(self.trading_app.detector, "signal_engine") and \
+                if safe_hasattr(self.trading_app, "detector") and \
+                        safe_hasattr(self.trading_app.detector, "signal_engine") and \
                         self.trading_app.detector.signal_engine is not None:
                     engine = self.trading_app.detector.signal_engine
                     # Access last cache if stored
-                    indicator_cache = getattr(engine, "_last_cache", {})
+                    indicator_cache = safe_getattr(engine, "_last_cache", {})
             except Exception as e:
                 logger.debug(f"Failed to get indicator cache: {e}")
 
@@ -1467,8 +1854,8 @@ class DynamicSignalDebugPopup(QDialog, ThemedMixin):
                     confidence = confidence_dict.get(sig, 0.0)
 
                     try:
-                        engine = getattr(
-                            getattr(self.trading_app, "detector", None),
+                        engine = safe_getattr(
+                            safe_getattr(self.trading_app, "detector", None),
                             "signal_engine", None
                         )
                         if engine is not None:

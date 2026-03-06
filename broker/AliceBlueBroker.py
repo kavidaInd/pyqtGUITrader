@@ -36,6 +36,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -100,11 +101,11 @@ class AliceBlueBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for AliceBlueBroker.")
 
-            self.app_id = getattr(broker_setting, 'client_id', None)
-            self.api_secret = getattr(broker_setting, 'secret_key', None)
+            self.app_id = safe_getattr(broker_setting, 'client_id', None)
+            self.api_secret = safe_getattr(broker_setting, 'secret_key', None)
 
             # Parse "username|password|YOB" from redirect_uri
-            creds_raw = getattr(broker_setting, 'redirect_uri', '') or ''
+            creds_raw = safe_getattr(broker_setting, 'redirect_uri', '') or ''
             cred_parts = creds_raw.split("|")
             self.username = cred_parts[0] if len(cred_parts) > 0 else None
             self.password = cred_parts[1] if len(cred_parts) > 1 else None
@@ -716,10 +717,10 @@ class AliceBlueBroker(BaseBroker):
         self._ws_closed = True
 
         # Clean up WebSocket if it exists
-        if hasattr(self, 'alice') and self.alice is not None:
+        if safe_hasattr(self, 'alice') and self.alice is not None:
             try:
                 # Try to close WebSocket with timeout
-                if hasattr(self.alice, 'close_websocket'):
+                if safe_hasattr(self.alice, 'close_websocket'):
                     if self._ws_cleanup_event is None:
                         self._ws_cleanup_event = threading.Event()
                     self._ws_cleanup_event.clear()
@@ -928,7 +929,7 @@ class AliceBlueBroker(BaseBroker):
 
             alice = ws_obj.get("__alice__") if isinstance(ws_obj, dict) else self.alice
 
-            if alice and hasattr(alice, "close_websocket"):
+            if alice and safe_hasattr(alice, "close_websocket"):
                 # Run close in separate thread with timeout
                 disconnect_complete = threading.Event()
 
@@ -977,9 +978,9 @@ class AliceBlueBroker(BaseBroker):
 
             raw_symbol = raw_tick.get("symbol", "")
             # pya3 returns instrument object or string symbol
-            if hasattr(raw_symbol, "tradingsymbol"):
+            if safe_hasattr(raw_symbol, "tradingsymbol"):
                 # pya3 Instrument object — use its exchange attribute if available
-                exch = getattr(raw_symbol, "exchange", None)
+                exch = safe_getattr(raw_symbol, "exchange", None)
                 exch_str = str(exch).upper() if exch else ""
                 prefix = "NFO" if exch_str in ("NFO", "NSE_FO") else "NSE"
                 symbol_str = f"{prefix}:{raw_symbol.tradingsymbol}"
@@ -1020,7 +1021,7 @@ class AliceBlueBroker(BaseBroker):
         Caches results for the session.
         """
         try:
-            cache = getattr(self, "_alice_inst_cache", {})
+            cache = safe_getattr(self, "_alice_inst_cache", {})
             if symbol in cache:
                 return cache[symbol]
 

@@ -1,10 +1,8 @@
 """
 Utils/BrokerLoginPopup.py
 =========================
-Generic multi-broker PyQt5 login dialog.
-
-Replaces with a broker-agnostic design.
-The popup adapts its UI to the active broker's auth method via BrokerLoginHelper.
+Generic multi-broker PyQt5 login dialog with modern minimalist design.
+Matches the theme of DailyTradeSettingGUI.py and BrokerageSettingGUI.py
 
 Auth method variants handled:
     oauth    — URL display + auth-code/URL paste  (Fyers, Zerodha, Upstox, FlatTrade)
@@ -18,12 +16,12 @@ Usage:
 
     popup = BrokerLoginPopup(
         parent=main_window,
-        brokerage_setting=settings,   # has .broker_type, .client_id, .secret_key, .redirect_uri
-        reason="Session expired",     # optional — shows warning banner
-        notifier=telegram_notifier,   # optional
+        brokerage_setting=settings,
+        reason="Session expired",
+        notifier=telegram_notifier,
     )
     if popup.exec_() == QDialog.Accepted:
-        token = popup.result_token    # the obtained access token
+        token = popup.result_token
 """
 
 import logging
@@ -41,6 +39,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from gui.brokerage_settings.BrokerLoginHelper import BrokerLoginHelper
 
 # Rule 13.1: Import theme manager
@@ -63,6 +62,89 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
+
+
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class StepCard(QFrame):
+    """Step card with number indicator."""
+
+    def __init__(self, step_number: int, title: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("stepCard")
+        self.step_number = step_number
+        self.title = title
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QFrame#stepCard {{
+                background: {c.BG_HOVER};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
 
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
@@ -136,12 +218,12 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
             self.result_token: Optional[str] = None
 
             # Build broker-aware helper
-            broker_type = getattr(brokerage_setting, 'broker_type', 'fyers') or 'fyers'
+            broker_type = safe_getattr(brokerage_setting, 'broker_type', 'fyers') or 'fyers'
             self._helper = BrokerLoginHelper.for_broker(
                 broker_type=broker_type,
-                client_id=getattr(brokerage_setting, 'client_id', '') or '',
-                secret_key=getattr(brokerage_setting, 'secret_key', '') or '',
-                redirect_uri=getattr(brokerage_setting, 'redirect_uri', '') or '',
+                client_id=safe_getattr(brokerage_setting, 'client_id', '') or '',
+                secret_key=safe_getattr(brokerage_setting, 'secret_key', '') or '',
+                redirect_uri=safe_getattr(brokerage_setting, 'redirect_uri', '') or '',
             )
 
             broker_name = self._helper.broker_display_name
@@ -149,8 +231,13 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                 f"{broker_name} — Re-authentication Required" if reason
                 else f"{broker_name} — Login"
             )
-            self.setMinimumSize(750, 700 if reason else 650)
-            self.resize(750, 700 if reason else 650)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            self.setMinimumSize(800, 750 if reason else 700)
+            self.resize(800, 750 if reason else 700)
             self.setModal(True)
 
             self._build_ui()
@@ -189,6 +276,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         self.notify_check = None
         self.telegram_status_label = None
         self.login_url = None
+        self.main_card = None
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -196,24 +284,77 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         Called on theme change, density change, and initial render.
         """
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
+            # Update step cards
+            self._update_step_card_styles()
 
             # Update button styles
             self._update_button_styles()
 
-            # Update header
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;")
-
             # Update status label
             if self.status_label:
-                self.status_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
+
+            # Update progress bar
+            if self.progress_bar:
+                self.progress_bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        border: 1px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        text-align: center;
+                        color: {self._c.TEXT_MAIN};
+                        background: {self._c.BG_HOVER};
+                        min-height: {self._sp.PROGRESS_MD}px;
+                        max-height: {self._sp.PROGRESS_MD}px;
+                    }}
+                    QProgressBar::chunk {{
+                        background: {self._c.BLUE};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
+
+            # Update tabs
+            if self.tabs:
+                self.tabs.setStyleSheet(f"""
+                    QTabWidget::pane {{
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        background: {self._c.BG_PANEL};
+                        margin-top: {self._sp.PAD_SM}px;
+                    }}
+                    QTabBar::tab {{
+                        background: {self._c.BG_HOVER};
+                        color: {self._c.TEXT_DIM};
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        min-width: 130px;
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-bottom: none;
+                        border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        margin-right: {self._sp.PAD_XS}px;
+                    }}
+                    QTabBar::tab:selected {{
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_MAIN};
+                        border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                    }}
+                    QTabBar::tab:hover:!selected {{
+                        background: {self._c.BORDER};
+                        color: {self._c.TEXT_MAIN};
+                    }}
+                """)
 
             # Update telegram status
             self._update_telegram_status()
@@ -223,96 +364,21 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[BrokerLoginPopup.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
+    def _update_step_card_styles(self):
+        """Update step card styles."""
         c = self._c
-        ty = self._ty
         sp = self._sp
 
-        return f"""
-            QDialog {{ background: {c.BG_PANEL}; color: {c.TEXT_MAIN}; font-family:'{ty.FONT_UI}', sans-serif; }}
-            QLabel  {{ color: {c.TEXT_DIM}; font-size: {ty.SIZE_BODY}pt; }}
-            QGroupBox {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px;
-            }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                background: {c.BG_PANEL};
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                min-width: 130px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:hover:!selected {{ background: {c.BORDER}; color: {c.TEXT_MAIN}; }}
-            QTextEdit, QLineEdit {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_SM}px;
-                font-family:'{ty.FONT_MONO}';
-                font-size: {ty.SIZE_SM}pt;
-            }}
-            QTextEdit:focus, QLineEdit:focus {{ border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
-            QPushButton {{
-                background: {c.GREEN};
-                color: {c.TEXT_INVERSE};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QPushButton:hover   {{ background: {c.GREEN_BRIGHT}; }}
-            QPushButton:pressed {{ background: {c.GREEN}; }}
-            QPushButton:disabled {{ background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; }}
-            QPushButton#secondary {{ background: {c.BG_HOVER}; border: {sp.SEPARATOR}px solid {c.BORDER}; }}
-            QPushButton#secondary:hover {{ background: {c.BORDER}; }}
-            QProgressBar {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                text-align: center;
-                color: {c.TEXT_MAIN};
-                background: {c.BG_HOVER};
-                min-height: {sp.PROGRESS_MD}px;
-                max-height: {sp.PROGRESS_MD}px;
-            }}
-            QProgressBar::chunk {{ background: {c.GREEN}; border-radius: {sp.RADIUS_SM}px; }}
-            QScrollArea {{ border: none; background: transparent; }}
-            QFrame#infoCard {{ background: {c.BG_HOVER}; border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px; }}
-            QFrame#stepCard {{ background: {c.BG_ROW_B}; border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px; }}
-            QCheckBox {{ color: {c.TEXT_MAIN}; spacing: {sp.GAP_SM}px; font-size: {ty.SIZE_BODY}pt; }}
-            QCheckBox::indicator {{
-                width: {sp.ICON_MD}px;
-                height: {sp.ICON_MD}px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                background: {c.BG_HOVER};
-            }}
-            QCheckBox::indicator:checked {{ background: {c.GREEN}; border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT}; }}
-        """
+        # Find all step cards and update their style
+        for card in self.findChildren(QFrame, "stepCard"):
+            card.setStyleSheet(f"""
+                QFrame#stepCard {{
+                    background: {c.BG_HOVER};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_LG}px;
+                    padding: {sp.PAD_LG}px;
+                }}
+            """)
 
     def _update_button_styles(self):
         """Update button styles with theme tokens"""
@@ -320,44 +386,135 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         sp = self._sp
         ty = self._ty
 
-        # Cancel button special styling
+        # Login button
+        if self.login_btn:
+            self.login_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-width: 160px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_DISABLED};
+                }}
+            """)
+
+        # Cancel button
         if self.cancel_btn:
             self.cancel_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: {c.RED};
-                    color: {c.TEXT_INVERSE};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    font-weight: {ty.WEIGHT_BOLD};
+                    color: white;
+                    border: none;
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
                     font-size: {ty.SIZE_BODY}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-width: 120px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover {{ background: {c.RED_BRIGHT}; }}
+                QPushButton:hover {{
+                    background: {c.RED_BRIGHT};
+                }}
             """)
+
+        # Clear button
+        if self.clear_btn:
+            self.clear_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_LG}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {c.BORDER};
+                }}
+            """)
+
+        # Secondary buttons (Copy, Open Browser)
+        for btn_name in ["copy_btn", "open_btn"]:
+            btn = getattr(self, btn_name, None)
+            if btn:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c.BG_HOVER};
+                        color: {c.TEXT_MAIN};
+                        border: 1px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                        font-size: {ty.SIZE_BODY}pt;
+                        min-width: 100px;
+                        min-height: 32px;
+                    }}
+                    QPushButton:hover {{
+                        background: {c.BORDER};
+                        border-color: {c.BORDER_FOCUS};
+                    }}
+                """)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
         sp = self._sp
 
+        # Root layout with margins for shadow effect
         root = QVBoxLayout(self)
-        root.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        root.setSpacing(sp.GAP_MD)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(0)
+
+        # Main container card
+        self.main_card = ModernCard(self, elevated=True)
+        main_layout = QVBoxLayout(self.main_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom title bar
+        title_bar = self._create_title_bar()
+        main_layout.addWidget(title_bar)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        main_layout.addWidget(separator)
+
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+        content_layout.setSpacing(sp.GAP_LG)
 
         # Header
         broker_name = self._helper.broker_display_name
-        header = QLabel(f"🔐 {broker_name} Authentication")
-        header.setObjectName("header")
-        header.setAlignment(Qt.AlignCenter)
-        root.addWidget(header)
+        header_text = f"🔐 {broker_name} Authentication"
+        if self._reason:
+            header_text = f"🔄 {broker_name} — Re-authentication Required"
+        header = ModernHeader(header_text)
+        content_layout.addWidget(header)
 
         # Warning banner (token-expiry reason)
         if self._reason:
             banner = self._create_warning_banner()
-            root.addWidget(banner)
+            content_layout.addWidget(banner)
 
         # Tabs
         self.tabs = QTabWidget()
-        root.addWidget(self.tabs)
+        content_layout.addWidget(self.tabs)
         self.tabs.addTab(self._build_login_tab(), "🔑 Login")
         self.tabs.addTab(self._build_notification_tab(), "📱 Notifications")
         self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
@@ -366,19 +523,42 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         self.progress_bar.setMaximum(100)
-        root.addWidget(self.progress_bar)
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid {self._c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                text-align: center;
+                color: {self._c.TEXT_MAIN};
+                background: {self._c.BG_HOVER};
+                min-height: {sp.PROGRESS_MD}px;
+                max-height: {sp.PROGRESS_MD}px;
+            }}
+            QProgressBar::chunk {{
+                background: {self._c.BLUE};
+                border-radius: {sp.RADIUS_MD}px;
+            }}
+        """)
+        content_layout.addWidget(self.progress_bar)
 
         # Status label
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignCenter)
-        root.addWidget(self.status_label)
+        self.status_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_DIM};
+                font-size: {self._ty.SIZE_SM}pt;
+                padding: {sp.PAD_SM}px;
+                background: {self._c.BG_HOVER};
+                border-radius: {sp.RADIUS_MD}px;
+            }}
+        """)
+        content_layout.addWidget(self.status_label)
 
         # Bottom buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(sp.GAP_MD)
 
         self.clear_btn = QPushButton("✖ Clear")
-        self.clear_btn.setObjectName("secondary")
         self.clear_btn.clicked.connect(self._clear_entries)
 
         self.login_btn = QPushButton("🔒 Complete Login")
@@ -391,7 +571,57 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         btn_layout.addWidget(self.login_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(self.cancel_btn)
-        root.addLayout(btn_layout)
+        content_layout.addLayout(btn_layout)
+
+        main_layout.addWidget(content)
+        root.addWidget(self.main_card)
+
+        # Apply button styles after they're created
+        self._update_button_styles()
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        broker_name = self._helper.broker_display_name if self._helper else "Broker"
+        title = QLabel(f"🔐 {broker_name} Login")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
 
     def _create_warning_banner(self) -> QFrame:
         """Create a warning banner for token expiry reasons"""
@@ -399,17 +629,21 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         sp = self._sp
         ty = self._ty
 
-        banner = QFrame()
+        banner = ModernCard()
         banner.setStyleSheet(f"""
-            QFrame {{ background: {c.BG_ROW_B}; border: {sp.SEPARATOR}px solid {c.RED};
-                     border-radius: {sp.RADIUS_MD}px; padding: {sp.PAD_XS}px; }}
+            QFrame#modernCard {{
+                background: {c.BG_ROW_B};
+                border: 1px solid {c.RED};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_MD}px;
+            }}
         """)
         bl = QHBoxLayout(banner)
         bl.setContentsMargins(sp.PAD_MD, sp.PAD_SM, sp.PAD_MD, sp.PAD_SM)
         bl.setSpacing(sp.GAP_MD)
 
         icon_lbl = QLabel("⚠️")
-        icon_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_MD))
+        icon_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_LG))
         icon_lbl.setStyleSheet("background:transparent; border:none;")
 
         msg_lbl = QLabel(
@@ -434,96 +668,142 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
             ty = self._ty
 
             layout = QVBoxLayout(widget)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_MD)
-            layout.setSpacing(sp.GAP_MD)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(sp.GAP_LG)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+            container = QWidget()
+            container.setStyleSheet("background: transparent;")
+            scroll_layout = QVBoxLayout(container)
+            scroll_layout.setContentsMargins(sp.PAD_LG, sp.PAD_LG, sp.PAD_LG, sp.PAD_LG)
+            scroll_layout.setSpacing(sp.GAP_LG)
 
             auth = self._helper.auth_method
 
             # ── Step 1 card ───────────────────────────────────────────────────
-            step1 = self._make_step_card()
-            step1_inner = QVBoxLayout(step1)
-            step1_inner.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-            step1_inner.setSpacing(sp.GAP_SM)
+            step1_card = ModernCard()
+            step1_layout = QVBoxLayout(step1_card)
+            step1_layout.setSpacing(sp.GAP_MD)
 
-            t1 = QLabel(self._helper.step1_title)
-            t1.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-            t1.setStyleSheet(f"color:{c.BLUE};")
-            h1 = QLabel(self._helper.step1_hint)
-            h1.setWordWrap(True)
-            h1.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+            # Step header with number
+            step1_header = QLabel("Step 1: Generate Login URL")
+            step1_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {c.BLUE};
+                    font-size: {ty.SIZE_MD}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+            """)
+            step1_layout.addWidget(step1_header)
 
-            step1_inner.addWidget(t1)
-            step1_inner.addWidget(h1)
+            step1_desc = QLabel(self._helper.step1_hint)
+            step1_desc.setWordWrap(True)
+            step1_desc.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt;")
+            step1_layout.addWidget(step1_desc)
 
             if self._helper.has_login_url:
-                # URL display + copy/open buttons
+                # URL display with copy button
                 url_row = QHBoxLayout()
+                url_row.setSpacing(sp.GAP_SM)
+
                 self.url_text = QTextEdit()
-                self.url_text.setMaximumHeight(sp.BTN_HEIGHT_LG)
+                self.url_text.setMaximumHeight(sp.BTN_HEIGHT_LG * 2)
                 self.url_text.setReadOnly(True)
-                self.url_text.setToolTip("Generated login URL — copy or open in browser")
+                self.url_text.setStyleSheet(f"""
+                    QTextEdit {{
+                        background: {c.BG_INPUT};
+                        color: {c.TEXT_MAIN};
+                        border: 1px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_MD}px;
+                        padding: {sp.PAD_SM}px;
+                        font-family: {ty.FONT_MONO};
+                        font-size: {ty.SIZE_XS}pt;
+                    }}
+                """)
                 url_row.addWidget(self.url_text, 1)
 
                 copy_btn = QPushButton("📋 Copy")
-                copy_btn.setObjectName("secondary")
+                copy_btn.setObjectName("copy_btn")
+                copy_btn.setCursor(Qt.PointingHandCursor)
                 copy_btn.setMaximumWidth(80)
                 copy_btn.clicked.connect(self._copy_url)
                 url_row.addWidget(copy_btn)
 
+                step1_layout.addLayout(url_row)
+
                 open_btn = QPushButton("🌐 Open in Browser")
+                open_btn.setObjectName("open_btn")
+                open_btn.setCursor(Qt.PointingHandCursor)
                 open_btn.clicked.connect(self._open_url)
+                step1_layout.addWidget(open_btn, 0, Qt.AlignRight)
 
-                step1_inner.addLayout(url_row)
-                step1_inner.addWidget(open_btn, alignment=Qt.AlignRight)
-
-            layout.addWidget(step1)
+            scroll_layout.addWidget(step1_card)
 
             # ── Step 2 card ───────────────────────────────────────────────────
-            step2 = self._make_step_card()
-            step2_inner = QVBoxLayout(step2)
-            step2_inner.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-            step2_inner.setSpacing(sp.GAP_SM)
+            step2_card = ModernCard()
+            step2_layout = QVBoxLayout(step2_card)
+            step2_layout.setSpacing(sp.GAP_MD)
 
-            t2 = QLabel(self._helper.step2_title)
-            t2.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-            t2.setStyleSheet(f"color:{c.BLUE};")
-            h2 = QLabel(self._helper.step2_hint)
-            h2.setWordWrap(True)
-            h2.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+            step2_header = QLabel("Step 2: Complete Authentication")
+            step2_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {c.BLUE};
+                    font-size: {ty.SIZE_MD}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+            """)
+            step2_layout.addWidget(step2_header)
 
-            step2_inner.addWidget(t2)
-            step2_inner.addWidget(h2)
+            step2_desc = QLabel(self._helper.step2_hint)
+            step2_desc.setWordWrap(True)
+            step2_desc.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt;")
+            step2_layout.addWidget(step2_desc)
 
             # Code / token entry (hidden for password-auth brokers)
             if auth != "password":
+                code_label = QLabel(self._helper.code_entry_placeholder)
+                code_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
+                step2_layout.addWidget(code_label)
+
                 self.code_entry = QLineEdit()
-                self.code_entry.setPlaceholderText(self._helper.code_entry_placeholder)
-                step2_inner.addWidget(self.code_entry)
+                self.code_entry.setPlaceholderText("Paste code or redirect URL here")
+                self.code_entry.setStyleSheet(self._get_lineedit_style())
+                step2_layout.addWidget(self.code_entry)
 
             # Secondary password/MPIN field (totp brokers that need it)
             if self._helper.needs_password_field:
-                pwd_lbl = QLabel(self._helper.password_field_label)
-                pwd_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+                pwd_label = QLabel(self._helper.password_field_label)
+                pwd_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
                 self.password_entry = QLineEdit()
                 self.password_entry.setPlaceholderText(self._helper.password_field_placeholder)
                 self.password_entry.setEchoMode(QLineEdit.Password)
-                step2_inner.addWidget(pwd_lbl)
-                step2_inner.addWidget(self.password_entry)
+                self.password_entry.setStyleSheet(self._get_lineedit_style())
+                step2_layout.addWidget(pwd_label)
+                step2_layout.addWidget(self.password_entry)
 
             # Mobile + UCC fields for Kotak Neo
-            if (getattr(self.brokerage_setting, 'broker_type', '') or '') == 'kotak':
-                kotak_lbl = QLabel("Mobile number and UCC (required for Kotak Neo):")
-                kotak_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+            if (safe_getattr(self.brokerage_setting, 'broker_type', '') or '') == 'kotak':
+                kotak_label = QLabel("Mobile number and UCC (required for Kotak Neo):")
+                kotak_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
                 self.mobile_entry = QLineEdit()
                 self.mobile_entry.setPlaceholderText("Mobile number with country code (e.g. +919999999999)")
+                self.mobile_entry.setStyleSheet(self._get_lineedit_style())
                 self.ucc_entry = QLineEdit()
                 self.ucc_entry.setPlaceholderText("UCC (Unique Client Code)")
-                step2_inner.addWidget(kotak_lbl)
-                step2_inner.addWidget(self.mobile_entry)
-                step2_inner.addWidget(self.ucc_entry)
+                self.ucc_entry.setStyleSheet(self._get_lineedit_style())
+                step2_layout.addWidget(kotak_label)
+                step2_layout.addWidget(self.mobile_entry)
+                step2_layout.addWidget(self.ucc_entry)
 
-            layout.addWidget(step2)
-            layout.addStretch()
+            scroll_layout.addWidget(step2_card)
+            scroll_layout.addStretch()
+
+            scroll.setWidget(container)
+            layout.addWidget(scroll)
 
         except Exception as e:
             logger.error(f"[BrokerLoginPopup._build_login_tab] {e}", exc_info=True)
@@ -535,11 +815,22 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
         return widget
 
-    @staticmethod
-    def _make_step_card() -> QFrame:
-        card = QFrame()
-        card.setObjectName("stepCard")
-        return card
+    def _get_lineedit_style(self):
+        """Get consistent line edit styling."""
+        return f"""
+            QLineEdit {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QLineEdit:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
 
     # ── Notifications tab ─────────────────────────────────────────────────────
 
@@ -551,34 +842,90 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
             ty = self._ty
 
             layout = QVBoxLayout(widget)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
 
-            grp = QGroupBox("Notification Settings")
-            grp_layout = QVBoxLayout(grp)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+            container = QWidget()
+            container.setStyleSheet("background: transparent;")
+            scroll_layout = QVBoxLayout(container)
+            scroll_layout.setContentsMargins(sp.PAD_LG, sp.PAD_LG, sp.PAD_LG, sp.PAD_LG)
+            scroll_layout.setSpacing(sp.GAP_LG)
+
+            # Notification settings card
+            notify_card = ModernCard()
+            notify_layout = QVBoxLayout(notify_card)
+            notify_layout.setSpacing(sp.GAP_MD)
+
+            notify_header = QLabel("📱 Notification Settings")
+            notify_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {c.TEXT_MAIN};
+                    font-size: {ty.SIZE_MD}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+            """)
+            notify_layout.addWidget(notify_header)
 
             self.notify_check = QCheckBox("Send Telegram notification on token expiry")
             configured = False
-            if self.brokerage_setting and hasattr(self.brokerage_setting, 'is_telegram_configured'):
+            if self.brokerage_setting and safe_hasattr(self.brokerage_setting, 'is_telegram_configured'):
                 configured = self.brokerage_setting.is_telegram_configured()
             self.notify_check.setChecked(configured)
-            grp_layout.addWidget(self.notify_check)
+            self.notify_check.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {c.TEXT_MAIN};
+                    font-size: {ty.SIZE_BODY}pt;
+                    spacing: {sp.GAP_SM}px;
+                }}
+                QCheckBox::indicator {{
+                    width: {sp.ICON_MD}px;
+                    height: {sp.ICON_MD}px;
+                    border: 2px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {c.BLUE};
+                    border-color: {c.BLUE};
+                }}
+            """)
+            notify_layout.addWidget(self.notify_check)
 
             hint = QLabel(
                 "When enabled, you'll receive a Telegram notification whenever "
                 "your token expires and needs renewal."
             )
             hint.setWordWrap(True)
-            hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
-            grp_layout.addWidget(hint)
-            layout.addWidget(grp)
+            hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+            notify_layout.addWidget(hint)
 
-            status_grp = QGroupBox("Current Status")
-            status_layout = QVBoxLayout(status_grp)
+            scroll_layout.addWidget(notify_card)
+
+            # Status card
+            status_card = ModernCard()
+            status_layout = QVBoxLayout(status_card)
+            status_layout.setSpacing(sp.GAP_MD)
+
+            status_header = QLabel("📊 Current Status")
+            status_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {c.TEXT_MAIN};
+                    font-size: {ty.SIZE_MD}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+            """)
+            status_layout.addWidget(status_header)
+
             self.telegram_status_label = QLabel("")
+            self.telegram_status_label.setWordWrap(True)
             status_layout.addWidget(self.telegram_status_label)
-            layout.addWidget(status_grp)
 
+            scroll_layout.addWidget(status_card)
+
+            # Info card
             info = self._make_info_card(
                 "📘 About Token Expiry Notifications",
                 f"• {self._helper.broker_display_name} tokens expire periodically\n"
@@ -586,8 +933,12 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                 "• Configure Telegram in Settings → Brokerage Settings\n"
                 "• This helps you know when re-authentication is needed"
             )
-            layout.addWidget(info)
-            layout.addStretch()
+            scroll_layout.addWidget(info)
+
+            scroll_layout.addStretch()
+            scroll.setWidget(container)
+            layout.addWidget(scroll)
+
         except Exception as e:
             logger.error(f"[_build_notification_tab] {e}", exc_info=True)
         return widget
@@ -597,16 +948,16 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
             c = self._c
             if not self.telegram_status_label:
                 return
-            if self.brokerage_setting and hasattr(self.brokerage_setting, 'is_telegram_configured'):
+            if self.brokerage_setting and safe_hasattr(self.brokerage_setting, 'is_telegram_configured'):
                 if self.brokerage_setting.is_telegram_configured():
                     self.telegram_status_label.setText("✅ Telegram notifications configured")
                     self.telegram_status_label.setStyleSheet(f"color:{c.GREEN};")
                 else:
                     self.telegram_status_label.setText("⚠️ Telegram not configured")
-                    self.telegram_status_label.setStyleSheet(f"color:{c.YELLOW};")
+                    self.telegram_status_label.setStyleSheet(f"color:{c.ORANGE};")
             else:
                 self.telegram_status_label.setText("⚠️ Telegram settings not available")
-                self.telegram_status_label.setStyleSheet(f"color:{c.YELLOW};")
+                self.telegram_status_label.setStyleSheet(f"color:{c.ORANGE};")
         except Exception as e:
             logger.error(f"[_update_telegram_status] {e}", exc_info=True)
 
@@ -618,9 +969,13 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            layout.setContentsMargins(sp.PAD_LG, sp.PAD_LG, sp.PAD_LG, sp.PAD_LG)
             layout.setSpacing(sp.GAP_MD)
 
             auth = self._helper.auth_method
@@ -708,41 +1063,71 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         ty = self._ty
         sp = self._sp
 
-        card = QFrame()
-        card.setObjectName("infoCard")
+        card = ModernCard()
         cl = QVBoxLayout(card)
-        cl.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        cl.setSpacing(sp.GAP_XS)
+        cl.setSpacing(sp.GAP_SM)
+
         t = QLabel(title)
-        t.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-        t.setStyleSheet(f"color:{c.TEXT_MAIN};")
+        t.setStyleSheet(f"""
+            QLabel {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_SM}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
         b = QLabel(body)
         b.setWordWrap(True)
-        b.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+        b.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
+
         cl.addWidget(t)
         cl.addWidget(b)
         return card
 
     def _create_error_dialog(self, parent):
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             super().__init__(parent)
             self.setWindowTitle("Login — ERROR")
             self.setMinimumSize(400, 200)
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
 
             lbl = QLabel("❌ Failed to initialize login dialog.\nPlease check the logs.")
             lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color:{c.RED_BRIGHT}; padding:{sp.PAD_XL}px; font-size:{ty.SIZE_MD}pt;")
+            lbl.setStyleSheet(f"color:{self._c.RED_BRIGHT}; padding:{self._sp.PAD_XL}px; font-size:{self._ty.SIZE_MD}pt;")
             layout.addWidget(lbl)
 
             btn = QPushButton("Close")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+            """)
             btn.clicked.connect(self.reject)
-            layout.addWidget(btn)
+            layout.addWidget(btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
         except Exception as e:
             logger.error(f"[_create_error_dialog] {e}", exc_info=True)
 
@@ -780,7 +1165,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
     def _copy_url(self):
         try:
-            url = getattr(self, 'login_url', None)
+            url = safe_getattr(self, 'login_url', None)
             if url:
                 QApplication.clipboard().setText(url)
                 if self.status_label:
@@ -793,7 +1178,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
     def _open_url(self):
         try:
-            url = getattr(self, 'login_url', None)
+            url = safe_getattr(self, 'login_url', None)
             if url:
                 webbrowser.open(url)
                 if self.status_label:
@@ -885,11 +1270,9 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                 extra["password"] = password
 
             # Kotak Neo — mobile + UCC required
-            if (getattr(self.brokerage_setting, 'broker_type', '') or '') == 'kotak':
-                mobile = getattr(self, 'mobile_entry', None)
-                ucc = getattr(self, 'ucc_entry', None)
-                mobile_val = mobile.text().strip() if mobile else ""
-                ucc_val = ucc.text().strip() if ucc else ""
+            if (safe_getattr(self.brokerage_setting, 'broker_type', '') or '') == 'kotak':
+                mobile_val = self.mobile_entry.text().strip() if self.mobile_entry else ""
+                ucc_val = self.ucc_entry.text().strip() if self.ucc_entry else ""
                 if not mobile_val or not ucc_val:
                     QMessageBox.warning(self, "Input Needed",
                                         "Mobile number and UCC are required for Kotak Neo.")
@@ -917,7 +1300,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                     return
             elif auth == "static":
                 # For Dhan: accept token from entry or fall back to secret_key
-                code = raw_code or getattr(self._helper, 'secret_key', '') or ""
+                code = raw_code or safe_getattr(self._helper, 'secret_key', '') or ""
                 if not code:
                     QMessageBox.warning(self, "Input Needed", "Please paste the access token.")
                     return
@@ -984,7 +1367,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
             if token:
                 # Save token to brokerage_setting if possible
-                if self.brokerage_setting and hasattr(self.brokerage_setting, 'save_token'):
+                if self.brokerage_setting and safe_hasattr(self.brokerage_setting, 'save_token'):
                     try:
                         now = datetime.now()
                         self.brokerage_setting.save_token(
@@ -1095,5 +1478,4 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
 
 # ── Backward-compatibility alias ─────────────────────────────────────────────
-# Any existing code that imports FyersManualLoginPopup will continue to work.
 FyersManualLoginPopup = BrokerLoginPopup

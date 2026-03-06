@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QColor
 
+from Utils.safe_getattr import safe_hasattr
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
@@ -93,7 +94,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
         except Exception as e:
             logger.critical(f"[DailyPnLWidget.__init__] Failed: {e}", exc_info=True)
             # Ensure we still call super().__init__ even if construction fails
-            if not hasattr(self, '_is_initialized'):
+            if not safe_hasattr(self, '_is_initialized'):
                 super().__init__(parent)
 
     def _safe_defaults_init(self):

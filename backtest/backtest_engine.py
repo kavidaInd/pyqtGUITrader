@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 
 from Utils.OptionUtils import OptionUtils
+from Utils.safe_getattr import safe_hasattr, safe_getattr
 from backtest.backtest_option_pricer import OptionPricer, PriceSource, atm_strike
 from backtest.backtest_candle_debugger import CandleDebugger
 from data.candle_store import CandleStore, resample_df
@@ -431,7 +432,7 @@ class BacktestEngine:
             days = (self.config.end_date - self.config.start_date).days + 2
 
             # Detect broker type for correct symbol/interval translation
-            broker_type = getattr(self.broker, 'broker_type', None) if self.broker else None
+            broker_type = safe_getattr(self.broker, 'broker_type', None) if self.broker else None
 
             # Get store from manager
             store = candle_store_manager.get_store(self.config.derivative)
@@ -604,7 +605,7 @@ class BacktestEngine:
             ts = row["time"]
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
             bar_time = ts if isinstance(ts, datetime) else pd.Timestamp(ts).to_pydatetime()
-            if hasattr(bar_time, "tzinfo") and bar_time.tzinfo is not None:
+            if safe_hasattr(bar_time, "tzinfo") and bar_time.tzinfo is not None:
                 bar_time = bar_time.replace(tzinfo=None)
 
             bar_date = bar_time.date()
@@ -720,7 +721,7 @@ class BacktestEngine:
                     sig_result = signal_engine.evaluate(
                         hist_df,
                         current_position=_pos_context,
-                        df_index=hist_df.index if hasattr(hist_df, 'index') else None
+                        df_index=hist_df.index if safe_hasattr(hist_df, 'index') else None
                     )
 
                     if sig_result and sig_result.get("available", False):
@@ -808,7 +809,7 @@ class BacktestEngine:
                                 "index_sl_level": None, "tp_hit": False,
                                 "sl_hit": False, "trailing_sl_hit": False, "index_sl_hit": False}
                 try:
-                    _d_strike = getattr(state, "_bt_strike", atm_strike(c, cfg.derivative))
+                    _d_strike = safe_getattr(state, "_bt_strike", atm_strike(c, cfg.derivative))
                     _d_opt_type = "CE" if state.current_position == BaseEnums.CALL else "PE"
                     _d_opt_sym = self._get_historical_option_symbol(
                         derivative=cfg.derivative,
@@ -839,7 +840,7 @@ class BacktestEngine:
                         _tp_sl_debug["trailing_sl_price"] = tsl_p
                         _tp_sl_debug["trailing_sl_hit"] = _d_opt_low <= tsl_p
                     if cfg.index_sl is not None:
-                        _e_spot = getattr(state, "_bt_spot_entry", None)
+                        _e_spot = safe_getattr(state, "_bt_spot_entry", None)
                         if _e_spot:
                             if state.current_position == BaseEnums.CALL:
                                 idx_sl_level = _e_spot - cfg.index_sl
@@ -879,7 +880,7 @@ class BacktestEngine:
             # ── Monitor open position ─────────────────────────────────────────
             if state.current_position:
                 # Use the ENTRY strike, not the current ATM
-                strike = getattr(state, "_bt_strike", atm_strike(c, cfg.derivative))
+                strike = safe_getattr(state, "_bt_strike", atm_strike(c, cfg.derivative))
                 opt_type = "CE" if state.current_position == BaseEnums.CALL else "PE"
 
                 # Compute one full BS OHLC bar for this candle using spot OHLC.
@@ -949,7 +950,7 @@ class BacktestEngine:
 
                 # ── Check index SL ───────────────────────────────────────────
                 if cfg.index_sl is not None:
-                    entry_spot = getattr(state, "_bt_spot_entry", None)
+                    entry_spot = safe_getattr(state, "_bt_spot_entry", None)
                     if entry_spot is not None:
                         if state.current_position == BaseEnums.CALL and l <= entry_spot - cfg.index_sl:
                             logger.debug(
@@ -1037,8 +1038,8 @@ class BacktestEngine:
                 # Update state with entry information
                 state.current_position = BaseEnums.CALL if opt_type == "CE" else BaseEnums.PUT
                 state.current_buy_price = entry_price
-                state.put_option = opt_sym if opt_type == "PE" else getattr(state, "put_option", None)
-                state.call_option = opt_sym if opt_type == "CE" else getattr(state, "call_option", None)
+                state.put_option = opt_sym if opt_type == "PE" else safe_getattr(state, "put_option", None)
+                state.call_option = opt_sym if opt_type == "CE" else safe_getattr(state, "call_option", None)
 
                 # Store backtest-specific attributes
                 object.__setattr__(state, "_bt_entry_time", bar_time)
@@ -1067,7 +1068,7 @@ class BacktestEngine:
             last = spot_df.iloc[-1]
             last_ts = (last["time"] if isinstance(last["time"], datetime)
                        else pd.Timestamp(last["time"]).to_pydatetime())
-            if hasattr(last_ts, "tzinfo") and last_ts.tzinfo is not None:
+            if safe_hasattr(last_ts, "tzinfo") and last_ts.tzinfo is not None:
                 last_ts = last_ts.replace(tzinfo=None)
             result, equity, trade_no = self._close_trade(
                 result, state, last_ts, last["close"], pricer, equity, trade_no, "MARKET_CLOSE"
@@ -1192,7 +1193,7 @@ class BacktestEngine:
                 symbol = f"{exchange_symbol}{year_2d}{month_code}{day_str}{int(strike)}{option_type}"
 
             # Add broker prefix if needed
-            broker_type = getattr(getattr(self.broker, "broker_setting", None), "broker_type", None)
+            broker_type = safe_getattr(safe_getattr(self.broker, "broker_setting", None), "broker_type", None)
 
             broker_type = broker_type
             if broker_type:
@@ -1255,7 +1256,7 @@ class BacktestEngine:
                 for _, row in tf_df.iterrows():
                     ts = row["time"]
                     bar_time = ts if isinstance(ts, datetime) else pd.Timestamp(ts).to_pydatetime()
-                    if hasattr(bar_time, "tzinfo") and bar_time.tzinfo is not None:
+                    if safe_hasattr(bar_time, "tzinfo") and bar_time.tzinfo is not None:
                         bar_time = bar_time.replace(tzinfo=None)
 
                     c = row["close"]
@@ -1316,7 +1317,7 @@ class BacktestEngine:
         """
         import BaseEnums
         try:
-            current = getattr(state, "current_position", None)
+            current = safe_getattr(state, "current_position", None)
 
             # Entry signals — only when flat
             if signal_value == "BUY_CALL" and current is None:
@@ -1350,7 +1351,7 @@ class BacktestEngine:
         import BaseEnums
         try:
             opt_type = "CE" if state.current_position == BaseEnums.CALL else "PE"
-            strike = getattr(state, "_bt_strike", atm_strike(spot_exit, self.config.derivative))
+            strike = safe_getattr(state, "_bt_strike", atm_strike(spot_exit, self.config.derivative))
             opt_sym = f"{self.config.derivative}{strike}{opt_type}"
 
             if forced_option_price is not None:
@@ -1364,8 +1365,8 @@ class BacktestEngine:
 
             exit_price = max(0.05, Utils.round_off(exit_price))
 
-            entry_price = getattr(state, "_bt_entry_price", state.current_buy_price or exit_price)
-            entry_source = getattr(state, "_bt_entry_source", PriceSource.SYNTHETIC)
+            entry_price = safe_getattr(state, "_bt_entry_price", state.current_buy_price or exit_price)
+            entry_source = safe_getattr(state, "_bt_entry_source", PriceSource.SYNTHETIC)
             lots = self.config.num_lots
             lot_size = self.config.lot_size
 
@@ -1380,9 +1381,9 @@ class BacktestEngine:
             trade = BacktestTrade(
                 trade_no=trade_no,
                 direction=opt_type,
-                entry_time=getattr(state, "_bt_entry_time", exit_time),
+                entry_time=safe_getattr(state, "_bt_entry_time", exit_time),
                 exit_time=exit_time,
-                spot_entry=getattr(state, "_bt_spot_entry", spot_exit),
+                spot_entry=safe_getattr(state, "_bt_spot_entry", spot_exit),
                 spot_exit=spot_exit,
                 strike=strike,
                 option_entry=entry_price,
@@ -1396,7 +1397,7 @@ class BacktestEngine:
                 entry_source=entry_source,
                 exit_source=exit_source,
                 exit_reason=exit_reason,
-                signal_name=getattr(state, "_bt_signal_name", ""),
+                signal_name=safe_getattr(state, "_bt_signal_name", ""),
             )
             result.trades.append(trade)
 

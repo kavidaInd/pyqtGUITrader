@@ -97,12 +97,12 @@ class PositionMonitor:
                 logger.debug("No current position. Skipping trailing SL/TP update.")
                 return
 
-            if not getattr(state, "current_trade_confirmed", False):
+            if not safe_getattr(state, "current_trade_confirmed", False):
                 self.confirm_trade(trading)
                 return
 
-            current_price = getattr(state, "current_price", None)
-            buy_price     = getattr(state, "current_buy_price", None)
+            current_price = safe_getattr(state, "current_price", None)
+            buy_price     = safe_getattr(state, "current_buy_price", None)
 
             if buy_price is None or current_price is None:
                 logger.info("Cannot update trailing SL/TP: Missing buy/current price.")
@@ -124,12 +124,12 @@ class PositionMonitor:
                 logger.error(f"Error calculating percentage change: {e}", exc_info=True)
                 state.percentage_change = 0
 
-            if getattr(state, "highest_current_price", None) is None:
+            if safe_getattr(state, "highest_current_price", None) is None:
                 state.highest_current_price = buy_price
 
             try:
                 price_increased = current_price > state.highest_current_price
-                tp_point        = getattr(state, "tp_point", float("inf"))
+                tp_point        = safe_getattr(state, "tp_point", float("inf"))
                 crossed_tp      = (current_price >= tp_point) if tp_point is not None else False
 
                 # ── Update the all-time high for this trade ────────────────────
@@ -139,20 +139,20 @@ class PositionMonitor:
                 # ── Adjust trailing percentages when in profit ─────────────────
                 # (Only step the percentages when price is rising — but always
                 #  recalculate the actual SL/TP price points below.)
-                if price_increased and crossed_tp and getattr(state, "take_profit_type", None) == TRAILING:
-                    original_profit = getattr(state, "original_profit_per", 0)
-                    max_profit      = getattr(state, "max_profit", 100)
-                    change_pct      = getattr(state, "percentage_change", 0)
+                if price_increased and crossed_tp and safe_getattr(state, "take_profit_type", None) == TRAILING:
+                    original_profit = safe_getattr(state, "original_profit_per", 0)
+                    max_profit      = safe_getattr(state, "max_profit", 100)
+                    change_pct      = safe_getattr(state, "percentage_change", 0)
 
                     if original_profit <= change_pct <= max_profit:
-                        if state.stoploss_percentage == getattr(state, "original_stoploss_per", 0):
-                            state.stoploss_percentage = getattr(state, "trailing_first_profit", 3.0)
+                        if state.stoploss_percentage == safe_getattr(state, "original_stoploss_per", 0):
+                            state.stoploss_percentage = safe_getattr(state, "trailing_first_profit", 3.0)
                         else:
-                            state.stoploss_percentage += getattr(state, "loss_step", 2.0)
-                        state.tp_percentage += getattr(state, "profit_step", 2.0)
+                            state.stoploss_percentage += safe_getattr(state, "loss_step", 2.0)
+                        state.tp_percentage += safe_getattr(state, "profit_step", 2.0)
 
-                    elif change_pct > max_profit and getattr(state, "trail_after_max_profit", False):
-                        profit_step = getattr(state, "profit_step", 2.0)
+                    elif change_pct > max_profit and safe_getattr(state, "trail_after_max_profit", False):
+                        profit_step = safe_getattr(state, "profit_step", 2.0)
                         state.stoploss_percentage += round(profit_step * 0.66, 2)
                         if state.stoploss_percentage < max_profit:
                             state.stoploss_percentage = max(state.stoploss_percentage, max_profit - 5)
@@ -200,7 +200,7 @@ class PositionMonitor:
         """Update stop loss in the database for all open orders."""
         try:
             state  = state_manager.get_state()
-            orders = getattr(state, "orders", [])
+            orders = safe_getattr(state, "orders", [])
             if not orders:
                 return
 
@@ -235,11 +235,11 @@ class PositionMonitor:
                 logger.warning("confirm_trade called with None trading")
                 return
 
-            if getattr(state, "current_position", None) is None:
+            if safe_getattr(state, "current_position", None) is None:
                 return
 
-            current_price = getattr(state, "current_price", None)
-            buy_price     = getattr(state, "current_buy_price", None)
+            current_price = safe_getattr(state, "current_price", None)
+            buy_price     = safe_getattr(state, "current_buy_price", None)
 
             if current_price is None or buy_price is None:
                 logger.warning("Price data missing during trade confirmation.")
@@ -248,13 +248,13 @@ class PositionMonitor:
             now = datetime.now()
 
             # Throttle polling to once every 3 seconds
-            if not hasattr(state, "last_status_check") or state.last_status_check is None:
+            if not safe_hasattr(state, "last_status_check") or state.last_status_check is None:
                 state.last_status_check = datetime.min
             if (now - state.last_status_check).total_seconds() < 3:
                 return
             state.last_status_check = now
 
-            order_list = getattr(state, "orders", [])
+            order_list = safe_getattr(state, "orders", [])
             if not order_list:
                 logger.info("No orders to confirm.")
                 state.current_trade_confirmed = True
@@ -333,10 +333,10 @@ class PositionMonitor:
             except ZeroDivisionError:
                 change = 0
 
-            trade_start_time = getattr(state, "current_trade_started_time", now) or now
-            cancel_after     = getattr(state, "cancel_after", 5)
+            trade_start_time = safe_getattr(state, "current_trade_started_time", now) or now
+            cancel_after     = safe_getattr(state, "cancel_after", 5)
             deadline         = trade_start_time + timedelta(minutes=cancel_after)
-            lower_per        = getattr(state, "lower_percentage", 0)
+            lower_per        = safe_getattr(state, "lower_percentage", 0)
 
             if now > deadline or change > (3 + lower_per):
                 logger.warning(
@@ -344,7 +344,7 @@ class PositionMonitor:
                     f"Change: {change:.2f}%, Deadline: {deadline}"
                 )
                 self.cancel_pending_trade(trading)
-                if hasattr(state, "reset_trade_attributes"):
+                if safe_hasattr(state, "reset_trade_attributes"):
                     try:
                         state.reset_trade_attributes(current_position=None)
                     except Exception as e:
@@ -369,15 +369,15 @@ class PositionMonitor:
                 return
 
             # Only cancel orders that are NOT yet confirmed
-            all_orders       = getattr(state, "orders", [])
-            confirmed_ids    = {o.get("id") for o in getattr(state, "confirmed_orders", []) if isinstance(o, dict)}
+            all_orders       = safe_getattr(state, "orders", [])
+            confirmed_ids    = {o.get("id") for o in safe_getattr(state, "confirmed_orders", []) if isinstance(o, dict)}
             pending_orders   = [o for o in all_orders if isinstance(o, dict) and o.get("id") not in confirmed_ids]
 
             if not pending_orders:
                 logger.info("No pending (unconfirmed) orders to cancel.")
                 return
 
-            has_confirmed = bool(getattr(state, "confirmed_orders", []))
+            has_confirmed = bool(safe_getattr(state, "confirmed_orders", []))
             if has_confirmed:
                 logger.info("Confirmed order(s) present — cancelling only unconfirmed orders.")
 
@@ -398,7 +398,7 @@ class PositionMonitor:
 
                     # ── BUG #7 FIX: cancel at broker using broker_id ───────────
                     broker_cancelled = True
-                    if broker_id and hasattr(trading, "cancel_order") and callable(trading.cancel_order):
+                    if broker_id and safe_hasattr(trading, "cancel_order") and callable(trading.cancel_order):
                         try:
                             trading.cancel_order(order_id=broker_id)   # broker-side ID
                             logger.info(f"Broker cancel sent for broker_id={broker_id} (db_id={order_id})")
@@ -452,7 +452,7 @@ class PositionMonitor:
         """Return count of open orders from state."""
         try:
             state = state_manager.get_state()
-            return len(getattr(state, "orders", []))
+            return len(safe_getattr(state, "orders", []))
         except Exception as e:
             logger.error(f"[get_open_orders_count] Failed: {e}", exc_info=True)
             return 0
@@ -461,7 +461,7 @@ class PositionMonitor:
         """Return True if there are any confirmed orders."""
         try:
             state = state_manager.get_state()
-            return bool(getattr(state, "confirmed_orders", []))
+            return bool(safe_getattr(state, "confirmed_orders", []))
         except Exception as e:
             logger.error(f"[has_confirmed_orders] Failed: {e}", exc_info=True)
             return False

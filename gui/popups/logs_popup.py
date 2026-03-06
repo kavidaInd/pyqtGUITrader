@@ -2,6 +2,7 @@
 logs_popup.py
 =============
 High-performance log viewer popup with filtering, export, and syntax highlighting.
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
@@ -9,7 +10,7 @@ import logging
 import logging.handlers
 import traceback
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from collections import deque
 from datetime import datetime
 
@@ -18,9 +19,10 @@ from PyQt5.QtGui import QTextCharFormat, QColor, QFont, QTextCursor, QSyntaxHigh
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QApplication,
     QHBoxLayout, QCheckBox, QSpinBox, QGroupBox, QComboBox, QLineEdit,
-    QFileDialog
+    QFileDialog, QWidget, QFrame
 )
 
+from Utils.safe_getattr import safe_hasattr
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
@@ -42,6 +44,110 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
+
+
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
+class StatusBadge(QLabel):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="neutral"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(60)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        if status == "success":
+            color = c.GREEN
+            bg = c.GREEN + "20"
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        elif status == "info":
+            color = c.BLUE
+            bg = c.BLUE + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
 
 
 class LogHighlighter(QSyntaxHighlighter, ThemedMixin):
@@ -209,7 +315,8 @@ class LogViewerWidget(QPlainTextEdit, ThemedMixin):
                 QPlainTextEdit {{ 
                     background: {c.BG_MAIN}; 
                     color: {c.TEXT_MAIN}; 
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
                     font-family: '{ty.FONT_MONO}';
                     font-size: {ty.SIZE_SM}pt;
                     selection-background-color: {c.BG_SELECTED};
@@ -218,7 +325,7 @@ class LogViewerWidget(QPlainTextEdit, ThemedMixin):
         except Exception as e:
             logger.error(f"[LogViewerWidget.apply_theme] Failed: {e}", exc_info=True)
 
-    def append_log_batch(self, messages):
+    def append_log_batch(self, messages: List[str]):
         """Append multiple messages efficiently"""
         if not messages:
             return
@@ -234,7 +341,7 @@ class LogViewerWidget(QPlainTextEdit, ThemedMixin):
 
 
 class LogPopup(QDialog, ThemedMixin):
-    """Popup window for displaying logs with enhanced features"""
+    """Popup window for displaying logs with enhanced features - Modern Design"""
 
     # Signal for filtered log messages
     log_filtered = pyqtSignal(str)
@@ -254,11 +361,13 @@ class LogPopup(QDialog, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self.setWindowTitle("Log Viewer")
-            self.resize(1200, 800)
-            self.setMinimumSize(800, 600)
 
-            # Set window flags to make it a proper popup
-            self.setWindowFlags(Qt.Window)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            self.resize(1200, 800)
+            self.setMinimumSize(900, 600)
 
             # Initialize components
             self._init_ui()
@@ -289,6 +398,7 @@ class LogPopup(QDialog, ThemedMixin):
         self.export_btn = None
         self.stats_btn = None
         self.case_sensitive_check = None
+        self.main_card = None
 
         # Message handling
         self._message_queue = deque(maxlen=10000)
@@ -320,15 +430,94 @@ class LogPopup(QDialog, ThemedMixin):
         self._batch_timer = None
         self._stats_timer = None
 
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Log Viewer - ERROR")
+            self.setMinimumSize(400, 300)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+
+            error_label = QLabel("❌ Failed to initialize log viewer.\nPlease check the logs.")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = self._create_modern_button("Close", primary=False)
+            close_btn.clicked.connect(self.accept)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[LogPopup._create_error_dialog] Failed: {e}", exc_info=True)
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 100px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
+
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the popup"""
         try:
             c = self._c
-            ty = self._ty
             sp = self._sp
 
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
             # Update filter edit style
             if self.filter_edit:
@@ -337,113 +526,37 @@ class LogPopup(QDialog, ThemedMixin):
             # Update status label
             if self.status_label:
                 self.status_label.setStyleSheet(f"""
-                    QLabel#statusLabel {{
+                    QLabel {{
                         color: {c.TEXT_DIM};
-                        font-size: {ty.SIZE_XS}pt;
-                        padding: {sp.PAD_XS}px;
-                        background: {c.BG_PANEL};
-                        border-radius: {sp.RADIUS_SM}px;
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {sp.PAD_SM}px;
+                        background: {c.BG_HOVER};
+                        border-radius: {sp.RADIUS_MD}px;
                     }}
                 """)
 
             # Update log widget
-            if self.log_widget and hasattr(self.log_widget, 'apply_theme'):
+            if self.log_widget and safe_hasattr(self.log_widget, 'apply_theme'):
                 self.log_widget.apply_theme()
+
+            # Update combobox styles
+            for combo in [self.level_combo, self.source_combo]:
+                if combo:
+                    combo.setStyleSheet(self._get_combobox_style())
+
+            # Update spinbox style
+            if self.max_lines_spin:
+                self.max_lines_spin.setStyleSheet(self._get_spinbox_style())
+
+            # Update checkbox style
+            for chk in [self.wrap_check, self.case_sensitive_check]:
+                if chk:
+                    chk.setStyleSheet(self._get_checkbox_style())
 
             logger.debug("[LogPopup.apply_theme] Applied theme")
 
         except Exception as e:
             logger.error(f"[LogPopup.apply_theme] Failed: {e}", exc_info=True)
-
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog {{ 
-                background: {c.BG_MAIN}; 
-                color: {c.TEXT_MAIN}; 
-            }}
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                min-width: 80px;
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QPushButton:hover {{ 
-                background: {c.BORDER}; 
-            }}
-            QPushButton:pressed {{ 
-                background: {c.BORDER_STRONG}; 
-            }}
-            QPushButton:checked {{
-                background: {c.BLUE_DARK};
-                border: {sp.SEPARATOR}px solid {c.BLUE};
-            }}
-            QPushButton#dangerBtn {{
-                background: {c.RED};
-            }}
-            QPushButton#dangerBtn:hover {{
-                background: {c.RED_BRIGHT};
-            }}
-            QGroupBox {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
-            }}
-            QCheckBox {{
-                color: {c.TEXT_MAIN};
-                spacing: {sp.GAP_XS}px;
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QCheckBox::indicator {{
-                width: {sp.ICON_SM}px;
-                height: {sp.ICON_SM}px;
-            }}
-            QSpinBox, QComboBox, QLineEdit {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px;
-                min-width: 60px;
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QSpinBox::up-button, QSpinBox::down-button {{
-                background: {c.BORDER};
-                border: none;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
-                margin-right: {sp.PAD_XS}px;
-            }}
-            QComboBox QAbstractItemView {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                selection-background-color: {c.BG_SELECTED};
-            }}
-        """
 
     def _get_lineedit_style(self) -> str:
         """Get styled lineedit"""
@@ -453,43 +566,186 @@ class LogPopup(QDialog, ThemedMixin):
 
         return f"""
             QLineEdit {{
-                background: {c.BG_HOVER};
+                background: {c.BG_INPUT};
                 color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border: 1px solid {c.BORDER};
                 border-radius: {sp.RADIUS_MD}px;
-                padding: {sp.PAD_XS}px;
-                font-size: {ty.SIZE_SM}pt;
-                min-width: 250px;
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                min-height: {sp.INPUT_HEIGHT}px;
+                font-size: {ty.SIZE_BODY}pt;
             }}
             QLineEdit:focus {{
-                border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS};
+                border-color: {c.BORDER_FOCUS};
+            }}
+        """
+
+    def _get_combobox_style(self) -> str:
+        """Get consistent combobox styling."""
+        return f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                min-width: 100px;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """
+
+    def _get_spinbox_style(self) -> str:
+        """Get consistent spinbox styling."""
+        return f"""
+            QSpinBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                min-width: 80px;
+            }}
+            QSpinBox:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
+
+    def _get_checkbox_style(self) -> str:
+        """Get consistent checkbox styling."""
+        return f"""
+            QCheckBox {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_BODY}pt;
+                spacing: {self._sp.GAP_SM}px;
+            }}
+            QCheckBox::indicator {{
+                width: {self._sp.ICON_MD}px;
+                height: {self._sp.ICON_MD}px;
+                border: 2px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_SM}px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {self._c.BLUE};
+                border-color: {self._c.BLUE};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {self._c.BORDER_FOCUS};
             }}
         """
 
     def _init_ui(self):
-        """Initialize UI components"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-        layout.setSpacing(self._sp.GAP_MD)
+        """Initialize UI components with modern design"""
+        # Root layout with margins for shadow effect
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(0)
+
+        # Main container card
+        self.main_card = ModernCard(self, elevated=True)
+        main_layout = QVBoxLayout(self.main_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom title bar
+        title_bar = self._create_title_bar()
+        main_layout.addWidget(title_bar)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        main_layout.addWidget(separator)
+
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                         self._sp.PAD_XL, self._sp.PAD_XL)
+        content_layout.setSpacing(self._sp.GAP_LG)
+
+        # Header
+        header = ModernHeader("Log Viewer")
+        content_layout.addWidget(header)
 
         # Top toolbar
         toolbar = self._create_toolbar()
-        layout.addLayout(toolbar)
+        content_layout.addLayout(toolbar)
 
         # Status bar
-        self.status_label = QLabel("📋 Log Viewer - Ready")
-        self.status_label.setObjectName("statusLabel")
-        layout.addWidget(self.status_label)
+        self.status_label = QLabel("📋 Ready")
+        self.status_label.setAlignment(Qt.AlignLeft)
+        content_layout.addWidget(self.status_label)
 
         # Log widget
         self.log_widget = LogViewerWidget()
-        layout.addWidget(self.log_widget, 1)  # Give it stretch factor
+        content_layout.addWidget(self.log_widget, 1)  # Give it stretch factor
 
         # Bottom button bar
         button_bar = self._create_button_bar()
-        layout.addLayout(button_bar)
+        content_layout.addLayout(button_bar)
+
+        main_layout.addWidget(content)
+        root.addWidget(self.main_card)
 
         self._initialized = True
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("📋 Log Viewer")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.accept)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
 
     def _create_toolbar(self):
         """Create top toolbar with filters and controls"""
@@ -500,41 +756,48 @@ class LogPopup(QDialog, ThemedMixin):
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("🔍 Filter logs...")
         self.filter_edit.textChanged.connect(self._on_filter_changed)
-        toolbar.addWidget(self.filter_edit)
+        self.filter_edit.setStyleSheet(self._get_lineedit_style())
+        toolbar.addWidget(self.filter_edit, 2)  # Give more stretch
 
         # Level filter
         self.level_combo = QComboBox()
         self.level_combo.addItems(['ALL', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
         self.level_combo.currentTextChanged.connect(self._on_filter_changed)
+        self.level_combo.setStyleSheet(self._get_combobox_style())
         toolbar.addWidget(self.level_combo)
 
         # Source filter
         self.source_combo = QComboBox()
         self.source_combo.addItem('ALL')
         self.source_combo.currentTextChanged.connect(self._on_filter_changed)
+        self.source_combo.setStyleSheet(self._get_combobox_style())
         toolbar.addWidget(self.source_combo)
 
         # Case sensitive checkbox
         self.case_sensitive_check = QCheckBox("Aa")
         self.case_sensitive_check.setToolTip("Case sensitive filter")
         self.case_sensitive_check.toggled.connect(self._on_case_sensitive_toggled)
+        self.case_sensitive_check.setStyleSheet(self._get_checkbox_style())
         toolbar.addWidget(self.case_sensitive_check)
 
         # Max lines spinbox
-        toolbar.addWidget(QLabel("Max lines:"))
+        max_lines_layout = QHBoxLayout()
+        max_lines_layout.addWidget(QLabel("Max:"))
         self.max_lines_spin = QSpinBox()
         self.max_lines_spin.setRange(1000, 50000)
         self.max_lines_spin.setValue(20000)
         self.max_lines_spin.setSingleStep(1000)
         self.max_lines_spin.valueChanged.connect(self._on_max_lines_changed)
-        toolbar.addWidget(self.max_lines_spin)
+        self.max_lines_spin.setStyleSheet(self._get_spinbox_style())
+        max_lines_layout.addWidget(self.max_lines_spin)
+        toolbar.addLayout(max_lines_layout)
 
         # Word wrap checkbox
-        self.wrap_check = QCheckBox("Wrap text")
+        self.wrap_check = QCheckBox("Wrap")
+        self.wrap_check.setToolTip("Wrap text")
         self.wrap_check.toggled.connect(self._on_wrap_toggled)
+        self.wrap_check.setStyleSheet(self._get_checkbox_style())
         toolbar.addWidget(self.wrap_check)
-
-        toolbar.addStretch()
 
         return toolbar
 
@@ -543,43 +806,53 @@ class LogPopup(QDialog, ThemedMixin):
         button_bar = QHBoxLayout()
         button_bar.setSpacing(self._sp.GAP_MD)
 
-        # Clear button
-        self.clear_btn = QPushButton("🗑️ Clear")
-        self.clear_btn.clicked.connect(self.clear_logs)
-        button_bar.addWidget(self.clear_btn)
+        # Left side buttons
+        left_layout = QHBoxLayout()
 
-        # Pause/Resume button
-        self.pause_btn = QPushButton("⏸️ Pause")
+        self.clear_btn = self._create_modern_button("Clear", primary=False, icon="🗑️")
+        self.clear_btn.clicked.connect(self.clear_logs)
+        left_layout.addWidget(self.clear_btn)
+
+        self.pause_btn = self._create_modern_button("Pause", primary=False, icon="⏸️")
         self.pause_btn.setCheckable(True)
         self.pause_btn.toggled.connect(self._on_pause_toggled)
-        button_bar.addWidget(self.pause_btn)
+        left_layout.addWidget(self.pause_btn)
 
-        # Copy buttons
-        self.copy_btn = QPushButton("📋 Copy All")
-        self.copy_btn.clicked.connect(self.copy_all_logs)
-        button_bar.addWidget(self.copy_btn)
-
-        self.copy_filtered_btn = QPushButton("🔍 Copy Filtered")
-        self.copy_filtered_btn.clicked.connect(self.copy_filtered_logs)
-        button_bar.addWidget(self.copy_filtered_btn)
-
-        # Stats button
-        self.stats_btn = QPushButton("📊 Statistics")
-        self.stats_btn.clicked.connect(self._show_statistics)
-        button_bar.addWidget(self.stats_btn)
+        button_bar.addLayout(left_layout)
 
         button_bar.addStretch()
 
-        # Export button
-        self.export_btn = QPushButton("💾 Export")
-        self.export_btn.clicked.connect(self.export_logs)
-        button_bar.addWidget(self.export_btn)
+        # Center buttons
+        center_layout = QHBoxLayout()
 
-        # Close button
-        close_btn = QPushButton("✕ Close")
-        close_btn.setObjectName("dangerBtn")
+        self.copy_btn = self._create_modern_button("Copy All", primary=False, icon="📋")
+        self.copy_btn.clicked.connect(self.copy_all_logs)
+        center_layout.addWidget(self.copy_btn)
+
+        self.copy_filtered_btn = self._create_modern_button("Copy Filtered", primary=False, icon="🔍")
+        self.copy_filtered_btn.clicked.connect(self.copy_filtered_logs)
+        center_layout.addWidget(self.copy_filtered_btn)
+
+        self.export_btn = self._create_modern_button("Export", primary=False, icon="💾")
+        self.export_btn.clicked.connect(self.export_logs)
+        center_layout.addWidget(self.export_btn)
+
+        self.stats_btn = self._create_modern_button("Stats", primary=False, icon="📊")
+        self.stats_btn.clicked.connect(self._show_statistics)
+        center_layout.addWidget(self.stats_btn)
+
+        button_bar.addLayout(center_layout)
+
+        button_bar.addStretch()
+
+        # Right side buttons
+        right_layout = QHBoxLayout()
+
+        close_btn = self._create_modern_button("Close", primary=True, icon="✕")
         close_btn.clicked.connect(self.accept)
-        button_bar.addWidget(close_btn)
+        right_layout.addWidget(close_btn)
+
+        button_bar.addLayout(right_layout)
 
         return button_bar
 
@@ -603,26 +876,6 @@ class LogPopup(QDialog, ThemedMixin):
         self._filter_level = "ALL"
         self._filter_source = "ALL"
         self._case_sensitive = False
-
-    def _create_error_dialog(self, parent):
-        """Create error dialog if initialization fails"""
-        super().__init__(parent)
-        self.setWindowTitle("Log Viewer - ERROR")
-        self.setMinimumSize(400, 300)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
-
-        error_label = QLabel("Failed to initialize log viewer. Please check logs.")
-        error_label.setWordWrap(True)
-        error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
-        layout.addWidget(error_label)
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
-
-        self._initialized = False
 
     def append_log(self, message: str):
         """Queue log message for batch processing"""
@@ -715,7 +968,7 @@ class LogPopup(QDialog, ThemedMixin):
                 if self._should_show_message(msg, level, source):
                     try:
                         # Use the log widget's append method
-                        if hasattr(self.log_widget, 'appendPlainText'):
+                        if safe_hasattr(self.log_widget, 'appendPlainText'):
                             self.log_widget.appendPlainText(msg)
                         else:
                             self.log_widget.append(msg)
@@ -833,7 +1086,7 @@ class LogPopup(QDialog, ThemedMixin):
             for msg, level, source in list(self._filtered_queue):  # Use a copy to avoid modification during iteration
                 if msg and self._should_show_message(msg, level, source):
                     try:
-                        if hasattr(self.log_widget, 'appendPlainText'):
+                        if safe_hasattr(self.log_widget, 'appendPlainText'):
                             self.log_widget.appendPlainText(msg)
                         else:
                             self.log_widget.append(msg)
@@ -909,7 +1162,7 @@ class LogPopup(QDialog, ThemedMixin):
             block_count = self.log_widget.blockCount() if self.log_widget else 0
             queue_size = len(self._message_queue)
 
-            status = f"📋 Log Viewer - {block_count} messages"
+            status = f"📋 {block_count} messages"
             if queue_size > 0:
                 status += f" ({queue_size} queued)"
             if self._paused:
@@ -959,7 +1212,7 @@ class LogPopup(QDialog, ThemedMixin):
                     self.source_combo.blockSignals(False)
 
                 if self.status_label:
-                    self.status_label.setText("📋 Log Viewer - Cleared")
+                    self.status_label.setText("📋 Cleared")
                 logger.debug("Logs cleared")
         except Exception as e:
             logger.error(f"[LogPopup.clear_logs] Failed: {e}", exc_info=True)
@@ -1022,19 +1275,33 @@ class LogPopup(QDialog, ThemedMixin):
     def _show_statistics(self):
         """Show detailed statistics dialog"""
         try:
-            from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+            from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
 
             dialog = QDialog(self)
             dialog.setWindowTitle("Log Statistics")
-            dialog.setMinimumSize(300, 400)
-            dialog.setStyleSheet(self.styleSheet())
+            dialog.setMinimumSize(400, 500)
 
-            layout = QVBoxLayout(dialog)
-            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-            layout.setSpacing(self._sp.GAP_MD)
+            # Set window flags for modern look
+            dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            dialog.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(dialog)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(dialog, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+            layout.setSpacing(self._sp.GAP_LG)
+
+            # Title
+            title = ModernHeader("Log Statistics")
+            layout.addWidget(title)
 
             # Level statistics
-            layout.addWidget(QLabel("<b>Level Counts:</b>"))
+            level_group = QLabel("Level Counts:")
+            level_group.setStyleSheet(f"color: {self._c.TEXT_MAIN}; font-weight: {self._ty.WEIGHT_BOLD}; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(level_group)
 
             # Use theme colors for level labels
             c = self._c
@@ -1049,27 +1316,54 @@ class LogPopup(QDialog, ThemedMixin):
             for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
                 count = self._level_counts.get(level, 0)
                 color = level_colors.get(level, c.TEXT_MAIN)
-                label = QLabel(f"{level}: {count}")
-                label.setStyleSheet(f"color: {color};")
-                layout.addWidget(label)
+
+                level_layout = QHBoxLayout()
+                level_layout.addWidget(QLabel(f"{level}:"))
+
+                count_label = QLabel(str(count))
+                count_label.setStyleSheet(f"color: {color}; font-weight: {self._ty.WEIGHT_BOLD};")
+                level_layout.addWidget(count_label)
+                level_layout.addStretch()
+
+                layout.addLayout(level_layout)
 
             # Source statistics
             if self._source_counts:
-                layout.addWidget(QLabel("<br><b>Source Counts:</b>"))
+                layout.addSpacing(self._sp.GAP_MD)
+                source_group = QLabel("Source Counts:")
+                source_group.setStyleSheet(f"color: {self._c.TEXT_MAIN}; font-weight: {self._ty.WEIGHT_BOLD}; font-size: {self._ty.SIZE_MD}pt;")
+                layout.addWidget(source_group)
+
                 for source, count in sorted(self._source_counts.items()):
-                    label = QLabel(f"{source}: {count}")
-                    label.setStyleSheet(f"color: {c.TEXT_DIM};")
-                    layout.addWidget(label)
+                    source_layout = QHBoxLayout()
+                    source_layout.addWidget(QLabel(f"{source}:"))
+
+                    count_label = QLabel(str(count))
+                    count_label.setStyleSheet(f"color: {self._c.TEXT_DIM};")
+                    source_layout.addWidget(count_label)
+                    source_layout.addStretch()
+
+                    layout.addLayout(source_layout)
 
             # Total messages
             total = sum(self._level_counts.values())
-            layout.addWidget(QLabel(f"<br><b>Total Messages:</b> {total}"))
+            layout.addSpacing(self._sp.GAP_MD)
+            total_layout = QHBoxLayout()
+            total_layout.addWidget(QLabel("Total Messages:"))
+            total_label = QLabel(str(total))
+            total_label.setStyleSheet(f"color: {self._c.BLUE}; font-weight: {self._ty.WEIGHT_BOLD}; font-size: {self._ty.SIZE_MD}pt;")
+            total_layout.addWidget(total_label)
+            total_layout.addStretch()
+            layout.addLayout(total_layout)
+
+            layout.addStretch()
 
             # Close button
-            close_btn = QPushButton("Close")
+            close_btn = self._create_modern_button("Close", primary=True)
             close_btn.clicked.connect(dialog.accept)
-            layout.addWidget(close_btn)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
 
+            root.addWidget(main_card)
             dialog.exec_()
 
         except Exception as e:
@@ -1081,9 +1375,36 @@ class LogPopup(QDialog, ThemedMixin):
             if self.status_label is not None:
                 old_text = self.status_label.text()
                 self.status_label.setText(f"✅ {message}")
-                QTimer.singleShot(2000, lambda: self.status_label.setText(old_text))
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.GREEN};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
+                QTimer.singleShot(2000, lambda: self._restore_status_label(old_text))
         except Exception as e:
             logger.error(f"[LogPopup._show_copy_feedback] Failed: {e}", exc_info=True)
+
+    def _restore_status_label(self, old_text: str):
+        """Restore status label after feedback"""
+        try:
+            if self.status_label is not None:
+                self.status_label.setText(old_text)
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
+        except Exception as e:
+            logger.error(f"[LogPopup._restore_status_label] Failed: {e}", exc_info=True)
 
     # Rule 8: Cleanup method
     def cleanup(self):
@@ -1136,6 +1457,7 @@ class LogPopup(QDialog, ThemedMixin):
             self.max_lines_spin = None
             self.export_btn = None
             self.stats_btn = None
+            self.main_card = None
 
             logger.info(f"[LogPopup] Cleanup completed (ID: {id(self)})")
 
@@ -1168,6 +1490,7 @@ class LogPopup(QDialog, ThemedMixin):
             self._paused = False
             if self.pause_btn:
                 self.pause_btn.setChecked(False)
+                self.pause_btn.setText("⏸️ Pause")
             # Process any pending messages
             self._process_batch()
         except Exception as e:

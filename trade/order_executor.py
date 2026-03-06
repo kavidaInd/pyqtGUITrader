@@ -290,9 +290,9 @@ class OrderExecutor:
 
             # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
             is_paper = False
-            if hasattr(state, 'is_paper_mode'):
+            if safe_hasattr(state, 'is_paper_mode'):
                 is_paper = state.is_paper_mode
-            elif hasattr(state, 'trading_mode'):
+            elif safe_hasattr(state, 'trading_mode'):
                 is_paper = state.trading_mode != BaseEnums.LIVE
 
             is_live = not is_paper
@@ -300,8 +300,8 @@ class OrderExecutor:
             if is_live and self.api:
                 logger.info(f"[ORDER] Attempt 3/3: MARKET order for {shares} shares")
                 try:
-                    side_buy = getattr(self.api, 'SIDE_BUY', 1)
-                    mkt_type = getattr(self.api, 'MARKET_ORDER_TYPE', 2)
+                    side_buy = safe_getattr(self.api, 'SIDE_BUY', 1)
+                    mkt_type = safe_getattr(self.api, 'MARKET_ORDER_TYPE', 2)
                     broker_id = self.api.place_order(
                         symbol=option_name, qty=shares, side=side_buy, order_type=mkt_type
                     )
@@ -342,7 +342,7 @@ class OrderExecutor:
     def _calculate_mid_price(self, state, option_name, market_price):
         try:
             chain_data = {}
-            if hasattr(state, 'option_chain') and state.option_chain:
+            if safe_hasattr(state, 'option_chain') and state.option_chain:
                 chain_data = state.option_chain.get(option_name, {})
             ask = chain_data.get('ask') or market_price
             bid = chain_data.get('bid')
@@ -405,14 +405,14 @@ class OrderExecutor:
             if not symbol or shares <= 0 or price <= 0 or state is None:
                 return []
 
-            session_id = getattr(state, 'session_id', None)
+            session_id = safe_getattr(state, 'session_id', None)
 
             # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
             # Check if we're in paper mode - either from state or from trading_mode_setting
             is_paper = False
-            if hasattr(state, 'is_paper_mode'):
+            if safe_hasattr(state, 'is_paper_mode'):
                 is_paper = state.is_paper_mode
-            elif hasattr(state, 'trading_mode'):
+            elif safe_hasattr(state, 'trading_mode'):
                 is_paper = state.trading_mode != BaseEnums.LIVE
 
             is_live = not is_paper
@@ -672,9 +672,9 @@ class OrderExecutor:
 
             # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
             is_paper = False
-            if hasattr(state, 'is_paper_mode'):
+            if safe_hasattr(state, 'is_paper_mode'):
                 is_paper = state.is_paper_mode
-            elif hasattr(state, 'trading_mode'):
+            elif safe_hasattr(state, 'trading_mode'):
                 is_paper = state.trading_mode != BaseEnums.LIVE
 
             is_live = not is_paper

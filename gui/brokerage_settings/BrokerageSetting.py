@@ -15,6 +15,7 @@ import logging.handlers
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 
+from Utils.safe_getattr import safe_hasattr
 from db.connector import get_db
 from db.crud import brokerage, tokens
 from db.config_crud import config_crud
@@ -73,7 +74,7 @@ class BrokerageSetting:
     def _update_state_token_status(self):
         """Update state manager with current token status"""
         try:
-            if hasattr(state_manager, 'set_token_status'):
+            if safe_hasattr(state_manager, 'set_token_status'):
                 state_manager.set_token_status(
                     broker_type=self.broker_type,
                     has_valid_token=self.has_valid_token,

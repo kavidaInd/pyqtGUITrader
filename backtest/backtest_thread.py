@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from Utils.safe_getattr import safe_hasattr
 from data.trade_state_manager import state_manager
 
 if TYPE_CHECKING:
@@ -150,7 +151,7 @@ class BacktestThread(QThread):
                 logger.debug("[BacktestThread] Restored pre-backtest state")
 
             # Clean up engine if it exists
-            if self._engine and hasattr(self._engine, 'cleanup'):
+            if self._engine and safe_hasattr(self._engine, 'cleanup'):
                 try:
                     self._engine.cleanup()
                 except Exception as e:

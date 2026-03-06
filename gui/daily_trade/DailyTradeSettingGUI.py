@@ -3,40 +3,27 @@ DailyTradeSettingGUI.py
 =======================
 GUI for daily trade settings with database integration.
 
-UPDATED: Derivative selection now uses dropdown from OptionUtils constants.
-FULLY INTEGRATED with ThemeManager for dynamic theming.
-
-FIX LOG
--------
-- _on_derivative_changed(): New slot — auto-fills lot_size from a live NSE
-  fetch via OptionUtils.get_lot_size() whenever the derivative dropdown changes.
-
-- Week field: Disabled (and tooltip updated) for monthly-only indices
-  (BANKNIFTY, FINNIFTY, MIDCPNIFTY) because those indices have no weekly
-  contracts since SEBI circular Nov 20, 2024.
-
-- max_num_of_option: Pre-filled with per-index sensible defaults from
-  OptionUtils.get_default_max_options() when the derivative changes.
-
-- Expiry-type badge: A small read-only label next to the derivative dropdown
-  shows "Weekly + Monthly" or "Monthly Only" so the trader always knows.
-
-- Info tab: Updated lot sizes and week-field descriptions to reflect Jan 2026
-  regulatory changes.
+UPDATED: Consistent tab styling across all dialogs
+- Tabs now match the style of BrokerageSettingGUI and BrokerLoginPopup
+- Clean card-based layout with proper spacing
+- Better visual hierarchy
+- Smooth hover effects and transitions
+- Consistent use of theme tokens
 """
 
 import logging
 import threading
 from typing import Optional, Dict, Any, Tuple, List
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont, QDoubleValidator, QIntValidator
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
+from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QVBoxLayout, QLabel,
                              QWidget, QTabWidget, QFrame, QScrollArea,
                              QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
-                             QGroupBox, QHBoxLayout)
+                             QGroupBox, QHBoxLayout, QSizePolicy)
 
+from Utils.safe_getattr import safe_setattr, safe_hasattr
 from gui.daily_trade.DailyTradeSetting import DailyTradeSetting
 from Utils.OptionUtils import OptionUtils
 
@@ -63,6 +50,66 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            # Add subtle shadow effect for elevated cards
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
 class DailyTradeSettingGUI(QDialog, ThemedMixin):
     save_completed = pyqtSignal(bool, str)
 
@@ -79,14 +126,24 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         ("240 minutes", "240m")
     ]
 
-    # Derivative choices — value is the canonical key used in OptionUtils.
-    DERIVATIVE_CHOICES = [
-        ("NIFTY 50",     "NIFTY50"),
-        ("BANK NIFTY",   "BANKNIFTY"),
-        ("FIN NIFTY",    "FINNIFTY"),
-        ("MIDCP NIFTY",  "MIDCPNIFTY"),
-        ("SENSEX",       "SENSEX"),
+    # Exchange choices
+    EXCHANGE_CHOICES = [
+        ("NSE - National Stock Exchange", "NSE"),
+        ("BSE - Bombay Stock Exchange", "BSE"),
     ]
+
+    # Derivative choices per exchange
+    DERIVATIVE_CHOICES = {
+        "NSE": [
+            ("NIFTY 50", "NIFTY50"),
+            ("BANK NIFTY", "BANKNIFTY"),
+            ("FIN NIFTY", "FINNIFTY"),
+            ("MIDCP NIFTY", "MIDCPNIFTY"),
+        ],
+        "BSE": [
+            ("SENSEX", "SENSEX"),
+        ]
+    }
 
     VALIDATION_RANGES = {
         "week": (0, 53),
@@ -127,40 +184,80 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             if daily_setting is None:
                 logger.error("DailyTradeSettingGUI initialized with None daily_setting")
 
-            self.setWindowTitle("Daily Trade Settings")
+            self.setWindowTitle("⚙️ Daily Trade Settings")
             self.setModal(True)
-            self.setMinimumSize(750, 700)
-            self.resize(750, 700)
+            self.setMinimumSize(900, 800)
+            self.resize(900, 800)
 
-            # Root layout
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+            root.setSpacing(0)
+
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
+
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
+
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
+
+            # Content area
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                             self._sp.PAD_XL, self._sp.PAD_XL)
+            content_layout.setSpacing(self._sp.GAP_LG)
 
             # Header
-            header = QLabel("⚙️ Daily Trade Settings")
-            header.setObjectName("header")
-            header.setAlignment(Qt.AlignCenter)
-            root.addWidget(header)
+            header = ModernHeader("Trading Configuration")
+            content_layout.addWidget(header)
 
-            # Tabs
-            self.tabs = QTabWidget()
-            root.addWidget(self.tabs)
+            # Tabs with consistent styling matching other dialogs
+            self.tabs = self._create_tabs()
+            content_layout.addWidget(self.tabs)
 
-            # Add all tabs
-            self.tabs.addTab(self._build_settings_tab(), "⚙️ Core Settings")
-            self.tabs.addTab(self._build_risk_tab(), "⚠️ Risk Management")
-            self.tabs.addTab(self._build_mtf_tab(), "📈 MTF Filter")
-            self.tabs.addTab(self._build_signal_tab(), "🎯 Signal")
-            self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
+            # Status and save area
+            status_save_layout = QHBoxLayout()
+            status_save_layout.setSpacing(self._sp.GAP_MD)
 
-            # Status + Save (always visible below tabs)
             self.status_label = QLabel("")
-            self.status_label.setAlignment(Qt.AlignCenter)
-            self.status_label.setObjectName("status")
-            root.addWidget(self.status_label)
+            self.status_label.setAlignment(Qt.AlignLeft)
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
+            status_save_layout.addWidget(self.status_label, 1)
 
-            self.save_btn = QPushButton("💾 Save All Settings")
+            self.save_btn = self._create_modern_button(
+                "💾 Save Settings",
+                primary=True,
+                icon="💾"
+            )
             self.save_btn.clicked.connect(self.save)
-            root.addWidget(self.save_btn)
+            status_save_layout.addWidget(self.save_btn)
+
+            content_layout.addLayout(status_save_layout)
+
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
 
             self.save_completed.connect(self.on_save_completed)
 
@@ -170,8 +267,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             # Apply theme initially
             self.apply_theme()
 
-            # FIX: Trigger derivative-change handler once after UI is built so
-            # lot size, week-field state and expiry badge are correct on open.
+            # Trigger initial update after UI is built
             QTimer.singleShot(0, lambda: self._on_derivative_changed(
                 self.derivative_combo.currentIndex() if self.derivative_combo else 0
             ))
@@ -182,6 +278,143 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.critical(f"[DailyTradeSettingGUI.__init__] Failed: {e}", exc_info=True)
             self._create_error_dialog(parent)
 
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("⚙️ Daily Trade Settings")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
+    def _create_tabs(self):
+        """Create tabs with consistent styling matching other dialogs."""
+        tabs = QTabWidget()
+
+        # Apply the consistent tab styling used across all dialogs
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
+
+        # Add all tabs
+        tabs.addTab(self._build_settings_tab(), "⚙️ Core")
+        tabs.addTab(self._build_risk_tab(), "⚠️ Risk")
+        tabs.addTab(self._build_mtf_tab(), "📈 MTF")
+        tabs.addTab(self._build_signal_tab(), "🎯 Signal")
+        tabs.addTab(self._build_info_tab(), "ℹ️ Info")
+
+        return tabs
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:pressed {{
+                    background: {self._c.BLUE};
+                    opacity: 0.8;
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
+
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults."""
         self.daily_setting = None
@@ -189,9 +422,10 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         self.tabs = None
         self.vars = {}
         self.entries = {}
+        self.exchange_combo = None
         self.interval_combo = None
         self.derivative_combo = None
-        self.expiry_badge = None          # FIX: label showing Weekly/Monthly
+        self.expiry_badge = None
         self.sideway_check = None
         self.status_label = None
         self.save_btn = None
@@ -201,145 +435,90 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     def apply_theme(self, _: str = None) -> None:
         """Rule 13.2: Apply theme colors to the dialog."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            layout = self.layout()
-            if layout:
-                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-                layout.setSpacing(sp.GAP_MD)
+            # Update title bar
+            if hasattr(self, 'title_bar'):
+                self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
 
-            self.setStyleSheet(self._get_stylesheet())
-
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(
-                    f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; "
-                    f"font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;"
-                )
-
+            # Update status label
             if self.status_label:
-                self.status_label.setStyleSheet(
-                    f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};"
-                )
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
 
-            if self.save_btn:
-                self.save_btn.setStyleSheet(self._get_button_style())
+            # Update tabs with consistent styling
+            if self.tabs:
+                self.tabs.setStyleSheet(f"""
+                    QTabWidget::pane {{
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        background: {self._c.BG_PANEL};
+                        margin-top: {self._sp.PAD_SM}px;
+                    }}
+                    QTabBar::tab {{
+                        background: {self._c.BG_HOVER};
+                        color: {self._c.TEXT_DIM};
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        min-width: 130px;
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-bottom: none;
+                        border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        margin-right: {self._sp.PAD_XS}px;
+                    }}
+                    QTabBar::tab:selected {{
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_MAIN};
+                        border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                    }}
+                    QTabBar::tab:hover:!selected {{
+                        background: {self._c.BORDER};
+                        color: {self._c.TEXT_MAIN};
+                    }}
+                """)
 
-            self._update_hint_styles()
+            # Update buttons
+            self._update_button_styles()
 
             logger.debug("[DailyTradeSettingGUI.apply_theme] Applied theme")
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens."""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog {{ background:{c.BG_PANEL}; color:{c.TEXT_MAIN}; }}
-            QLabel  {{ color:{c.TEXT_DIM}; font-size:{ty.SIZE_SM}pt; }}
-            QGroupBox {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
-            }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                background: {c.BG_PANEL};
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                min-width: 130px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:hover:!selected {{ background:{c.BORDER}; color:{c.TEXT_MAIN}; }}
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-                background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px; font-size:{ty.SIZE_BODY}pt;
-                min-height: {sp.BTN_HEIGHT_SM}px;
-            }}
-            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-                border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS};
-            }}
-            QLineEdit:disabled {{
-                background:{c.BG_PANEL}; color:{c.TEXT_DISABLED};
-            }}
-            QSpinBox::up-button, QSpinBox::down-button,
-            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-                background: {c.BORDER};
-                border: none;
-                width: {sp.ICON_SM}px;
-            }}
-            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-                image: none;
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-bottom: {sp.PAD_XS}px solid {c.TEXT_DIM};
-            }}
-            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-                image: none;
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
-            }}
-            QCheckBox {{ color:{c.TEXT_MAIN}; spacing:{sp.GAP_SM}px; font-size:{ty.SIZE_BODY}pt; }}
-            QCheckBox::indicator {{ width:{sp.ICON_MD}px; height:{sp.ICON_MD}px; }}
-            QCheckBox::indicator:unchecked {{ border:{sp.SEPARATOR}px solid {c.BORDER}; background:{c.BG_HOVER}; border-radius:{sp.RADIUS_SM}px; }}
-            QCheckBox::indicator:checked   {{ background:{c.GREEN}; border:{sp.SEPARATOR}px solid {c.GREEN_BRIGHT}; border-radius:{sp.RADIUS_SM}px; }}
-            QScrollArea {{ border:none; background:transparent; }}
-            QFrame#infoCard {{
-                background:{c.BG_HOVER};
-                border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_MD}px;
-            }}
-        """
-
-    def _get_button_style(self) -> str:
-        """Get styled button with theme tokens."""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
-        return f"""
-            QPushButton {{
-                background:{c.GREEN}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;
-            }}
-            QPushButton:hover    {{ background:{c.GREEN_BRIGHT}; }}
-            QPushButton:pressed  {{ background:{c.GREEN}; }}
-            QPushButton:disabled {{ background:{c.BG_HOVER}; color:{c.TEXT_DISABLED}; }}
-        """
-
-    def _update_hint_styles(self):
-        """Update all hint labels with theme colors (placeholder for dynamic refresh)."""
-        pass
-
-    # ── Signal wiring ─────────────────────────────────────────────────────────
+    def _update_button_styles(self):
+        """Update button styles with theme tokens"""
+        # Save button
+        if self.save_btn:
+            self.save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
 
     def _connect_signals(self):
         """Connect internal signals."""
@@ -350,32 +529,38 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._connect_signals] Failed: {e}", exc_info=True)
 
-    # ── Error handling ────────────────────────────────────────────────────────
-
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             super().__init__(parent)
             self.setWindowTitle("Daily Trade Settings - ERROR")
             self.setMinimumSize(400, 200)
 
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
 
             error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
             error_label.setWordWrap(True)
             error_label.setStyleSheet(
-                f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;"
+                f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; "
+                f"font-size: {self._ty.SIZE_MD}pt;"
             )
             layout.addWidget(error_label)
 
-            close_btn = QPushButton("Close")
+            close_btn = self._create_modern_button("Close", primary=False)
             close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
 
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
@@ -385,219 +570,337 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     def _build_settings_tab(self):
         """Build the core settings tab with form fields."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
-            container.setStyleSheet("background:transparent;")
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_MD)
-            layout.setSpacing(sp.GAP_XS)
-
-            form = QFormLayout()
-            form.setSpacing(sp.GAP_XS)
-            form.setVerticalSpacing(sp.GAP_XS)
-            form.setLabelAlignment(Qt.AlignRight)
-            form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
             self.vars = {}
             self.entries = {}
 
-            # (label, key, type, icon, placeholder, hint text, tooltip)
+            # Exchange Selection Card
+            exchange_card = ModernCard()
+            exchange_layout = QVBoxLayout(exchange_card)
+            exchange_layout.setSpacing(self._sp.GAP_MD)
+
+            exchange_header = QLabel("🌐 Exchange Selection")
+            exchange_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            exchange_layout.addWidget(exchange_header)
+
+            self.exchange_combo = QComboBox()
+            for display, value in self.EXCHANGE_CHOICES:
+                self.exchange_combo.addItem(display, value)
+            self.exchange_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QComboBox:hover {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {self._sp.ICON_LG}px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    selection-background-color: {self._c.BG_SELECTED};
+                }}
+            """)
+
+            # Restore saved exchange value
+            current_exchange = "NSE"
+            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'exchange'):
+                current_exchange = self.daily_setting.exchange
+
+            for i in range(self.exchange_combo.count()):
+                if self.exchange_combo.itemData(i) == current_exchange:
+                    self.exchange_combo.setCurrentIndex(i)
+                    break
+
+            self.exchange_combo.currentIndexChanged.connect(self._on_exchange_changed)
+            exchange_layout.addWidget(self.exchange_combo)
+
+            exchange_hint = QLabel("Select the exchange where you want to trade")
+            exchange_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            exchange_layout.addWidget(exchange_hint)
+
+            layout.addWidget(exchange_card)
+
+            # Derivative Selection Card
+            derivative_card = ModernCard()
+            derivative_layout = QVBoxLayout(derivative_card)
+            derivative_layout.setSpacing(self._sp.GAP_MD)
+
+            derivative_header = QLabel("💡 Derivative Selection")
+            derivative_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            derivative_layout.addWidget(derivative_header)
+
+            deriv_row = QHBoxLayout()
+            deriv_row.setSpacing(self._sp.GAP_MD)
+
+            self.derivative_combo = self._create_derivative_dropdown()
+            deriv_row.addWidget(self.derivative_combo, 1)
+
+            self.expiry_badge = QLabel("")
+            self.expiry_badge.setFixedWidth(140)
+            self.expiry_badge.setAlignment(Qt.AlignCenter)
+            self.expiry_badge.setStyleSheet(f"""
+                QLabel {{
+                    font-size: {self._ty.SIZE_XS}pt;
+                    border-radius: {self._sp.RADIUS_PILL}px;
+                    padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                }}
+            """)
+            deriv_row.addWidget(self.expiry_badge)
+
+            derivative_layout.addLayout(deriv_row)
+
+            derivative_hint = QLabel("Auto-fills lot size, freeze limit, and strike multiplier")
+            derivative_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            derivative_layout.addWidget(derivative_hint)
+
+            layout.addWidget(derivative_card)
+
+            # Static Fields Card (Read-Only)
+            static_card = ModernCard()
+            static_layout = QVBoxLayout(static_card)
+            static_layout.setSpacing(self._sp.GAP_MD)
+
+            static_header = QLabel("📊 Static Values (Read-Only)")
+            static_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            static_layout.addWidget(static_header)
+
+            static_form = QFormLayout()
+            static_form.setSpacing(self._sp.GAP_SM)
+            static_form.setLabelAlignment(Qt.AlignRight)
+            static_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+            # Lot Size
+            lot_edit = QLineEdit()
+            lot_edit.setReadOnly(True)
+            lot_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER_DIM};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+            """)
+            static_form.addRow("🔢 Lot Size:", lot_edit)
+            self.entries["lot_size"] = lot_edit
+            self.vars["lot_size"] = (lot_edit, int)
+
+            # Freeze Size
+            freeze_edit = QLineEdit()
+            freeze_edit.setReadOnly(True)
+            freeze_edit.setStyleSheet(lot_edit.styleSheet())
+            static_form.addRow("❄️ Freeze Size:", freeze_edit)
+            self.entries["freeze_size"] = freeze_edit
+
+            # Strike Multiplier
+            multiplier_edit = QLineEdit()
+            multiplier_edit.setReadOnly(True)
+            multiplier_edit.setStyleSheet(lot_edit.styleSheet())
+            static_form.addRow("📊 Strike Multiplier:", multiplier_edit)
+            self.entries["multiplier"] = multiplier_edit
+
+            static_layout.addLayout(static_form)
+            layout.addWidget(static_card)
+
+            # Configurable Fields Card
+            config_card = ModernCard()
+            config_layout = QVBoxLayout(config_card)
+            config_layout.setSpacing(self._sp.GAP_MD)
+
+            config_header = QLabel("⚙️ Trading Parameters")
+            config_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            config_layout.addWidget(config_header)
+
+            config_form = QFormLayout()
+            config_form.setSpacing(self._sp.GAP_MD)
+            config_form.setLabelAlignment(Qt.AlignRight)
+            config_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
             fields = [
-                ("Exchange", "exchange", str, "🌐",
-                 "e.g. NSE",
-                 "The stock exchange to trade on.",
-                 "Name of the exchange, e.g. NSE, BSE, NFO."),
-
-                ("Week", "week", int, "📆",
-                 "e.g. 0  (0 = current week, NIFTY/SENSEX only)",
-                 "Weekly expiry offset — only for NIFTY 50 and SENSEX.",
-                 "0 = current/nearest weekly expiry. BANKNIFTY/FINNIFTY/MIDCPNIFTY "
-                 "are monthly-only (SEBI circular Nov 20, 2024) so this field is "
-                 "disabled for those indices."),
-
-                ("Lot Size", "lot_size", int, "🔢",
-                 "Auto-filled from NSE on derivative change",
-                 "Units per lot — fetched live from NSE and auto-filled.",
-                 "Auto-populated when you change the derivative. "
-                 "Jan 2026 values: NIFTY=65, BANKNIFTY=30, FINNIFTY=60, "
-                 "MIDCPNIFTY=120, SENSEX=20."),
-
-                ("Call Lookback", "call_lookback", int, "🔎",
-                 "e.g. 5",
-                 "Number of candles to look back for call signal (0–100).",
-                 "How many historical candles the strategy uses to detect a call entry."),
-
-                ("Put Lookback", "put_lookback", int, "🔎",
-                 "e.g. 5",
-                 "Number of candles to look back for put signal (0–100).",
-                 "How many historical candles the strategy uses to detect a put entry."),
-
-                ("Max Num of Option", "max_num_of_option", int, "📈",
-                 "e.g. 10",
-                 "Maximum open option positions allowed at once (1–10 000).",
-                 "The strategy will stop opening new positions once this limit is reached. "
-                 "Auto-filled with a per-index default when derivative changes."),
-
-                ("Lower Percentage", "lower_percentage", float, "🔻",
-                 "e.g. 0.5",
-                 "Minimum percentage move required to trigger an entry (0–100).",
-                 "Filters out low-momentum signals. Higher values = stricter entries."),
-
-                ("Cancel After", "cancel_after", int, "⏰",
-                 "e.g. 30  (seconds)",
-                 "Cancel unfilled orders after this many seconds (1–60).",
-                 "Prevents stale orders from sitting in the book too long."),
-
-                ("Capital Reserve", "capital_reserve", int, "💰",
-                 "e.g. 50000",
-                 "Amount of capital (₹) kept reserved and not deployed (0–1 000 000).",
-                 "The strategy will never use more than (total capital − reserve)."),
+                ("📆 Week", "week", int, "Weekly expiry offset (0 = current)"),
+                ("🔎 Call Lookback", "call_lookback", int, "Candles to look back for calls"),
+                ("🔎 Put Lookback", "put_lookback", int, "Candles to look back for puts"),
+                ("📈 Max Options", "max_num_of_option", int, "Maximum open positions"),
+                ("🔻 Lower %", "lower_percentage", float, "Minimum move % to trigger entry"),
+                ("⏰ Cancel After (Seconds)", "cancel_after", int, "Cancel unfilled orders after (seconds)"),
+                ("💰 Capital Reserve (₹)", "capital_reserve", int, "Capital to keep reserved"),
             ]
 
-            for label, key, typ, icon, placeholder, hint, tooltip in fields:
-                try:
-                    edit = QLineEdit()
-                    edit.setPlaceholderText(placeholder)
-                    edit.setToolTip(tooltip)
+            for label, key, typ, tooltip in fields:
+                edit = QLineEdit()
+                edit.setPlaceholderText("Auto-filled from saved settings")
+                edit.setToolTip(tooltip)
+                edit.setStyleSheet(f"""
+                    QLineEdit {{
+                        background: {self._c.BG_INPUT};
+                        color: {self._c.TEXT_MAIN};
+                        border: 1px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                        min-height: {self._sp.INPUT_HEIGHT}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                    }}
+                    QLineEdit:focus {{
+                        border-color: {self._c.BORDER_FOCUS};
+                    }}
+                """)
 
-                    val = ""
-                    if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
-                        val = self.daily_setting.data.get(key, "")
-                    edit.setText(str(val))
+                val = ""
+                if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'data'):
+                    val = self.daily_setting.data.get(key, "")
+                edit.setText(str(val))
 
-                    hint_lbl = QLabel(hint)
-                    hint_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+                config_form.addRow(f"{label}:", edit)
+                self.vars[key] = (edit, typ)
+                self.entries[key] = edit
 
-                    form.addRow(f"{icon} {label}:", edit)
-                    form.addRow("", hint_lbl)
+            config_layout.addLayout(config_form)
+            layout.addWidget(config_card)
 
-                    self.vars[key] = (edit, typ)
-                    self.entries[key] = edit
+            # History Interval Card
+            interval_card = ModernCard()
+            interval_layout = QVBoxLayout(interval_card)
+            interval_layout.setSpacing(self._sp.GAP_MD)
 
-                except Exception as e:
-                    logger.error(f"Failed to create field {key}: {e}", exc_info=True)
-                    edit = QLineEdit()
-                    edit.setPlaceholderText("Error loading field")
-                    edit.setEnabled(False)
-                    form.addRow(f"{icon} {label}:", edit)
+            interval_header = QLabel("⏱️ History Interval")
+            interval_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            interval_layout.addWidget(interval_header)
 
-            # ── Derivative Dropdown + expiry badge ────────────────────────────
-            try:
-                derivative_label = QLabel("💡 Derivative:")
-                derivative_label.setToolTip(
-                    "The underlying instrument whose options or futures will be traded."
-                )
+            self.interval_combo = QComboBox()
+            for display, value in self.INTERVAL_CHOICES:
+                self.interval_combo.addItem(display, value)
+            self.interval_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QComboBox:hover {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
 
-                # Build a small horizontal container: [combo] [badge]
-                deriv_row = QWidget()
-                deriv_row_layout = QHBoxLayout(deriv_row)
-                deriv_row_layout.setContentsMargins(0, 0, 0, 0)
-                deriv_row_layout.setSpacing(sp.GAP_SM)
+            current_val = "2m"
+            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'data'):
+                current_val = self.daily_setting.data.get("history_interval", "2m")
 
-                self.derivative_combo = self._create_derivative_dropdown()
-                deriv_row_layout.addWidget(self.derivative_combo, stretch=1)
+            for i in range(self.interval_combo.count()):
+                if self.interval_combo.itemData(i) == current_val:
+                    self.interval_combo.setCurrentIndex(i)
+                    break
 
-                # FIX: Expiry-type badge — updated by _on_derivative_changed()
-                self.expiry_badge = QLabel("")
-                self.expiry_badge.setFixedWidth(160)
-                self.expiry_badge.setAlignment(Qt.AlignCenter)
-                self.expiry_badge.setStyleSheet(
-                    f"font-size:{ty.SIZE_XS}pt; border-radius:{sp.RADIUS_SM}px; "
-                    f"padding:2px 6px;"
-                )
-                deriv_row_layout.addWidget(self.expiry_badge)
+            interval_layout.addWidget(self.interval_combo)
+            interval_hint = QLabel("Candle size for historical data and signal generation")
+            interval_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            interval_layout.addWidget(interval_hint)
 
-                form.addRow(derivative_label, deriv_row)
+            self.vars["history_interval"] = (self.interval_combo, str)
+            layout.addWidget(interval_card)
 
-                derivative_hint = QLabel(
-                    "Underlying symbol. Lot size and expiry type are auto-filled when changed."
-                )
-                derivative_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-                form.addRow("", derivative_hint)
+            # Sideway Zone Checkbox Card
+            sideway_card = ModernCard()
+            sideway_layout = QVBoxLayout(sideway_card)
+            sideway_layout.setSpacing(self._sp.GAP_SM)
 
-            except Exception as e:
-                logger.error(f"Failed to create derivative row: {e}", exc_info=True)
+            self.sideway_check = QCheckBox("Enable trading during sideways market (12:00–14:00)")
+            self.sideway_check.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    spacing: {self._sp.GAP_SM}px;
+                }}
+                QCheckBox::indicator {{
+                    width: {self._sp.ICON_MD}px;
+                    height: {self._sp.ICON_MD}px;
+                    border: 2px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {self._c.BLUE};
+                    border-color: {self._c.BLUE};
+                    image: none;
+                }}
+                QCheckBox::indicator:hover {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
 
-            # ── History Interval ComboBox ──────────────────────────────────────
-            try:
-                interval_label = QLabel("⏱️ History Interval:")
-                interval_label.setToolTip(
-                    "Candle interval used to fetch historical price data.\n"
-                    "Smaller intervals = more granular signals but heavier data load."
-                )
-                self.interval_combo = QComboBox()
-                for display, value in self.INTERVAL_CHOICES:
-                    self.interval_combo.addItem(display, value)
+            checked = False
+            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'data'):
+                checked = self.daily_setting.data.get("sideway_zone_trade", False)
+            self.sideway_check.setChecked(checked)
 
-                current_val = "2m"
-                if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
-                    current_val = self.daily_setting.data.get("history_interval", "2m")
+            sideway_layout.addWidget(self.sideway_check)
+            sideway_hint = QLabel("Allow entries during the low-volatility midday window")
+            sideway_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            sideway_layout.addWidget(sideway_hint)
 
-                found = False
-                for i in range(self.interval_combo.count()):
-                    if self.interval_combo.itemData(i) == current_val:
-                        self.interval_combo.setCurrentIndex(i)
-                        found = True
-                        break
-
-                if not found:
-                    logger.warning(f"Interval value {current_val} not found in choices")
-
-                form.addRow(interval_label, self.interval_combo)
-                interval_hint = QLabel("Candle size used for historical data and signal generation.")
-                interval_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-                form.addRow("", interval_hint)
-
-                self.vars["history_interval"] = (self.interval_combo, str)
-
-            except Exception as e:
-                logger.error(f"Failed to create interval combo: {e}", exc_info=True)
-                self.interval_combo = QComboBox()
-                self.interval_combo.addItem("Error", "2m")
-                form.addRow("⏱️ History Interval:", self.interval_combo)
-
-            layout.addLayout(form)
-
-            # ── Sideway Zone checkbox ─────────────────────────────────────────
-            try:
-                self.sideway_check = QCheckBox(
-                    "Enable trading during sideways market (12:00–14:00)"
-                )
-
-                checked = False
-                if self.daily_setting is not None and hasattr(self.daily_setting, 'data'):
-                    checked = self.daily_setting.data.get("sideway_zone_trade", False)
-                self.sideway_check.setChecked(checked)
-
-                self.sideway_check.setToolTip(
-                    "When enabled, the strategy will continue placing orders during the\n"
-                    "low-volatility midday window (12:00–14:00). Disable to avoid choppy moves."
-                )
-                sideway_hint = QLabel("Allow entries during the low-volatility midday window.")
-                sideway_hint.setStyleSheet(
-                    f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;"
-                )
-
-                layout.addWidget(self.sideway_check)
-                layout.addWidget(sideway_hint)
-
-                self.vars["sideway_zone_trade"] = (self.sideway_check, bool)
-
-            except Exception as e:
-                logger.error(f"Failed to create sideway checkbox: {e}", exc_info=True)
-                self.sideway_check = QCheckBox("Error loading setting")
-                self.sideway_check.setEnabled(False)
-                layout.addWidget(self.sideway_check)
+            self.vars["sideway_zone_trade"] = (self.sideway_check, bool)
+            layout.addWidget(sideway_card)
 
             layout.addStretch()
             scroll.setWidget(container)
+
+            # Trigger initial derivative update
+            QTimer.singleShot(0, lambda: self._on_derivative_changed(
+                self.derivative_combo.currentIndex() if self.derivative_combo else 0
+            ))
+
             return scroll
 
         except Exception as e:
@@ -610,12 +913,42 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             combo = QComboBox()
             combo.setToolTip("The underlying instrument whose options or futures will be traded.")
 
-            for display, value in self.DERIVATIVE_CHOICES:
+            # Initially populate based on current exchange
+            exchange = "NSE"
+            if self.exchange_combo is not None:
+                exchange = self.exchange_combo.currentData()
+
+            for display, value in self.DERIVATIVE_CHOICES.get(exchange, self.DERIVATIVE_CHOICES["NSE"]):
                 combo.addItem(display, value)
+
+            combo.setStyleSheet(f"""
+                QComboBox {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QComboBox:hover {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {self._sp.ICON_LG}px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    selection-background-color: {self._c.BG_SELECTED};
+                }}
+            """)
 
             # Restore saved value
             current_val = "NIFTY50"
-            if self.daily_setting is not None and hasattr(self.daily_setting, 'derivative'):
+            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'derivative'):
                 current_val = self.daily_setting.derivative
 
             found = False
@@ -632,7 +965,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             self.vars["derivative"] = (combo, str)
             self.entries["derivative"] = combo
 
-            # FIX: Connect change signal AFTER storing reference
+            # Connect change signal AFTER storing reference
             self.derivative_combo = combo
             combo.currentIndexChanged.connect(self._on_derivative_changed)
 
@@ -645,15 +978,34 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             combo.setEnabled(False)
             return combo
 
-    # ── FIX: Derivative change handler ────────────────────────────────────────
+    # ── Exchange change handler ───────────────────────────────────────────────
+
+    def _on_exchange_changed(self, _index: int) -> None:
+        """Update derivative choices based on selected exchange."""
+        try:
+            if self.exchange_combo is None or self.derivative_combo is None:
+                return
+
+            exchange = self.exchange_combo.currentData()
+
+            # Clear and repopulate derivative combo based on exchange
+            self.derivative_combo.clear()
+
+            for display, value in self.DERIVATIVE_CHOICES.get(exchange, self.DERIVATIVE_CHOICES["NSE"]):
+                self.derivative_combo.addItem(display, value)
+
+            # Trigger derivative change to update static fields
+            self._on_derivative_changed(0)
+
+            logger.info(f"[_on_exchange_changed] Exchange set to {exchange}")
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._on_exchange_changed] Failed: {e}", exc_info=True)
+
+    # ── Derivative change handler ─────────────────────────────────────────────
 
     def _on_derivative_changed(self, _index: int) -> None:
-        """Auto-fill lot size and update week/badge when derivative changes.
-
-        Called both programmatically on startup and by the user via the dropdown.
-        Performs the live lot-size fetch in a background thread to avoid
-        freezing the UI.
-        """
+        """Auto-fill lot size and update week/badge when derivative changes."""
         try:
             if self.derivative_combo is None:
                 return
@@ -662,25 +1014,36 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             if not derivative_val:
                 return
 
+            # Update static fields from OptionUtils
+            self._update_static_fields(derivative_val)
+
             # ── Expiry-type badge ─────────────────────────────────────────────
             has_weekly = OptionUtils.has_weekly_expiry(derivative_val)
             if self.expiry_badge is not None:
-                c = self._c
-                ty = self._ty
                 if has_weekly:
-                    self.expiry_badge.setText("📅 Weekly + Monthly")
-                    self.expiry_badge.setStyleSheet(
-                        f"color:{c.GREEN}; background:{c.BG_HOVER}; "
-                        f"font-size:{ty.SIZE_XS}pt; border-radius:4px; padding:2px 6px; "
-                        f"border:1px solid {c.GREEN};"
-                    )
+                    self.expiry_badge.setText("Weekly + Monthly")
+                    self.expiry_badge.setStyleSheet(f"""
+                        QLabel {{
+                            color: {self._c.GREEN};
+                            background: {self._c.BG_HOVER};
+                            font-size: {self._ty.SIZE_XS}pt;
+                            border-radius: {self._sp.RADIUS_PILL}px;
+                            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                            border: 1px solid {self._c.GREEN};
+                        }}
+                    """)
                 else:
-                    self.expiry_badge.setText("📆 Monthly Only")
-                    self.expiry_badge.setStyleSheet(
-                        f"color:{c.TEXT_DIM}; background:{c.BG_HOVER}; "
-                        f"font-size:{ty.SIZE_XS}pt; border-radius:4px; padding:2px 6px; "
-                        f"border:1px solid {c.BORDER};"
-                    )
+                    self.expiry_badge.setText("Monthly Only")
+                    self.expiry_badge.setStyleSheet(f"""
+                        QLabel {{
+                            color: {self._c.TEXT_DIM};
+                            background: {self._c.BG_HOVER};
+                            font-size: {self._ty.SIZE_XS}pt;
+                            border-radius: {self._sp.RADIUS_PILL}px;
+                            padding: {self._sp.PAD_XS}px {self._sp.PAD_SM}px;
+                            border: 1px solid {self._c.BORDER};
+                        }}
+                    """)
 
             # ── Week field: disable for monthly-only indices ──────────────────
             week_edit = self.entries.get("week")
@@ -712,8 +1075,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
                 def _fetch_lot(sym: str):
                     try:
-                        lot = OptionUtils.get_lot_size(sym, fetch_live=True)
-                        # Marshal back to the Qt main thread via a zero-delay timer
+                        lot = OptionUtils.get_lot_size(sym)
                         QTimer.singleShot(0, lambda: self._apply_lot_size(lot))
                     except Exception as ex:
                         logger.error(f"[_fetch_lot] Failed for {sym}: {ex}", exc_info=True)
@@ -737,6 +1099,38 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._on_derivative_changed] Failed: {e}", exc_info=True)
 
+    def _update_static_fields(self, derivative_val: str) -> None:
+        """Update static fields from OptionUtils based on selected derivative."""
+        try:
+            # Update lot size
+            lot_edit = self.entries.get("lot_size")
+            if lot_edit:
+                lot_size = OptionUtils.get_lot_size(derivative_val, fallback=0)
+                if lot_size > 0:
+                    lot_edit.setText(str(lot_size))
+                else:
+                    lot_edit.setText("N/A")
+
+            # Update freeze size
+            freeze_edit = self.entries.get("freeze_size")
+            if freeze_edit:
+                freeze_size = OptionUtils.get_freeze_size(derivative_val)
+                if freeze_size > 0:
+                    freeze_edit.setText(str(freeze_size))
+                else:
+                    freeze_edit.setText("N/A")
+
+            # Update multiplier
+            multiplier_edit = self.entries.get("multiplier")
+            if multiplier_edit:
+                multiplier = OptionUtils.get_multiplier(derivative_val)
+                multiplier_edit.setText(str(multiplier))
+
+            logger.debug(f"[_update_static_fields] Updated static fields for {derivative_val}")
+
+        except Exception as e:
+            logger.error(f"[DailyTradeSettingGUI._update_static_fields] Failed: {e}", exc_info=True)
+
     def _apply_lot_size(self, lot_size: int) -> None:
         """Apply the fetched lot size to the lot_size field (must run on main thread)."""
         try:
@@ -748,93 +1142,91 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI._apply_lot_size] Failed: {e}", exc_info=True)
 
-    # ── FEATURE 1: Risk Management Tab ───────────────────────────────────────
+    # ── Risk Management Tab ───────────────────────────────────────────────────
 
     def _build_risk_tab(self):
         """Build risk management tab."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            # Risk Limits Group
-            limits_group = QGroupBox("Daily Risk Limits")
-            limits_layout = QFormLayout(limits_group)
-            limits_layout.setSpacing(sp.GAP_SM)
-            limits_layout.setLabelAlignment(Qt.AlignRight)
+            # Risk Limits Card
+            risk_card = ModernCard()
+            risk_layout = QVBoxLayout(risk_card)
+            risk_layout.setSpacing(self._sp.GAP_MD)
+
+            risk_header = QLabel("⚠️ Daily Risk Limits")
+            risk_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            risk_layout.addWidget(risk_header)
+
+            risk_form = QFormLayout()
+            risk_form.setSpacing(self._sp.GAP_MD)
+            risk_form.setLabelAlignment(Qt.AlignRight)
 
             # Max Daily Loss
             loss_spin = QDoubleSpinBox()
             loss_spin.setRange(-1000000, 0)
             loss_spin.setSingleStep(100)
             loss_spin.setPrefix("₹")
-            loss_spin.setToolTip("Maximum daily loss before bot stops trading (negative value)")
+            loss_spin.setStyleSheet(self._get_spinbox_style())
             current_loss = -5000
-            if self.daily_setting and hasattr(self.daily_setting, 'max_daily_loss'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'max_daily_loss'):
                 current_loss = self.daily_setting.max_daily_loss
             loss_spin.setValue(current_loss)
-            limits_layout.addRow("Max Daily Loss:", loss_spin)
+            risk_form.addRow("Max Daily Loss:", loss_spin)
             self.vars["max_daily_loss"] = (loss_spin, float)
             self.entries["max_daily_loss"] = loss_spin
-
-            loss_hint = QLabel("Trading stops when daily P&L reaches this level (negative number)")
-            loss_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            limits_layout.addRow("", loss_hint)
 
             # Max Trades Per Day
             trades_spin = QSpinBox()
             trades_spin.setRange(1, 100)
             trades_spin.setSuffix(" trades")
-            trades_spin.setToolTip("Maximum number of trades per day")
+            trades_spin.setStyleSheet(self._get_spinbox_style())
             current_trades = 10
-            if self.daily_setting and hasattr(self.daily_setting, 'max_trades_per_day'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'max_trades_per_day'):
                 current_trades = self.daily_setting.max_trades_per_day
             trades_spin.setValue(current_trades)
-            limits_layout.addRow("Max Trades/Day:", trades_spin)
+            risk_form.addRow("Max Trades/Day:", trades_spin)
             self.vars["max_trades_per_day"] = (trades_spin, int)
             self.entries["max_trades_per_day"] = trades_spin
-
-            trades_hint = QLabel("Hard limit on number of entries per day")
-            trades_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            limits_layout.addRow("", trades_hint)
 
             # Daily Profit Target
             target_spin = QDoubleSpinBox()
             target_spin.setRange(0, 1000000)
             target_spin.setSingleStep(100)
             target_spin.setPrefix("₹")
-            target_spin.setToolTip("Daily profit target for progress tracking")
+            target_spin.setStyleSheet(self._get_spinbox_style())
             current_target = 5000
-            if self.daily_setting and hasattr(self.daily_setting, 'daily_target'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'daily_target'):
                 current_target = self.daily_setting.daily_target
             target_spin.setValue(current_target)
-            limits_layout.addRow("Daily Target:", target_spin)
+            risk_form.addRow("Daily Target:", target_spin)
             self.vars["daily_target"] = (target_spin, float)
             self.entries["daily_target"] = target_spin
 
-            target_hint = QLabel("Profit target for the day (for display purposes only)")
-            target_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            limits_layout.addRow("", target_hint)
+            risk_layout.addLayout(risk_form)
+            layout.addWidget(risk_card)
 
-            layout.addWidget(limits_group)
-
+            # Info Card
             info_card = self._create_info_card(
-                "📘 About Risk Management:",
-                "• Max Daily Loss: When daily P&L reaches this negative value, "
-                "the bot stops trading automatically.\n\n"
-                "• Max Trades/Day: Hard limit on the number of entries per day. "
-                "Once reached, no new positions are opened.\n\n"
-                "• Daily Target: Visual progress indicator only — does not stop trading.\n\n"
-                "These limits help protect your capital and prevent over-trading."
+                "📘 About Risk Management",
+                "• Max Daily Loss: Stop trading when daily P&L reaches this level\n"
+                "• Max Trades/Day: Hard limit on number of entries\n"
+                "• Daily Target: Visual progress indicator only"
             )
             layout.addWidget(info_card)
 
@@ -846,100 +1238,177 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI._build_risk_tab] Failed: {e}", exc_info=True)
             return self._create_error_scroll(f"Error building risk tab: {e}")
 
-    # ── FEATURE 6: Multi-Timeframe Filter Tab ────────────────────────────────
+    def _get_spinbox_style(self):
+        """Get consistent spinbox styling."""
+        return f"""
+            QSpinBox, QDoubleSpinBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QSpinBox:focus, QDoubleSpinBox:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                background: {self._c.BG_HOVER};
+                border: none;
+                width: {self._sp.ICON_MD}px;
+            }}
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                background: {self._c.BORDER};
+            }}
+        """
+
+    # ── Multi-Timeframe Filter Tab ────────────────────────────────────────────
 
     def _build_mtf_tab(self):
         """Build Multi-Timeframe Filter settings tab."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            enable_group = QGroupBox("MTF Filter Status")
-            enable_layout = QVBoxLayout(enable_group)
+            # Enable MTF Card
+            enable_card = ModernCard()
+            enable_layout = QVBoxLayout(enable_card)
+            enable_layout.setSpacing(self._sp.GAP_MD)
+
+            enable_header = QLabel("📈 Multi-Timeframe Filter")
+            enable_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            enable_layout.addWidget(enable_header)
 
             mtf_check = QCheckBox("Enable Multi-Timeframe Filter")
-            mtf_check.setToolTip("When enabled, requires agreement across multiple timeframes before entry")
+            mtf_check.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    spacing: {self._sp.GAP_SM}px;
+                }}
+                QCheckBox::indicator {{
+                    width: {self._sp.ICON_MD}px;
+                    height: {self._sp.ICON_MD}px;
+                    border: 2px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_SM}px;
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {self._c.BLUE};
+                    border-color: {self._c.BLUE};
+                }}
+            """)
             current_enabled = False
-            if self.daily_setting and hasattr(self.daily_setting, 'use_mtf_filter'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'use_mtf_filter'):
                 current_enabled = self.daily_setting.use_mtf_filter
             mtf_check.setChecked(current_enabled)
             enable_layout.addWidget(mtf_check)
             self.vars["use_mtf_filter"] = (mtf_check, bool)
 
-            enable_hint = QLabel("Requires at least 2 of 3 timeframes to agree with trade direction")
-            enable_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
+            enable_hint = QLabel("Requires agreement across multiple timeframes before entry")
+            enable_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
             enable_layout.addWidget(enable_hint)
 
-            layout.addWidget(enable_group)
+            layout.addWidget(enable_card)
 
-            tf_group = QGroupBox("Timeframe Configuration")
-            tf_layout = QFormLayout(tf_group)
-            tf_layout.setSpacing(sp.GAP_SM)
-            tf_layout.setLabelAlignment(Qt.AlignRight)
+            # Configuration Card
+            config_card = ModernCard()
+            config_layout = QVBoxLayout(config_card)
+            config_layout.setSpacing(self._sp.GAP_MD)
 
+            config_header = QLabel("⚙️ MTF Configuration")
+            config_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            config_layout.addWidget(config_header)
+
+            config_form = QFormLayout()
+            config_form.setSpacing(self._sp.GAP_MD)
+            config_form.setLabelAlignment(Qt.AlignRight)
+
+            # Timeframes
             tf_edit = QLineEdit()
             tf_edit.setPlaceholderText("1,5,15")
-            tf_edit.setToolTip("Comma-separated list of timeframes in minutes")
+            tf_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QLineEdit:focus {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
             current_tf = "1,5,15"
-            if self.daily_setting and hasattr(self.daily_setting, 'mtf_timeframes'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'mtf_timeframes'):
                 current_tf = self.daily_setting.mtf_timeframes
             tf_edit.setText(current_tf)
-            tf_layout.addRow("Timeframes:", tf_edit)
+            config_form.addRow("Timeframes:", tf_edit)
             self.vars["mtf_timeframes"] = (tf_edit, str)
 
-            tf_hint = QLabel("Example: 1,5,15 for 1min, 5min, and 15min")
-            tf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            tf_layout.addRow("", tf_hint)
-
+            # Fast EMA
             fast_spin = QSpinBox()
             fast_spin.setRange(1, 50)
             fast_spin.setSuffix(" periods")
-            fast_spin.setToolTip("Fast EMA period for trend detection")
+            fast_spin.setStyleSheet(self._get_spinbox_style())
             current_fast = 9
-            if self.daily_setting and hasattr(self.daily_setting, 'mtf_ema_fast'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'mtf_ema_fast'):
                 current_fast = self.daily_setting.mtf_ema_fast
             fast_spin.setValue(current_fast)
-            tf_layout.addRow("Fast EMA:", fast_spin)
+            config_form.addRow("Fast EMA:", fast_spin)
             self.vars["mtf_ema_fast"] = (fast_spin, int)
 
+            # Slow EMA
             slow_spin = QSpinBox()
             slow_spin.setRange(5, 200)
             slow_spin.setSuffix(" periods")
-            slow_spin.setToolTip("Slow EMA period for trend detection")
+            slow_spin.setStyleSheet(self._get_spinbox_style())
             current_slow = 21
-            if self.daily_setting and hasattr(self.daily_setting, 'mtf_ema_slow'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'mtf_ema_slow'):
                 current_slow = self.daily_setting.mtf_ema_slow
             slow_spin.setValue(current_slow)
-            tf_layout.addRow("Slow EMA:", slow_spin)
+            config_form.addRow("Slow EMA:", slow_spin)
             self.vars["mtf_ema_slow"] = (slow_spin, int)
 
+            # Agreement Required
             agree_spin = QSpinBox()
             agree_spin.setRange(1, 3)
             agree_spin.setSuffix(" timeframes")
-            agree_spin.setToolTip("Number of timeframes that must agree")
+            agree_spin.setStyleSheet(self._get_spinbox_style())
             current_agree = 2
-            if self.daily_setting and hasattr(self.daily_setting, 'mtf_agreement_required'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'mtf_agreement_required'):
                 current_agree = self.daily_setting.mtf_agreement_required
             agree_spin.setValue(current_agree)
-            tf_layout.addRow("Agreement Required:", agree_spin)
+            config_form.addRow("Agreement Required:", agree_spin)
             self.vars["mtf_agreement_required"] = (agree_spin, int)
 
-            agree_hint = QLabel("How many timeframes must agree before allowing entry")
-            agree_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            tf_layout.addRow("", agree_hint)
+            config_layout.addLayout(config_form)
+            layout.addWidget(config_card)
 
-            layout.addWidget(tf_group)
-
+            # Info Card
             info_card = self._create_mtf_info_card()
             layout.addWidget(info_card)
 
@@ -951,54 +1420,66 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI._build_mtf_tab] Failed: {e}", exc_info=True)
             return self._create_error_scroll(f"Error building MTF tab: {e}")
 
-    # ── FEATURE 3: Signal Confidence Tab ─────────────────────────────────────
+    # ── Signal Confidence Tab ─────────────────────────────────────────────────
 
     def _build_signal_tab(self):
         """Build signal confidence settings tab."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_LG)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_LG)
 
-            conf_group = QGroupBox("Signal Confidence Settings")
-            conf_layout = QFormLayout(conf_group)
-            conf_layout.setSpacing(sp.GAP_SM)
-            conf_layout.setLabelAlignment(Qt.AlignRight)
+            # Confidence Card
+            conf_card = ModernCard()
+            conf_layout = QVBoxLayout(conf_card)
+            conf_layout.setSpacing(self._sp.GAP_MD)
+
+            conf_header = QLabel("🎯 Signal Confidence")
+            conf_header.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_MD}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
+            conf_layout.addWidget(conf_header)
+
+            conf_form = QFormLayout()
+            conf_form.setSpacing(self._sp.GAP_MD)
+            conf_form.setLabelAlignment(Qt.AlignRight)
 
             conf_spin = QDoubleSpinBox()
             conf_spin.setRange(0.0, 1.0)
             conf_spin.setSingleStep(0.05)
             conf_spin.setDecimals(2)
-            conf_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
+            conf_spin.setStyleSheet(self._get_spinbox_style())
             current_conf = 0.6
-            if self.daily_setting and hasattr(self.daily_setting, 'min_confidence'):
+            if self.daily_setting and safe_hasattr(self.daily_setting, 'min_confidence'):
                 current_conf = self.daily_setting.min_confidence
             conf_spin.setValue(current_conf)
-            conf_layout.addRow("Min Confidence:", conf_spin)
+            conf_form.addRow("Min Confidence:", conf_spin)
             self.vars["min_confidence"] = (conf_spin, float)
 
+            conf_layout.addLayout(conf_form)
+
             conf_hint = QLabel("Signals below this confidence are suppressed (0.0-1.0)")
-            conf_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            conf_layout.addRow("", conf_hint)
+            conf_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+            conf_layout.addWidget(conf_hint)
 
-            layout.addWidget(conf_group)
+            layout.addWidget(conf_card)
 
+            # Info Card
             info_card = self._create_info_card(
-                "📘 About Signal Confidence:",
+                "📘 About Signal Confidence",
                 "• Confidence Score: Weighted average of rule results\n"
-                "• Min Confidence: Signals below this threshold are ignored\n"
-                "• Rule Weights: Configured in Strategy Editor\n\n"
-                "Example: If min confidence = 0.6, a group needs 60% of weighted "
-                "rules to pass before firing."
+                "• Min Confidence: Signals below threshold are ignored\n"
+                "• Rule Weights: Configured in Strategy Editor"
             )
             layout.addWidget(info_card)
 
@@ -1015,99 +1496,29 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     def _build_info_tab(self):
         """Build the information tab with help content."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
             container = QWidget()
+            container.setStyleSheet("background: transparent;")
             layout = QVBoxLayout(container)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-            layout.setSpacing(sp.GAP_MD)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(self._sp.GAP_MD)
 
             infos = [
-                (
-                    "🌐  Exchange",
-                    "Specifies the stock exchange where trades will be placed.\n\n"
-                    "• Common values: NSE (equities), NFO (F&O), BSE.\n"
-                    "• Must match the exchange codes supported by your brokerage API.\n"
-                    "• Incorrect values will cause order rejection at the broker level."
-                ),
-                (
-                    "📆  Week",
-                    "Selects the expiry week — applicable ONLY for NIFTY 50 and SENSEX.\n\n"
-                    "• BANKNIFTY, FINNIFTY and MIDCPNIFTY are MONTHLY ONLY since\n"
-                    "  Nov 20, 2024 (SEBI circular SEBI/HO/MRD/TPD-1/P/CIR/2024/132).\n"
-                    "  The Week field is automatically disabled for those indices.\n\n"
-                    "• For NIFTY / SENSEX:\n"
-                    "    0 = current/nearest weekly expiry (most liquid).\n"
-                    "    1 = next week's expiry, 2 = two weeks out, and so on."
-                ),
-                (
-                    "💡  Derivative",
-                    "The underlying instrument whose options or futures will be traded.\n\n"
-                    "• Supported: NIFTY50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX.\n"
-                    "• Changing this auto-fills the Lot Size from the live NSE feed.\n"
-                    "• The expiry type (Weekly+Monthly or Monthly Only) is shown next\n"
-                    "  to the dropdown."
-                ),
-                (
-                    "🔢  Lot Size  (auto-filled — Jan 2026 values)",
-                    "Number of units in one contract lot for the chosen derivative.\n\n"
-                    "• NIFTY = 65 units/lot       (was 75 before Jan 2026)\n"
-                    "• BANKNIFTY = 30 units/lot   (was 35 before Jan 2026)\n"
-                    "• FINNIFTY = 60 units/lot    (was 65 before Jan 2026)\n"
-                    "• MIDCPNIFTY = 120 units/lot (was 140 before Jan 2026)\n"
-                    "• SENSEX = 20 units/lot\n\n"
-                    "Source: NSE Circular 176/2025 (effective Oct 28, 2025).\n"
-                    "The value is fetched live from NSE on derivative change and\n"
-                    "will stay current even after future regulatory revisions."
-                ),
-                (
-                    "🔎  Call / Put Lookback",
-                    "The number of historical candles the strategy looks back to detect an entry signal.\n\n"
-                    "• A higher lookback = smoother, slower signals (fewer false entries).\n"
-                    "• A lower lookback = faster, noisier signals (more trades, more risk).\n"
-                    "• Call and Put lookbacks can be tuned independently."
-                ),
-                (
-                    "⚠️  Risk Management",
-                    "Daily loss limits and trade counts to protect capital.\n\n"
-                    "• Max Daily Loss: Stop trading when daily P&L hits this level.\n"
-                    "• Max Trades/Day: Hard limit on number of entries.\n"
-                    "• Daily Target: Visual progress indicator for profit goals."
-                ),
-                (
-                    "📈  Multi-Timeframe Filter",
-                    "Confirms trend direction across multiple timeframes.\n\n"
-                    "• Uses EMA 9/21 crossovers on 1m, 5m, 15m charts.\n"
-                    "• Requires at least 2 of 3 timeframes to agree.\n"
-                    "• Reduces false entries during conflicting trends."
-                ),
-                (
-                    "🎯  Signal Confidence",
-                    "Weighted voting system for signal groups.\n\n"
-                    "• Each rule can have a weight (default 1.0).\n"
-                    "• Confidence = passed_weight / total_weight.\n"
-                    "• Signals below min_confidence are suppressed."
-                ),
-                (
-                    "📁  Where are settings stored?",
-                    "Daily trade settings are saved locally to:\n\n"
-                    "    config/daily_trade_setting.json\n\n"
-                    "The file is written atomically to prevent corruption on unexpected exits. "
-                    "Back up this file before making major strategy changes."
-                ),
+                ("🌐 Exchange", "NSE: NIFTY50, BANKNIFTY, FINNIFTY, MIDCPNIFTY\nBSE: SENSEX"),
+                ("📆 Week", "Weekly expiry offset (0 = current) - only for NIFTY/SENSEX"),
+                ("💡 Derivative", "Auto-fills lot size, freeze limit, and strike multiplier"),
+                ("🔢 Static Fields", "Lot Size, Freeze Size, Strike Multiplier - read-only from OptionUtils"),
+                ("⚠️ Risk", "Daily loss limits and trade counts to protect capital"),
+                ("📈 MTF Filter", "Confirms trend across multiple timeframes"),
+                ("🎯 Signal Confidence", "Weighted voting system for signal groups"),
             ]
 
             for title, body in infos:
-                try:
-                    info_card = self._create_info_card(title, body)
-                    layout.addWidget(info_card)
-                except Exception as e:
-                    logger.error(f"Failed to create info card for {title}: {e}", exc_info=True)
+                info_card = self._create_info_card(title, body)
+                layout.addWidget(info_card)
 
             layout.addStretch()
             scroll.setWidget(container)
@@ -1119,70 +1530,47 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
     def _create_info_card(self, title: str, body: str) -> QFrame:
         """Create an information card with themed styling."""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        card = QFrame()
-        card.setObjectName("infoCard")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        card_layout.setSpacing(sp.GAP_XS)
+        card = ModernCard()
+        layout = QVBoxLayout(card)
+        layout.setSpacing(self._sp.GAP_SM)
 
         title_lbl = QLabel(title)
-        title_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-        title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN};")
+        title_lbl.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
 
         body_lbl = QLabel(body)
         body_lbl.setWordWrap(True)
-        body_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+        body_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
 
-        card_layout.addWidget(title_lbl)
-        card_layout.addWidget(body_lbl)
+        layout.addWidget(title_lbl)
+        layout.addWidget(body_lbl)
         return card
 
     def _create_mtf_info_card(self) -> QFrame:
         """Create info card for MTF filter."""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        card = QFrame()
-        card.setObjectName("infoCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-
-        title = QLabel("📘 How Multi-Timeframe Filter Works:")
-        title.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-        title.setStyleSheet(f"color:{c.TEXT_MAIN};")
-
-        text = QLabel(
+        return self._create_info_card(
+            "📘 How Multi-Timeframe Filter Works",
             "1. For each timeframe, calculates EMA9 and EMA21\n"
-            "2. Determines trend: BULLISH (EMA9 > EMA21 > LTP) or BEARISH (EMA9 < EMA21 < LTP)\n"
-            "3. Requires at least N timeframes to agree (default: 2 of 3)\n"
-            "4. Entry is blocked if insufficient agreement\n\n"
-            "This filter helps avoid entries during conflicting trends across timeframes."
+            "2. Determines trend direction\n"
+            "3. Requires N timeframes to agree (default: 2 of 3)\n"
+            "4. Entry blocked if insufficient agreement"
         )
-        text.setWordWrap(True)
-        text.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-
-        layout.addWidget(title)
-        layout.addWidget(text)
-        return card
 
     def _create_error_scroll(self, error_msg):
         """Create a scroll area with error message."""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
         scroll = QScrollArea()
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+        layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                 self._sp.PAD_XL, self._sp.PAD_XL)
 
         error_label = QLabel(f"❌ {error_msg}")
-        error_label.setStyleSheet(f"color: {c.RED}; padding: {sp.PAD_XL}px;")
+        error_label.setStyleSheet(f"color: {self._c.RED}; padding: {self._sp.PAD_XL}px;")
         error_label.setWordWrap(True)
         layout.addWidget(error_label)
         scroll.setWidget(container)
@@ -1237,20 +1625,18 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     def show_success_feedback(self):
         """Show success feedback with animation."""
         try:
-            c = self._c
-            sp = self._sp
-
             self.status_label.setText("✓ Settings saved successfully!")
-            self.status_label.setStyleSheet(
-                f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};"
-            )
-            self.save_btn.setText("✓ Saved!")
-            self.save_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background:{c.GREEN_BRIGHT}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{self._ty.WEIGHT_BOLD}; font-size:{self._ty.SIZE_BODY}pt;
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.GREEN};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
                 }}
             """)
+            self.save_btn.setText("✓ Saved!")
             QTimer.singleShot(1500, self.reset_styles)
             logger.info("Success feedback shown")
 
@@ -1260,17 +1646,31 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     def show_error_feedback(self, error_msg):
         """Show error feedback."""
         try:
-            c = self._c
-            sp = self._sp
-
             self.status_label.setText(f"✗ {error_msg}")
-            self.status_label.setStyleSheet(
-                f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};"
-            )
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.RED};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
             self.save_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background:{c.RED}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{self._ty.WEIGHT_BOLD}; font-size:{self._ty.SIZE_BODY}pt;
+                    background: {self._c.RED};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.RED_BRIGHT};
                 }}
             """)
             QTimer.singleShot(2000, self.reset_styles)
@@ -1282,8 +1682,28 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     def reset_styles(self):
         """Reset all styles to normal."""
         try:
-            self.save_btn.setText("💾 Save All Settings")
-            self.save_btn.setStyleSheet(self._get_button_style())
+            self.status_label.setText("")
+            self.save_btn.setText("💾 Save Settings")
+            self.save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
         except Exception as e:
             logger.error(f"[DailyTradeSettingGUI.reset_styles] Failed: {e}", exc_info=True)
 
@@ -1334,10 +1754,17 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                         else:
                             validation_errors.append(error or f"Invalid value for {key}")
                             if isinstance(widget, QLineEdit):
-                                widget.setStyleSheet(
-                                    f"QLineEdit {{ background:{self._c.BG_ROW_B}; color:{self._c.TEXT_MAIN}; "
-                                    f"border:{self._sp.SEPARATOR}px solid {self._c.RED}; }}"
-                                )
+                                widget.setStyleSheet(f"""
+                                    QLineEdit {{
+                                        background: {self._c.BG_INPUT};
+                                        color: {self._c.TEXT_MAIN};
+                                        border: 1px solid {self._c.RED};
+                                        border-radius: {self._sp.RADIUS_MD}px;
+                                        padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                                        min-height: {self._sp.INPUT_HEIGHT}px;
+                                        font-size: {self._ty.SIZE_BODY}pt;
+                                    }}
+                                """)
 
                 except Exception as e:
                     logger.error(f"Error validating field {key}: {e}", exc_info=True)
@@ -1350,6 +1777,10 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 self._save_in_progress = False
                 self.operation_finished.emit()
                 return
+
+            # Ensure exchange is captured
+            if "exchange" not in data_to_save and self.exchange_combo is not None:
+                data_to_save["exchange"] = self.exchange_combo.currentData()
 
             # Ensure derivative is captured
             if "derivative" not in data_to_save and self.derivative_combo is not None:
@@ -1387,15 +1818,15 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             for key, value in data_to_save.items():
                 try:
-                    if hasattr(self.daily_setting, key):
-                        setattr(self.daily_setting, key, value)
+                    if safe_hasattr(self.daily_setting, key):
+                        safe_setattr(self.daily_setting, key, value)
                     else:
                         logger.warning(f"Setting {key} not found in daily_setting")
                 except Exception as e:
                     logger.error(f"Failed to set {key}={value}: {e}", exc_info=True)
 
             success = False
-            if hasattr(self.daily_setting, 'save'):
+            if safe_hasattr(self.daily_setting, 'save'):
                 success = self.daily_setting.save()
             else:
                 logger.error("Daily setting object has no save method")
@@ -1422,7 +1853,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 self.show_success_feedback()
                 self.save_btn.setEnabled(True)
 
-                if self.app is not None and hasattr(self.app, "refresh_settings_live"):
+                if self.app is not None and safe_hasattr(self.app, "refresh_settings_live"):
                     try:
                         self.app.refresh_settings_live()
                         logger.debug("App settings refreshed")
@@ -1459,7 +1890,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         try:
             logger.info("[DailyTradeSettingGUI] Starting cleanup")
 
-            if hasattr(self, '_save_timer') and self._save_timer is not None:
+            if safe_hasattr(self, '_save_timer') and self._save_timer is not None:
                 try:
                     if self._save_timer.isActive():
                         self._save_timer.stop()
@@ -1470,6 +1901,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             self.app = None
             self.vars.clear()
             self.entries.clear()
+            self.exchange_combo = None
             self.interval_combo = None
             self.derivative_combo = None
             self.expiry_badge = None

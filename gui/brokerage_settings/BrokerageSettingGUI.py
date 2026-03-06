@@ -3,7 +3,7 @@ gui/BrokerageSettingGUI.py
 ==========================
 Brokerage settings dialog with broker selector and dynamic field hints.
 PyQt5 version with proper database saving.
-Matches the theme of DailyTradeSettingGUI.py
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI theme with original tab style.
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
@@ -12,11 +12,11 @@ import webbrowser
 from typing import Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QPixmap
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QWidget, QLabel, QComboBox, QLineEdit,
                              QPushButton, QMessageBox, QGroupBox, QFormLayout,
-                             QFrame, QScrollArea)
+                             QFrame, QScrollArea, QSizePolicy)
 
 from broker.BrokerFactory import BrokerType, BrokerFactory
 from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
@@ -156,13 +156,73 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            # Add subtle shadow effect for elevated cards
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
+
+
 class BrokerageSettingDialog(QDialog, ThemedMixin):
     """
     Settings dialog with two tabs:
         🏦 Broker   — broker selection + credentials
         📱 Telegram — Telegram bot credentials
 
-    Matches the theme of DailyTradeSettingGUI.py
+    MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI theme.
     FULLY INTEGRATED with ThemeManager.
     """
 
@@ -191,8 +251,12 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
 
             self.setWindowTitle("⚙️ Brokerage Settings")
             self.setModal(True)
-            self.setMinimumSize(700, 650)
-            self.resize(700, 650)
+            self.setMinimumSize(800, 700)
+            self.resize(800, 700)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
 
             # ── Variables from settings ────────────────────────────────────────
             self.broker_type = broker_setting.broker_type or 'fyers'
@@ -202,65 +266,85 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             self.tg_token = broker_setting.telegram_bot_token or ''
             self.tg_chat = broker_setting.telegram_chat_id or ''
 
-            # Root layout
+            # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
-            # Margins and spacing will be set in apply_theme
+            root.setContentsMargins(20, 20, 20, 20)
+            root.setSpacing(0)
+
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
+
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
+
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
+
+            # Content area
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                             self._sp.PAD_XL, self._sp.PAD_XL)
+            content_layout.setSpacing(self._sp.GAP_LG)
 
             # Header
-            header = QLabel("⚙️ Brokerage Settings")
-            header.setObjectName("header")
-            header.setAlignment(Qt.AlignCenter)
-            root.addWidget(header)
+            header = ModernHeader("Brokerage & Notification Settings")
+            content_layout.addWidget(header)
 
             # ── Tab Widget ─────────────────────────────────────────────────────
-            self.tabs = QTabWidget()
-            root.addWidget(self.tabs)
-
-            # Tab 1 — Broker
-            self.broker_tab = QWidget()
-            self.tabs.addTab(self.broker_tab, "🏦  Broker")
-            self._setup_broker_tab()
-
-            # Tab 2 — Telegram
-            self.telegram_tab = QWidget()
-            self.tabs.addTab(self.telegram_tab, "📱  Telegram")
-            self._setup_telegram_tab()
-
-            # Tab 3 — Information (like DailyTradeSettingGUI)
-            self.info_tab = QWidget()
-            self.tabs.addTab(self.info_tab, "ℹ️ Information")
-            self._setup_info_tab()
+            self.tabs = self._create_tabs()
+            content_layout.addWidget(self.tabs)
 
             # ── Status label ─────────────────────────────────────────────────────
             self.status_label = QLabel("")
-            self.status_label.setAlignment(Qt.AlignCenter)
-            self.status_label.setObjectName("status")
-            root.addWidget(self.status_label)
+            self.status_label.setAlignment(Qt.AlignLeft)
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
+            content_layout.addWidget(self.status_label)
 
             # ── Button row ───────────────────────────────────────────────────────
             button_layout = QHBoxLayout()
-            root.addLayout(button_layout)
+            button_layout.setSpacing(self._sp.GAP_MD)
 
             # Left side buttons
-            self.login_url_btn = QPushButton("🌐  Open Login URL")
+            self.login_url_btn = self._create_modern_button("🌐 Open Login URL", primary=False, icon="🌐")
             self.login_url_btn.clicked.connect(self._open_login_url)
             button_layout.addWidget(self.login_url_btn)
 
-            self.test_btn = QPushButton("🔌  Test Connection")
+            self.test_btn = self._create_modern_button("🔌 Test Connection", primary=False, icon="🔌")
             self.test_btn.clicked.connect(self._test_connection)
             button_layout.addWidget(self.test_btn)
 
             button_layout.addStretch()
 
             # Right side buttons
-            self.save_btn = QPushButton("💾  Save All Settings")
+            self.save_btn = self._create_modern_button("💾 Save Settings", primary=True, icon="💾")
             self.save_btn.clicked.connect(self._save)
             self.save_btn.setDefault(True)
             button_layout.addWidget(self.save_btn)
 
-            self.cancel_btn = QPushButton("Cancel")
+            self.cancel_btn = self._create_modern_button("Cancel", primary=False)
             self.cancel_btn.clicked.connect(self.reject)
             button_layout.addWidget(self.cancel_btn)
+
+            content_layout.addLayout(button_layout)
+
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
 
             # Connect internal signals
             self._connect_signals()
@@ -277,6 +361,151 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         except Exception as e:
             logger.critical(f"[BrokerageSettingGUI.__init__] Failed: {e}", exc_info=True)
             self._create_error_dialog(parent)
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("⚙️ Brokerage Settings")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
+    def _create_tabs(self):
+        """Create tabs with original style (like previous design)."""
+        tabs = QTabWidget()
+
+        # Apply the original tab styling from previous design
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
+
+        # Tab 1 — Broker
+        self.broker_tab = QWidget()
+        tabs.addTab(self.broker_tab, "🏦  Broker")
+        self._setup_broker_tab()
+
+        # Tab 2 — Telegram
+        self.telegram_tab = QWidget()
+        tabs.addTab(self.telegram_tab, "📱  Telegram")
+        self._setup_telegram_tab()
+
+        # Tab 3 — Information
+        self.info_tab = QWidget()
+        tabs.addTab(self.info_tab, "ℹ️  Information")
+        self._setup_info_tab()
+
+        return tabs
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 140px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:pressed {{
+                    background: {self._c.BLUE};
+                    opacity: 0.8;
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 140px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -313,29 +542,55 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         Called on theme change, density change, and initial render.
         """
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            # Update root layout margins and spacing
-            layout = self.layout()
-            if layout:
-                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-                layout.setSpacing(sp.GAP_MD)
-
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
-
-            # Update header
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;")
+            # Update tabs with original style
+            if self.tabs:
+                self.tabs.setStyleSheet(f"""
+                    QTabWidget::pane {{
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        background: {self._c.BG_PANEL};
+                        margin-top: {self._sp.PAD_SM}px;
+                    }}
+                    QTabBar::tab {{
+                        background: {self._c.BG_HOVER};
+                        color: {self._c.TEXT_DIM};
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        min-width: 130px;
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-bottom: none;
+                        border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        margin-right: {self._sp.PAD_XS}px;
+                    }}
+                    QTabBar::tab:selected {{
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_MAIN};
+                        border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                    }}
+                    QTabBar::tab:hover:!selected {{
+                        background: {self._c.BORDER};
+                        color: {self._c.TEXT_MAIN};
+                    }}
+                """)
 
             # Update status label
             if self.status_label:
-                self.status_label.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
 
-            # Update button styles
+            # Update buttons
             self._update_button_styles()
 
             # Update tab-specific elements
@@ -346,127 +601,47 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[BrokerageSettingDialog.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog {{ background: {c.BG_PANEL}; color: {c.TEXT_MAIN}; }}
-            QLabel  {{ color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt; }}
-            QGroupBox {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px 0 {sp.PAD_XS}px;
-            }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                background: {c.BG_PANEL};
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                min-width: 130px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:hover:!selected {{ background: {c.BORDER}; color: {c.TEXT_MAIN}; }}
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_SM}px;
-                font-size: {ty.SIZE_BODY}pt;
-                min-height: {sp.BTN_HEIGHT_SM}px;
-            }}
-            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-                border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS};
-            }}
-            QSpinBox::up-button, QSpinBox::down-button,
-            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-                background: {c.BORDER};
-                border: none;
-                width: {sp.ICON_SM}px;
-            }}
-            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-                image: none;
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-bottom: {sp.PAD_XS}px solid {c.TEXT_DIM};
-            }}
-            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-                image: none;
-                border-left: {sp.PAD_XS}px solid transparent;
-                border-right: {sp.PAD_XS}px solid transparent;
-                border-top: {sp.PAD_XS}px solid {c.TEXT_DIM};
-            }}
-            QCheckBox {{ color: {c.TEXT_MAIN}; spacing: {sp.GAP_SM}px; font-size: {ty.SIZE_BODY}pt; }}
-            QCheckBox::indicator {{ width: {sp.ICON_MD}px; height: {sp.ICON_MD}px; }}
-            QCheckBox::indicator:unchecked {{ border: {sp.SEPARATOR}px solid {c.BORDER}; background: {c.BG_HOVER}; border-radius: {sp.RADIUS_SM}px; }}
-            QCheckBox::indicator:checked   {{ background: {c.GREEN}; border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT}; border-radius: {sp.RADIUS_SM}px; }}
-            QScrollArea {{ border: none; background: transparent; }}
-            QFrame#infoCard {{
-                background: {c.BG_HOVER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-            }}
-        """
-
     def _update_button_styles(self):
         """Update button styles with theme tokens"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
         # Save button
         if self.save_btn:
             self.save_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: {c.GREEN};
-                    color: {c.TEXT_INVERSE};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_SM}px;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    font-size: {ty.SIZE_BODY}pt;
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 140px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover {{ background: {c.GREEN_BRIGHT}; }}
-                QPushButton:pressed {{ background: {c.GREEN}; }}
-                QPushButton:disabled {{ background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
             """)
 
         # Cancel button
         if self.cancel_btn:
             self.cancel_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_SM}px;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    font-size: {ty.SIZE_BODY}pt;
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover {{ background: {c.BORDER}; }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                }}
             """)
 
         # Login URL button and Test button
@@ -474,73 +649,107 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             if btn:
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: {c.BG_HOVER};
-                        color: {c.TEXT_MAIN};
-                        border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_SM}px;
-                        padding: {sp.PAD_SM}px;
-                        font-size: {ty.SIZE_BODY}pt;
+                        background: {self._c.BG_HOVER};
+                        color: {self._c.TEXT_MAIN};
+                        border: 1px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_LG}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        min-width: 140px;
+                        min-height: 36px;
                     }}
-                    QPushButton:hover {{ background: {c.BORDER}; }}
-                    QPushButton:disabled {{ background: {c.BG_PANEL}; color: {c.TEXT_DISABLED}; }}
+                    QPushButton:hover {{
+                        background: {self._c.BORDER};
+                        border-color: {self._c.BORDER_FOCUS};
+                    }}
+                    QPushButton:disabled {{
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_DISABLED};
+                        border-color: {self._c.BORDER};
+                    }}
                 """)
 
     def _update_tab_styles(self):
         """Update tab-specific element styles"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
         # Auth note label
         if self.auth_note_label:
-            self.auth_note_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; padding: {sp.PAD_XS}px;")
+            self.auth_note_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_XS}pt;
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
 
         # Redirect note label
         if self.redirect_note_label:
-            self.redirect_note_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; padding-left: {sp.PAD_XS}px;")
+            self.redirect_note_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_XS}pt;
+                    padding-left: {self._sp.PAD_XS}px;
+                }}
+            """)
 
-        # Token status label
-        if self.token_status_label:
-            self.token_status_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
+        # Token status card
+        token_frame = self.findChild(QFrame, "tokenFrame")
+        if token_frame:
+            token_frame.setStyleSheet(f"""
+                QFrame {{
+                    background: {self._c.BG_HOVER};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_MD}px;
+                }}
+            """)
 
         # Help label
         if self.help_label:
-            self.help_label.setStyleSheet(f"color: {c.BLUE}; font-size: {ty.SIZE_XS}pt;")
+            self.help_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.BLUE};
+                    font-size: {self._ty.SIZE_XS}pt;
+                    text-decoration: underline;
+                }}
+                QLabel:hover {{
+                    color: {self._c.BLUE_DARK};
+                }}
+            """)
 
         # History label
         if self.history_label:
             self._update_history_label()
 
-        # Test Telegram button (in Telegram tab)
-        test_tg_btn = self.findChild(QPushButton, "testTelegramBtn")
-        if test_tg_btn:
-            test_tg_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BLUE_DARK};
-                    color: {c.TEXT_INVERSE};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_SM}px;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    font-size: {ty.SIZE_BODY}pt;
-                }}
-                QPushButton:hover {{ background: {c.BLUE}; }}
-            """)
-
     def _update_history_label(self):
         """Update history label based on current broker"""
         try:
-            c = self._c
-            ty = self._ty
-
             bt_str = self.broker_type
             bt = next((b for b in BROKER_ORDER if str(b) == bt_str), BrokerType.FYERS)
 
             if BrokerFactory.supports_history(bt):
-                self.history_label.setText("✅  Historical OHLC data supported")
-                self.history_label.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt;")
+                self.history_label.setText("✅ Historical OHLC data supported")
+                self.history_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.GREEN};
+                        font-size: {self._ty.SIZE_XS}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
             else:
-                self.history_label.setText("⚠️  Historical data NOT available — use external data source")
-                self.history_label.setStyleSheet(f"color: {c.RED}; font-size: {ty.SIZE_XS}pt;")
+                self.history_label.setText("⚠️ Historical data NOT available — use external data source")
+                self.history_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.ORANGE};
+                        font-size: {self._ty.SIZE_XS}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
         except Exception as e:
             logger.error(f"Failed to update history label: {e}")
 
@@ -555,24 +764,21 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
 
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
         try:
             super().__init__(parent)
             self.setWindowTitle("Brokerage Settings - ERROR")
             self.setMinimumSize(400, 200)
 
             layout = QVBoxLayout(self)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
 
             error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;")
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
             layout.addWidget(error_label)
 
-            close_btn = QPushButton("Close")
+            close_btn = self._create_modern_button("Close", primary=False)
             close_btn.clicked.connect(self.reject)
             layout.addWidget(close_btn)
 
@@ -580,28 +786,36 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             logger.error(f"[BrokerageSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
 
     def _setup_broker_tab(self):
-        """Setup the broker configuration tab with scroll area like DailyTradeSettingGUI."""
-        sp = self._sp
-
+        """Setup the broker configuration tab with modern card-based layout."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
-        container.setStyleSheet("background:transparent;")
+        container.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_MD)
-        layout.setSpacing(sp.GAP_MD)
+        layout.setContentsMargins(self._sp.PAD_LG, self._sp.PAD_LG,
+                                 self._sp.PAD_LG, self._sp.PAD_LG)
+        layout.setSpacing(self._sp.GAP_LG)
 
-        # ── Broker selector ───────────────────────────────────────────────────
-        broker_group = QGroupBox("Select Broker")
-        broker_layout = QVBoxLayout(broker_group)
-        broker_layout.setSpacing(sp.GAP_SM)
+        # ── Broker Selector Card ───────────────────────────────────────────────────
+        broker_card = ModernCard()
+        broker_layout = QVBoxLayout(broker_card)
+        broker_layout.setSpacing(self._sp.GAP_MD)
+
+        broker_header = QLabel("🏦 Select Broker")
+        broker_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        broker_layout.addWidget(broker_header)
 
         self.broker_combo = QComboBox()
         for bt, name in BROKER_DISPLAY_OPTIONS:
-            # Store the str value (e.g. "fyers") as item data so findData() works
-            # regardless of whether BrokerType subclasses str or not.
             self.broker_combo.addItem(f"{name}  ({bt})", str(bt))
 
         # Set current selection
@@ -610,20 +824,65 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             self.broker_combo.setCurrentIndex(index)
 
         self.broker_combo.currentIndexChanged.connect(self._on_broker_changed)
+        self.broker_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """)
         broker_layout.addWidget(self.broker_combo)
 
-        layout.addWidget(broker_group)
+        layout.addWidget(broker_card)
 
-        # ── Auth note banner ──────────────────────────────────────────────────
+        # ── Auth Note Card ──────────────────────────────────────────────────
         self.auth_note_label = QLabel()
         self.auth_note_label.setWordWrap(True)
+        self.auth_note_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_DIM};
+                font-size: {self._ty.SIZE_XS}pt;
+                padding: {self._sp.PAD_SM}px;
+                background: {self._c.BG_HOVER};
+                border-radius: {self._sp.RADIUS_MD}px;
+            }}
+        """)
         layout.addWidget(self.auth_note_label)
 
-        # ── Credential fields ─────────────────────────────────────────────────
-        cred_group = QGroupBox("Credentials")
-        form_layout = QFormLayout(cred_group)
-        form_layout.setSpacing(sp.GAP_SM)
-        form_layout.setVerticalSpacing(sp.GAP_XS)
+        # ── Credentials Card ─────────────────────────────────────────────────
+        cred_card = ModernCard()
+        cred_layout = QVBoxLayout(cred_card)
+        cred_layout.setSpacing(self._sp.GAP_MD)
+
+        cred_header = QLabel("🔑 Credentials")
+        cred_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        cred_layout.addWidget(cred_header)
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(self._sp.GAP_MD)
         form_layout.setLabelAlignment(Qt.AlignRight)
         form_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -633,6 +892,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         self.client_id_entry.setText(self.client_id)
         self.client_id_entry.setPlaceholderText("Enter client ID / API key")
         self.client_id_entry.textChanged.connect(self._clear_field_error)
+        self.client_id_entry.setStyleSheet(self._get_lineedit_style())
         form_layout.addRow(self.client_id_label, self.client_id_entry)
 
         # Secret Key
@@ -642,6 +902,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         self.secret_key_entry.setText(self.secret_key)
         self.secret_key_entry.setPlaceholderText("Enter secret key")
         self.secret_key_entry.textChanged.connect(self._clear_field_error)
+        self.secret_key_entry.setStyleSheet(self._get_lineedit_style())
         form_layout.addRow(self.secret_key_label, self.secret_key_entry)
 
         # Redirect URI
@@ -650,48 +911,76 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         self.redirect_entry.setText(self.redirect_uri)
         self.redirect_entry.setPlaceholderText("Enter redirect URI")
         self.redirect_entry.textChanged.connect(self._clear_field_error)
+        self.redirect_entry.setStyleSheet(self._get_lineedit_style())
         form_layout.addRow(self.redirect_label, self.redirect_entry)
 
-        layout.addWidget(cred_group)
+        cred_layout.addLayout(form_layout)
+        layout.addWidget(cred_card)
 
-        # ── Redirect note ─────────────────────────────────────────────────────
+        # ── Redirect Note ─────────────────────────────────────────────────────
         self.redirect_note_label = QLabel()
         self.redirect_note_label.setWordWrap(True)
+        self.redirect_note_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_DIM};
+                font-size: {self._ty.SIZE_XS}pt;
+                padding-left: {self._sp.PAD_XS}px;
+            }}
+        """)
         layout.addWidget(self.redirect_note_label)
 
-        # ── Token status ─────────────────────────────────────────────────────
-        token_frame = QFrame()
-        token_frame.setObjectName("infoCard")
-        token_layout = QHBoxLayout(token_frame)
-        token_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        # ── Token Status Card ─────────────────────────────────────────────────────
+        token_card = ModernCard()
+        token_layout = QHBoxLayout(token_card)
+        token_layout.setSpacing(self._sp.GAP_MD)
 
         token_icon = QLabel("🔑")
-        token_icon.setFont(QFont(self._ty.FONT_UI, self._ty.SIZE_MD))
+        token_icon.setFont(QFont(self._ty.FONT_UI, self._ty.SIZE_LG))
         token_layout.addWidget(token_icon)
 
         self.token_status_label = QLabel()
         self.token_status_label.setWordWrap(True)
+        self.token_status_label.setStyleSheet(f"color: {self._c.TEXT_MAIN}; font-size: {self._ty.SIZE_SM}pt;")
         token_layout.addWidget(self.token_status_label, 1)
 
-        layout.addWidget(token_frame)
+        layout.addWidget(token_card)
 
-        # ── Help link ─────────────────────────────────────────────────────────
+        # ── Help and History Card ─────────────────────────────────────────────────
+        info_card = ModernCard()
+        info_layout = QVBoxLayout(info_card)
+        info_layout.setSpacing(self._sp.GAP_MD)
+
+        # Help link
         help_layout = QHBoxLayout()
-        help_layout.setContentsMargins(sp.PAD_XS, sp.PAD_SM, sp.PAD_XS, sp.PAD_XS)
         self.help_label = QLabel("📖  API Documentation")
         self.help_label.setCursor(Qt.PointingHandCursor)
-        help_font = QFont()
-        help_font.setUnderline(True)
-        self.help_label.setFont(help_font)
         self.help_label.mousePressEvent = self._open_help_url
+        self.help_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.BLUE};
+                font-size: {self._ty.SIZE_SM}pt;
+                text-decoration: underline;
+            }}
+            QLabel:hover {{
+                color: {self._c.BLUE_DARK};
+            }}
+        """)
         help_layout.addWidget(self.help_label)
         help_layout.addStretch()
-        layout.addLayout(help_layout)
+        info_layout.addLayout(help_layout)
 
-        # ── History support indicator ─────────────────────────────────────────
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        info_layout.addWidget(separator)
+
+        # History support
         self.history_label = QLabel()
         self.history_label.setWordWrap(True)
-        layout.addWidget(self.history_label)
+        info_layout.addWidget(self.history_label)
+
+        layout.addWidget(info_card)
 
         layout.addStretch()
         scroll.setWidget(container)
@@ -701,24 +990,54 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         tab_layout.setContentsMargins(0, 0, 0, 0)
         tab_layout.addWidget(scroll)
 
-    def _setup_telegram_tab(self):
-        """Setup the Telegram configuration tab with scroll area."""
-        sp = self._sp
+    def _get_lineedit_style(self):
+        """Get consistent line edit styling."""
+        return f"""
+            QLineEdit {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QLineEdit:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
 
+    def _setup_telegram_tab(self):
+        """Setup the Telegram configuration tab with modern card-based layout."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
-        container.setStyleSheet("background:transparent;")
+        container.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-        layout.setSpacing(sp.GAP_LG)
+        layout.setContentsMargins(self._sp.PAD_LG, self._sp.PAD_LG,
+                                 self._sp.PAD_LG, self._sp.PAD_LG)
+        layout.setSpacing(self._sp.GAP_LG)
 
-        # ── Telegram settings ─────────────────────────────────────────────────
-        tg_group = QGroupBox("Telegram Notifications")
-        form_layout = QFormLayout(tg_group)
-        form_layout.setSpacing(sp.GAP_SM)
+        # ── Telegram Settings Card ─────────────────────────────────────────────────
+        tg_card = ModernCard()
+        tg_layout = QVBoxLayout(tg_card)
+        tg_layout.setSpacing(self._sp.GAP_MD)
+
+        tg_header = QLabel("📱 Telegram Notifications")
+        tg_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        tg_layout.addWidget(tg_header)
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(self._sp.GAP_MD)
         form_layout.setLabelAlignment(Qt.AlignRight)
 
         # Bot Token
@@ -726,6 +1045,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         self.tg_token_entry.setText(self.tg_token)
         self.tg_token_entry.setEchoMode(QLineEdit.Password)
         self.tg_token_entry.setPlaceholderText("Enter your bot token")
+        self.tg_token_entry.setStyleSheet(self._get_lineedit_style())
         form_layout.addRow("Bot Token:", self.tg_token_entry)
 
         token_hint = QLabel("From @BotFather on Telegram")
@@ -736,29 +1056,52 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         self.tg_chat_entry = QLineEdit()
         self.tg_chat_entry.setText(self.tg_chat)
         self.tg_chat_entry.setPlaceholderText("Enter your chat ID")
+        self.tg_chat_entry.setStyleSheet(self._get_lineedit_style())
         form_layout.addRow("Chat ID:", self.tg_chat_entry)
 
         chat_hint = QLabel("Get by messaging @userinfobot")
         chat_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
         form_layout.addRow("", chat_hint)
 
-        layout.addWidget(tg_group)
+        tg_layout.addLayout(form_layout)
 
         # Test Telegram button
-        test_tg_btn = QPushButton("📱  Test Telegram")
-        test_tg_btn.setObjectName("testTelegramBtn")
+        test_tg_btn = self._create_modern_button("📱 Test Telegram", primary=False, icon="📱")
         test_tg_btn.clicked.connect(self._test_telegram)
-        layout.addWidget(test_tg_btn)
+        test_tg_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BLUE_DARK};
+                color: white;
+                border: none;
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                min-width: 160px;
+                min-height: 36px;
+            }}
+            QPushButton:hover {{
+                background: {self._c.BLUE};
+            }}
+        """)
+        tg_layout.addWidget(test_tg_btn, 0, Qt.AlignCenter)
+
+        layout.addWidget(tg_card)
 
         # ── Info Card ─────────────────────────────────────────────────────────
-        info_card = QFrame()
-        info_card.setObjectName("infoCard")
+        info_card = ModernCard()
         info_layout = QVBoxLayout(info_card)
-        info_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        info_layout.setSpacing(self._sp.GAP_SM)
 
         info_title = QLabel("📘 About Telegram Integration:")
-        info_title.setFont(QFont(self._ty.FONT_UI, self._ty.SIZE_BODY, QFont.Bold))
-        info_title.setStyleSheet(f"color: {self._c.TEXT_MAIN};")
+        info_title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        info_layout.addWidget(info_title)
 
         info_text = QLabel(
             "• **Bot Token**: Get from @BotFather on Telegram\n"
@@ -768,9 +1111,8 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         )
         info_text.setWordWrap(True)
         info_text.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
-
-        info_layout.addWidget(info_title)
         info_layout.addWidget(info_text)
+
         layout.addWidget(info_card)
 
         layout.addStretch()
@@ -782,23 +1124,22 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         tab_layout.addWidget(scroll)
 
     def _setup_info_tab(self):
-        """Setup information tab with help content (like DailyTradeSettingGUI)."""
-        sp = self._sp
-        c = self._c
-        ty = self._ty
-
+        """Setup information tab with help content."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-        layout.setSpacing(sp.GAP_MD)
+        layout.setContentsMargins(self._sp.PAD_LG, self._sp.PAD_LG,
+                                 self._sp.PAD_LG, self._sp.PAD_LG)
+        layout.setSpacing(self._sp.GAP_MD)
 
         infos = [
             (
-                "🏦  Broker Selection",
+                "🏦 Broker Selection",
                 "Choose your brokerage from the dropdown. Each broker has specific credential requirements:\n\n"
                 "• **Fyers/Zerodha/Upstox**: OAuth based - requires redirect URI\n"
                 "• **Dhan/ICICI**: Static token based - no redirect needed\n"
@@ -806,26 +1147,26 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
                 "• **AliceBlue/Flattrade**: Combined credentials format"
             ),
             (
-                "🔑  Credentials",
+                "🔑 Credentials",
                 "• **Client ID**: Your unique identifier for the broker API\n"
                 "• **Secret Key**: Secret/API key from broker developer portal\n"
                 "• **Redirect URI**: Callback URL (for OAuth brokers)\n\n"
                 "All credentials are stored encrypted in the local database."
             ),
             (
-                "📊  Historical Data Support",
+                "📊 Historical Data Support",
                 "Brokers marked with ✅ support historical OHLC data fetching.\n"
                 "Brokers marked with ⚠️ require external data source for backtesting."
             ),
             (
-                "🔐  Token Management",
+                "🔐 Token Management",
                 "• OAuth tokens typically expire end-of-day\n"
                 "• Static tokens last longer but need manual refresh\n"
                 "• TOTP secrets generate one-time passwords automatically\n\n"
                 "Use 'Open Login URL' button for OAuth brokers to generate new tokens."
             ),
             (
-                "📱  Telegram Notifications",
+                "📱 Telegram Notifications",
                 "Configure Telegram to receive:\n"
                 "• Trade entry/exit alerts\n"
                 "• Error notifications\n"
@@ -835,27 +1176,26 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         ]
 
         for title, body in infos:
-            try:
-                card = QFrame()
-                card.setObjectName("infoCard")
-                card_layout = QVBoxLayout(card)
-                card_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-                card_layout.setSpacing(sp.GAP_XS)
+            card = ModernCard()
+            card_layout = QVBoxLayout(card)
+            card_layout.setSpacing(self._sp.GAP_SM)
 
-                title_lbl = QLabel(title)
-                title_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-                title_lbl.setStyleSheet(f"color: {c.TEXT_MAIN};")
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_MAIN};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+            """)
 
-                body_lbl = QLabel(body)
-                body_lbl.setWordWrap(True)
-                body_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
+            body_lbl = QLabel(body)
+            body_lbl.setWordWrap(True)
+            body_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
 
-                card_layout.addWidget(title_lbl)
-                card_layout.addWidget(body_lbl)
-                layout.addWidget(card)
-
-            except Exception as e:
-                logger.error(f"Failed to create info card for {title}: {e}", exc_info=True)
+            card_layout.addWidget(title_lbl)
+            card_layout.addWidget(body_lbl)
+            layout.addWidget(card)
 
         layout.addStretch()
         scroll.setWidget(container)
@@ -868,47 +1208,44 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
     def _update_token_status(self):
         """Update token status display with styled card."""
         try:
-            c = self._c
             if self.broker_setting.has_valid_token:
                 expiry = self.broker_setting.token_expiry
                 if expiry:
                     self.token_status_label.setText(
-                        f"✅ **Valid Token**\nExpires: {expiry}"
+                        f"✅ Valid Token\nExpires: {expiry}"
                     )
                 else:
                     self.token_status_label.setText(
-                        "✅ **Valid Token**\nNo expiry information"
+                        "✅ Valid Token\nNo expiry information"
                     )
             else:
                 self.token_status_label.setText(
-                    "❌ **No Valid Token**\nPlease complete login to start trading"
+                    "❌ No Valid Token\nPlease complete login to start trading"
                 )
+
+            self.token_status_label.setStyleSheet(f"color: {self._c.TEXT_MAIN}; font-size: {self._ty.SIZE_SM}pt;")
+
         except Exception as e:
             logger.error(f"Error updating token status: {e}")
-            self.token_status_label.setText("⚠️ **Unknown Token Status**")
+            self.token_status_label.setText("⚠️ Unknown Token Status")
 
     def _clear_field_error(self):
         """Clear error styling when user starts typing."""
         sender = self.sender()
         if sender:
-            sender.setStyleSheet("")  # Will be reset by theme on next apply_theme
+            sender.setStyleSheet(self._get_lineedit_style())
 
     def _on_broker_changed(self, index: int):
         """Handle broker selection change."""
         if index >= 0:
-            # currentData() is str because we store str(bt) in addItem(); keep consistent.
             self.broker_type = str(self.broker_combo.currentData())
             self._update_hints()
 
     def _update_hints(self):
         """Update UI hints based on selected broker."""
-        bt_str = self.broker_type  # str, e.g. "fyers"
-        # BROKER_HINTS is keyed by BrokerType enum, so resolve the enum from the str value
+        bt_str = self.broker_type
         bt = next((b for b in BROKER_ORDER if str(b) == bt_str), BrokerType.FYERS)
         hints = BROKER_HINTS.get(bt, BROKER_HINTS[BrokerType.FYERS])
-
-        c = self._c
-        ty = self._ty
 
         # Update labels
         self.client_id_label.setText(hints["client_id"][0] + ":")
@@ -929,10 +1266,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
 
         # Update notes
         self.redirect_note_label.setText(f"ℹ️ {hints.get('redirect_note', '')}")
-        self.redirect_note_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; padding-left: {self._sp.PAD_XS}px;")
-
         self.auth_note_label.setText(f"ℹ️ {hints.get('auth_note', '')}")
-        self.auth_note_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; padding: {self._sp.PAD_XS}px;")
 
         self._help_url = hints.get("help_url", "")
 
@@ -1031,7 +1365,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             return
 
         try:
-            bt = self.broker_type  # always str (e.g. "fyers")
+            bt = self.broker_type
             if not bt:
                 QMessageBox.critical(self, "Error", "Please select a broker.")
                 return
@@ -1067,16 +1401,28 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             if success:
                 logger.info(f"Brokerage settings saved for {bt}")
                 self.status_label.setText("✓ Settings saved successfully!")
-                self.status_label.setStyleSheet(f"color: {self._c.GREEN}; font-size: {self._ty.SIZE_XS}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.GREEN};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
                 self.save_btn.setText("✓ Saved!")
                 self.save_btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: {self._c.GREEN_BRIGHT};
-                        color: {self._c.TEXT_INVERSE};
-                        border-radius: {self._sp.RADIUS_SM}px;
-                        padding: {self._sp.PAD_SM}px;
-                        font-weight: {self._ty.WEIGHT_BOLD};
+                        background: {self._c.GREEN};
+                        color: white;
+                        border: none;
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
                         font-size: {self._ty.SIZE_BODY}pt;
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                        min-width: 140px;
+                        min-height: 36px;
                     }}
                 """)
 
@@ -1099,10 +1445,19 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"Failed to save settings: {e}", exc_info=True)
             self.status_label.setText(f"✗ Save failed: {str(e)}")
-            self.status_label.setStyleSheet(f"color: {self._c.RED}; font-size: {self._ty.SIZE_XS}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.RED};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
             self.save_btn.setEnabled(True)
-            self.save_btn.setText("💾  Save All Settings")
-            self.save_btn.setStyleSheet("")  # Reset to theme default
+            self.save_btn.setText("💾 Save Settings")
+            self.save_btn.setStyleSheet(self._create_modern_button("", primary=True).styleSheet())
             self._save_in_progress = False
             self.operation_finished.emit()
             QMessageBox.critical(self, "Save Error", f"Could not save settings:\n{e}")
@@ -1112,7 +1467,16 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         try:
             logger.error(f"Error signal received: {error_msg}")
             self.status_label.setText(f"✗ {error_msg}")
-            self.status_label.setStyleSheet(f"color: {self._c.RED}; font-size: {self._ty.SIZE_XS}pt; font-weight: {self._ty.WEIGHT_BOLD};")
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.RED};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
             self.save_btn.setEnabled(True)
             self._save_in_progress = False
         except Exception as e:

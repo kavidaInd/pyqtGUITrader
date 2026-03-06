@@ -6,12 +6,14 @@ Fully integrated with ThemeManager for dynamic theming.
 """
 
 import logging
+import os
 import time
 from typing import Optional
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QFont, QLinearGradient, QPen, QBrush
 from PyQt5.QtWidgets import QSplashScreen, QProgressBar, QLabel, QVBoxLayout, QWidget, QFrame, QApplication
 
+from Utils.safe_getattr import safe_hasattr
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
@@ -73,7 +75,7 @@ class AnimatedSplashScreen(QSplashScreen):
         except Exception as e:
             logger.error(f"[AnimatedSplashScreen.__init__] Failed: {e}", exc_info=True)
             # Ensure we still call super().__init__ even if construction fails
-            if not hasattr(self, '_is_initialized'):
+            if not safe_hasattr(self, '_is_initialized'):
                 pixmap = QPixmap(600, 450)
                 pixmap.fill(Qt.transparent)
                 super().__init__(pixmap)

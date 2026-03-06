@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QFileDialog,
 )
 
+from Utils.safe_getattr import safe_hasattr, safe_getattr
 from backtest.backtest_candle_debug_tab import CandleDebugTab
 from backtest.backtest_engine import BacktestConfig, BacktestResult
 from backtest.backtest_help_tab import BacktestHelpTab
@@ -407,7 +408,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
             self.setDocumentMode(True)
 
             for label, method in self._TABS:
-                self.addTab(getattr(self, method)(), label)
+                self.addTab(safe_getattr(self, method)(), label)
 
             self.apply_theme()
         except Exception as e:
@@ -946,8 +947,8 @@ class EquityChart(QWidget, ThemedMixin):
                     trade.exit_source  == PriceSource.SYNTHETIC)
         except Exception:
             try:
-                return (getattr(trade.entry_source, "value", "") == "synthetic" or
-                        getattr(trade.exit_source,  "value", "") == "synthetic")
+                return (safe_getattr(trade.entry_source, "value", "") == "synthetic" or
+                        safe_getattr(trade.exit_source,  "value", "") == "synthetic")
             except Exception:
                 return False
 
@@ -1006,17 +1007,17 @@ class EquityChart(QWidget, ThemedMixin):
         signal_colors = get_signal_colors()
         for i, trade in enumerate(trades):
             y = equities[min(i, len(equities) - 1)]
-            clr = signal_colors.get("BUY_CALL") if getattr(trade, "direction", "") in ("CE", "CALL") else signal_colors.get("BUY_PUT")
+            clr = signal_colors.get("BUY_CALL") if safe_getattr(trade, "direction", "") in ("CE", "CALL") else signal_colors.get("BUY_PUT")
             pw.addItem(pg.ScatterPlotItem(
                 [i], [y],
-                symbol="t1" if getattr(trade, "net_pnl", 0) > 0 else "t",
+                symbol="t1" if safe_getattr(trade, "net_pnl", 0) > 0 else "t",
                 size=13, brush=clr, pen=pg.mkPen(None),
             ))
 
     def clear(self):
         if self._use_pg:
             self._pg_widget.clear()
-        elif hasattr(self, "_fallback"):
+        elif safe_hasattr(self, "_fallback"):
             self._fallback.set_data([], [])
 
 
@@ -1606,23 +1607,23 @@ class BacktestWindow(QMainWindow, ThemedMixin):
     def _load_defaults(self):
         try:
             sb = self.settings_sidebar
-            if self._trading_app and hasattr(self._trading_app, "trade_config"):
+            if self._trading_app and safe_hasattr(self._trading_app, "trade_config"):
                 tc = self._trading_app.trade_config
-                if getattr(tc, "derivative", None):
+                if safe_getattr(tc, "derivative", None):
                     idx = sb.derivative.findText(tc.derivative.upper())
                     if idx >= 0:
                         sb.derivative.setCurrentIndex(idx)
-                if getattr(tc, "lot_size", None):
+                if safe_getattr(tc, "lot_size", None):
                     sb.lot_size.setValue(int(tc.lot_size))
-                if getattr(tc, "history_interval", None):
+                if safe_getattr(tc, "history_interval", None):
                     idx = sb.execution_interval.findText(str(tc.history_interval).replace("m", ""))
                     if idx >= 0:
                         sb.execution_interval.setCurrentIndex(idx)
-            if self._trading_app and hasattr(self._trading_app, "profit_loss_config"):
+            if self._trading_app and safe_hasattr(self._trading_app, "profit_loss_config"):
                 pl = self._trading_app.profit_loss_config
-                if getattr(pl, "tp_percentage", None):
+                if safe_getattr(pl, "tp_percentage", None):
                     sb.tp_pct.setValue(float(pl.tp_percentage))
-                if getattr(pl, "stoploss_percentage", None):
+                if safe_getattr(pl, "stoploss_percentage", None):
                     sb.sl_pct.setValue(float(pl.stoploss_percentage))
         except Exception as e:
             logger.debug(f"[BacktestWindow._load_defaults] {e}")
@@ -1731,7 +1732,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
 
     def _get_broker(self):
         try:
-            if self._trading_app and hasattr(self._trading_app, "broker"):
+            if self._trading_app and safe_hasattr(self._trading_app, "broker"):
                 return self._trading_app.broker
         except Exception:
             pass
@@ -1769,12 +1770,12 @@ class BacktestWindow(QMainWindow, ThemedMixin):
 
         # Auto-export analysis
         if (self.settings_sidebar.auto_export.isChecked()
-                and hasattr(result, "analysis_data")
+                and safe_hasattr(result, "analysis_data")
                 and result.analysis_data):
             self._export_analysis()
 
         # FIX: Load debug entries from the saved JSON file
-        if hasattr(result, 'debug_log_path') and result.debug_log_path:
+        if safe_hasattr(result, 'debug_log_path') and result.debug_log_path:
             try:
                 import json
                 import os
@@ -1898,7 +1899,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             is_synth = self._equity_chart._is_synthetic(t)
             src_badge = "⚗" if is_synth else "✓"
             bg_color  = QColor(c.BG_ROW_B) if is_synth else QColor(c.BG_MAIN)
-            dir_clr   = signal_colors.get("BUY_CALL") if getattr(t, "direction", "") in ("CE", "CALL") else signal_colors.get("BUY_PUT")
+            dir_clr   = signal_colors.get("BUY_CALL") if safe_getattr(t, "direction", "") in ("CE", "CALL") else signal_colors.get("BUY_PUT")
             pnl_clr   = c.GREEN if t.net_pnl >= 0 else c.RED
             cells = [
                 (str(t.trade_no),                                         c.TEXT_MAIN),
@@ -1946,7 +1947,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
           2. Trade list fallback — one BarAnalysis per trade entry.
         """
         # ── 1. Try candle debug JSON ───────────────────────────────────────────
-        debug_path = getattr(result, "debug_log_path", None)
+        debug_path = safe_getattr(result, "debug_log_path", None)
         if debug_path:
             try:
                 data = self._build_analysis_from_debug_log(debug_path, result)
@@ -2034,7 +2035,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             return {}
 
         # Put all bars under the execution timeframe.
-        selected = getattr(self, "_selected_analysis_tfs", [tf])
+        selected = safe_getattr(self, "_selected_analysis_tfs", [tf])
         data: Dict[str, List[BarAnalysis]] = {}
         for selected_tf in selected:
             relabelled = []
@@ -2076,7 +2077,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
                 timeframe=tf,
             ))
 
-        selected = getattr(self, "_selected_analysis_tfs", [tf])
+        selected = safe_getattr(self, "_selected_analysis_tfs", [tf])
         if not selected:
             selected = [tf]
 
@@ -2132,7 +2133,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             logger.info("[BacktestWindow] Closing, restoring original state")
 
             # Restore original state if needed
-            if hasattr(self, '_pre_backtest_state') and self._pre_backtest_state:
+            if safe_hasattr(self, '_pre_backtest_state') and self._pre_backtest_state:
                 state_manager.restore_state(self._pre_backtest_state)
 
             # Stop thread if running

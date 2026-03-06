@@ -20,6 +20,7 @@ from requests.exceptions import Timeout, ConnectionError
 import pytz
 
 from Utils.OptionUtils import OptionUtils
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -80,10 +81,10 @@ class FyersBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided.")
 
-            self.username = getattr(broker_setting, 'username', None)
-            self.client_id = getattr(broker_setting, 'client_id', None)
-            self.secret_key = getattr(broker_setting, 'secret_key', None)
-            self.redirect_uri = getattr(broker_setting, 'redirect_uri', None)
+            self.username = safe_getattr(broker_setting, 'username', None)
+            self.client_id = safe_getattr(broker_setting, 'client_id', None)
+            self.secret_key = safe_getattr(broker_setting, 'secret_key', None)
+            self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', None)
 
             try:
                 self.state.token = self._load_token_from_db()
@@ -604,10 +605,10 @@ class FyersBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_socket, "close_connection"):
+                        if safe_hasattr(self._ws_socket, "close_connection"):
                             self._ws_socket.close_connection()
                             logger.debug("[FyersBroker] close_connection called")
-                        elif hasattr(self._ws_socket, "disconnect"):
+                        elif safe_hasattr(self._ws_socket, "disconnect"):
                             self._ws_socket.disconnect()
                             logger.debug("[FyersBroker] disconnect called")
                     except Exception as e:
@@ -630,7 +631,7 @@ class FyersBroker(BaseBroker):
 
         # Close fyers session
         try:
-            if self.fyers and hasattr(self.fyers, 'close'):
+            if self.fyers and safe_hasattr(self.fyers, 'close'):
                 self.fyers.close()
         except Exception as e:
             logger.warning(f"[FyersBroker.cleanup] Session close error: {e}")
@@ -809,7 +810,7 @@ class FyersBroker(BaseBroker):
         try:
             from fyers_apiv3.FyersWebsocket import data_ws
 
-            token = getattr(self.state, "token", None) if self.state else None
+            token = safe_getattr(self.state, "token", None) if self.state else None
             if not self.client_id or not token:
                 logger.error("FyersBroker.create_websocket: missing client_id or token")
                 return None
@@ -932,10 +933,10 @@ class FyersBroker(BaseBroker):
 
             def _do_disconnect():
                 try:
-                    if hasattr(ws_obj, "close_connection"):
+                    if safe_hasattr(ws_obj, "close_connection"):
                         ws_obj.close_connection()
                         logger.debug("[FyersBroker] close_connection completed")
-                    elif hasattr(ws_obj, "disconnect"):
+                    elif safe_hasattr(ws_obj, "disconnect"):
                         ws_obj.disconnect()
                         logger.debug("[FyersBroker] disconnect completed")
                 except Exception as e:

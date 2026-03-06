@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 
+from Utils.safe_getattr import safe_hasattr
 from strategy.strategy_presets import get_preset_names, get_preset_rules
 from strategy.strategy_manager import strategy_manager
 from strategy.indicator_registry import (
@@ -200,7 +201,7 @@ class _ExampleCard(QFrame, ThemedMixin):
 
     def _on_add_clicked(self):
         """Handle add button click"""
-        if hasattr(self.parent_tab, 'add_example'):
+        if safe_hasattr(self.parent_tab, 'add_example'):
             self.parent_tab.add_example(self.example_name, self.signal, self.rules)
 
 
@@ -337,7 +338,7 @@ class _PresetCard(QFrame, ThemedMixin):
 
     def _on_apply_clicked(self):
         """Handle apply button click"""
-        if hasattr(self.parent_tab, 'apply_preset'):
+        if safe_hasattr(self.parent_tab, 'apply_preset'):
             self.parent_tab.apply_preset(self.signal_type, self.preset_name, self.rules)
 
 
@@ -1139,18 +1140,18 @@ class StrategyHelpTab(QWidget, ThemedMixin):
 
     def _quick_action_new(self):
         """Handle new strategy quick action"""
-        if hasattr(self.parent_window, "_list_panel"):
+        if safe_hasattr(self.parent_window, "_list_panel"):
             self.parent_window._list_panel._on_new()
 
     def _quick_action_import(self):
         """Handle import quick action"""
-        if hasattr(self.parent_window, "_on_import"):
+        if safe_hasattr(self.parent_window, "_on_import"):
             self.parent_window._on_import()
 
     def apply_preset(self, signal: str, preset_name: str, rules: list):
         """Apply a preset to the current strategy"""
         try:
-            if hasattr(self.parent_window, "_rules_tab"):
+            if safe_hasattr(self.parent_window, "_rules_tab"):
                 rules_tab = self.parent_window._rules_tab
                 if signal in rules_tab._panels:
                     panel = rules_tab._panels[signal]
@@ -1166,7 +1167,7 @@ class StrategyHelpTab(QWidget, ThemedMixin):
     def add_example(self, example_name: str, signal: str, rules: list):
         """Add an example rule to the current strategy"""
         try:
-            if hasattr(self.parent_window, "_rules_tab"):
+            if safe_hasattr(self.parent_window, "_rules_tab"):
                 rules_tab = self.parent_window._rules_tab
                 if signal in rules_tab._panels:
                     panel = rules_tab._panels[signal]

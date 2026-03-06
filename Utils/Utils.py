@@ -1,3 +1,4 @@
+# Utils.py (fixed)
 # Utils.py - Cleaned up version with option methods moved to OptionUtils.py
 import asyncio
 import calendar
@@ -892,7 +893,7 @@ class Utils:
             if not unit:
                 return False
 
-            if hasattr(last_updated, 'timestamp'):
+            if safe_hasattr(last_updated, 'timestamp'):
                 last_updated_ts = last_updated.timestamp()
             else:
                 last_updated_ts = float(last_updated)
@@ -962,23 +963,22 @@ class Utils:
                 logger.error(f"Token file not found at: {token_path}")
                 return None
 
+            # Bug #30 fix: Use a single with-block and proper JSON parsing
             with open(token_path, "r", encoding='utf-8') as f:
+                content = f.read().strip()
+                if not content:
+                    logger.error("Token file is empty")
+                    return None
+
                 try:
-                    token_obj = json.load(f)
+                    token_obj = json.loads(content)
                     token = token_obj.get("access_token")
                     if token:
                         return token
                 except json.JSONDecodeError:
-                    f.seek(0)
-                    token_raw = f.read().strip()
-                    try:
-                        data = json.loads(token_raw)
-                        token = data.get("access_token")
-                        if token:
-                            return token
-                    except:
-                        if token_raw and len(token_raw) > 50 and ' ' not in token_raw:
-                            return token_raw
+                    # Try treating the entire file as the token
+                    if len(content) > 50 and ' ' not in content and '\n' not in content:
+                        return content
 
             logger.error("Token not found! Please check token file or authentication flow.")
             return None

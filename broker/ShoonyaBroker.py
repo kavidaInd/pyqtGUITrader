@@ -42,6 +42,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_hasattr, safe_getattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -128,15 +129,15 @@ class ShoonyaBroker(BaseBroker):
                 raise ValueError("BrokerageSetting must be provided for ShoonyaBroker.")
 
             # Parse "user_id|vendor_code" from client_id
-            client_id_raw = getattr(broker_setting, 'client_id', '') or ''
+            client_id_raw = safe_getattr(broker_setting, 'client_id', '') or ''
             if "|" in client_id_raw:
                 self.user_id, self.vendor_code = client_id_raw.split("|", 1)
             else:
                 self.user_id = client_id_raw
                 self.vendor_code = client_id_raw  # fallback
 
-            self.password    = getattr(broker_setting, 'secret_key', '') or ''
-            self.totp_secret = getattr(broker_setting, 'redirect_uri', '') or ''
+            self.password    = safe_getattr(broker_setting, 'secret_key', '') or ''
+            self.totp_secret = safe_getattr(broker_setting, 'redirect_uri', '') or ''
 
             if not self.user_id:
                 raise ValueError("Shoonya user_id is required.")
@@ -763,7 +764,7 @@ class ShoonyaBroker(BaseBroker):
 
                 def _do_disconnect():
                     try:
-                        if hasattr(self._ws_api, "close_websocket"):
+                        if safe_hasattr(self._ws_api, "close_websocket"):
                             self._ws_api.close_websocket()
                             logger.debug("[ShoonyaBroker] close_websocket called")
                     except Exception as e:
@@ -966,7 +967,7 @@ class ShoonyaBroker(BaseBroker):
 
             api = ws_obj.get("__shoonya_api__") if isinstance(ws_obj, dict) else self.api
 
-            if api and hasattr(api, "close_websocket"):
+            if api and safe_hasattr(api, "close_websocket"):
                 # Run close in separate thread with timeout
                 disconnect_complete = threading.Event()
 
@@ -1066,7 +1067,7 @@ class ShoonyaBroker(BaseBroker):
         e.g. "NSE:NIFTY50-INDEX" → "NSE|26000"
         """
         try:
-            cache = getattr(self, "_sh_sym_cache", {})
+            cache = safe_getattr(self, "_sh_sym_cache", {})
             if symbol in cache:
                 return cache[symbol]
 

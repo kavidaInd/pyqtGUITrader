@@ -31,6 +31,7 @@ from typing import Optional, Dict, List, Any, Callable
 import pandas as pd
 from requests.exceptions import Timeout, ConnectionError
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
 from db.connector import get_db
 from db.crud import tokens
@@ -97,9 +98,9 @@ class ZerodhaBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided for ZerodhaBroker.")
 
-            self.api_key = getattr(broker_setting, 'client_id', None)
-            self.api_secret = getattr(broker_setting, 'secret_key', None)
-            self.redirect_uri = getattr(broker_setting, 'redirect_uri', None)
+            self.api_key = safe_getattr(broker_setting, 'client_id', None)
+            self.api_secret = safe_getattr(broker_setting, 'secret_key', None)
+            self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', None)
 
             # Load saved access token
             access_token = self._load_token_from_db()
@@ -685,7 +686,7 @@ class ZerodhaBroker(BaseBroker):
 
                 def _do_close():
                     try:
-                        if hasattr(self._ws_ticker, "close"):
+                        if safe_hasattr(self._ws_ticker, "close"):
                             self._ws_ticker.close()
                             logger.debug("[ZerodhaBroker] ticker close called")
                     except Exception as e:
@@ -719,7 +720,7 @@ class ZerodhaBroker(BaseBroker):
 
     def _load_zerodha_instruments(self):
         """Load Zerodha instrument master and cache it."""
-        if not hasattr(self, '_instruments_df') or self._instruments_df is None:
+        if not safe_hasattr(self, '_instruments_df') or self._instruments_df is None:
             try:
                 # Fetch all instruments once
                 instruments = self._call(
@@ -809,7 +810,7 @@ class ZerodhaBroker(BaseBroker):
             from kiteconnect import KiteTicker  # type: ignore
 
             api_key = self.api_key
-            access_token = getattr(self.state, "token", None) if self.state else None
+            access_token = safe_getattr(self.state, "token", None) if self.state else None
             if not api_key or not access_token:
                 logger.error("ZerodhaBroker.create_websocket: missing api_key or access_token")
                 return None

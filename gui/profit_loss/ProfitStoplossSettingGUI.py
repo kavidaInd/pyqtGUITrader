@@ -1,4 +1,4 @@
-# PYQT: Converted from Tkinter to PyQt5 QDialog - class name preserved
+# PYQT: Modern minimalist design matching DailyTradeSettingGUI and BrokerageSettingGUI
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QPushButton, QVBoxLayout, QHBoxLayout,
                              QLabel, QWidget, QTabWidget, QFrame,
@@ -8,6 +8,7 @@ from PyQt5.QtGui import QFont, QDoubleValidator
 from BaseEnums import STOP, TRAILING, logger
 import threading
 
+from Utils.safe_getattr import safe_getattr, safe_hasattr, safe_setattr
 from gui.profit_loss import ProfitStoplossSetting
 
 # Rule 13.1: Import theme manager
@@ -28,6 +29,65 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
+
+
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class ModernHeader(QLabel):
+    """Modern header with underline accent."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("modernHeader")
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
+
+        self.setStyleSheet(f"""
+            QLabel#modernHeader {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                padding-bottom: {sp.PAD_SM}px;
+                border-bottom: 2px solid {c.BLUE};
+                margin-bottom: {sp.PAD_MD}px;
+            }}
+        """)
 
 
 class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
@@ -62,48 +122,81 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             self.app = app
             self.setWindowTitle("Profit & Stoploss Settings")
             self.setModal(True)
-            self.setMinimumSize(750, 650)
-            self.resize(750, 650)
+            self.setMinimumSize(800, 700)
+            self.resize(800, 700)
 
-            # Root layout
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
-            # Margins and spacing will be set in apply_theme
+            root.setContentsMargins(20, 20, 20, 20)
+            root.setSpacing(0)
+
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
+
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
+
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
+
+            # Content area
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                             self._sp.PAD_XL, self._sp.PAD_XL)
+            content_layout.setSpacing(self._sp.GAP_LG)
 
             # Header
-            header = QLabel("💹 Profit & Stoploss Configuration")
-            header.setObjectName("header")
-            header.setAlignment(Qt.AlignCenter)
-            root.addWidget(header)
+            header = ModernHeader("Profit & Stoploss Configuration")
+            content_layout.addWidget(header)
 
-            # BUG #1 Warning Banner
-            warning_banner = self._create_warning_banner()
-            root.addWidget(warning_banner)
+            # Tabs with consistent styling
+            self.tabs = self._create_tabs()
+            content_layout.addWidget(self.tabs)
 
-            # Tabs
-            self.tabs = QTabWidget()
-            root.addWidget(self.tabs)
-            self.tabs.addTab(self._build_settings_tab(), "⚙️ Settings")
-            self.tabs.addTab(self._build_info_tab(), "ℹ️ Information")
-
-            # Status label (always visible)
+            # Status label
             self.status_label = QLabel("")
-            self.status_label.setAlignment(Qt.AlignCenter)
-            self.status_label.setObjectName("status")
-            root.addWidget(self.status_label)
+            self.status_label.setAlignment(Qt.AlignLeft)
+            self.status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {self._c.TEXT_DIM};
+                    font-size: {self._ty.SIZE_SM}pt;
+                    padding: {self._sp.PAD_SM}px;
+                    background: {self._c.BG_HOVER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                }}
+            """)
+            content_layout.addWidget(self.status_label)
 
-            # Save + Cancel buttons
+            # Button row
             btn_layout = QHBoxLayout()
             btn_layout.setSpacing(self._sp.GAP_MD)
 
-            self.save_btn = QPushButton("💾 Save Settings")
+            self.save_btn = self._create_modern_button(" Save Settings", primary=True, icon="💾")
             self.save_btn.clicked.connect(self.save)
 
-            self.cancel_btn = QPushButton("❌ Cancel")
+            self.cancel_btn = self._create_modern_button("✕ Cancel", primary=False)
             self.cancel_btn.clicked.connect(self.reject)
 
+            btn_layout.addStretch()
             btn_layout.addWidget(self.save_btn)
             btn_layout.addWidget(self.cancel_btn)
-            root.addLayout(btn_layout)
+
+            content_layout.addLayout(btn_layout)
+
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
 
             self.save_completed.connect(self.on_save_completed)
 
@@ -122,6 +215,138 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             logger.critical(f"[ProfitStoplossSettingGUI.__init__] Failed: {e}", exc_info=True)
             self._create_error_dialog(parent)
 
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("💹 Profit & Stoploss Settings")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
+
+    def _create_tabs(self):
+        """Create tabs with consistent styling matching other dialogs."""
+        tabs = QTabWidget()
+
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
+
+        tabs.addTab(self._build_settings_tab(), "⚙️ Settings")
+        tabs.addTab(self._build_info_tab(), "ℹ️ Information")
+
+        return tabs
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:pressed {{
+                    background: {self._c.BLUE};
+                    opacity: 0.8;
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
+
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         self.profit_stoploss_setting = None
@@ -134,6 +359,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         self.save_btn = None
         self.cancel_btn = None
         self._save_in_progress = False
+        self.main_card = None
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -141,29 +367,57 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         Called on theme change, density change, and initial render.
         """
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
+            # Update main card style
+            if hasattr(self, 'main_card'):
+                self.main_card._apply_style()
 
-            # Update root layout margins and spacing
-            layout = self.layout()
-            if layout:
-                layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-                layout.setSpacing(sp.GAP_MD)
-
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
-
-            # Update header
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(
-                    f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; font-weight: {ty.WEIGHT_BOLD}; padding: {sp.PAD_XS}px;")
+            # Update title bar
+            if hasattr(self, 'title_bar'):
+                self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
 
             # Update status label
             if self.status_label:
-                self.status_label.setStyleSheet(
-                    f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};")
+                self.status_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {self._c.TEXT_DIM};
+                        font-size: {self._ty.SIZE_SM}pt;
+                        padding: {self._sp.PAD_SM}px;
+                        background: {self._c.BG_HOVER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                    }}
+                """)
+
+            # Update tabs
+            if self.tabs:
+                self.tabs.setStyleSheet(f"""
+                    QTabWidget::pane {{
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        background: {self._c.BG_PANEL};
+                        margin-top: {self._sp.PAD_SM}px;
+                    }}
+                    QTabBar::tab {{
+                        background: {self._c.BG_HOVER};
+                        color: {self._c.TEXT_DIM};
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                        min-width: 130px;
+                        border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                        border-bottom: none;
+                        border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                        font-size: {self._ty.SIZE_BODY}pt;
+                        margin-right: {self._sp.PAD_XS}px;
+                    }}
+                    QTabBar::tab:selected {{
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_MAIN};
+                        border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
+                    }}
+                    QTabBar::tab:hover:!selected {{
+                        background: {self._c.BORDER};
+                        color: {self._c.TEXT_MAIN};
+                    }}
+                """)
 
             # Update button styles
             self._update_button_styles()
@@ -176,87 +430,47 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[ProfitStoplossSettingGUI.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QDialog {{ background:{c.BG_PANEL}; color:{c.TEXT_MAIN}; }}
-            QLabel  {{ color:{c.TEXT_DIM}; font-size:{ty.SIZE_SM}pt; }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                background: {c.BG_PANEL};
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                min-width: 130px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:hover:!selected {{ background:{c.BORDER}; color:{c.TEXT_MAIN}; }}
-            QGroupBox {{
-                color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER}; border-radius:{sp.RADIUS_MD}px;
-                margin-top:{sp.PAD_LG}px; padding-top:{sp.PAD_MD}px; font-weight:{ty.WEIGHT_BOLD};
-                font-size:{ty.SIZE_BODY}pt;
-            }}
-            QGroupBox::title {{ subcontrol-origin:margin; left:{sp.PAD_MD}px; padding:0 {sp.PAD_SM}px; }}
-            QLineEdit, QComboBox {{
-                background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px; font-size:{ty.SIZE_BODY}pt;
-            }}
-            QLineEdit:focus, QComboBox:focus {{ border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
-            QLineEdit:disabled {{ background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; }}
-            QScrollArea {{ border:none; background:transparent; }}
-            QFrame#infoCard {{
-                background:{c.BG_HOVER};
-                border:{sp.SEPARATOR}px solid {c.BORDER};
-                border-radius:{sp.RADIUS_MD}px;
-            }}
-            QLabel#warning {{
-                color: {c.YELLOW};
-                font-size: {ty.SIZE_XS}pt;
-            }}
-        """
-
     def _update_button_styles(self):
         """Update button styles with theme tokens"""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
         # Save button
         if self.save_btn:
             self.save_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background:{c.GREEN}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 150px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover    {{ background:{c.GREEN_BRIGHT}; }}
-                QPushButton:pressed  {{ background:{c.GREEN}; }}
-                QPushButton:disabled {{ background:{c.BG_HOVER}; color:{c.TEXT_DISABLED}; }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
             """)
 
         # Cancel button
         if self.cancel_btn:
             self.cancel_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background:{c.RED}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
                 }}
-                QPushButton:hover {{ background:{c.RED_BRIGHT}; }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                }}
             """)
 
     def _create_warning_banner(self) -> QFrame:
@@ -265,19 +479,20 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         sp = self._sp
         ty = self._ty
 
-        banner = QFrame()
+        banner = ModernCard()
         banner.setStyleSheet(f"""
-            QFrame {{
+            QFrame#modernCard {{
                 background: {c.BG_ROW_B};
-                border: {sp.SEPARATOR}px solid {c.YELLOW};
+                border: 1px solid {c.YELLOW};
                 border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px;
             }}
         """)
         warning_layout = QHBoxLayout(banner)
         warning_layout.setContentsMargins(sp.PAD_MD, sp.PAD_SM, sp.PAD_MD, sp.PAD_SM)
 
         warning_icon = QLabel("⚠️")
-        warning_icon.setFont(QFont(ty.FONT_UI, ty.SIZE_MD))
+        warning_icon.setFont(QFont(ty.FONT_UI, ty.SIZE_LG))
         warning_layout.addWidget(warning_icon)
 
         warning_text = QLabel(
@@ -285,7 +500,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             "(CALL/PUT buyers). Enter the percentage as a positive number."
         )
         warning_text.setWordWrap(True)
-        warning_text.setObjectName("warning")
+        warning_text.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_SM}pt;")
         warning_layout.addWidget(warning_text, 1)
 
         return banner
@@ -302,54 +517,70 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
     def _create_error_dialog(self, parent):
         """Create error dialog if initialization fails"""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
             super().__init__(parent)
             self.setWindowTitle("Profit & Stoploss Settings - ERROR")
             self.setMinimumSize(400, 200)
 
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
 
             error_label = QLabel("❌ Failed to initialize settings dialog.\nPlease check the logs.")
             error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {c.RED_BRIGHT}; padding: {sp.PAD_XL}px; font-size: {ty.SIZE_MD}pt;")
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
             layout.addWidget(error_label)
 
-            close_btn = QPushButton("Close")
+            close_btn = self._create_modern_button("Close", primary=False)
             close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
 
         except Exception as e:
             logger.error(f"[ProfitStoplossSettingGUI._create_error_dialog] Failed: {e}", exc_info=True)
 
     # ── Settings Tab ──────────────────────────────────────────────────────────
     def _build_settings_tab(self):
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
-        container.setStyleSheet("background:transparent;")
+        container.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_MD)
-        layout.setSpacing(sp.GAP_MD)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(self._sp.GAP_LG)
 
         validator = QDoubleValidator()
         validator.setLocale(QLocale.c())
 
-        # ── Profit Type group ─────────────────────────────────────────────────
-        main_group = QGroupBox("Profit Mode")
-        main_layout = QFormLayout()
-        main_layout.setSpacing(sp.GAP_XS)
-        main_layout.setVerticalSpacing(sp.GAP_XS)
-        main_layout.setLabelAlignment(Qt.AlignRight)
+        # Warning Banner
+        warning_banner = self._create_warning_banner()
+        layout.addWidget(warning_banner)
+
+        # ── Profit Mode Card ─────────────────────────────────────────────────
+        mode_card = ModernCard()
+        mode_layout = QVBoxLayout(mode_card)
+        mode_layout.setSpacing(self._sp.GAP_MD)
+
+        mode_header = QLabel("💰 Profit Mode")
+        mode_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        mode_layout.addWidget(mode_header)
 
         self.profit_type_combo = QComboBox()
         self.profit_type_combo.addItem("STOP (Fixed Target)", STOP)
@@ -361,110 +592,132 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             "STOP: exit at a fixed take-profit target.\n"
             "TRAILING: lock in gains as price moves in your favour."
         )
-        profit_type_hint = QLabel("STOP exits at a fixed target. TRAILING locks in gains dynamically.")
-        profit_type_hint.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+        self.profit_type_combo.setStyleSheet(self._get_combobox_style())
+        mode_layout.addWidget(self.profit_type_combo)
 
-        main_layout.addRow("💰 Profit Type:", self.profit_type_combo)
-        main_layout.addRow("", profit_type_hint)
-        main_group.setLayout(main_layout)
-        layout.addWidget(main_group)
+        mode_hint = QLabel("STOP exits at a fixed target. TRAILING locks in gains dynamically.")
+        mode_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
+        mode_layout.addWidget(mode_hint)
 
-        # ── Threshold Values group ────────────────────────────────────────────
-        values_group = QGroupBox("Threshold Values")
-        values_layout = QFormLayout()
-        values_layout.setSpacing(sp.GAP_XS)
-        values_layout.setVerticalSpacing(sp.GAP_XS)
-        values_layout.setLabelAlignment(Qt.AlignRight)
+        layout.addWidget(mode_card)
+
+        # ── Threshold Values Card ────────────────────────────────────────────
+        values_card = ModernCard()
+        values_layout = QVBoxLayout(values_card)
+        values_layout.setSpacing(self._sp.GAP_MD)
+
+        values_header = QLabel("📊 Threshold Values")
+        values_header.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+        values_layout.addWidget(values_header)
+
+        values_form = QFormLayout()
+        values_form.setSpacing(self._sp.GAP_MD)
+        values_form.setLabelAlignment(Qt.AlignRight)
+        values_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.vars = {}
         self.entries = {}
 
-        # (label, key, icon, placeholder, hint, tooltip)
+        # (label, key, icon, tooltip)
         fields = [
-            (
-                "Take Profit (%)", "tp_percentage",
-                "💰", "e.g. 2.5",
-                "Exit the trade when profit reaches this % (0.1–100).",
-                "The position is closed automatically once unrealised P&L hits this percentage."
-            ),
-            (
-                "Stoploss (%)", "stoploss_percentage",
-                "🛑", "e.g. 1.0",
-                "Exit the trade when loss reaches this % (0.1–50). Enter as positive number.",
-                "BUG #1 FIX: This is applied BELOW entry price for long positions. Enter the absolute value."
-            ),
-            (
-                "Trailing First Profit (%)", "trailing_first_profit",
-                "📈", "e.g. 1.0  (TRAILING only)",
-                "Minimum profit % before the trailing stop activates (TRAILING only).",
-                "The trailing mechanism only kicks in once this initial profit level is reached."
-            ),
-            (
-                "Max Profit (%)", "max_profit",
-                "🏆", "e.g. 10.0  (TRAILING only)",
-                "Upper profit ceiling; trailing stop range ends here (TRAILING only).",
-                "Must be greater than Trailing First Profit. Acts as the profit ladder's top rung."
-            ),
-            (
-                "Profit Step (%)", "profit_step",
-                "➕", "e.g. 0.5  (TRAILING only)",
-                "How much profit must increase to move the trailing stop up (TRAILING only).",
-                "Smaller steps = tighter trailing, locks in more gains but risks early exit."
-            ),
-            (
-                "Loss Step (%)", "loss_step",
-                "➖", "e.g. 0.5  (TRAILING only)",
-                "How far price can fall back from peak before the stop triggers (TRAILING only).",
-                "Larger steps = more room to breathe, but gives back more open profit."
-            ),
+            ("Take Profit (%)", "tp_percentage", "💰", "Exit the trade when profit reaches this % (0.1–100)."),
+            ("Stoploss (%)", "stoploss_percentage", "🛑", "Exit the trade when loss reaches this % (0.1–50). Enter as positive number."),
+            ("Trailing First Profit (%)", "trailing_first_profit", "📈", "Minimum profit % before the trailing stop activates (TRAILING only)."),
+            ("Max Profit (%)", "max_profit", "🏆", "Upper profit ceiling; trailing stop range ends here (TRAILING only)."),
+            ("Profit Step (%)", "profit_step", "➕", "How much profit must increase to move the trailing stop up (TRAILING only)."),
+            ("Loss Step (%)", "loss_step", "➖", "How far price can fall back from peak before the stop triggers (TRAILING only)."),
         ]
 
-        for label, key, icon, placeholder, hint, tooltip in fields:
+        for label, key, icon, tooltip in fields:
             edit = QLineEdit()
             edit.setValidator(validator)
-            edit.setPlaceholderText(placeholder)
             edit.setToolTip(tooltip)
+            edit.setStyleSheet(self._get_lineedit_style())
 
             # BUG #1 FIX: Always show stoploss as positive
             if key == "stoploss_percentage":
-                val = abs(getattr(self.profit_stoploss_setting, key, 0))
+                val = abs(safe_getattr(self.profit_stoploss_setting, key, 0))
             else:
-                val = getattr(self.profit_stoploss_setting, key, 0)
+                val = safe_getattr(self.profit_stoploss_setting, key, 0)
             edit.setText(f"{val:.1f}")
 
-            hint_lbl = QLabel(hint)
-            hint_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-
-            values_layout.addRow(f"{icon} {label}:", edit)
-            values_layout.addRow("", hint_lbl)
-
+            values_form.addRow(f"{icon} {label}:", edit)
             self.vars[key] = edit
             self.entries[key] = edit
 
-        values_group.setLayout(values_layout)
-        layout.addWidget(values_group)
-        layout.addStretch()
+        values_layout.addLayout(values_form)
+        layout.addWidget(values_card)
 
+        layout.addStretch()
         scroll.setWidget(container)
         return scroll
 
+    def _get_lineedit_style(self):
+        """Get consistent line edit styling."""
+        return f"""
+            QLineEdit {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QLineEdit:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
+
+    def _get_combobox_style(self):
+        """Get consistent combobox styling."""
+        return f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """
+
     # ── Information Tab ───────────────────────────────────────────────────────
     def _build_info_tab(self):
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
-        layout.setSpacing(sp.GAP_MD)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(self._sp.GAP_MD)
 
         infos = [
             (
-                "💰  Profit Type",
+                "💰 Profit Mode",
                 "Controls how the exit strategy works once a position is open.\n\n"
                 "• STOP (Fixed Target): the position is closed as soon as unrealised profit hits "
                 "the Take Profit percentage. Simple and predictable.\n"
@@ -472,7 +725,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
                 "the trade moves in your favour. More complex but can capture larger moves."
             ),
             (
-                "💰  Take Profit (%)",
+                "💰 Take Profit (%)",
                 "The profit percentage at which an open position is automatically closed.\n\n"
                 "• Used in both STOP and TRAILING modes.\n"
                 "• In STOP mode this is the only exit target.\n"
@@ -480,7 +733,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
                 "• Valid range: 0.1 – 100."
             ),
             (
-                "🛑  Stoploss (%) — BUG #1 FIX",
+                "🛑 Stoploss (%) — BUG #1 FIX",
                 "The maximum loss percentage tolerated before the position is force-closed.\n\n"
                 "• **IMPORTANT**: For long positions (CALL/PUT buyers), this is applied BELOW the entry price.\n"
                 "• Enter the percentage as a **positive number** (e.g., 1.5 for a 1.5% stop).\n"
@@ -488,28 +741,28 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
                 "• Valid range: 0.1 – 50."
             ),
             (
-                "📈  Trailing First Profit (%) — TRAILING only",
+                "📈 Trailing First Profit (%) — TRAILING only",
                 "The minimum profit the trade must reach before the trailing stop mechanism activates.\n\n"
                 "• Prevents the trailing stop from triggering on tiny initial moves.\n"
                 "• Once this level is crossed, the trailing ladder begins stepping up.\n"
                 "• Must be less than Max Profit. Valid range: 0.1 – 50."
             ),
             (
-                "🏆  Max Profit (%) — TRAILING only",
+                "🏆 Max Profit (%) — TRAILING only",
                 "The upper ceiling of the trailing profit ladder.\n\n"
                 "• The trailing stop will not step beyond this level.\n"
                 "• Must be strictly greater than Trailing First Profit.\n"
                 "• Think of it as the top rung of the profit ladder. Valid range: 0.1 – 200."
             ),
             (
-                "➕  Profit Step (%) — TRAILING only",
+                "➕ Profit Step (%) — TRAILING only",
                 "How much the unrealised profit must increase to move the trailing stop up one step.\n\n"
                 "• Smaller steps = tighter trailing, locks in more gains but risks an early exit on normal retracements.\n"
                 "• Larger steps = more room for the trade to breathe before the stop moves.\n"
                 "• Valid range: 0.1 – 20."
             ),
             (
-                "➖  Loss Step (%) — TRAILING only",
+                "➖ Loss Step (%) — TRAILING only",
                 "How far the price is allowed to pull back from its peak profit before the stop fires.\n\n"
                 "• This is the 'give-back' allowance above the current trailing stop level.\n"
                 "• Smaller values = stop triggered quickly on any dip (tighter protection).\n"
@@ -517,11 +770,10 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
                 "• Valid range: 0.1 – 20."
             ),
             (
-                "📁  Where are settings stored?",
+                "📁 Storage",
                 "Profit & stoploss settings are saved locally to:\n\n"
                 "    config/profit_stoploss_setting.json\n\n"
-                "The file is written atomically to prevent corruption. "
-                "Back it up before experimenting with new threshold values."
+                "The file is written atomically to prevent corruption."
             ),
         ]
 
@@ -535,23 +787,22 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
 
     def _create_info_card(self, title: str, body: str) -> QFrame:
         """Create an information card with themed styling"""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        card = QFrame()
-        card.setObjectName("infoCard")
+        card = ModernCard()
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        card_layout.setSpacing(sp.GAP_XS)
+        card_layout.setSpacing(self._sp.GAP_SM)
 
         title_lbl = QLabel(title)
-        title_lbl.setFont(QFont(ty.FONT_UI, ty.SIZE_BODY, QFont.Bold))
-        title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN};")
+        title_lbl.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
 
         body_lbl = QLabel(body)
         body_lbl.setWordWrap(True)
-        body_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
+        body_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
 
         card_layout.addWidget(title_lbl)
         card_layout.addWidget(body_lbl)
@@ -562,25 +813,21 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         selected = self.profit_type_combo.currentData()
         trailing_keys = {"trailing_first_profit", "max_profit", "profit_step", "loss_step"}
 
-        c = self._c
-        sp = self._sp
-
         for key, edit in self.entries.items():
             if key in trailing_keys:
                 edit.setEnabled(selected == TRAILING)
                 if selected == TRAILING:
-                    edit.setStyleSheet(f"""
-                        QLineEdit {{
-                            background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                            border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                        }}
-                        QLineEdit:focus {{ border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
-                    """)
+                    edit.setStyleSheet(self._get_lineedit_style())
                 else:
                     edit.setStyleSheet(f"""
                         QLineEdit {{
-                            background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                            border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
+                            background: {self._c.BG_PANEL};
+                            color: {self._c.TEXT_DISABLED};
+                            border: 1px solid {self._c.BORDER_DIM};
+                            border-radius: {self._sp.RADIUS_MD}px;
+                            padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                            min-height: {self._sp.INPUT_HEIGHT}px;
+                            font-size: {self._ty.SIZE_BODY}pt;
                         }}
                     """)
 
@@ -611,72 +858,110 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
 
     # ── Feedback helpers ──────────────────────────────────────────────────────
     def show_success_feedback(self):
-        c = self._c
-        sp = self._sp
-
         self.status_label.setText("✓ Settings saved successfully!")
-        self.status_label.setStyleSheet(
-            f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+        self.status_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.GREEN};
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                padding: {self._sp.PAD_SM}px;
+                background: {self._c.BG_HOVER};
+                border-radius: {self._sp.RADIUS_MD}px;
+            }}
+        """)
         self.save_btn.setText("✓ Saved!")
         self.save_btn.setStyleSheet(f"""
             QPushButton {{
-                background:{c.GREEN_BRIGHT}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                font-weight:{self._ty.WEIGHT_BOLD}; font-size:{self._ty.SIZE_BODY}pt;
+                background: {self._c.GREEN};
+                color: white;
+                border: none;
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                min-width: 150px;
+                min-height: 36px;
             }}
         """)
         for entry in self.entries.values():
             if entry.isEnabled():
                 entry.setStyleSheet(f"""
                     QLineEdit {{
-                        background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.GREEN};
-                        border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
+                        background: {self._c.BG_INPUT};
+                        color: {self._c.TEXT_MAIN};
+                        border: 1px solid {self._c.GREEN};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                        min-height: {self._sp.INPUT_HEIGHT}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
                     }}
                 """)
         QTimer.singleShot(1500, self.reset_styles)
 
     def show_error_feedback(self, error_msg):
-        c = self._c
-        sp = self._sp
-
         self.status_label.setText(f"✗ {error_msg}")
-        self.status_label.setStyleSheet(
-            f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+        self.status_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.RED};
+                font-size: {self._ty.SIZE_SM}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                padding: {self._sp.PAD_SM}px;
+                background: {self._c.BG_HOVER};
+                border-radius: {self._sp.RADIUS_MD}px;
+            }}
+        """)
         self.save_btn.setStyleSheet(f"""
             QPushButton {{
-                background:{c.RED}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                font-weight:{self._ty.WEIGHT_BOLD}; font-size:{self._ty.SIZE_BODY}pt;
+                background: {self._c.RED};
+                color: white;
+                border: none;
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                min-width: 150px;
+                min-height: 36px;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED_BRIGHT};
             }}
         """)
         QTimer.singleShot(2000, self.reset_styles)
 
     def reset_styles(self):
-        c = self._c
-        sp = self._sp
-
         for key, entry in self.entries.items():
             if entry.isEnabled():
-                entry.setStyleSheet(f"""
-                    QLineEdit {{
-                        background:{c.BG_HOVER}; color:{c.TEXT_MAIN}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                    }}
-                    QLineEdit:focus {{ border:{sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
-                """)
+                entry.setStyleSheet(self._get_lineedit_style())
             else:
                 entry.setStyleSheet(f"""
                     QLineEdit {{
-                        background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; border:{sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
+                        background: {self._c.BG_PANEL};
+                        color: {self._c.TEXT_DISABLED};
+                        border: 1px solid {self._c.BORDER_DIM};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                        min-height: {self._sp.INPUT_HEIGHT}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
                     }}
                 """)
         self.save_btn.setText("💾 Save Settings")
         self.save_btn.setStyleSheet(f"""
             QPushButton {{
-                background:{c.GREEN}; color:{c.TEXT_INVERSE}; border-radius:{sp.RADIUS_SM}px; padding:{sp.PAD_SM}px;
-                font-weight:{self._ty.WEIGHT_BOLD}; font-size:{self._ty.SIZE_BODY}pt;
+                background: {self._c.BLUE};
+                color: white;
+                border: none;
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+                min-width: 150px;
+                min-height: 36px;
             }}
-            QPushButton:hover {{ background:{c.GREEN_BRIGHT}; }}
+            QPushButton:hover {{
+                background: {self._c.BLUE_DARK};
+            }}
         """)
+        self.status_label.setText("")
 
     # ── Save logic ────────────────────────────────────────────────────────────
     def save(self):
@@ -709,8 +994,13 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
                 validation_errors.append(error)
                 edit.setStyleSheet(f"""
                     QLineEdit {{
-                        background:{self._c.BG_ROW_B}; color:{self._c.TEXT_MAIN}; border:{self._sp.SEPARATOR}px solid {self._c.RED};
-                        border-radius:{self._sp.RADIUS_SM}px; padding:{self._sp.PAD_SM}px;
+                        background: {self._c.BG_INPUT};
+                        color: {self._c.TEXT_MAIN};
+                        border: 1px solid {self._c.RED};
+                        border-radius: {self._sp.RADIUS_MD}px;
+                        padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                        min-height: {self._sp.INPUT_HEIGHT}px;
+                        font-size: {self._ty.SIZE_BODY}pt;
                     }}
                 """)
 
@@ -727,7 +1017,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         def _save():
             try:
                 for key, value in data_to_save.items():
-                    setattr(self.profit_stoploss_setting, key, value)
+                    safe_setattr(self.profit_stoploss_setting, key, value)
                 success = self.profit_stoploss_setting.save()
                 if success:
                     self.save_completed.emit(True, "Settings saved successfully!")
@@ -746,7 +1036,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             self.show_success_feedback()
             self.save_btn.setEnabled(True)
             # Refresh app if available
-            if self.app is not None and hasattr(self.app, "refresh_settings_live"):
+            if self.app is not None and safe_hasattr(self.app, "refresh_settings_live"):
                 try:
                     self.app.refresh_settings_live()
                 except Exception as e:
@@ -799,6 +1089,8 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
     def closeEvent(self, event):
         """Handle close event with cleanup"""
         try:
+            if self._save_in_progress:
+                logger.warning("Closing while save in progress")
             self.cleanup()
             super().closeEvent(event)
         except Exception as e:

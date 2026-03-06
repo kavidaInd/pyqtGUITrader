@@ -1,3 +1,4 @@
+# trade_state.py (fixed)
 """
 Trade State Module
 ==================
@@ -70,6 +71,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import pandas as pd
 
 import BaseEnums
+from Utils.safe_getattr import safe_getattr, safe_hasattr, safe_setattr
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -336,8 +338,18 @@ class TradeState:
                 self.cancel_pending_trade: Optional[Callable] = None
 
                 # ── Session tracking ─────────────────────────────────────────────
-                self._session_id: Optional[str] = None
+                self._session_id: Optional[int] = None  # Database session ID (integer)
+                self._app_session_id: Optional[str] = None  # Application session ID (string)
                 self._session_start_time: Optional[datetime] = None
+
+                # ── Risk management fields (FEATURE 1) ─────────────────────────
+                self._max_daily_loss: float = -5000.0
+                self._max_trades_per_day: int = 10
+                self._daily_target: float = 5000.0
+                self._min_confidence: float = 0.6
+                self._use_mtf_filter: bool = False
+                self._market_open_time: str = "09:15"
+                self._market_close_time: str = "15:30"
 
                 # ── Startup validation ────────────────────────────────────────
                 try:
@@ -353,9 +365,9 @@ class TradeState:
 
             except Exception as e:
                 logger.critical(f"[TradeState.__init__] Failed: {e}", exc_info=True)
-                # Still set _lock to prevent crashes
+                # Bug #6 fix: Don't mark as initialized on failure
                 object.__setattr__(self, "_lock", threading.RLock())
-                self._initialized = True  # Mark as initialized to prevent repeated failures
+                # self._initialized = True  # REMOVED - don't mask initialization failure
 
     @classmethod
     def get_instance(cls) -> 'TradeState':
@@ -423,7 +435,7 @@ class TradeState:
         """
         try:
             with self._lock:
-                old_value = object.__getattribute__(self, attr) if hasattr(self, attr) else None
+                old_value = object.__getattribute__(self, attr) if safe_hasattr(self, attr) else None
                 object.__setattr__(self, attr, value)
 
                 # Log significant changes (debug level)
@@ -934,7 +946,7 @@ class TradeState:
         try:
             if isinstance(value, (datetime, pd.Timestamp)):
                 # Convert datetime to integer epoch
-                if hasattr(value, 'timestamp'):
+                if safe_hasattr(value, 'timestamp'):
                     epoch = int(value.timestamp())
                 else:
                     # Fallback for older datetime objects
@@ -1571,6 +1583,80 @@ class TradeState:
             logger.error(f"[mtf_results setter] Failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
+    # FEATURE 1: Risk management fields
+    # ------------------------------------------------------------------
+
+    @property
+    def max_daily_loss(self) -> float:
+        """Maximum allowed daily loss (negative value)."""
+        return self._get("_max_daily_loss")
+
+    @max_daily_loss.setter
+    def max_daily_loss(self, value: float) -> None:
+        """Set maximum daily loss."""
+        self._set("_max_daily_loss", float(value))
+
+    @property
+    def max_trades_per_day(self) -> int:
+        """Maximum number of trades per day."""
+        return self._get("_max_trades_per_day")
+
+    @max_trades_per_day.setter
+    def max_trades_per_day(self, value: int) -> None:
+        """Set maximum trades per day."""
+        self._set("_max_trades_per_day", int(value))
+
+    @property
+    def daily_target(self) -> float:
+        """Daily profit target."""
+        return self._get("_daily_target")
+
+    @daily_target.setter
+    def daily_target(self, value: float) -> None:
+        """Set daily profit target."""
+        self._set("_daily_target", float(value))
+
+    @property
+    def min_confidence(self) -> float:
+        """Minimum confidence threshold for signals (0.0-1.0)."""
+        return self._get("_min_confidence")
+
+    @min_confidence.setter
+    def min_confidence(self, value: float) -> None:
+        """Set minimum confidence threshold."""
+        self._set("_min_confidence", float(value))
+
+    @property
+    def use_mtf_filter(self) -> bool:
+        """Whether to use multi-timeframe filter."""
+        return self._get("_use_mtf_filter")
+
+    @use_mtf_filter.setter
+    def use_mtf_filter(self, value: bool) -> None:
+        """Set MTF filter usage."""
+        self._set("_use_mtf_filter", bool(value))
+
+    @property
+    def market_open_time(self) -> str:
+        """Market open time (HH:MM format)."""
+        return self._get("_market_open_time")
+
+    @market_open_time.setter
+    def market_open_time(self, value: str) -> None:
+        """Set market open time."""
+        self._set("_market_open_time", value)
+
+    @property
+    def market_close_time(self) -> str:
+        """Market close time (HH:MM format)."""
+        return self._get("_market_close_time")
+
+    @market_close_time.setter
+    def market_close_time(self, value: str) -> None:
+        """Set market close time."""
+        self._set("_market_close_time", value)
+
+    # ------------------------------------------------------------------
     # Misc market state
     # ------------------------------------------------------------------
 
@@ -1658,7 +1744,21 @@ class TradeState:
     # ------------------------------------------------------------------
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> Optional[int]:
+        """
+        Current database session ID.
+
+        This ID is generated when a trading session is created in the database.
+        """
+        return self._get("_session_id")
+
+    @session_id.setter
+    def session_id(self, value: Optional[int]) -> None:
+        """Set database session ID."""
+        self._set("_session_id", value)
+
+    @property
+    def app_session_id(self) -> Optional[str]:
         """
         Current application session ID.
 
@@ -1668,12 +1768,12 @@ class TradeState:
         - Tracking trading sessions in logs/database
         - Identifying unique application runs
         """
-        return self._get("_session_id")
+        return self._get("_app_session_id")
 
-    @session_id.setter
-    def session_id(self, value: Optional[str]) -> None:
-        """Set session ID."""
-        self._set("_session_id", value)
+    @app_session_id.setter
+    def app_session_id(self, value: Optional[str]) -> None:
+        """Set application session ID."""
+        self._set("_app_session_id", value)
 
     @property
     def session_start_time(self) -> Optional[datetime]:
@@ -2027,6 +2127,7 @@ class TradeState:
                     # FEATURE 2 fields
                     "last_slippage": self._last_slippage,
                     "session_id": self._session_id,
+                    "app_session_id": self._app_session_id,
                     "session_start_time": self._session_start_time,
                     # FEATURE 6 fields
                     "last_mtf_summary": self._last_mtf_summary,
@@ -2136,6 +2237,15 @@ class TradeState:
                     "loss_step": self._loss_step,
                     "take_profit_type": self._take_profit_type,
 
+                    # FEATURE 1: Risk management
+                    "max_daily_loss": self._max_daily_loss,
+                    "max_trades_per_day": self._max_trades_per_day,
+                    "daily_target": self._daily_target,
+                    "min_confidence": self._min_confidence,
+                    "use_mtf_filter": self._use_mtf_filter,
+                    "market_open_time": self._market_open_time,
+                    "market_close_time": self._market_close_time,
+
                     # P&L
                     "current_pnl": self._current_pnl,
                     "percentage_change": self._percentage_change,
@@ -2196,6 +2306,7 @@ class TradeState:
                     "current_index_data": str(self._current_index_data) if self._current_index_data else "None",
 
                     "session_id": self._session_id,
+                    "app_session_id": self._app_session_id,
                     "session_start_time": self._session_start_time,
                 }
         except Exception as e:
@@ -2270,9 +2381,9 @@ class TradeState:
                         continue
 
                     # Check if the attribute exists and is settable via property
-                    if hasattr(self, key) and not key.startswith('_'):
+                    if safe_hasattr(self, key) and not key.startswith('_'):
                         # Check if it's a property with a setter
-                        attr = getattr(type(self), key, None)
+                        attr = safe_getattr(type(self), key, None)
                         if isinstance(attr, property):
                             if attr.fset is None:
                                 logger.debug(f"[update_from_dict] Property {key} has no setter - skipping")
@@ -2281,7 +2392,7 @@ class TradeState:
                             else:
                                 # Property with setter - use it
                                 try:
-                                    setattr(self, key, value)
+                                    safe_setattr(self, key, value)
                                     restored_count += 1
                                 except Exception as e:
                                     logger.debug(f"[update_from_dict] Cannot set {key}: {e}")
@@ -2289,7 +2400,7 @@ class TradeState:
                         else:
                             # Regular attribute - set directly
                             try:
-                                setattr(self, key, value)
+                                safe_setattr(self, key, value)
                                 restored_count += 1
                             except Exception as e:
                                 logger.debug(f"[update_from_dict] Cannot set {key}: {e}")
@@ -2297,12 +2408,12 @@ class TradeState:
                     else:
                         # Handle private attributes (those starting with _)
                         private_key = f"_{key}"
-                        if hasattr(self, private_key):
+                        if safe_hasattr(self, private_key):
                             # Skip DataFrame summary strings produced by get_snapshot()
                             # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)")
                             # These are human-readable representations, not real DataFrames,
                             # and must not be written back into DataFrame-typed attributes.
-                            existing = getattr(self, private_key, None)
+                            existing = safe_getattr(self, private_key, None)
                             if isinstance(existing, (pd.DataFrame, type(None))) and isinstance(value, str):
                                 logger.debug(
                                     f"[update_from_dict] Skipping DataFrame summary string "
@@ -2365,6 +2476,10 @@ class TradeState:
                 # Save trading mode before reset
                 trading_mode = self._trading_mode
                 is_paper_mode = self._is_paper_mode
+                interval = self._interval  # Bug #9 fix: Preserve interval
+                session_id = self._session_id
+                app_session_id = self._app_session_id
+                session_start_time = self._session_start_time
 
                 # ── Build audit record while values are still live ────────
                 audit = {
@@ -2386,8 +2501,6 @@ class TradeState:
                 }
 
                 # ── Reset all trade-lifecycle fields atomically ───────────
-                session_id = self._session_id
-                session_start_time = self._session_start_time
                 self._previous_position = current_position
                 self._orders = []
                 self._confirmed_orders = []
@@ -2420,10 +2533,12 @@ class TradeState:
                 self._mtf_allowed = True
                 self._mtf_results = {}
 
-                # Restore trading mode settings
+                # Restore preserved settings
                 self._trading_mode = trading_mode
                 self._is_paper_mode = is_paper_mode
+                self._interval = interval  # Bug #9 fix: Restore interval
                 self._session_id = session_id
+                self._app_session_id = app_session_id
                 self._session_start_time = session_start_time
                 # NOTE: option_signal_result is refreshed every bar — do NOT clear here
 
@@ -2491,6 +2606,7 @@ class TradeState:
                 # Reset to defaults but preserve trading mode
                 trading_mode = self._trading_mode
                 is_paper_mode = self._is_paper_mode
+                interval = self._interval
 
                 self._current_position = None
                 self._previous_position = None
@@ -2508,9 +2624,10 @@ class TradeState:
                 self._last_mtf_summary = None
                 self._mtf_allowed = True
 
-                # Restore trading mode
+                # Restore preserved settings
                 self._trading_mode = trading_mode
                 self._is_paper_mode = is_paper_mode
+                self._interval = interval
 
             logger.info("[TradeState] Cleanup completed")
 
