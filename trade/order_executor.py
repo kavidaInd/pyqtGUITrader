@@ -47,6 +47,7 @@ from typing import Dict, List, Optional
 import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 from db.connector import get_db
 from db.crud import orders as orders_crud
 
@@ -114,7 +115,7 @@ class OrderExecutor:
 
             # Risk manager pre-flight check
             if self.risk_manager:
-                allowed, reason = self.risk_manager.should_allow_trade(self.config)
+                allowed, reason = self.risk_manager.should_allow_trade()
                 if not allowed:
                     logger.warning(f"[RiskManager] Trade blocked: {reason}")
                     return False
@@ -259,12 +260,14 @@ class OrderExecutor:
             mid_price = self._calculate_mid_price(state, option_name, market_price)
 
             logger.info(f"[ORDER] Attempt 1/3: LIMIT at mid-price Rs{mid_price:.2f}")
-            orders = self.place_orders(option_name, shares, mid_price, state)
+            orders = self.place_orders(option_name, shares, mid_price, state, option_type=option_type)
             if not orders:
                 return False
 
             if self._wait_for_fill(orders, state, timeout_seconds=3):
-                slippage = (state.current_buy_price or mid_price) - mid_price
+                fill_price = state.current_buy_price or mid_price
+                self.record_trade_state(state, option_type, option_name, fill_price, shares, orders)
+                slippage = fill_price - mid_price
                 logger.info(f'[FILL] Mid-price fill. Slippage: Rs{slippage:+.2f}')
                 state.last_slippage = slippage
                 self._notify_entry(state, option_type, option_name)
@@ -274,12 +277,14 @@ class OrderExecutor:
             self._cancel_unconfirmed_orders(orders, state)
             ltp_price = Utils.round_to_nse_price(market_price)
             logger.info(f"[ORDER] Attempt 2/3: LIMIT at LTP Rs{ltp_price:.2f}")
-            orders = self.place_orders(option_name, shares, ltp_price, state)
+            orders = self.place_orders(option_name, shares, ltp_price, state, option_type=option_type)
             if not orders:
                 return False
 
             if self._wait_for_fill(orders, state, timeout_seconds=3):
-                slippage = (state.current_buy_price or ltp_price) - mid_price
+                fill_price = state.current_buy_price or ltp_price
+                self.record_trade_state(state, option_type, option_name, fill_price, shares, orders)
+                slippage = fill_price - mid_price
                 logger.info(f'[FILL] LTP retry fill. Slippage: Rs{slippage:+.2f}')
                 state.last_slippage = slippage
                 self._notify_entry(state, option_type, option_name)
@@ -288,7 +293,6 @@ class OrderExecutor:
             logger.warning("[ORDER] Attempt 2 failed. Trying MARKET order.")
             self._cancel_unconfirmed_orders(orders, state)
 
-            # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
             is_paper = False
             if safe_hasattr(state, 'is_paper_mode'):
                 is_paper = state.is_paper_mode
@@ -306,10 +310,10 @@ class OrderExecutor:
                         symbol=option_name, qty=shares, side=side_buy, order_type=mkt_type
                     )
                     if broker_id:
+                        mkt_orders = [{'id': 0, 'broker_id': broker_id,
+                                       'qty': shares, 'symbol': option_name, 'price': ltp_price}]
                         self.record_trade_state(
-                            state, option_type, option_name, ltp_price, shares,
-                            [{'id': 0, 'broker_id': broker_id,
-                              'qty': shares, 'symbol': option_name, 'price': ltp_price}]
+                            state, option_type, option_name, ltp_price, shares, mkt_orders
                         )
                         state.last_slippage = ltp_price - mid_price
                         logger.info(f'[FILL] MARKET fill. Slippage: Rs{state.last_slippage:+.2f}')
@@ -353,18 +357,34 @@ class OrderExecutor:
             return Utils.round_to_nse_price(market_price * 0.999)
 
     def _wait_for_fill(self, orders, state, timeout_seconds=3) -> bool:
-        if not orders or not self.api:
+        if not orders:
             return False
+
+        # Paper orders have broker_id=None — there is no broker to poll.
+        # They are considered immediately filled by definition: the DB record
+        # was already created by place_orders(), so just confirm the price and
+        # return True.  Returning True here means the caller's fill block runs
+        # and record_trade_state() will be called, which is what we want.
+        live_orders = [o for o in orders if o.get('broker_id')]
+        if not live_orders:
+            # All orders are paper — instant fill
+            if not state.current_buy_price:
+                state.current_buy_price = orders[0].get('price')
+            return True
+
+        if not self.api:
+            return False
+
         start = time.time()
         while time.time() - start < timeout_seconds:
             try:
                 all_filled = all(
                     self.api.get_current_order_status(o.get('broker_id')) == 2
-                    for o in orders if o.get('broker_id')
+                    for o in live_orders
                 )
                 if all_filled:
-                    if orders and not state.current_buy_price:
-                        state.current_buy_price = orders[0].get('price')
+                    if not state.current_buy_price:
+                        state.current_buy_price = live_orders[0].get('price')
                     return True
                 time.sleep(0.5)
             except Exception as e:
@@ -391,7 +411,8 @@ class OrderExecutor:
     # Order placement
     # ------------------------------------------------------------------
 
-    def place_orders(self, symbol: str, shares: int, price: float, state) -> List[Dict]:
+    def place_orders(self, symbol: str, shares: int, price: float, state,
+                     option_type=None) -> List[Dict]:
         """
         Place one or more buy orders for *shares* at *price*, automatically
         splitting into child orders that each respect the exchange freeze limit.
@@ -406,6 +427,9 @@ class OrderExecutor:
                 return []
 
             session_id = safe_getattr(state, 'session_id', None)
+            # Prefer caller-supplied option_type so DB records the correct position type
+            # even before state.current_position is set.
+            position_type = str(option_type) if option_type else (state.current_position or "UNKNOWN")
 
             # FIX: Use state's trading mode instead of global BaseEnums.BOT_TYPE
             # Check if we're in paper mode - either from state or from trading_mode_setting
@@ -435,7 +459,7 @@ class OrderExecutor:
                             oid = orders_crud.create(
                                 session_id=session_id,
                                 symbol=symbol,
-                                position_type=state.current_position or "UNKNOWN",
+                                position_type=position_type,
                                 quantity=qty,
                                 broker_order_id=broker_id,
                                 entry_price=price,
@@ -473,7 +497,7 @@ class OrderExecutor:
                     oid = orders_crud.create(
                         session_id=session_id,
                         symbol=symbol,
-                        position_type=state.current_position or "UNKNOWN",
+                        position_type=position_type,
                         quantity=shares,
                         broker_order_id=(
                             f"paper_{random.randint(10000, 99999)}_{Utils.get_epoch()}"
@@ -644,23 +668,40 @@ class OrderExecutor:
 
         For paper orders (`broker_id` is None) the full quantity is passed
         through without splitting — the broker is never called in that case.
+
+        BUG 2 FIX: Capture closed_position before calling reset_trade_attributes.
+            Previously: state.previous_position = state.current_position
+                        state.reset_trade_attributes(current_position=state.previous_position)
+            This passed the already-updated previous_position back in, but more
+            critically could cause a lock-order deadlock: reset_trade_attributes
+            acquires state._lock while the signal-evaluation thread also holds it,
+            causing the worker thread to hang after exit.
+            Fix: capture the position first, then pass it directly.
+
+        BUG 3 FIX: Use try/finally to guarantee order_pending is always cleared.
+            Previously any unexpected exception in the exit body left order_pending=True
+            forever, causing every subsequent buy_option/exit_position call to be
+            silently blocked with "Order already pending" until restart.
         """
+        state = state_manager.get_state()
+        if state is None:
+            return False
+
+        if state.current_position not in {BaseEnums.CALL, BaseEnums.PUT}:
+            logger.warning(f"[EXIT] Not in CALL or PUT. Current: {state.current_position}")
+            return False
+        if state.order_pending:
+            logger.warning("[EXIT] Order already pending")
+            return False
+
+        # BUG 3 FIX: set pending flag before the try block so the finally
+        # clause is always responsible for clearing it.
+        state.order_pending = True
+        _exit_succeeded = False
+
         try:
-            state = state_manager.get_state()
-            if state is None:
-                return False
-
-            if state.current_position not in {BaseEnums.CALL, BaseEnums.PUT}:
-                logger.warning(f"[EXIT] Not in CALL or PUT. Current: {state.current_position}")
-                return False
-            if state.order_pending:
-                logger.warning("[EXIT] Order already pending")
-                return False
-
-            state.order_pending = True
             sell_price = state.current_price
             if sell_price is None:
-                state.order_pending = False
                 return False
 
             exit_reason = reason or state.reason_to_exit
@@ -755,11 +796,17 @@ class OrderExecutor:
                 # Update orders list to only the ones that failed so retry attempts
                 # know exactly which positions are still open.
                 state.orders = failed_orders
-                state.order_pending = False
                 return False
 
             logger.info(f"[EXIT] Completed exit for {state.current_position}. Reason: {exit_reason}")
-            state.previous_position = state.current_position
+
+            # BUG 2 FIX: Capture the closing position BEFORE reset_trade_attributes
+            # clears current_position. Passing state.previous_position (which is set
+            # just above here in the old code) introduced a subtle data-race: the
+            # signal thread could read previous_position between the assignment and
+            # the reset call, and the lock inside reset_trade_attributes could
+            # deadlock with an outer lock held by evaluate_trend_and_decision().
+            closed_position = state.current_position
 
             if self.notifier and state.current_buy_price:
                 try:
@@ -788,8 +835,11 @@ class OrderExecutor:
 
             state.orders = []
             state.confirmed_orders = []
-            state.reset_trade_attributes(current_position=state.previous_position)
-            state.order_pending = False
+            # BUG 2 FIX: pass the captured position directly — not state.previous_position.
+            # reset_trade_attributes atomically sets previous_position = closed_position
+            # and clears current_position inside a single lock acquisition, eliminating
+            # the window where another thread could read a stale current_position.
+            state.reset_trade_attributes(current_position=closed_position)
 
             # Invalidate risk manager cache so the next should_allow_trade() call
             # immediately re-queries the DB for updated daily PnL and trade count.
@@ -799,14 +849,18 @@ class OrderExecutor:
                 except Exception as e:
                     logger.warning(f"[EXIT] Risk manager cache invalidation failed: {e}")
 
+            _exit_succeeded = True
             return True
 
         except Exception as e:
             logger.exception(f"[EXIT] Exception: {e}")
-            state = state_manager.get_state()
-            if state:
-                state.order_pending = False
             return False
+
+        finally:
+            try:
+                state.order_pending = False
+            except Exception as e:
+                logger.error(f"[EXIT] Failed to clear order_pending in finally: {e}", exc_info=True)
     # ------------------------------------------------------------------
     # DB helpers
     # ------------------------------------------------------------------

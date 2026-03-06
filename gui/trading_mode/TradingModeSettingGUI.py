@@ -6,23 +6,19 @@ MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, et
 FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 
-import logging
 import logging.handlers
-import traceback
-from typing import Optional
 
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-                             QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
-                             QCheckBox, QGroupBox, QLabel, QMessageBox,
-                             QTabWidget, QFrame, QScrollArea, QWidget, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+                             QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
+                             QCheckBox, QLabel, QMessageBox,
+                             QTabWidget, QFrame, QScrollArea, QWidget, QLineEdit)
 
 from Utils.safe_getattr import safe_getattr
-from gui.trading_mode.TradingModeSetting import TradingMode, TradingModeSetting
-
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
+from gui.trading_mode.TradingModeSetting import TradingMode, TradingModeSetting
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -586,9 +582,9 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             mode_layout.addWidget(mode_header)
 
             self.mode_combo = QComboBox()
-            self.mode_combo.addItem("🖥️ Simulation (Paper Trading)", TradingMode.PAPER.value)
-            self.mode_combo.addItem("💰 Live Trading", TradingMode.LIVE.value)
-            self.mode_combo.addItem("📊 Backtest", TradingMode.BACKTEST.value)
+            self.mode_combo.addItem("🖥️ Simulation (Paper Trading)", TradingMode.PAPER)
+            self.mode_combo.addItem("💰 Live Trading", TradingMode.LIVE)
+            self.mode_combo.addItem("📊 Backtest", TradingMode.BACKTEST)
             self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
             self.mode_combo.setStyleSheet(self._get_combobox_style())
             mode_layout.addWidget(self.mode_combo)
@@ -1314,7 +1310,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
 
             # Set mode
             if self.mode_combo is not None:
-                mode_value = self.trading_mode_setting.mode.value if self.trading_mode_setting.mode else TradingMode.PAPER.value
+                mode_value = self.trading_mode_setting.mode if self.trading_mode_setting.mode else TradingMode.PAPER
                 mode_index = self.mode_combo.findData(mode_value)
                 if mode_index >= 0:
                     self.mode_combo.setCurrentIndex(mode_index)
@@ -1381,7 +1377,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                 logger.warning("_update_ui_state called with None mode_combo")
                 return
 
-            is_live = self.mode_combo.currentData() == TradingMode.LIVE.value
+            is_live = self.mode_combo.currentData() == TradingMode.LIVE
 
             if self.safety_warning is not None:
                 self.safety_warning.setVisible(is_live)
@@ -1551,7 +1547,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                 current_data = self.mode_combo.currentData()
 
             # Check live mode safety
-            if current_data == TradingMode.LIVE.value:
+            if current_data == TradingMode.LIVE:
                 if self.allow_live_check is not None and not self.allow_live_check.isChecked():
                     QMessageBox.warning(
                         self,

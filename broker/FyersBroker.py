@@ -81,7 +81,7 @@ class FyersBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided.")
 
-            self.username = safe_getattr(broker_setting, 'username', None)
+            # self.username = safe_getattr(broker_setting, 'username', None)
             self.client_id = safe_getattr(broker_setting, 'client_id', None)
             self.secret_key = safe_getattr(broker_setting, 'secret_key', None)
             self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', None)
@@ -120,7 +120,7 @@ class FyersBroker(BaseBroker):
 
     def _safe_defaults_init(self):
         self.state = None
-        self.username = None
+        # self.username = None
         self.client_id = None
         self.secret_key = None
         self.redirect_uri = None
@@ -254,7 +254,6 @@ class FyersBroker(BaseBroker):
 
     @staticmethod
     def _get_error_code(response: Any) -> int:
-        print(response)
         if isinstance(response, dict):
             try:
                 code = response.get("code", 0)

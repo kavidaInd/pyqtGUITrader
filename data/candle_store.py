@@ -432,6 +432,33 @@ class CandleStore:
         with self._lock:
             return 0 if self._df is None else len(self._df)
 
+    def get_current_close(self) -> Optional[float]:
+        """
+        Single source of truth for the current price of this symbol.
+
+        Returns the most up-to-date close price from the store:
+          1. The live tick accumulator's running close (current open bar) —
+             this is updated by every push_tick() call and therefore reflects
+             the very latest WebSocket tick.
+          2. The last completed 1-min bar's close — used when the current bar
+             has not yet received any ticks (edge case at bar open).
+          3. None — store is completely empty (before first fetch/tick).
+
+        All callers (update_market_state, tick-gate, P&L tracking) should use
+        this method instead of caching raw ltp values in state, so there is
+        exactly one code path responsible for the current price.
+        """
+        with self._lock:
+            if self._tick_close is not None:
+                return float(self._tick_close)
+            if self._df is not None and not self._df.empty:
+                return float(self._df["close"].iloc[-1])
+            return None
+
+    def get_current_index_price(self) -> Optional[float]:
+        """Alias for get_current_close() — clearer name when the store holds index data."""
+        return self.get_current_close()
+
     def is_stale(self, max_gap_minutes: int = 5) -> bool:
         """
         Return True if the most recent completed bar is older than

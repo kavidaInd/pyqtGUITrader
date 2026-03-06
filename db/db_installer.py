@@ -110,8 +110,8 @@ CREATE TABLE IF NOT EXISTS profit_stoploss_setting (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS trading_mode_setting (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    mode                 TEXT    NOT NULL DEFAULT 'SIM'
-                         CHECK (mode IN ('SIM', 'PAPER', 'LIVE')),
+    mode                 TEXT    NOT NULL DEFAULT 'PAPER'
+                         CHECK (mode IN ('BACKTEST', 'PAPER', 'LIVE')),
     paper_balance        REAL    NOT NULL DEFAULT 100000.0,
     allow_live_trading   INTEGER NOT NULL DEFAULT 0,
     confirm_live_trades  INTEGER NOT NULL DEFAULT 1,
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS trade_sessions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
     ended_at       TEXT,
-    mode           TEXT    NOT NULL DEFAULT 'SIM',
+    mode           TEXT    NOT NULL DEFAULT 'PAPER',
     exchange       TEXT,
     derivative     TEXT,
     lot_size       INTEGER,

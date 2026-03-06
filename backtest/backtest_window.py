@@ -3,6 +3,7 @@ backtest/backtest_window.py
 ============================
 Full backtesting window with state_manager integration.
 
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 Layout (mirrors main TradingGUI):
   ┌──────────────────────────────────┬─────────────────┐
   │  Results Panel (tabs)            │  Settings       │
@@ -70,6 +71,112 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class StatusBadge(QLabel):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="neutral"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(60)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        if status == "success":
+            color = c.GREEN
+            bg = c.GREEN + "20"
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        elif status == "info":
+            color = c.BLUE
+            bg = c.BLUE + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class ValueLabel(QLabel):
+    """Value label with consistent styling."""
+
+    def __init__(self, text="--", parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("valueLabel")
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setMinimumWidth(60)
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        self.setStyleSheet(f"""
+            QLabel#valueLabel {{
+                color: {c.TEXT_MAIN};
+                background: {c.BG_HOVER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_SM}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
 def get_signal_colors():
     """Get signal colors from theme manager."""
     c = theme_manager.palette
@@ -104,7 +211,7 @@ def _sep():
     sp = theme_manager.spacing
     f = QFrame()
     f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet(f"color: {c.BORDER};")
+    f.setStyleSheet(f"background: {c.BORDER}; max-height: {sp.SEPARATOR}px;")
     return f
 
 
@@ -112,7 +219,22 @@ def _card(title: str, title_color_token: str = "BLUE") -> QGroupBox:
     """Create a themed group box card."""
     c = theme_manager.palette
     g = QGroupBox(title)
-    g.setStyleSheet(f"QGroupBox::title {{ color: {c.get(title_color_token, c.BLUE)}; }}")
+    g.setStyleSheet(f"""
+        QGroupBox {{
+            border: 1px solid {c.BORDER};
+            border-radius: {theme_manager.spacing.RADIUS_MD}px;
+            margin-top: {theme_manager.spacing.PAD_MD}px;
+            padding-top: {theme_manager.spacing.PAD_MD}px;
+            font-weight: {theme_manager.typography.WEIGHT_BOLD};
+            color: {c.TEXT_DIM};
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: {theme_manager.spacing.PAD_MD}px;
+            padding: 0 {theme_manager.spacing.PAD_XS}px;
+            color: {c.get(title_color_token, c.BLUE)};
+        }}
+    """)
     return g
 
 
@@ -165,7 +287,7 @@ class BarAnalysis:
         return result
 
 
-# ── Multi-Timeframe Analysis Tab ───────────────────────────────────────────────
+# ── Multi-Timeframe Analysis Tab (Themed) ─────────────────────────────────────
 
 class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
 
@@ -193,6 +315,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         self.stats_lbl = None
         self.tree = None
         self.details_text = None
+        self.main_card = None
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the tab."""
@@ -213,29 +336,30 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
 
     def _build_ui(self):
         sp = self._sp
-        c = self._c
-        ty = self._ty
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
-        layout.setSpacing(sp.GAP_SM)
+        layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        layout.setSpacing(sp.GAP_MD)
 
         # Toolbar
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(sp.GAP_MD)
+
         self.timeframe_combo = QComboBox()
         self.timeframe_combo.addItems(ANALYSIS_TIMEFRAMES)
         self.timeframe_combo.setCurrentText("5m")
         self.timeframe_combo.currentTextChanged.connect(self._show_timeframe)
+        self.timeframe_combo.setStyleSheet(self._get_combobox_style())
         toolbar.addWidget(_label("Timeframe:", size_token="SIZE_XS"))
         toolbar.addWidget(self.timeframe_combo)
         toolbar.addSpacing(sp.PAD_MD)
 
-        self.export_btn = QPushButton("📥 Export Timeframe")
+        self.export_btn = self._create_modern_button("📥 Export", primary=False, icon="📥")
         self.export_btn.clicked.connect(self._export_current)
         self.export_btn.setEnabled(False)
         toolbar.addWidget(self.export_btn)
 
-        self.export_all_btn = QPushButton("📥 Export All")
+        self.export_all_btn = self._create_modern_button("📥 Export All", primary=False, icon="📥")
         self.export_all_btn.clicked.connect(self._export_all)
         self.export_all_btn.setEnabled(False)
         toolbar.addWidget(self.export_all_btn)
@@ -248,6 +372,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         # Splitter: tree on top, details below
         splitter = QSplitter(Qt.Vertical)
         splitter.setHandleWidth(sp.SPLITTER)
+        splitter.setStyleSheet(f"QSplitter::handle {{ background: {self._c.BORDER}; }}")
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(
@@ -257,15 +382,120 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         self.tree.setAlternatingRowColors(True)
         self.tree.itemClicked.connect(self._on_bar_selected)
         self.tree.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.tree.setStyleSheet(f"""
+            QTreeWidget {{
+                background: {self._c.BG_MAIN};
+                alternate-background-color: {self._c.BG_PANEL};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                color: {self._c.TEXT_MAIN};
+            }}
+            QTreeWidget::item {{
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                border-bottom: 1px solid {self._c.BORDER};
+            }}
+            QTreeWidget::item:selected {{
+                background: {self._c.BG_SELECTED};
+                color: {self._c.TEXT_MAIN};
+            }}
+            QTreeWidget::item:hover {{
+                background: {self._c.BG_HOVER};
+            }}
+        """)
         splitter.addWidget(self.tree)
 
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
         self.details_text.setMaximumHeight(220)
+        self.details_text.setStyleSheet(f"""
+            QTextEdit {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                font-family: '{self._ty.FONT_MONO}';
+                font-size: {self._ty.SIZE_XS}pt;
+                padding: {sp.PAD_SM}px;
+            }}
+        """)
         splitter.addWidget(self.details_text)
         splitter.setSizes([500, 220])
 
         layout.addWidget(splitter, 1)
+
+    def _get_combobox_style(self):
+        """Get consistent combobox styling."""
+        return f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+                min-width: 100px;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """
+
+    def _create_modern_button(self, text, primary=False, icon=""):
+        """Create a modern styled button."""
+        btn = QPushButton(f"{icon} {text}" if icon else text)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        if primary:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BLUE};
+                    color: white;
+                    border: none;
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BLUE_DARK};
+                }}
+                QPushButton:disabled {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DISABLED};
+                }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-width: 120px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.BORDER};
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
+
+        return btn
 
     def set_analysis_data(self, data: Dict[str, List[BarAnalysis]]):
         self.analysis_data = data
@@ -376,7 +606,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         QMessageBox.information(self, "Done", f"Exported {n} file(s) to:\n{directory}")
 
 
-# ── Settings Sidebar (RIGHT side, tabbed like StatusPanel) ─────────────────────
+# ── Settings Sidebar (Themed) ─────────────────────────────────────────────────
 
 class SettingsSidebar(QTabWidget, ThemedMixin):
     """
@@ -452,30 +682,100 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
                 QTabWidget::pane {{
                     border: {sp.SEPARATOR}px solid {c.BORDER};
                     background: {c.BG_PANEL};
-                    border-radius: 0 {sp.RADIUS_SM}px {sp.RADIUS_SM}px {sp.RADIUS_SM}px;
+                    border-radius: 0 {sp.RADIUS_MD}px {sp.RADIUS_MD}px {sp.RADIUS_MD}px;
                 }}
                 QTabBar::tab {{
                     background: {c.BG_HOVER};
                     color: {c.TEXT_DIM};
                     border: {sp.SEPARATOR}px solid {c.BORDER};
                     border-bottom: none;
-                    border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                    padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
+                    border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    font-weight: {ty.WEIGHT_NORMAL};
+                    margin-right: {sp.PAD_XS}px;
                 }}
                 QTabBar::tab:selected {{
                     background: {c.BG_PANEL};
                     color: {c.TEXT_MAIN};
                     border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+                    font-weight: {ty.WEIGHT_BOLD};
                 }}
                 QTabBar::tab:hover:!selected {{
                     background: {c.BORDER};
+                    color: {c.TEXT_MAIN};
                 }}
             """)
             logger.debug("[SettingsSidebar.apply_theme] Applied theme")
         except Exception as e:
             logger.error(f"[SettingsSidebar.apply_theme] Failed: {e}", exc_info=True)
+
+    def _get_combobox_style(self):
+        """Get consistent combobox styling."""
+        return f"""
+            QComboBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QComboBox:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {self._sp.ICON_LG}px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                selection-background-color: {self._c.BG_SELECTED};
+            }}
+        """
+
+    def _get_spinbox_style(self):
+        """Get consistent spinbox styling."""
+        return f"""
+            QSpinBox, QDoubleSpinBox {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                min-height: {self._sp.INPUT_HEIGHT}px;
+                font-size: {self._ty.SIZE_BODY}pt;
+            }}
+            QSpinBox:focus, QDoubleSpinBox:focus {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
+
+    def _get_checkbox_style(self):
+        """Get consistent checkbox styling."""
+        return f"""
+            QCheckBox {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_BODY}pt;
+                spacing: {self._sp.GAP_SM}px;
+            }}
+            QCheckBox::indicator {{
+                width: {self._sp.ICON_MD}px;
+                height: {self._sp.ICON_MD}px;
+                border: 2px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_SM}px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {self._c.BLUE};
+                border-color: {self._c.BLUE};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {self._c.BORDER_FOCUS};
+            }}
+        """
 
     # ── Tab builders ───────────────────────────────────────────────────────
 
@@ -491,30 +791,49 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
 
         g = _card("Active Strategy")
         gl = QVBoxLayout(g)
+        gl.setSpacing(sp.GAP_SM)
 
         self.strategy_combo = QComboBox()
         self.strategy_combo.setMinimumHeight(sp.BTN_HEIGHT_SM)
+        self.strategy_combo.setStyleSheet(self._get_combobox_style())
         gl.addWidget(self.strategy_combo)
 
         refresh_btn = QPushButton("🔄  Refresh List")
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-size: {ty.SIZE_BODY}pt;
+                min-height: 36px;
+            }}
+            QPushButton:hover {{
+                background: {c.BORDER};
+            }}
+        """)
         refresh_btn.clicked.connect(lambda: self._win._load_strategies())
         gl.addWidget(refresh_btn)
 
         self.strategy_info = QLabel("")
-        self.strategy_info.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding:{sp.PAD_XS}px;")
         self.strategy_info.setWordWrap(True)
+        self.strategy_info.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding:{sp.PAD_SM}px; background:{c.BG_HOVER}; border-radius:{sp.RADIUS_SM}px;")
         gl.addWidget(self.strategy_info)
         lay.addWidget(g)
 
         g2 = _card("Strategy Stats", "TEXT_DIM")
         g2l = QFormLayout(g2)
-        g2l.setSpacing(sp.GAP_XS)
-        self.rule_count_lbl = _label("Rules: 0", color_token="TEXT_DIM", size_token="SIZE_XS")
-        self.min_conf_lbl   = _label("Min Confidence: —", color_token="TEXT_DIM", size_token="SIZE_XS")
-        self.enabled_grp_lbl= _label("Enabled Groups: —", color_token="TEXT_DIM", size_token="SIZE_XS")
-        g2l.addRow(self.rule_count_lbl)
-        g2l.addRow(self.min_conf_lbl)
-        g2l.addRow(self.enabled_grp_lbl)
+        g2l.setSpacing(sp.GAP_SM)
+        g2l.setLabelAlignment(Qt.AlignRight)
+
+        self.rule_count_lbl = ValueLabel("0")
+        self.min_conf_lbl   = ValueLabel("—")
+        self.enabled_grp_lbl= ValueLabel("—")
+        g2l.addRow("Rules:", self.rule_count_lbl)
+        g2l.addRow("Min Confidence:", self.min_conf_lbl)
+        g2l.addRow("Enabled Groups:", self.enabled_grp_lbl)
         lay.addWidget(g2)
 
         lay.addStretch()
@@ -530,20 +849,20 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
         lay.setSpacing(sp.GAP_MD)
 
-        # Note: candle data is always fetched at 1-minute resolution from the
-        # broker and resampled in-process — there is no "base interval" to select.
-
         g_tf = _card("Analysis Timeframes", "PURPLE")
         gl_tf = QVBoxLayout(g_tf)
+        gl_tf.setSpacing(sp.GAP_SM)
         gl_tf.addWidget(_label("Select timeframes to analyse:", size_token="SIZE_XS"))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
         tf_w = QWidget()
         tf_lay = QVBoxLayout(tf_w)
         tf_lay.setContentsMargins(0, 0, 0, 0)
-        tf_lay.setSpacing(sp.GAP_XS)
+        tf_lay.setSpacing(sp.GAP_SM)
 
         self.timeframe_checkboxes: Dict[str, QCheckBox] = {}
         categories = [
@@ -557,17 +876,36 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
             for tf in tfs:
                 cb = QCheckBox(tf)
                 cb.setChecked(tf == "5m")
+                cb.setStyleSheet(self._get_checkbox_style())
                 self.timeframe_checkboxes[tf] = cb
                 tf_lay.addWidget(cb)
-            tf_lay.addSpacing(sp.PAD_XS)
+            tf_lay.addSpacing(sp.PAD_SM)
 
         scroll.setWidget(tf_w)
         gl_tf.addWidget(scroll, 1)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(sp.GAP_SM)
         sel_all = QPushButton("Select All")
+        sel_all.setCursor(Qt.PointingHandCursor)
+        sel_all.setStyleSheet(f"""
+            QPushButton {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-size: {ty.SIZE_BODY}pt;
+                min-height: 32px;
+            }}
+            QPushButton:hover {{
+                background: {c.BORDER};
+            }}
+        """)
         sel_all.clicked.connect(lambda: self._set_all_tfs(True))
         des_all = QPushButton("Deselect All")
+        des_all.setCursor(Qt.PointingHandCursor)
+        des_all.setStyleSheet(sel_all.styleSheet())
         des_all.clicked.connect(lambda: self._set_all_tfs(False))
         btn_row.addWidget(sel_all)
         btn_row.addWidget(des_all)
@@ -592,20 +930,24 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
 
         self.derivative = QComboBox()
         self.derivative.addItems(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"])
+        self.derivative.setStyleSheet(self._get_combobox_style())
         gl.addRow("Derivative:", self.derivative)
 
         self.expiry_type = QComboBox()
         self.expiry_type.addItems(["weekly", "monthly"])
+        self.expiry_type.setStyleSheet(self._get_combobox_style())
         gl.addRow("Expiry:", self.expiry_type)
 
         self.lot_size = QSpinBox()
         self.lot_size.setRange(1, 1800)
         self.lot_size.setValue(50)
+        self.lot_size.setStyleSheet(self._get_spinbox_style())
         gl.addRow("Lot Size:", self.lot_size)
 
         self.num_lots = QSpinBox()
         self.num_lots.setRange(1, 50)
         self.num_lots.setValue(1)
+        self.num_lots.setStyleSheet(self._get_spinbox_style())
         gl.addRow("# Lots:", self.num_lots)
         lay.addWidget(g)
 
@@ -618,12 +960,14 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         self.date_from.setCalendarPopup(True)
         self.date_from.setDate(QDate.currentDate().addDays(-30))
         self.date_from.setDisplayFormat("dd MMM yyyy")
+        self.date_from.setStyleSheet(self._get_spinbox_style())
         g2l.addRow("From:", self.date_from)
 
         self.date_to = QDateEdit()
         self.date_to.setCalendarPopup(True)
         self.date_to.setDate(QDate.currentDate().addDays(-1))
         self.date_to.setDisplayFormat("dd MMM yyyy")
+        self.date_to.setStyleSheet(self._get_spinbox_style())
         g2l.addRow("To:", self.date_to)
         lay.addWidget(g2)
 
@@ -647,6 +991,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
 
         self.use_tp = QCheckBox("Enable Take Profit")
         self.use_tp.setChecked(True)
+        self.use_tp.setStyleSheet(self._get_checkbox_style())
         gl.addRow("", self.use_tp)
 
         self.tp_pct = QDoubleSpinBox()
@@ -654,10 +999,12 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         self.tp_pct.setValue(30)
         self.tp_pct.setSuffix(" %")
         self.tp_pct.setDecimals(1)
+        self.tp_pct.setStyleSheet(self._get_spinbox_style())
         gl.addRow("TP %:", self.tp_pct)
 
         self.use_sl = QCheckBox("Enable Stop Loss")
         self.use_sl.setChecked(True)
+        self.use_sl.setStyleSheet(self._get_checkbox_style())
         gl.addRow("", self.use_sl)
 
         self.sl_pct = QDoubleSpinBox()
@@ -665,6 +1012,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         self.sl_pct.setValue(25)
         self.sl_pct.setSuffix(" %")
         self.sl_pct.setDecimals(1)
+        self.sl_pct.setStyleSheet(self._get_spinbox_style())
         gl.addRow("SL %:", self.sl_pct)
         lay.addWidget(g)
 
@@ -672,6 +1020,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         g2l = QVBoxLayout(g2)
         self.skip_sideway = QCheckBox("Skip 12:00–14:00 (sideway zone)")
         self.skip_sideway.setChecked(True)
+        self.skip_sideway.setStyleSheet(self._get_checkbox_style())
         g2l.addWidget(self.skip_sideway)
         lay.addWidget(g2)
 
@@ -698,6 +1047,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         self.slippage.setValue(0.25)
         self.slippage.setSuffix(" %")
         self.slippage.setDecimals(2)
+        self.slippage.setStyleSheet(self._get_spinbox_style())
         gl.addRow("Slippage:", self.slippage)
 
         self.brokerage = QDoubleSpinBox()
@@ -705,6 +1055,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         self.brokerage.setValue(40)
         self.brokerage.setPrefix("₹ ")
         self.brokerage.setDecimals(0)
+        self.brokerage.setStyleSheet(self._get_spinbox_style())
         gl.addRow("Brokerage/Lot:", self.brokerage)
         lay.addWidget(g)
 
@@ -718,6 +1069,7 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
         self.capital.setPrefix("₹ ")
         self.capital.setDecimals(0)
         self.capital.setSingleStep(10_000)
+        self.capital.setStyleSheet(self._get_spinbox_style())
         g2l.addRow("Initial Capital:", self.capital)
         lay.addWidget(g2)
 
@@ -736,11 +1088,13 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
 
         g = _card("Execution Options", "GREEN")
         gl = QVBoxLayout(g)
+        gl.setSpacing(sp.GAP_SM)
 
         gl.addWidget(_label("Execution interval (minutes):", size_token="SIZE_XS"))
         self.execution_interval = QComboBox()
         self.execution_interval.addItems(["1", "2", "3", "5", "10", "15", "30"])
         self.execution_interval.setCurrentText("5")
+        self.execution_interval.setStyleSheet(self._get_combobox_style())
         self.execution_interval.setToolTip(
             "Candle width used for signal evaluation and trade execution.\n"
             "Data is always fetched at 1-min resolution from the broker\n"
@@ -750,13 +1104,16 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
 
         self.auto_export = QCheckBox("Auto-export analysis after run")
         self.auto_export.setChecked(False)
+        self.auto_export.setStyleSheet(self._get_checkbox_style())
         gl.addWidget(self.auto_export)
         lay.addWidget(g)
 
         g3 = _card("Volatility Source", "BLUE")
         g3l = QVBoxLayout(g3)
+        g3l.setSpacing(sp.GAP_SM)
         self.use_vix = QCheckBox("Use India VIX for option pricing")
         self.use_vix.setChecked(True)
+        self.use_vix.setStyleSheet(self._get_checkbox_style())
         self.use_vix.setToolTip(
             "When checked: fetches India VIX from NSE/yfinance for Black-Scholes sigma.\n"
             "When unchecked: computes rolling historical volatility from spot candles — \n"
@@ -768,13 +1125,14 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
             "from the spot candles — no VIX download required.\n"
             "HV updates every bar using the last 20 closes."
         )
-        hv_note.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         hv_note.setWordWrap(True)
+        hv_note.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; padding-left:{sp.PAD_XL}px;")
         g3l.addWidget(hv_note)
         lay.addWidget(g3)
 
         g2 = _card("Notes", "TEXT_DIM")
         g2l = QVBoxLayout(g2)
+        g2l.setSpacing(sp.GAP_SM)
         info = QLabel(
             "• Spot data is always fetched at 1-min resolution\n"
             "  and resampled to the execution interval above\n"
@@ -783,8 +1141,8 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
             "  (marked ⚗ in Trade Log)\n"
             "• HV mode: no network calls, fully offline capable"
         )
-        info.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         info.setWordWrap(True)
+        info.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         g2l.addWidget(info)
         lay.addWidget(g2)
 
@@ -812,14 +1170,14 @@ class SettingsSidebar(QTabWidget, ThemedMixin):
             if grp.get("enabled", True):
                 enabled += 1
         min_conf = engine.get("min_confidence", 0.6) * 100
-        self.rule_count_lbl.setText(f"Rules: {total_rules}")
-        self.min_conf_lbl.setText(f"Min Confidence: {min_conf:.0f}%")
-        self.enabled_grp_lbl.setText(f"Enabled Groups: {enabled}/5")
+        self.rule_count_lbl.setText(str(total_rules))
+        self.min_conf_lbl.setText(f"{min_conf:.0f}%")
+        self.enabled_grp_lbl.setText(f"{enabled}/5")
 
 
-# ── Stat Card ──────────────────────────────────────────────────────────────────
+# ── Stat Card (Themed) ────────────────────────────────────────────────────────
 
-class _StatCard(QFrame, ThemedMixin):
+class _StatCard(ModernCard, ThemedMixin):
     def __init__(self, label: str, value: str = "—", value_color_token: str = "TEXT_MAIN"):
         self._safe_defaults_init()
         try:
@@ -829,21 +1187,21 @@ class _StatCard(QFrame, ThemedMixin):
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
 
-            c = self._c
-            sp = self._sp
+            self._value_color_token = value_color_token
+            self.setObjectName("statCard")
 
-            self.setStyleSheet(
-                f"QFrame {{ background:{c.BG_PANEL}; border:{sp.SEPARATOR}px solid {c.BORDER};"
-                f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px; }}"
-            )
             lay = QVBoxLayout(self)
-            lay.setContentsMargins(sp.PAD_MD, sp.PAD_XS, sp.PAD_MD, sp.PAD_XS)
-            lay.setSpacing(sp.GAP_XS)
+            lay.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM,
+                                  self._sp.PAD_MD, self._sp.PAD_SM)
+            lay.setSpacing(self._sp.GAP_XS)
+
             self._lbl = QLabel(label)
-            self._lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; border:none;")
+            self._lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; border:none;")
+
             self._val = QLabel(value)
-            self._val_color_token = value_color_token
-            self._val.setStyleSheet(f"color:{c.get(value_color_token, c.TEXT_MAIN)}; font-size:{self._ty.SIZE_LG}pt; font-weight:bold; border:none;")
+            self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._val.setStyleSheet(f"color:{self._c.get(value_color_token, self._c.TEXT_MAIN)}; font-size:{self._ty.SIZE_XL}pt; font-weight:bold; border:none;")
+
             lay.addWidget(self._lbl)
             lay.addWidget(self._val)
 
@@ -855,32 +1213,27 @@ class _StatCard(QFrame, ThemedMixin):
     def _safe_defaults_init(self):
         self._lbl = None
         self._val = None
-        self._val_color_token = "TEXT_MAIN"
+        self._value_color_token = "TEXT_MAIN"
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the stat card."""
         try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
+            # Call parent apply_theme to update card styling
+            super()._apply_style()
 
-            self.setStyleSheet(
-                f"QFrame {{ background:{c.BG_PANEL}; border:{sp.SEPARATOR}px solid {c.BORDER};"
-                f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px; }}"
-            )
-            self._lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; border:none;")
-            self._val.setStyleSheet(f"color:{c.get(self._val_color_token, c.TEXT_MAIN)}; font-size:{ty.SIZE_LG}pt; font-weight:bold; border:none;")
+            # Update label and value styles
+            self._lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; border:none;")
+            self._val.setStyleSheet(f"color:{self._c.get(self._value_color_token, self._c.TEXT_MAIN)}; font-size:{self._ty.SIZE_XL}pt; font-weight:bold; border:none;")
         except Exception as e:
             logger.error(f"[_StatCard.apply_theme] Failed: {e}", exc_info=True)
 
     def update_value(self, value: str, color_token: str = "TEXT_MAIN"):
-        self._val_color_token = color_token
+        self._value_color_token = color_token
         self._val.setText(value)
-        c = self._c
-        self._val.setStyleSheet(f"color:{c.get(color_token, c.TEXT_MAIN)}; font-size:{self._ty.SIZE_LG}pt; font-weight:bold; border:none;")
+        self._val.setStyleSheet(f"color:{self._c.get(color_token, self._c.TEXT_MAIN)}; font-size:{self._ty.SIZE_XL}pt; font-weight:bold; border:none;")
 
 
-# ── Equity Chart ───────────────────────────────────────────────────────────────
+# ── Equity Chart (Themed) ─────────────────────────────────────────────────────
 
 class EquityChart(QWidget, ThemedMixin):
 
@@ -963,7 +1316,6 @@ class EquityChart(QWidget, ThemedMixin):
     def _draw_pg(self, equity_curve, trades, synth_indices):
         import pyqtgraph as pg
         c = self._c
-        sp = self._sp
 
         pw = self._pg_widget
         pw.clear()
@@ -1054,7 +1406,6 @@ class _EquityPainter(QWidget, ThemedMixin):
         from PyQt5.QtGui import QPainter, QPen
         c = self._c
         sp = self._sp
-        ty = self._ty
 
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -1079,13 +1430,14 @@ class _EquityPainter(QWidget, ThemedMixin):
         p.drawText(2, ty(mn) + 4, f"₹{mn:,.0f}")
 
 
-# ── Main Backtest Window ───────────────────────────────────────────────────────
+# ── Main Backtest Window (Themed) ─────────────────────────────────────────────
 
 class BacktestWindow(QMainWindow, ThemedMixin):
     """
     Standalone QMainWindow for running and reviewing backtests.
     Uses state_manager to access and restore trade state.
 
+    MODERN MINIMALIST DESIGN - Matches other dialogs.
     Layout mirrors TradingGUI:
       • Left/centre: tabbed results panel
       • Right: settings sidebar (tabbed, like StatusPanel)
@@ -1112,6 +1464,11 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             logger.info(f"[BacktestWindow] Saved pre-backtest state: {len(self._pre_backtest_state)} fields")
 
             self.setWindowTitle("📊  Strategy Backtester")
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
             self.setMinimumSize(1500, 900)
 
             self._build()
@@ -1148,6 +1505,50 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         self._progress = None
         self.run_btn = None
         self.stop_btn = None
+        self.main_card = None
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("📊 Strategy Backtester")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.close)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the window."""
@@ -1156,8 +1557,9 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             sp = self._sp
             ty = self._ty
 
-            # Apply main stylesheet
-            self.setStyleSheet(self._get_stylesheet())
+            # Update main card style
+            if hasattr(self, 'main_card') and self.main_card:
+                self.main_card._apply_style()
 
             # Update splitter
             splitter = self.findChild(QSplitter)
@@ -1167,7 +1569,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             # Update synth banner
             if self._synth_banner and self._synth_banner_lbl:
                 self._synth_banner.setStyleSheet(
-                    f"background:{c.BG_ROW_B}; border-bottom:{sp.SEPARATOR}px solid {c.YELLOW}; padding:{sp.PAD_XS}px {sp.PAD_MD}px;"
+                    f"background:{c.BG_ROW_B}; border-bottom:1px solid {c.YELLOW}; padding:{sp.PAD_XS}px {sp.PAD_MD}px;"
                 )
                 self._synth_banner_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_XS}pt;")
 
@@ -1185,7 +1587,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
                     QProgressBar {{
                         background: {c.BG_HOVER};
                         border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_SM}px;
+                        border-radius: {sp.RADIUS_MD}px;
                         text-align: center;
                         color: {c.TEXT_MAIN};
                         min-height: {sp.PROGRESS_MD}px;
@@ -1194,7 +1596,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
                     QProgressBar::chunk {{
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                             stop:0 {c.GREEN}, stop:1 {c.GREEN_BRIGHT});
-                        border-radius: {sp.RADIUS_SM}px;
+                        border-radius: {sp.RADIUS_MD}px;
                     }}
                 """)
 
@@ -1202,175 +1604,53 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         except Exception as e:
             logger.error(f"[BacktestWindow.apply_theme] Failed: {e}", exc_info=True)
 
-    def _get_stylesheet(self) -> str:
-        """Generate stylesheet with current theme tokens."""
-        c = self._c
-        ty = self._ty
-        sp = self._sp
-
-        return f"""
-            QMainWindow, QWidget {{
-                background: {c.BG_MAIN};
-                color: {c.TEXT_MAIN};
-                font-family: '{ty.FONT_UI}', 'SF Pro Display', 'Ubuntu', sans-serif;
-                font-size: {ty.SIZE_BODY}pt;
-            }}
-            QGroupBox {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top: {sp.PAD_MD}px;
-                padding-top: {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                color: {c.TEXT_DIM};
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {sp.PAD_MD}px;
-                padding: 0 {sp.PAD_XS}px;
-                color: {c.BLUE};
-            }}
-            QLabel {{ color: {c.TEXT_MAIN}; }}
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {{
-                background: {c.BG_HOVER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                color: {c.TEXT_MAIN};
-                min-height: {sp.BTN_HEIGHT_SM}px;
-            }}
-            QComboBox::drop-down {{ border: none; }}
-            QComboBox QAbstractItemView {{
-                background: {c.BG_HOVER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                color: {c.TEXT_MAIN};
-                selection-background-color: {c.BG_SELECTED};
-            }}
-            QPushButton {{
-                background: {c.BG_HOVER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                color: {c.TEXT_MAIN};
-                font-weight: 600;
-            }}
-            QPushButton:hover  {{ background: {c.BORDER}; }}
-            QPushButton:disabled {{ color: {c.TEXT_DISABLED}; background: {c.BG_PANEL}; }}
-            QPushButton#runBtn {{
-                background: {c.GREEN};
-                border-color: {c.GREEN_BRIGHT};
-                color: {c.TEXT_INVERSE};
-                font-size: {ty.SIZE_BODY}pt;
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                border-radius: {sp.RADIUS_MD}px;
-            }}
-            QPushButton#runBtn:hover {{ background: {c.GREEN_BRIGHT}; }}
-            QPushButton#stopBtn {{
-                background: {c.RED};
-                border-color: {c.RED_BRIGHT};
-                color: {c.TEXT_INVERSE};
-                border-radius: {sp.RADIUS_MD}px;
-            }}
-            QTableWidget {{
-                background: {c.BG_MAIN};
-                alternate-background-color: {c.BG_PANEL};
-                gridline-color: {c.BORDER};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-            }}
-            QHeaderView::section {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-right: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                font-weight: {ty.WEIGHT_BOLD};
-                font-size: {ty.SIZE_XS}pt;
-            }}
-            QTabWidget::pane {{
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                background: {c.BG_MAIN};
-                border-radius: 0 {sp.RADIUS_SM}px {sp.RADIUS_SM}px {sp.RADIUS_SM}px;
-            }}
-            QTabBar::tab {{
-                background: {c.BG_PANEL};
-                color: {c.TEXT_DIM};
-                padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_XS}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_MAIN};
-                color: {c.TEXT_MAIN};
-                border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-            }}
-            QTabBar::tab:hover:!selected {{ background: {c.BG_HOVER}; }}
-            QScrollBar:vertical {{
-                background: {c.BG_PANEL}; width: {sp.ICON_SM}px; border-radius: {sp.RADIUS_SM}px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {c.BORDER}; border-radius: {sp.RADIUS_SM}px; min-height: {sp.BTN_HEIGHT_SM}px;
-            }}
-            QCheckBox {{ color: {c.TEXT_MAIN}; spacing: {sp.GAP_XS}px; }}
-            QCheckBox::indicator {{
-                width: {sp.ICON_SM}px; height: {sp.ICON_SM}px;
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                background: {c.BG_HOVER};
-            }}
-            QCheckBox::indicator:checked {{ background: {c.GREEN}; border-color: {c.GREEN_BRIGHT}; }}
-            QSplitter::handle {{ background: {c.BORDER}; width: {sp.SPLITTER}px; height: {sp.SPLITTER}px; }}
-            QTreeWidget {{
-                background: {c.BG_MAIN};
-                alternate-background-color: {c.BG_PANEL};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-            }}
-            QTreeWidget::item {{
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-            }}
-            QTreeWidget::item:selected {{
-                background: {c.BG_HOVER};
-                color: {c.BLUE};
-            }}
-            QTextEdit {{
-                background: {c.BG_PANEL};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                color: {c.TEXT_MAIN};
-                font-family: '{ty.FONT_MONO}';
-                font-size: {ty.SIZE_XS}pt;
-            }}
-        """
-
     # ── Build UI ───────────────────────────────────────────────────────────────
 
     def _build(self):
         sp = self._sp
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
+        # Root layout with margins for shadow effect
+        root = QVBoxLayout()
+        root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(0)
+
+        # Main container card
+        self.main_card = ModernCard(self, elevated=True)
+        main_layout = QVBoxLayout(self.main_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom title bar
+        title_bar = self._create_title_bar()
+        main_layout.addWidget(title_bar)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        main_layout.addWidget(separator)
+
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL,
+                                         sp.PAD_XL, sp.PAD_XL)
+        content_layout.setSpacing(sp.GAP_LG)
 
         # ── Synthetic-price disclaimer banner ──────────────────────────
         self._synth_banner = QFrame()
         self._synth_banner.hide()
         sb_lay = QHBoxLayout(self._synth_banner)
-        sb_lay.setContentsMargins(0, 0, 0, 0)
+        sb_lay.setContentsMargins(sp.PAD_MD, sp.PAD_SM, sp.PAD_MD, sp.PAD_SM)
         self._synth_banner_lbl = QLabel()
         self._synth_banner_lbl.setWordWrap(True)
         sb_lay.addWidget(self._synth_banner_lbl)
-        root.addWidget(self._synth_banner)
+        content_layout.addWidget(self._synth_banner)
 
         # ── Main horizontal split: Results | Sidebar ───────────────────
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(sp.SPLITTER)
+        splitter.setStyleSheet(f"QSplitter::handle {{ background: {self._c.BORDER}; }}")
 
         # Left: Results panel
         results_panel = self._build_results_panel()
@@ -1382,11 +1662,18 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         splitter.addWidget(self.settings_sidebar)
 
         splitter.setSizes([1100, 380])
-        root.addWidget(splitter, 1)
+        content_layout.addWidget(splitter, 1)
 
         # ── Bottom bar: progress + buttons ─────────────────────────────
         bottom = self._build_bottom_bar()
-        root.addWidget(bottom)
+        content_layout.addWidget(bottom)
+
+        main_layout.addWidget(content)
+        root.addWidget(self.main_card)
+
+        central = QWidget()
+        central.setLayout(root)
+        self.setCentralWidget(central)
 
         # Wire strategy combo change
         self.settings_sidebar.strategy_combo.currentIndexChanged.connect(
@@ -1401,6 +1688,35 @@ class BacktestWindow(QMainWindow, ThemedMixin):
 
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
+        self._tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                background: {self._c.BG_PANEL};
+                margin-top: {self._sp.PAD_SM}px;
+            }}
+            QTabBar::tab {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                min-width: 130px;
+                border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
+                border-bottom: none;
+                border-radius: {self._sp.RADIUS_SM}px {self._sp.RADIUS_SM}px 0 0;
+                font-size: {self._ty.SIZE_BODY}pt;
+                margin-right: {self._sp.PAD_XS}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self._c.BG_PANEL};
+                color: {self._c.TEXT_MAIN};
+                border-bottom: {self._sp.PAD_XS}px solid {self._c.BLUE};
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {self._c.BORDER};
+                color: {self._c.TEXT_MAIN};
+            }}
+        """)
         lay.addWidget(self._tabs, 1)
 
         self._tabs.addTab(self._build_overview_tab(),       "📈  Overview")
@@ -1458,6 +1774,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             color_token="TEXT_DIM", size_token="SIZE_XS"
         )
         self._cfg_summary.setWordWrap(True)
+        self._cfg_summary.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; padding:{self._sp.PAD_SM}px; background:{self._c.BG_HOVER}; border-radius:{self._sp.RADIUS_SM}px;")
         lay.addWidget(self._cfg_summary)
 
         lay.addStretch()
@@ -1473,6 +1790,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         lay.setSpacing(sp.GAP_XS)
 
         legend = QHBoxLayout()
+        legend.setSpacing(sp.GAP_MD)
         for sym, lbl, clr in [
             ("⚗", "Synthetic (Black-Scholes) price", c.YELLOW),
             ("✓", "Real broker data",                 c.GREEN),
@@ -1493,6 +1811,33 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         self._trade_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._trade_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._trade_table.setSortingEnabled(True)
+        self._trade_table.setStyleSheet(f"""
+            QTableWidget {{
+                background: {c.BG_MAIN};
+                alternate-background-color: {c.BG_PANEL};
+                gridline-color: {c.BORDER};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                color: {c.TEXT_MAIN};
+            }}
+            QTableWidget::item {{
+                padding: {sp.PAD_SM}px;
+                border-bottom: 1px solid {c.BORDER};
+            }}
+            QTableWidget::item:selected {{
+                background: {c.BG_SELECTED};
+                color: {c.TEXT_MAIN};
+            }}
+            QHeaderView::section {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+                border: none;
+                border-bottom: 1px solid {c.BORDER};
+                border-right: 1px solid {c.BORDER};
+                padding: {sp.PAD_SM}px;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
         hdr = self._trade_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(True)
@@ -1501,7 +1846,6 @@ class BacktestWindow(QMainWindow, ThemedMixin):
 
     def _build_chart_tab(self) -> QWidget:
         sp = self._sp
-        c = self._c
 
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -1513,6 +1857,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             "⚗ Amber-shaded bars = Black-Scholes synthetic pricing (real option data unavailable).",
             color_token="YELLOW", size_token="SIZE_XS"
         )
+        note.setStyleSheet(f"color:{self._c.YELLOW}; font-size:{self._ty.SIZE_XS}pt; padding:{self._sp.PAD_SM}px; background:{self._c.BG_HOVER}; border-radius:{self._sp.RADIUS_SM}px;")
         lay.addWidget(note)
         return w
 
@@ -1521,11 +1866,12 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         sp = self._sp
         ty = self._ty
 
-        bar = QWidget()
+        bar = QFrame()
         bar.setFixedHeight(sp.BUTTON_PANEL_H)
-        bar.setStyleSheet(f"background:{c.BG_PANEL}; border-top:{sp.SEPARATOR}px solid {c.BORDER};")
+        bar.setStyleSheet(f"background:{c.BG_PANEL}; border-top:1px solid {c.BORDER}; border-radius:0 0 {sp.RADIUS_LG}px {sp.RADIUS_LG}px;")
+
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
+        lay.setContentsMargins(sp.PAD_XL, sp.PAD_MD, sp.PAD_XL, sp.PAD_MD)
         lay.setSpacing(sp.GAP_MD)
 
         # Progress section
@@ -1533,6 +1879,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
         prog_col.setSpacing(sp.GAP_XS)
 
         self._status_lbl = _label("Ready", color_token="TEXT_DIM", size_token="SIZE_XS")
+        self._status_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
         prog_col.addWidget(self._status_lbl)
 
         self._progress = QProgressBar()
@@ -1546,18 +1893,56 @@ class BacktestWindow(QMainWindow, ThemedMixin):
 
         # Buttons
         self.run_btn = QPushButton("▶  Run Backtest")
-        self.run_btn.setObjectName("runBtn")
+        self.run_btn.setCursor(Qt.PointingHandCursor)
         self.run_btn.setFixedHeight(sp.BTN_HEIGHT_LG)
         self.run_btn.setMinimumWidth(160)
         self.run_btn.clicked.connect(self._on_run)
+        self.run_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c.GREEN};
+                color: white;
+                border: none;
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                font-size: {ty.SIZE_BODY}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                min-width: 160px;
+            }}
+            QPushButton:hover {{
+                background: {c.GREEN_BRIGHT};
+            }}
+            QPushButton:disabled {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DISABLED};
+            }}
+        """)
         lay.addWidget(self.run_btn)
 
         self.stop_btn = QPushButton("■  Stop")
-        self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
         self.stop_btn.setFixedHeight(sp.BTN_HEIGHT_LG)
         self.stop_btn.setMinimumWidth(100)
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop)
+        self.stop_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c.RED};
+                color: white;
+                border: none;
+                border-radius: {sp.RADIUS_MD}px;
+                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                font-size: {ty.SIZE_BODY}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background: {c.RED_BRIGHT};
+            }}
+            QPushButton:disabled {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DISABLED};
+            }}
+        """)
         lay.addWidget(self.stop_btn)
 
         return bar
@@ -2142,7 +2527,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
                 if not self._thread.wait(2000):
                     logger.warning("[BacktestWindow] Thread did not stop gracefully")
 
-            event.accept()
+            super().closeEvent(event)
         except Exception as e:
             logger.error(f"[BacktestWindow.closeEvent] {e}", exc_info=True)
-            event.accept()
+            super().closeEvent(event)

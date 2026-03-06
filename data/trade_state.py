@@ -57,7 +57,7 @@ ensures:
 The `current_index_data` field is kept for backward compatibility but should
 be considered deprecated. Use CandleStoreManager to access candle data instead.
 
-Version: 2.5.0 (Added trading mode properties, fixed DataFrame handling)
+Version: 2.6.0 (Fixed should_* atomicity, _default_signal_result position_context, I/O-under-lock in update_from_dict, _set safe_hasattr recursion)
 """
 
 import copy
@@ -122,7 +122,7 @@ def _default_signal_result() -> Dict[str, Any]:
             'rule_results': {},
             'conflict': False,
             'available': False,
-            # FEATURE 3: Confidence scores
+            'position_context': None,
             'confidence': {},  # Dict mapping group -> confidence float
             'explanation': '',  # Human-readable explanation
             'threshold': 0.6,   # Minimum confidence threshold
@@ -435,10 +435,14 @@ class TradeState:
         """
         try:
             with self._lock:
-                old_value = object.__getattribute__(self, attr) if safe_hasattr(self, attr) else None
+                # Use object.__getattribute__ directly to bypass property getters
+                # and avoid recursive lock acquisition through safe_hasattr.
+                try:
+                    old_value = object.__getattribute__(self, attr)
+                except AttributeError:
+                    old_value = None
                 object.__setattr__(self, attr, value)
 
-                # Log significant changes (debug level)
                 if logger.isEnabledFor(logging.DEBUG):
                     if old_value != value:
                         logger.debug(f"State update: {attr} = {value} (was: {old_value})")
@@ -1911,7 +1915,10 @@ class TradeState:
 
     @option_signal_result.setter
     def option_signal_result(self, value: Optional[Dict[str, Any]]) -> None:
-        """Set signal result."""
+        """Set signal result.  The dict is stored as-is (not copied) so the
+        engine can replace it atomically; callers must never mutate the
+        returned shallow copy's nested objects (fired, confidence, etc.).
+        """
         try:
             with self._lock:
                 self._option_signal_result = value
@@ -1944,7 +1951,9 @@ class TradeState:
     def should_buy_call(self) -> bool:
         """True if signal indicates BUY_CALL."""
         try:
-            return self.option_signal == "BUY_CALL"
+            with self._lock:
+                r = self._option_signal_result
+                return bool(r and r.get("available") and r.get("signal_value") == "BUY_CALL")
         except Exception as e:
             logger.error(f"[should_buy_call] Failed: {e}", exc_info=True)
             return False
@@ -1953,7 +1962,9 @@ class TradeState:
     def should_buy_put(self) -> bool:
         """True if signal indicates BUY_PUT."""
         try:
-            return self.option_signal == "BUY_PUT"
+            with self._lock:
+                r = self._option_signal_result
+                return bool(r and r.get("available") and r.get("signal_value") == "BUY_PUT")
         except Exception as e:
             logger.error(f"[should_buy_put] Failed: {e}", exc_info=True)
             return False
@@ -1962,7 +1973,9 @@ class TradeState:
     def should_sell_call(self) -> bool:
         """True if signal indicates EXIT_CALL."""
         try:
-            return self.option_signal == "EXIT_CALL"
+            with self._lock:
+                r = self._option_signal_result
+                return bool(r and r.get("available") and r.get("signal_value") == "EXIT_CALL")
         except Exception as e:
             logger.error(f"[should_sell_call] Failed: {e}", exc_info=True)
             return False
@@ -1971,7 +1984,9 @@ class TradeState:
     def should_sell_put(self) -> bool:
         """True if signal indicates EXIT_PUT."""
         try:
-            return self.option_signal == "EXIT_PUT"
+            with self._lock:
+                r = self._option_signal_result
+                return bool(r and r.get("available") and r.get("signal_value") == "EXIT_PUT")
         except Exception as e:
             logger.error(f"[should_sell_put] Failed: {e}", exc_info=True)
             return False
@@ -1980,7 +1995,9 @@ class TradeState:
     def should_hold(self) -> bool:
         """True if signal indicates HOLD."""
         try:
-            return self.option_signal == "HOLD"
+            with self._lock:
+                r = self._option_signal_result
+                return bool(r and r.get("available") and r.get("signal_value") == "HOLD")
         except Exception as e:
             logger.error(f"[should_hold] Failed: {e}", exc_info=True)
             return False
@@ -1989,7 +2006,11 @@ class TradeState:
     def should_wait(self) -> bool:
         """True if signal indicates WAIT (no clear signal)."""
         try:
-            return self.option_signal == "WAIT"
+            with self._lock:
+                r = self._option_signal_result
+                if not r or not r.get("available"):
+                    return True
+                return r.get("signal_value") == "WAIT"
         except Exception as e:
             logger.error(f"[should_wait] Failed: {e}", exc_info=True)
             return True
@@ -2334,107 +2355,84 @@ class TradeState:
             logger.debug("[update_from_dict] No data to restore")
             return
 
+        # Computed / read-only properties — never written back
+        computed_properties = {
+            'option_signal', 'should_buy_call', 'should_buy_put',
+            'should_sell_call', 'should_sell_put', 'should_hold',
+            'should_wait', 'signal_conflict', 'dynamic_signals_active',
+            'signal_confidence', 'signal_explanation',
+            # get_snapshot() summary strings that must not be written back
+            'derivative_history_df', 'option_history_df',
+            'current_put_data', 'current_call_data', 'current_index_data',
+        }
+
+        # Collection-type guards (checked outside lock — no I/O under lock)
+        type_errors: list = []
+        collection_checks = {
+            'orders': (list, tuple),
+            'confirmed_orders': (list, tuple),
+            'all_symbols': (list, tuple),
+            'mtf_results': dict,
+            'current_order_id': dict,
+        }
+
+        restored_count = 0
+        skipped_count = 0
+
         try:
             with self._lock:
-                # List of computed properties that should NOT be directly set
-                computed_properties = {
-                    'option_signal', 'should_buy_call', 'should_buy_put',
-                    'should_sell_call', 'should_sell_put', 'should_hold',
-                    'should_wait', 'signal_conflict', 'dynamic_signals_active',
-                    'signal_confidence', 'signal_explanation'
-                }
-
-                restored_count = 0
-                skipped_count = 0
-
                 for key, value in data.items():
-                    # Skip computed properties
                     if key in computed_properties:
-                        logger.debug(f"[update_from_dict] Skipping computed property: {key}")
                         skipped_count += 1
                         continue
 
-                    # Handle special cases for collections
-                    if key == 'orders' and not isinstance(value, (list, tuple)):
-                        logger.warning(f"[update_from_dict] orders is not a list: {type(value)} - skipping")
-                        skipped_count += 1
-                        continue
+                    if key in collection_checks:
+                        expected = collection_checks[key]
+                        if not isinstance(value, expected):
+                            type_errors.append((key, type(value)))
+                            skipped_count += 1
+                            continue
 
-                    if key == 'confirmed_orders' and not isinstance(value, (list, tuple)):
-                        logger.warning(f"[update_from_dict] confirmed_orders is not a list: {type(value)} - skipping")
-                        skipped_count += 1
-                        continue
-
-                    if key == 'all_symbols' and not isinstance(value, (list, tuple)):
-                        logger.warning(f"[update_from_dict] all_symbols is not a list: {type(value)} - skipping")
-                        skipped_count += 1
-                        continue
-
-                    if key == 'mtf_results' and not isinstance(value, dict):
-                        logger.warning(f"[update_from_dict] mtf_results is not a dict: {type(value)} - skipping")
-                        skipped_count += 1
-                        continue
-
-                    if key == 'current_order_id' and not isinstance(value, dict):
-                        logger.warning(f"[update_from_dict] current_order_id is not a dict: {type(value)} - skipping")
-                        skipped_count += 1
-                        continue
-
-                    # Check if the attribute exists and is settable via property
                     if safe_hasattr(self, key) and not key.startswith('_'):
-                        # Check if it's a property with a setter
                         attr = safe_getattr(type(self), key, None)
                         if isinstance(attr, property):
                             if attr.fset is None:
-                                logger.debug(f"[update_from_dict] Property {key} has no setter - skipping")
                                 skipped_count += 1
                                 continue
-                            else:
-                                # Property with setter - use it
-                                try:
-                                    safe_setattr(self, key, value)
-                                    restored_count += 1
-                                except Exception as e:
-                                    logger.debug(f"[update_from_dict] Cannot set {key}: {e}")
-                                    skipped_count += 1
-                        else:
-                            # Regular attribute - set directly
                             try:
                                 safe_setattr(self, key, value)
                                 restored_count += 1
-                            except Exception as e:
-                                logger.debug(f"[update_from_dict] Cannot set {key}: {e}")
+                            except Exception:
+                                skipped_count += 1
+                        else:
+                            try:
+                                safe_setattr(self, key, value)
+                                restored_count += 1
+                            except Exception:
                                 skipped_count += 1
                     else:
-                        # Handle private attributes (those starting with _)
                         private_key = f"_{key}"
                         if safe_hasattr(self, private_key):
-                            # Skip DataFrame summary strings produced by get_snapshot()
-                            # (e.g. "None", "Empty DataFrame", "DataFrame(100, 5)")
-                            # These are human-readable representations, not real DataFrames,
-                            # and must not be written back into DataFrame-typed attributes.
+                            # Skip DataFrame summary strings from get_snapshot()
                             existing = safe_getattr(self, private_key, None)
                             if isinstance(existing, (pd.DataFrame, type(None))) and isinstance(value, str):
-                                logger.debug(
-                                    f"[update_from_dict] Skipping DataFrame summary string "
-                                    f"for private attr {private_key!r}: {value!r}"
-                                )
                                 skipped_count += 1
                                 continue
                             try:
                                 object.__setattr__(self, private_key, value)
                                 restored_count += 1
-                            except Exception as e:
-                                logger.debug(f"[update_from_dict] Cannot set private {private_key}: {e}")
+                            except Exception:
                                 skipped_count += 1
                         else:
-                            logger.debug(f"[update_from_dict] Attribute {key} not found - skipping")
                             skipped_count += 1
-
-                logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
 
         except Exception as e:
             logger.error(f"[update_from_dict] Failed: {e}", exc_info=True)
+
+        # ── All logging outside the lock (design principle #4) ───────────────
+        for key, typ in type_errors:
+            logger.warning(f"[update_from_dict] {key} has wrong type {typ} - skipping")
+        logger.debug(f"[update_from_dict] Restored {restored_count} fields, skipped {skipped_count} fields")
 
     # ==================================================================
     # ATOMIC RESET

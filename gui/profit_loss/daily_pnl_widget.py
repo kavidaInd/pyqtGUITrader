@@ -4,12 +4,12 @@ daily_pnl_widget.py
 Daily P&L Widget for the Algo Trading Dashboard.
 
 FEATURE 5: Real-time P&L tracking with progress bar and statistics.
-FULLY INTEGRATED with ThemeManager for dynamic theming.
+UPDATED: Now gets data from TradeState and database for persistence.
 """
 
 import logging
 from datetime import datetime, date
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtWidgets import (
@@ -21,6 +21,11 @@ from PyQt5.QtGui import QColor
 from Utils.safe_getattr import safe_hasattr
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
+
+# Import database and state management
+from db.crud import kv, orders
+from data.trade_state_manager import state_manager
+from data.trade_state import TradeState
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -46,7 +51,8 @@ class DailyPnLWidget(QWidget, ThemedMixin):
     """
     FEATURE 5: Daily P&L Widget with progress bar and statistics.
 
-    Receives data via pyqtSlot - no direct state polling.
+    Now gets data from TradeState and database for persistence across sessions.
+    Tracks daily P&L with automatic reset at market open.
     """
 
     def __init__(self, config, parent=None):
@@ -68,15 +74,19 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self.config = config
+            self._state = state_manager.get_state()
 
-            # Internal state
+            # Internal state cache (will be updated from TradeState/db)
             self._realized = 0.0
             self._unrealized = 0.0
             self._trades = 0
             self._winners = 0
             self._max_dd = 0.0
             self._peak = 0.0
-            self._last_reset_date = datetime.now().date()
+            self._last_reset_date = self._get_last_reset_date()
+
+            # Load persisted daily data
+            self._load_daily_data()
 
             # Build UI
             self._build_ui()
@@ -88,6 +98,11 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             self._reset_timer = QTimer(self)
             self._reset_timer.timeout.connect(self._check_daily_reset)
             self._reset_timer.start(60000)  # 1 minute
+
+            # Update timer for unrealized P&L (every second)
+            self._update_timer = QTimer(self)
+            self._update_timer.timeout.connect(self._update_unrealized)
+            self._update_timer.start(1000)
 
             logger.info("[DailyPnLWidget.__init__] Initialized successfully")
 
@@ -102,6 +117,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
         try:
             self._is_initialized = False
             self.config = None
+            self._state = None
             self._realized = 0.0
             self._unrealized = 0.0
             self._trades = 0
@@ -110,6 +126,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             self._peak = 0.0
             self._last_reset_date = None
             self._reset_timer = None
+            self._update_timer = None
             self._realized_lbl = None
             self._unrealized_lbl = None
             self._pbar = None
@@ -121,8 +138,144 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             self._row1_layout = None
             self._row5_layout = None
             self._closing = False
+            self._today = None
         except Exception as e:
             logger.error(f"[DailyPnLWidget._safe_defaults_init] Failed: {e}", exc_info=True)
+
+    def _get_last_reset_date(self) -> date:
+        """Get the last reset date from KV store or default to today."""
+        try:
+            last_reset = kv.get("daily_pnl_last_reset")
+            if last_reset:
+                return datetime.strptime(last_reset, "%Y-%m-%d").date()
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._get_last_reset_date] Failed: {e}", exc_info=True)
+        return datetime.now().date()
+
+    def _save_last_reset_date(self):
+        """Save the last reset date to KV store."""
+        try:
+            kv.set("daily_pnl_last_reset", self._last_reset_date.isoformat())
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._save_last_reset_date] Failed: {e}", exc_info=True)
+
+    def _load_daily_data(self):
+        """Load today's P&L data from database."""
+        try:
+            today_str = datetime.now().date().isoformat()
+
+            # Try to get from daily_pnl table first
+            from db.connector import get_db
+            db = get_db()
+            row = db.fetchone(
+                "SELECT realized_pnl, unrealized_pnl, trades_count, winners_count, "
+                "max_drawdown, peak FROM daily_pnl WHERE date = ?",
+                (today_str,)
+            )
+
+            if row:
+                self._realized = float(row['realized_pnl'])
+                self._unrealized = float(row['unrealized_pnl'])
+                self._trades = int(row['trades_count'])
+                self._winners = int(row['winners_count'])
+                self._max_dd = float(row['max_drawdown'])
+                self._peak = float(row['peak'])
+                logger.info(f"[DailyPnLWidget] Loaded daily data for {today_str}: "
+                          f"Realized={self._realized}, Trades={self._trades}")
+            else:
+                # Calculate from today's closed orders
+                self._calculate_from_orders()
+
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._load_daily_data] Failed: {e}", exc_info=True)
+
+    def _calculate_from_orders(self):
+        """Calculate today's P&L from closed orders in database."""
+        try:
+            # Get today's closed orders
+            today_orders = orders.get_by_period('today')
+
+            realized = 0.0
+            trades = 0
+            winners = 0
+            max_dd = 0.0
+            peak = 0.0
+            running_pnl = 0.0
+
+            for order in today_orders:
+                pnl = order.get('pnl', 0.0)
+                if pnl is not None:
+                    realized += pnl
+                    trades += 1
+                    if pnl > 0:
+                        winners += 1
+
+                    # Track max drawdown and peak
+                    running_pnl += pnl
+                    if running_pnl > peak:
+                        peak = running_pnl
+                    if running_pnl < max_dd:
+                        max_dd = running_pnl
+
+            self._realized = realized
+            self._trades = trades
+            self._winners = winners
+            self._max_dd = max_dd
+            self._peak = peak
+
+            # Save to daily_pnl table
+            self._save_daily_data()
+
+            logger.info(f"[DailyPnLWidget] Calculated from orders: Realized={realized}, Trades={trades}")
+
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._calculate_from_orders] Failed: {e}", exc_info=True)
+
+    def _save_daily_data(self):
+        """Save current daily data to database."""
+        try:
+            today_str = datetime.now().date().isoformat()
+            from db.connector import get_db
+            db = get_db()
+
+            # Upsert into daily_pnl table
+            db.execute("""
+                INSERT INTO daily_pnl 
+                (date, realized_pnl, unrealized_pnl, trades_count, 
+                 winners_count, max_drawdown, peak, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    realized_pnl = excluded.realized_pnl,
+                    unrealized_pnl = excluded.unrealized_pnl,
+                    trades_count = excluded.trades_count,
+                    winners_count = excluded.winners_count,
+                    max_drawdown = excluded.max_drawdown,
+                    peak = excluded.peak,
+                    updated_at = excluded.updated_at
+            """, (
+                today_str, self._realized, self._unrealized, self._trades,
+                self._winners, self._max_dd, self._peak, datetime.now().isoformat()
+            ))
+
+            logger.debug(f"[DailyPnLWidget] Saved daily data for {today_str}")
+
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._save_daily_data] Failed: {e}", exc_info=True)
+
+    def _update_from_state(self):
+        """Update unrealized P&L from TradeState."""
+        try:
+            snapshot = state_manager.get_position_snapshot()
+            current_pnl = snapshot.get('current_pnl')
+
+            if current_pnl is not None:
+                # Clamp to reasonable range
+                self._unrealized = max(-1000000.0, min(1000000.0, float(current_pnl)))
+            else:
+                self._unrealized = 0.0
+
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._update_from_state] Failed: {e}", exc_info=True)
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -276,6 +429,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
     def on_trade_closed(self, pnl: float, is_winner: bool):
         """
         Handle trade closed signal.
+        Updates realized P&L and saves to database.
 
         Args:
             pnl: Profit/Loss amount
@@ -296,7 +450,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             if is_winner:
                 self._winners += 1
 
-            # Track max drawdown
+            # Track max drawdown (for realized P&L only)
             if self._realized < self._max_dd:
                 self._max_dd = self._realized
 
@@ -304,8 +458,11 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             if self._realized > self._peak:
                 self._peak = self._realized
 
+            # Save to database
+            self._save_daily_data()
+
             self._refresh_ui()
-            logger.debug(f"[DailyPnLWidget.on_trade_closed] Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
+            logger.info(f"[DailyPnLWidget.on_trade_closed] Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
 
         except Exception as e:
             logger.error(f"[DailyPnLWidget.on_trade_closed] Failed: {e}", exc_info=True)
@@ -329,6 +486,15 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             self._refresh_ui()
         except Exception as e:
             logger.error(f"[DailyPnLWidget.on_unrealized_update] Failed: {e}", exc_info=True)
+
+    @pyqtSlot()
+    def _update_unrealized(self):
+        """Update unrealized P&L from TradeState."""
+        try:
+            self._update_from_state()
+            self._refresh_ui()
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._update_unrealized] Failed: {e}", exc_info=True)
 
     def _refresh_ui(self):
         """Refresh all UI elements with current state."""
@@ -357,8 +523,8 @@ class DailyPnLWidget(QWidget, ThemedMixin):
                     f'color: {ucolor}; font-size: {ty.SIZE_LG}pt; background: transparent;'
                 )
 
-            # Total P&L for progress bar (realized only)
-            total_pnl = self._realized
+            # Total P&L for progress bar (realized + unrealized for visual effect)
+            total_pnl = self._realized + self._unrealized
 
             # Progress bar
             if self._pbar:
@@ -390,7 +556,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
                     f'color: {c.TEXT_DIM}; font-size: {ty.SIZE_BODY}pt; background: transparent;'
                 )
 
-            # Drawdown
+            # Drawdown (based on realized P&L)
             if self._dd_lbl:
                 self._dd_lbl.setText(f'Max Drawdown: ₹{self._max_dd:,.2f}')
                 self._dd_lbl.setStyleSheet(
@@ -435,6 +601,7 @@ class DailyPnLWidget(QWidget, ThemedMixin):
                 logger.info("[DailyPnLWidget._check_daily_reset] Daily reset triggered")
                 self.reset()
                 self._last_reset_date = today
+                self._save_last_reset_date()
 
         except Exception as e:
             logger.error(f"[DailyPnLWidget._check_daily_reset] Failed: {e}", exc_info=True)
@@ -446,14 +613,22 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             if self._closing:
                 return
 
+            # Save current day's data before reset (should already be saved)
+            self._save_daily_data()
+
+            # Reset internal state
             self._realized = 0.0
             self._unrealized = 0.0
             self._trades = 0
             self._winners = 0
             self._max_dd = 0.0
             self._peak = 0.0
+
+            # Create new record for today
+            self._save_daily_data()
+
             self._refresh_ui()
-            logger.info("[DailyPnLWidget.reset] Reset completed")
+            logger.info("[DailyPnLWidget.reset] Reset completed for new trading day")
 
         except Exception as e:
             logger.error(f"[DailyPnLWidget.reset] Failed: {e}", exc_info=True)
@@ -476,6 +651,16 @@ class DailyPnLWidget(QWidget, ThemedMixin):
         except Exception as e:
             logger.error(f"[DailyPnLWidget.update_config] Failed: {e}", exc_info=True)
 
+    def manual_refresh(self):
+        """Force a refresh from database and TradeState."""
+        try:
+            self._load_daily_data()
+            self._update_from_state()
+            self._refresh_ui()
+            logger.debug("[DailyPnLWidget.manual_refresh] Manual refresh completed")
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget.manual_refresh] Failed: {e}", exc_info=True)
+
     # Rule 8: Cleanup method
     def cleanup(self):
         """Clean up resources."""
@@ -487,14 +672,23 @@ class DailyPnLWidget(QWidget, ThemedMixin):
             logger.info("[DailyPnLWidget.cleanup] Starting cleanup")
             self._closing = True
 
-            # Stop timer
-            if self._reset_timer is not None:
-                try:
-                    self._reset_timer.stop()
-                    self._reset_timer.timeout.disconnect(self._check_daily_reset)
-                except Exception as e:
-                    logger.warning(f"[DailyPnLWidget.cleanup] Timer stop error: {e}")
-                self._reset_timer = None
+            # Save final state
+            self._save_daily_data()
+
+            # Stop timers
+            for timer in [self._reset_timer, self._update_timer]:
+                if timer is not None:
+                    try:
+                        timer.stop()
+                        if timer == self._reset_timer:
+                            timer.timeout.disconnect(self._check_daily_reset)
+                        elif timer == self._update_timer:
+                            timer.timeout.disconnect(self._update_unrealized)
+                    except Exception as e:
+                        logger.warning(f"[DailyPnLWidget.cleanup] Timer stop error: {e}")
+
+            self._reset_timer = None
+            self._update_timer = None
 
             # Nullify widget references
             self._realized_lbl = None

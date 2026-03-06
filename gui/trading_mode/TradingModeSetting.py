@@ -31,13 +31,13 @@ class TradingMode(Enum):
 
     @classmethod
     def _missing_(cls, value):
-        """Handle missing enum values gracefully."""
+        """Handle missing enum values gracefully by returning PAPER enum member."""
         try:
             logger.warning(f"Unknown trading mode value: {value}, defaulting to Paper")
-            return cls.PAPER.value
+            return cls.PAPER  # Return the enum member, not the value
         except Exception as e:
             logger.error(f"[TradingMode._missing_] Failed: {e}", exc_info=True)
-            return cls.PAPER.value
+            return cls.PAPER
 
 
 class TradingModeSetting:
@@ -556,7 +556,7 @@ class TradingModeSetting:
             try:
                 self.mode = TradingMode(mode_str)
             except (ValueError, TypeError) as e:
-                logger.warning(f"Invalid mode value {mode_str!r}: {e}. Using SIM.")
+                logger.warning(f"Invalid mode value {mode_str!r}: {e}. Using PAPER.")
                 self.mode = TradingMode.PAPER.value
 
             # Paper balance

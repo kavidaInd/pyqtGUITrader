@@ -1806,7 +1806,7 @@ class DynamicSignalEngine:
 
             if not has_any_rules:
                 return neutral
-
+            print(sig)
             fired_after_threshold = {}
             for sig in SIGNAL_GROUPS:
                 sig_val = sig.value

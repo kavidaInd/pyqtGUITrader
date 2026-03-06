@@ -223,7 +223,7 @@ def _init_db_session(splash=None) -> Optional[int]:
 
         # Create database session
         session_id = sessions.create(
-            mode=mode_settings.get("mode", "SIM"),
+            mode=mode_settings.get("mode", "PAPER"),
             exchange=daily_settings.get("exchange", "NSE"),
             derivative=daily_settings.get("derivative", "NIFTY"),
             lot_size=daily_settings.get("lot_size", 65),

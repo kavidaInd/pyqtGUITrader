@@ -5,6 +5,7 @@ Full-page Strategy Editor Window with tab-based signal rules and complete indica
 Enhanced with expanded cards, clear labels, import/export functionality, and rule weights.
 Uses database-backed strategy manager.
 
+MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
 FEATURE 3: Added rule weight support for confidence scoring
 FEATURE: Shift controls for all indicators and columns
 FEATURE: Help & Documentation tab with interactive examples
@@ -82,6 +83,112 @@ class ThemedMixin:
         return theme_manager.spacing
 
 
+class ModernCard(QFrame):
+    """Modern card widget with consistent styling."""
+
+    def __init__(self, parent=None, elevated=False):
+        super().__init__(parent)
+        self.setObjectName("modernCard")
+        self.elevated = elevated
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+
+        base_style = f"""
+            QFrame#modernCard {{
+                background: {c.BG_PANEL};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_LG}px;
+                padding: {sp.PAD_LG}px;
+            }}
+        """
+
+        if self.elevated:
+            base_style += f"""
+                QFrame#modernCard {{
+                    border: 1px solid {c.BORDER_FOCUS};
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                }}
+            """
+
+        self.setStyleSheet(base_style)
+
+
+class StatusBadge(QLabel):
+    """Status badge with color-coded background."""
+
+    def __init__(self, text="", status="neutral"):
+        super().__init__(text)
+        self.setObjectName("statusBadge")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(60)
+        self.set_status(status)
+
+    def set_status(self, status):
+        """Update badge color based on status."""
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        if status == "success":
+            color = c.GREEN
+            bg = c.GREEN + "20"
+        elif status == "warning":
+            color = c.ORANGE
+            bg = c.ORANGE + "20"
+        elif status == "error":
+            color = c.RED
+            bg = c.RED + "20"
+        elif status == "info":
+            color = c.BLUE
+            bg = c.BLUE + "20"
+        else:
+            color = c.TEXT_DIM
+            bg = c.BG_HOVER
+
+        self.setStyleSheet(f"""
+            QLabel#statusBadge {{
+                color: {color};
+                background: {bg};
+                border: 1px solid {color};
+                border-radius: {sp.RADIUS_PILL}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
+class ValueLabel(QLabel):
+    """Value label with consistent styling."""
+
+    def __init__(self, text="--", parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("valueLabel")
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setMinimumWidth(40)
+        self._apply_style()
+
+    def _apply_style(self):
+        c = theme_manager.palette
+        sp = theme_manager.spacing
+        ty = theme_manager.typography
+
+        self.setStyleSheet(f"""
+            QLabel#valueLabel {{
+                color: {c.TEXT_MAIN};
+                background: {c.BG_HOVER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+            }}
+        """)
+
+
 def get_signal_meta():
     """Get signal metadata with theme colors."""
     c = theme_manager.palette
@@ -92,132 +199,6 @@ def get_signal_meta():
         "EXIT_PUT": ("🟠", c.ORANGE, "EXIT PUT"),
         "HOLD": ("⏸", c.YELLOW, "HOLD"),
     }
-
-
-def _ss() -> str:
-    """Global stylesheet with theme tokens."""
-    c = theme_manager.palette
-    ty = theme_manager.typography
-    sp = theme_manager.spacing
-
-    return f"""
-        QWidget, QDialog {{ background: {c.BG_MAIN}; color: {c.TEXT_MAIN}; font-size: {ty.SIZE_BODY}pt; }}
-        QLabel {{ color: {c.TEXT_MAIN}; }}
-        QGroupBox {{
-            background: {c.BG_PANEL};
-            border: {sp.SEPARATOR}px solid {c.BORDER};
-            border-radius: {sp.RADIUS_MD}px;
-            margin-top: {sp.PAD_MD}px;
-            padding: {sp.PAD_SM}px {sp.PAD_XS}px {sp.PAD_XS}px {sp.PAD_XS}px;
-            font-weight: {ty.WEIGHT_BOLD}; font-size: {ty.SIZE_XS}pt;
-        }}
-        QGroupBox::title {{
-            subcontrol-origin: margin; left: {sp.PAD_MD}px;
-            padding: 0 {sp.PAD_XS}px; color: {c.TEXT_MAIN};
-        }}
-        QLineEdit, QTextEdit, QComboBox {{
-            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px;
-            padding: {sp.PAD_XS}px {sp.PAD_SM}px; font-size: {ty.SIZE_BODY}pt;
-        }}
-        QLineEdit:focus, QTextEdit:focus {{ border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
-        QComboBox::drop-down {{ border: none; }}
-        QComboBox QAbstractItemView {{ 
-            background: {c.BG_HOVER}; 
-            color: {c.TEXT_MAIN}; 
-            selection-background-color: {c.BG_SELECTED};
-            min-width: 250px;
-        }}
-        QCheckBox {{ color: {c.TEXT_MAIN}; spacing: {sp.GAP_XS}px; font-size: {ty.SIZE_BODY}pt; }}
-        QCheckBox::indicator {{ width: {sp.ICON_MD}px; height: {sp.ICON_MD}px; border-radius: {sp.RADIUS_SM}px; }}
-        QCheckBox::indicator:unchecked {{ background: {c.BG_HOVER}; border: {sp.SEPARATOR}px solid {c.BORDER}; }}
-        QCheckBox::indicator:checked  {{ background: {c.GREEN};  border: {sp.SEPARATOR}px solid {c.GREEN}; }}
-        QDoubleSpinBox, QSpinBox {{
-            background: {c.BG_HOVER};
-            color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER};
-            border-radius: {sp.RADIUS_SM}px;
-            padding: {sp.PAD_XS}px {sp.PAD_XS}px;
-            font-size: {ty.SIZE_XS}pt;
-            min-width: 70px;
-        }}
-        QDoubleSpinBox:focus, QSpinBox:focus {{ border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS}; }}
-        QPushButton {{
-            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px;
-            padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt; font-weight: {ty.WEIGHT_BOLD};
-        }}
-        QPushButton:hover {{ background: {c.BORDER}; }}
-        QPushButton:disabled {{ background: {c.BG_PANEL}; color: {c.TEXT_DISABLED}; }}
-        QToolButton {{
-            background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px;
-            padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt; font-weight: {ty.WEIGHT_BOLD};
-        }}
-        QToolButton:hover {{ background: {c.BORDER}; }}
-        QToolButton::menu-indicator {{ image: none; }}
-        QMenu {{
-            background-color: {c.BG_HOVER};
-            color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER};
-            border-radius: {sp.RADIUS_SM}px;
-            font-size: {ty.SIZE_BODY}pt;
-        }}
-        QMenu::item {{
-            padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-            border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
-        }}
-        QMenu::item:selected {{
-            background-color: {c.BG_SELECTED};
-            color: {c.BLUE};
-        }}
-        QListWidget {{
-            background: {c.BG_PANEL}; color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px;
-            font-size: {ty.SIZE_BODY}pt; outline: none;
-        }}
-        QListWidget::item {{ padding: {sp.PAD_MD}px {sp.PAD_MD}px; border-bottom: {sp.SEPARATOR}px solid {c.BORDER}; }}
-        QListWidget::item:selected {{ background: {c.BG_SELECTED}; color: {c.BLUE}; border-left: {sp.PAD_XS}px solid {c.BLUE}; }}
-        QListWidget::item:hover {{ background: {c.BG_HOVER}; }}
-        QTabWidget::pane {{ border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; background: {c.BG_PANEL}; }}
-        QTabBar::tab {{
-            background: {c.BG_HOVER}; color: {c.TEXT_DIM};
-            border: {sp.SEPARATOR}px solid {c.BORDER}; border-bottom: none;
-            border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0; padding: {sp.PAD_XS}px {sp.PAD_MD}px; font-size: {ty.SIZE_BODY}pt;
-        }}
-        QTabBar::tab:selected {{ background: {c.BG_PANEL}; color: {c.TEXT_MAIN}; border-bottom: {sp.PAD_XS}px solid {c.BLUE}; }}
-        QTableWidget {{
-            background: {c.BG_PANEL}; gridline-color: {c.BORDER};
-            border: {sp.SEPARATOR}px solid {c.BORDER}; border-radius: {sp.RADIUS_SM}px; color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XS}pt;
-        }}
-        QTableWidget::item {{ padding: {sp.PAD_XS}px {sp.PAD_SM}px; }}
-        QHeaderView::section {{
-            background: {c.BG_HOVER}; color: {c.TEXT_DIM};
-            border: none; border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
-            padding: {sp.PAD_XS}px {sp.PAD_SM}px; font-size: {ty.SIZE_XS}pt; font-weight: {ty.WEIGHT_BOLD};
-        }}
-        QScrollArea {{ border: none; background: transparent; }}
-        QSplitter::handle {{ background: {c.BORDER}; }}
-        QStackedWidget {{ background: transparent; }}
-        QTreeWidget {{
-            background: {c.BG_PANEL};
-            color: {c.TEXT_MAIN};
-            border: {sp.SEPARATOR}px solid {c.BORDER};
-            border-radius: {sp.RADIUS_SM}px;
-            outline: none;
-        }}
-        QTreeWidget::item {{
-            padding: {sp.PAD_XS}px;
-            border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
-        }}
-        QTreeWidget::item:selected {{
-            background: {c.BG_SELECTED};
-            color: {c.BLUE};
-        }}
-        QTreeWidget::item:hover {{
-            background: {c.BORDER};
-        }}
-    """
 
 
 def _btn(text: str, color_token: str = "BG_HOVER", hover_token: str = "BORDER",
@@ -233,12 +214,13 @@ def _btn(text: str, color_token: str = "BG_HOVER", hover_token: str = "BORDER",
         text_color = c.get(text_color_token, c.TEXT_MAIN)
 
         b = QPushButton(text)
+        b.setCursor(Qt.PointingHandCursor)
         style = (
             f"QPushButton {{ background:{color}; color:{text_color}; border:{sp.SEPARATOR}px solid {c.BORDER};"
             f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px {sp.PAD_MD}px; font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;"
             f"{'min-width:' + str(min_w) + 'px;' if min_w else ''} }}"
-            f"QPushButton:hover {{ background:{hover}; }}"
-            f"QPushButton:disabled {{ background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; }}"
+            f"QPushButton:hover {{ background:{hover}; border-color:{c.BORDER_FOCUS}; }}"
+            f"QPushButton:disabled {{ background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; border-color:{c.BORDER}; }}"
         )
         b.setStyleSheet(style)
         return b
@@ -247,7 +229,7 @@ def _btn(text: str, color_token: str = "BG_HOVER", hover_token: str = "BORDER",
         return QPushButton(text)
 
 
-# ── Import/Export Dialog ─────────────────────────────────────────────────────
+# ── Import/Export Dialog (Themed) ─────────────────────────────────────────────────────
 
 class ImportExportDialog(QDialog, ThemedMixin):
     """Dialog for importing/exporting strategies as JSON"""
@@ -265,100 +247,21 @@ class ImportExportDialog(QDialog, ThemedMixin):
 
             self.mode = mode  # 'import' or 'export'
             self.strategy_data = strategy_data
-            self.setWindowTitle("📦 Import/Export Strategy")
-            self.setFixedSize(600, 400)
 
-            layout = QVBoxLayout(self)
-            layout.setSpacing(self._sp.GAP_MD)
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
 
-            # Header
-            header = QLabel("📋 Strategy JSON" if mode == 'export' else "📥 Import Strategy")
-            header.setObjectName("header")
-            layout.addWidget(header)
+            self.setFixedSize(700, 500)
 
-            # JSON Text Edit
-            self.json_edit = QTextEdit()
-            self.json_edit.setFont(QFont(self._ty.FONT_MONO, self._ty.SIZE_SM))
-
-            if mode == 'export' and strategy_data:
-                # Format JSON nicely
-                try:
-                    formatted_json = json.dumps(strategy_data, indent=2, default=str)
-                    self.json_edit.setPlainText(formatted_json)
-                except Exception as e:
-                    logger.error(f"Failed to format JSON for export: {e}", exc_info=True)
-                    self.json_edit.setPlainText("Error formatting JSON")
-                self.json_edit.setReadOnly(True)
-            else:
-                self.json_edit.setPlaceholderText("Paste your strategy JSON here...")
-
-            layout.addWidget(self.json_edit)
-
-            # Buttons
-            btn_layout = QHBoxLayout()
-
-            if mode == 'export':
-                # Copy button
-                copy_btn = QPushButton("📋 Copy to Clipboard")
-                copy_btn.clicked.connect(self._copy_to_clipboard)
-                btn_layout.addWidget(copy_btn)
-
-                # Save to file button
-                save_btn = QPushButton("💾 Save to File")
-                save_btn.clicked.connect(self._save_to_file)
-                btn_layout.addWidget(save_btn)
-            else:
-                # Load from file button
-                load_btn = QPushButton("📂 Load from File")
-                load_btn.clicked.connect(self._load_from_file)
-                btn_layout.addWidget(load_btn)
-
-                # Validate button
-                validate_btn = QPushButton("✓ Validate")
-                validate_btn.clicked.connect(self._validate_json)
-                btn_layout.addWidget(validate_btn)
-
-            btn_layout.addStretch()
-
-            # OK/Cancel
-            self.ok_btn = QPushButton("OK" if mode == 'export' else "Import")
-            self.ok_btn.setObjectName("primaryBtn")
-            self.ok_btn.clicked.connect(self.accept if mode == 'export' else self._on_import)
-
-            cancel_btn = QPushButton("Cancel")
-            cancel_btn.setObjectName("cancelBtn")
-            cancel_btn.clicked.connect(self.reject)
-
-            btn_layout.addWidget(self.ok_btn)
-            btn_layout.addWidget(cancel_btn)
-
-            layout.addLayout(btn_layout)
-
-            if mode == 'import':
-                self.ok_btn.setEnabled(False)
-
+            self._build_ui()
             self.apply_theme()
+
             logger.debug(f"ImportExportDialog initialized in {mode} mode")
 
         except Exception as e:
             logger.critical(f"[ImportExportDialog.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-            self.mode = mode
-            self.strategy_data = strategy_data
-            self.setWindowTitle("Import/Export - ERROR")
-            self.resize(400, 300)
-
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
-
-            error_label = QLabel(f"Failed to initialize dialog:\n{e}")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px;")
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -366,60 +269,204 @@ class ImportExportDialog(QDialog, ThemedMixin):
         self.strategy_data = None
         self.json_edit = None
         self.ok_btn = None
+        self.main_card = None
+
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent)
+            self.setWindowTitle("Import/Export - ERROR")
+            self.setMinimumSize(400, 300)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+
+            error_label = QLabel(f"❌ Failed to initialize dialog:")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = _btn("Close", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 100)
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[ImportExportDialog._create_error_dialog] Failed: {e}", exc_info=True)
+
+    def _build_ui(self):
+        """Build the dialog UI."""
+        # Root layout with margins for shadow effect
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(0)
+
+        # Main container card
+        self.main_card = ModernCard(self, elevated=True)
+        main_layout = QVBoxLayout(self.main_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom title bar
+        title_bar = self._create_title_bar()
+        main_layout.addWidget(title_bar)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+        main_layout.addWidget(separator)
+
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                         self._sp.PAD_XL, self._sp.PAD_XL)
+        content_layout.setSpacing(self._sp.GAP_LG)
+
+        # Header
+        header = QLabel("📦 " + ("Export Strategy" if self.mode == 'export' else "Import Strategy"))
+        header.setStyleSheet(f"""
+            color: {self._c.TEXT_MAIN};
+            font-size: {self._ty.SIZE_XL}pt;
+            font-weight: {self._ty.WEIGHT_BOLD};
+        """)
+        content_layout.addWidget(header)
+
+        # JSON Text Edit
+        self.json_edit = QTextEdit()
+        self.json_edit.setFont(QFont(self._ty.FONT_MONO, self._ty.SIZE_SM))
+        self.json_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background: {self._c.BG_INPUT};
+                color: {self._c.TEXT_MAIN};
+                border: 1px solid {self._c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+                font-family: '{self._ty.FONT_MONO}';
+                font-size: {self._ty.SIZE_SM}pt;
+                padding: {self._sp.PAD_MD}px;
+            }}
+        """)
+
+        if self.mode == 'export' and self.strategy_data:
+            # Format JSON nicely
+            try:
+                formatted_json = json.dumps(self.strategy_data, indent=2, default=str)
+                self.json_edit.setPlainText(formatted_json)
+            except Exception as e:
+                logger.error(f"Failed to format JSON for export: {e}", exc_info=True)
+                self.json_edit.setPlainText("Error formatting JSON")
+            self.json_edit.setReadOnly(True)
+        else:
+            self.json_edit.setPlaceholderText("Paste your strategy JSON here...")
+
+        content_layout.addWidget(self.json_edit)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(self._sp.GAP_MD)
+
+        if self.mode == 'export':
+            # Copy button
+            copy_btn = _btn("📋 Copy to Clipboard", "BG_HOVER", "BORDER", "TEXT_MAIN", 150)
+            copy_btn.clicked.connect(self._copy_to_clipboard)
+            btn_layout.addWidget(copy_btn)
+
+            # Save to file button
+            save_btn = _btn("💾 Save to File", "GREEN", "GREEN_BRIGHT", "TEXT_INVERSE", 150)
+            save_btn.clicked.connect(self._save_to_file)
+            btn_layout.addWidget(save_btn)
+        else:
+            # Load from file button
+            load_btn = _btn("📂 Load from File", "BG_HOVER", "BORDER", "TEXT_MAIN", 150)
+            load_btn.clicked.connect(self._load_from_file)
+            btn_layout.addWidget(load_btn)
+
+            # Validate button
+            validate_btn = _btn("✓ Validate", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 120)
+            validate_btn.clicked.connect(self._validate_json)
+            btn_layout.addWidget(validate_btn)
+
+        btn_layout.addStretch()
+
+        # OK/Cancel
+        self.ok_btn = _btn("OK" if self.mode == 'export' else "Import",
+                          "GREEN", "GREEN_BRIGHT", "TEXT_INVERSE", 100)
+        self.ok_btn.clicked.connect(self.accept if self.mode == 'export' else self._on_import)
+
+        cancel_btn = _btn("Cancel", "BG_HOVER", "BORDER", "TEXT_MAIN", 100)
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(cancel_btn)
+
+        content_layout.addLayout(btn_layout)
+
+        if self.mode == 'import':
+            self.ok_btn.setEnabled(False)
+
+        main_layout.addWidget(content)
+        root.addWidget(self.main_card)
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("📦 " + ("Export Strategy" if self.mode == 'export' else "Import Strategy"))
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the dialog."""
         try:
-            c = self._c
-            ty = self._ty
-            sp = self._sp
-
-            self.setStyleSheet(_ss())
-
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_LG}pt; font-weight:bold; padding:{sp.PAD_SM}px;")
-
-            if self.json_edit:
-                self.json_edit.setStyleSheet(f"""
-                    QTextEdit {{
-                        background: {c.BG_HOVER};
-                        color: {c.TEXT_MAIN};
-                        border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_SM}px;
-                        font-family: '{ty.FONT_MONO}';
-                        font-size: {ty.SIZE_SM}pt;
-                    }}
-                """)
-
-            primary_btn = self.findChild(QPushButton, "primaryBtn")
-            if primary_btn:
-                primary_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.GREEN};
-                        color: {c.TEXT_INVERSE};
-                        border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        font-size: {ty.SIZE_BODY}pt;
-                    }}
-                    QPushButton:hover {{ background: {c.GREEN_BRIGHT}; }}
-                """)
-
-            cancel_btn = self.findChild(QPushButton, "cancelBtn")
-            if cancel_btn:
-                cancel_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.BG_HOVER};
-                        color: {c.TEXT_MAIN};
-                        border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                    }}
-                    QPushButton:hover {{ background: {c.BORDER}; }}
-                """)
+            # Update main card style
+            if hasattr(self, 'main_card') and self.main_card:
+                self.main_card._apply_style()
 
             logger.debug("[ImportExportDialog.apply_theme] Applied theme")
         except Exception as e:
@@ -521,7 +568,7 @@ class ImportExportDialog(QDialog, ThemedMixin):
         return self.strategy_data if self.strategy_data else {}
 
 
-# ── Enhanced Indicator ComboBox ──────────────────────────────────────────────
+# ── Enhanced Indicator ComboBox (Themed) ──────────────────────────────────────────────
 
 class IndicatorComboBox(QComboBox, ThemedMixin):
     """Comprehensive indicator dropdown with categories and autocomplete"""
@@ -537,14 +584,14 @@ class IndicatorComboBox(QComboBox, ThemedMixin):
             self.setMinimumWidth(180)
             self.setMaxVisibleItems(30)
 
-            self.setStyleSheet(self._get_stylesheet())
-
             self._populate_indicators()
             self._setup_completer()
 
             # Apply theme
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
+
+            self.apply_theme()
 
         except Exception as e:
             logger.error(f"[IndicatorComboBox.__init__] Failed: {e}", exc_info=True)
@@ -554,73 +601,47 @@ class IndicatorComboBox(QComboBox, ThemedMixin):
         """Rule 2: Initialize all attributes with safe defaults"""
         self._category_indices = {}
 
-    def _get_stylesheet(self) -> str:
-        """Get themed stylesheet for combobox."""
-        c = self._c
-        sp = self._sp
-        ty = self._ty
-
-        return f"""
-            QComboBox {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                padding-right: {sp.PAD_XL}px;
-                font-size: {ty.SIZE_XS}pt;
-                min-width: 170px;
-            }}
-            QComboBox:hover {{
-                border: {sp.SEPARATOR}px solid {c.BLUE};
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: center right;
-                width: {sp.ICON_SM}px;
-                border-left: {sp.SEPARATOR}px solid {c.BORDER};
-                background: transparent;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                width: 0px;
-                height: 0px;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid {c.TEXT_DIM};
-                margin-right: 4px;
-            }}
-            QComboBox::down-arrow:hover {{
-                border-top-color: {c.TEXT_MAIN};
-            }}
-            QComboBox QAbstractItemView {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_MAIN};
-                selection-background-color: {c.BG_SELECTED};
-                selection-color: {c.TEXT_MAIN};
-                border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                outline: none;
-                min-width: 280px;
-            }}
-            QComboBox QAbstractItemView::item {{
-                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                min-height: 24px;
-                border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
-            }}
-            QComboBox QAbstractItemView::item:selected {{
-                background: {c.BG_SELECTED};
-                color: {c.BLUE};
-            }}
-            QComboBox QAbstractItemView::item:hover {{
-                background: {c.BORDER};
-            }}
-        """
-
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the combobox."""
         try:
-            self.setStyleSheet(self._get_stylesheet())
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"""
+                QComboBox {{
+                    background: {c.BG_INPUT};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    padding-right: {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    min-height: {sp.INPUT_HEIGHT}px;
+                }}
+                QComboBox:hover {{
+                    border-color: {c.BORDER_FOCUS};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {sp.ICON_LG}px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {c.BG_PANEL};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    selection-background-color: {c.BG_SELECTED};
+                    min-width: 280px;
+                }}
+                QComboBox QAbstractItemView::item {{
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    min-height: 24px;
+                }}
+                QComboBox QAbstractItemView::item:selected {{
+                    background: {c.BG_SELECTED};
+                    color: {c.TEXT_MAIN};
+                }}
+            """)
         except Exception as e:
             logger.error(f"[IndicatorComboBox.apply_theme] Failed: {e}", exc_info=True)
 
@@ -676,18 +697,18 @@ class IndicatorComboBox(QComboBox, ThemedMixin):
             completer.setCompletionMode(QCompleter.PopupCompletion)
             completer.popup().setStyleSheet(f"""
                 QListView {{
-                    background: {c.BG_HOVER};
+                    background: {c.BG_PANEL};
                     color: {c.TEXT_MAIN};
-                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    font-size: {self._ty.SIZE_XS}pt;
+                    border: 1px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
                 }}
                 QListView::item {{
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
                 }}
                 QListView::item:selected {{
                     background: {c.BG_SELECTED};
-                    color: {c.BLUE};
+                    color: {c.TEXT_MAIN};
                 }}
             """)
             self.setCompleter(completer)
@@ -726,7 +747,7 @@ class IndicatorComboBox(QComboBox, ThemedMixin):
             logger.error(f"[IndicatorComboBox.mousePressEvent] Failed: {e}", exc_info=True)
 
 
-# ── Column ComboBox ──────────────────────────────────────────────────────────
+# ── Column ComboBox (Themed) ──────────────────────────────────────────────────────────
 
 class ColumnComboBox(QComboBox, ThemedMixin):
     """Dropdown for selecting a DataFrame column with descriptions"""
@@ -753,6 +774,50 @@ class ColumnComboBox(QComboBox, ThemedMixin):
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
         pass
+
+    def apply_theme(self, _: str = None) -> None:
+        """Apply theme colors to the combobox."""
+        try:
+            c = self._c
+            sp = self._sp
+            ty = self._ty
+
+            self.setStyleSheet(f"""
+                QComboBox {{
+                    background: {c.BG_INPUT};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    padding-right: {sp.PAD_XL}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    min-height: {sp.INPUT_HEIGHT}px;
+                }}
+                QComboBox:hover {{
+                    border-color: {c.BORDER_FOCUS};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {sp.ICON_LG}px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {c.BG_PANEL};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    selection-background-color: {c.BG_SELECTED};
+                    min-width: 250px;
+                }}
+                QComboBox QAbstractItemView::item {{
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    min-height: 20px;
+                }}
+                QComboBox QAbstractItemView::item:selected {{
+                    background: {c.BG_SELECTED};
+                    color: {c.TEXT_MAIN};
+                }}
+            """)
+        except Exception as e:
+            logger.error(f"[ColumnComboBox.apply_theme] Failed: {e}", exc_info=True)
 
     def _populate(self):
         """Populate the combobox with columns."""
@@ -799,62 +864,6 @@ class ColumnComboBox(QComboBox, ThemedMixin):
         except Exception as e:
             logger.error(f"[ColumnComboBox._populate] Failed: {e}", exc_info=True)
 
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the combobox."""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                    padding-right: {sp.PAD_XL}px;
-                    font-size: {ty.SIZE_XS}pt;
-                }}
-                QComboBox:hover {{ border: {sp.SEPARATOR}px solid {c.BLUE}; }}
-                QComboBox::drop-down {{
-                    subcontrol-origin: padding;
-                    subcontrol-position: center right;
-                    width: {sp.ICON_SM}px;
-                    border-left: {sp.SEPARATOR}px solid {c.BORDER};
-                    background: transparent;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    width: 0px; height: 0px;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid {c.TEXT_DIM};
-                    margin-right: 4px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
-                    selection-background-color: {c.BG_SELECTED};
-                    selection-color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    outline: none;
-                    min-width: 250px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    min-height: 20px;
-                    border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {c.BG_SELECTED};
-                    color: {c.BLUE};
-                }}
-            """)
-        except Exception as e:
-            logger.error(f"[ColumnComboBox.apply_theme] Failed: {e}", exc_info=True)
-
     def get_column(self) -> str:
         """Return lowercase column name."""
         try:
@@ -884,7 +893,7 @@ class ColumnComboBox(QComboBox, ThemedMixin):
             logger.error(f"[ColumnComboBox.set_column] Failed for {col}: {e}", exc_info=True)
 
 
-# ── Sub-Column ComboBox ───────────────────────────────────────────────────────
+# ── Sub-Column ComboBox (Themed) ───────────────────────────────────────────────────────
 
 class SubColumnComboBox(QComboBox, ThemedMixin):
     """
@@ -924,49 +933,36 @@ class SubColumnComboBox(QComboBox, ThemedMixin):
 
             self.setStyleSheet(f"""
                 QComboBox {{
-                    background: {c.BG_HOVER};
+                    background: {c.BG_INPUT};
                     color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.PURPLE};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    border: 1px solid {c.PURPLE};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                     padding-right: {sp.PAD_XL}px;
-                    font-size: {ty.SIZE_XS}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
+                    font-size: {ty.SIZE_BODY}pt;
+                    min-height: {sp.INPUT_HEIGHT}px;
                 }}
-                QComboBox:hover {{ border: {sp.SEPARATOR}px solid {c.BLUE}; }}
+                QComboBox:hover {{
+                    border-color: {c.BORDER_FOCUS};
+                }}
                 QComboBox::drop-down {{
-                    subcontrol-origin: padding;
-                    subcontrol-position: center right;
-                    width: {sp.ICON_SM}px;
-                    border-left: {sp.SEPARATOR}px solid {c.BORDER};
-                    background: transparent;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    width: 0px; height: 0px;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid {c.TEXT_DIM};
-                    margin-right: 4px;
+                    border: none;
+                    width: {sp.ICON_LG}px;
                 }}
                 QComboBox QAbstractItemView {{
-                    background: {c.BG_HOVER};
+                    background: {c.BG_PANEL};
                     color: {c.TEXT_MAIN};
+                    border: 1px solid {c.PURPLE};
                     selection-background-color: {c.BG_SELECTED};
-                    selection-color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.PURPLE};
-                    border-radius: {sp.RADIUS_SM}px;
-                    outline: none;
                     min-width: 260px;
                 }}
                 QComboBox QAbstractItemView::item {{
                     padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                     min-height: 22px;
-                    border-bottom: {sp.SEPARATOR}px solid {c.BORDER}40;
                 }}
                 QComboBox QAbstractItemView::item:selected {{
                     background: {c.BG_SELECTED};
-                    color: {c.BLUE};
+                    color: {c.TEXT_MAIN};
                 }}
             """)
         except Exception as e:
@@ -1023,7 +1019,7 @@ class SubColumnComboBox(QComboBox, ThemedMixin):
             logger.error(f"[SubColumnComboBox.set_sub_col] Failed for {key}: {e}", exc_info=True)
 
 
-# ── Parameter Editor ─────────────────────────────────────────────────────────
+# ── Parameter Editor (Themed) ─────────────────────────────────────────────────────────
 
 class ParameterEditor(QWidget, ThemedMixin):
     """Inline editor for indicator parameters - Enhanced with better layout"""
@@ -1046,7 +1042,7 @@ class ParameterEditor(QWidget, ThemedMixin):
             self._param_widgets = {}
 
             self.setVisible(False)
-            self.setFixedHeight(50)  # Slightly taller for better visibility
+            self.setFixedHeight(60)  # Slightly taller for better visibility
 
             self.apply_theme()
 
@@ -1069,24 +1065,24 @@ class ParameterEditor(QWidget, ThemedMixin):
             self.setStyleSheet(f"""
                 QWidget {{
                     background: {c.BG_HOVER};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
                 }}
                 QLabel {{
                     color: {c.TEXT_DIM};
                     font-size: {self._ty.SIZE_XS}pt;
                     font-weight: {self._ty.WEIGHT_BOLD};
-                    padding: 0px 4px;
                 }}
                 QLineEdit, QCheckBox {{
                     font-size: {self._ty.SIZE_XS}pt;
-                    padding: {sp.PAD_XS}px {sp.PAD_XS}px;
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    padding: {sp.PAD_XS}px;
+                    border: 1px solid {c.BORDER};
                     border-radius: {sp.RADIUS_SM}px;
-                    background: {c.BG_HOVER};
+                    background: {c.BG_INPUT};
+                    color: {c.TEXT_MAIN};
                 }}
                 QLineEdit:focus {{
-                    border: {sp.SEPARATOR}px solid {c.BLUE};
+                    border-color: {c.BORDER_FOCUS};
                 }}
             """)
         except Exception as e:
@@ -1124,7 +1120,7 @@ class ParameterEditor(QWidget, ThemedMixin):
 
             # Add a small indicator icon/label
             icon_label = QLabel("⚙️")
-            icon_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_BODY}pt;")
+            icon_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_BODY}pt; background:transparent; border:none;")
             layout.addWidget(icon_label)
 
             for param_name, default_value in default_params.items():
@@ -1134,6 +1130,7 @@ class ParameterEditor(QWidget, ThemedMixin):
 
                     # Create container for each parameter
                     param_container = QWidget()
+                    param_container.setStyleSheet("background:transparent; border:none;")
                     param_container_layout = QHBoxLayout(param_container)
                     param_container_layout.setContentsMargins(0, 0, 0, 0)
                     param_container_layout.setSpacing(self._sp.GAP_XS)
@@ -1142,18 +1139,19 @@ class ParameterEditor(QWidget, ThemedMixin):
                     label = QLabel(f"{param_name}:")
                     label.setFixedWidth(60)
                     label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    label.setStyleSheet("background:transparent; border:none;")
                     param_container_layout.addWidget(label)
 
                     # Input widget
                     if param_type == "bool":
                         widget = QCheckBox()
                         widget.setChecked(bool(current_value))
-                        widget.setFixedSize(40, 22)
+                        widget.setFixedSize(20, 20)
                         widget.stateChanged.connect(self._on_params_changed)
                     elif param_type in ("int", "float"):
                         widget = QLineEdit()
                         widget.setText(str(current_value))
-                        widget.setFixedWidth(50)
+                        widget.setFixedWidth(60)
                         if param_type == "int":
                             widget.setValidator(QIntValidator())
                         else:
@@ -1162,7 +1160,7 @@ class ParameterEditor(QWidget, ThemedMixin):
                     else:  # string
                         widget = QLineEdit()
                         widget.setText(str(current_value))
-                        widget.setFixedWidth(70)
+                        widget.setFixedWidth(80)
                         widget.textChanged.connect(self._on_params_changed)
 
                     param_container_layout.addWidget(widget)
@@ -1176,16 +1174,16 @@ class ParameterEditor(QWidget, ThemedMixin):
 
             # Add indicator info button
             info_btn = QPushButton("?")
-            info_btn.setFixedSize(22, 22)
+            info_btn.setFixedSize(24, 24)
+            info_btn.setCursor(Qt.PointingHandCursor)
             info_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: {self._c.BG_HOVER};
                     color: {self._c.TEXT_DIM};
-                    border: {self._sp.SEPARATOR}px solid {self._c.BORDER};
-                    border-radius: 11px;
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: 12px;
                     font-size: {self._ty.SIZE_XS}pt;
                     font-weight: {self._ty.WEIGHT_BOLD};
-                    padding: 0px;
                 }}
                 QPushButton:hover {{
                     background: {self._c.BLUE}40;
@@ -1249,7 +1247,7 @@ class ParameterEditor(QWidget, ThemedMixin):
         return self._params.copy() if self._params else {}
 
 
-# ── Rule Editor Row (with weight and shift controls) ────────────────────────────
+# ── Rule Editor Row (Themed) ────────────────────────────────────────────────────────────
 
 class _RuleRow(QWidget, ThemedMixin):
     """One editable rule row with clear labels, expanded layout, weight control, and shift controls"""
@@ -1269,37 +1267,38 @@ class _RuleRow(QWidget, ThemedMixin):
 
             self._param_editors = {}
 
-            self.setMinimumHeight(200)
-            self.setMaximumHeight(300)
+            self.setMinimumHeight(220)
+            self.setMaximumHeight(320)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Main vertical layout
             main_layout = QVBoxLayout(self)
             main_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_SM)
-            main_layout.setSpacing(self._sp.GAP_XS)
+            main_layout.setSpacing(self._sp.GAP_SM)
 
             # Main content row - flexible stretch layout
             content_layout = QHBoxLayout()
-            content_layout.setSpacing(self._sp.GAP_MD)
+            content_layout.setSpacing(self._sp.GAP_LG)
 
             # ── LEFT SIDE ─────────────────────────────────────────────────────
-            lhs_container = QWidget()
+            lhs_container = ModernCard()
             lhs_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             lhs_layout = QVBoxLayout(lhs_container)
-            lhs_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_layout.setSpacing(self._sp.GAP_XS)
+            lhs_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+            lhs_layout.setSpacing(self._sp.GAP_SM)
 
-            lhs_header = QLabel("🔹 LEFT SIDE (Condition)")
-            lhs_header.setObjectName("lhs_header")
+            lhs_header = QLabel("LEFT SIDE (Condition)")
+            lhs_header.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
             lhs_layout.addWidget(lhs_header)
 
             # LHS type and shift row
             lhs_type_row = QHBoxLayout()
-            lhs_type_row.setSpacing(self._sp.GAP_XS)
+            lhs_type_row.setSpacing(self._sp.GAP_SM)
 
             self.lhs_type = QComboBox()
             self.lhs_type.addItems(SIDE_TYPES)
             self.lhs_type.setFixedWidth(100)
+            self.lhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("lhs", t))
             lhs_type_row.addWidget(self.lhs_type)
 
             # LHS shift control
@@ -1320,22 +1319,16 @@ class _RuleRow(QWidget, ThemedMixin):
             lhs_indicator_widget = QWidget()
             lhs_indicator_layout = QHBoxLayout(lhs_indicator_widget)
             lhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_indicator_layout.setSpacing(self._sp.GAP_XS)
-            ind_label = QLabel("📊")
-            ind_label.setFixedWidth(30)
-            lhs_indicator_layout.addWidget(ind_label)
+            lhs_indicator_layout.setSpacing(self._sp.GAP_SM)
             self.lhs_indicator = IndicatorComboBox()
-            lhs_indicator_layout.addWidget(self.lhs_indicator)
             self.lhs_indicator.currentTextChanged.connect(lambda t: self._on_indicator_changed("lhs", t))
+            lhs_indicator_layout.addWidget(self.lhs_indicator)
 
             # Column widget
             lhs_column_widget = QWidget()
             lhs_column_layout = QHBoxLayout(lhs_column_widget)
             lhs_column_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_column_layout.setSpacing(self._sp.GAP_XS)
-            col_label = QLabel("📈")
-            col_label.setFixedWidth(30)
-            lhs_column_layout.addWidget(col_label)
+            lhs_column_layout.setSpacing(self._sp.GAP_SM)
             self.lhs_column = ColumnComboBox()
             lhs_column_layout.addWidget(self.lhs_column)
 
@@ -1343,10 +1336,7 @@ class _RuleRow(QWidget, ThemedMixin):
             lhs_scalar_widget = QWidget()
             lhs_scalar_layout = QHBoxLayout(lhs_scalar_widget)
             lhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_scalar_layout.setSpacing(self._sp.GAP_XS)
-            scalar_label = QLabel("#️⃣")
-            scalar_label.setFixedWidth(30)
-            lhs_scalar_layout.addWidget(scalar_label)
+            lhs_scalar_layout.setSpacing(self._sp.GAP_SM)
             self.lhs_scalar = QLineEdit()
             self.lhs_scalar.setPlaceholderText("value")
             self.lhs_scalar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1365,13 +1355,11 @@ class _RuleRow(QWidget, ThemedMixin):
             self.lhs_params.setVisible(False)
             lhs_layout.addWidget(self.lhs_params)
 
-            # Sub-column selector row — lives OUTSIDE the QStackedWidget so it
-            # is never clipped or hidden by the stack's own page management.
-            # Only visible when the indicator produces multiple output columns.
+            # Sub-column selector row
             lhs_sub_row = QHBoxLayout()
-            lhs_sub_row.setSpacing(self._sp.GAP_XS)
+            lhs_sub_row.setSpacing(self._sp.GAP_SM)
             lhs_sub_arrow = QLabel("↳ Output column:")
-            lhs_sub_arrow.setObjectName("sub_arrow")
+            lhs_sub_arrow.setStyleSheet(f"color:{self._c.PURPLE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
             lhs_sub_row.addWidget(lhs_sub_arrow)
             self.lhs_sub_col = SubColumnComboBox()
             lhs_sub_row.addWidget(self.lhs_sub_col)
@@ -1385,43 +1373,45 @@ class _RuleRow(QWidget, ThemedMixin):
             content_layout.addWidget(lhs_container, 4)
 
             # ── OPERATOR ──────────────────────────────────────────────────────
-            op_container = QWidget()
-            op_container.setFixedWidth(130)
+            op_container = ModernCard()
+            op_container.setFixedWidth(120)
             op_layout = QVBoxLayout(op_container)
-            op_layout.setContentsMargins(0, 0, 0, 0)
+            op_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
             op_layout.setAlignment(Qt.AlignTop)
-            op_layout.setSpacing(self._sp.GAP_XS)
+            op_layout.setSpacing(self._sp.GAP_SM)
 
-            op_header = QLabel("⚖️ COMPARATOR")
-            op_header.setObjectName("op_header")
+            op_header = QLabel("COMPARATOR")
+            op_header.setStyleSheet(f"color:{self._c.YELLOW}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
             op_header.setAlignment(Qt.AlignCenter)
             op_layout.addWidget(op_header)
 
             self.op = QComboBox()
             self.op.addItems(OPERATORS)
-            self.op.setFixedWidth(150)
+            self.op.setFixedWidth(100)
+            self.op.currentTextChanged.connect(self._update_description)
             op_layout.addWidget(self.op)
 
             content_layout.addWidget(op_container)
 
             # ── RIGHT SIDE ────────────────────────────────────────────────────
-            rhs_container = QWidget()
+            rhs_container = ModernCard()
             rhs_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             rhs_layout = QVBoxLayout(rhs_container)
-            rhs_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_layout.setSpacing(self._sp.GAP_XS)
+            rhs_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
+            rhs_layout.setSpacing(self._sp.GAP_SM)
 
-            rhs_header = QLabel("🔸 RIGHT SIDE (Target)")
-            rhs_header.setObjectName("rhs_header")
+            rhs_header = QLabel("RIGHT SIDE (Target)")
+            rhs_header.setStyleSheet(f"color:{self._c.ORANGE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
             rhs_layout.addWidget(rhs_header)
 
             # RHS type and shift row
             rhs_type_row = QHBoxLayout()
-            rhs_type_row.setSpacing(self._sp.GAP_XS)
+            rhs_type_row.setSpacing(self._sp.GAP_SM)
 
             self.rhs_type = QComboBox()
             self.rhs_type.addItems(SIDE_TYPES)
             self.rhs_type.setFixedWidth(100)
+            self.rhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("rhs", t))
             rhs_type_row.addWidget(self.rhs_type)
 
             # RHS shift control
@@ -1442,22 +1432,16 @@ class _RuleRow(QWidget, ThemedMixin):
             rhs_indicator_widget = QWidget()
             rhs_indicator_layout = QHBoxLayout(rhs_indicator_widget)
             rhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_indicator_layout.setSpacing(self._sp.GAP_XS)
-            rhs_ind_label = QLabel("📊")
-            rhs_ind_label.setFixedWidth(30)
-            rhs_indicator_layout.addWidget(rhs_ind_label)
+            rhs_indicator_layout.setSpacing(self._sp.GAP_SM)
             self.rhs_indicator = IndicatorComboBox()
-            rhs_indicator_layout.addWidget(self.rhs_indicator)
             self.rhs_indicator.currentTextChanged.connect(lambda t: self._on_indicator_changed("rhs", t))
+            rhs_indicator_layout.addWidget(self.rhs_indicator)
 
             # Column widget
             rhs_column_widget = QWidget()
             rhs_column_layout = QHBoxLayout(rhs_column_widget)
             rhs_column_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_column_layout.setSpacing(self._sp.GAP_XS)
-            rhs_col_label = QLabel("📈")
-            rhs_col_label.setFixedWidth(30)
-            rhs_column_layout.addWidget(rhs_col_label)
+            rhs_column_layout.setSpacing(self._sp.GAP_SM)
             self.rhs_column = ColumnComboBox()
             rhs_column_layout.addWidget(self.rhs_column)
 
@@ -1465,10 +1449,7 @@ class _RuleRow(QWidget, ThemedMixin):
             rhs_scalar_widget = QWidget()
             rhs_scalar_layout = QHBoxLayout(rhs_scalar_widget)
             rhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_scalar_layout.setSpacing(self._sp.GAP_XS)
-            rhs_scalar_label = QLabel("#️⃣")
-            rhs_scalar_label.setFixedWidth(30)
-            rhs_scalar_layout.addWidget(rhs_scalar_label)
+            rhs_scalar_layout.setSpacing(self._sp.GAP_SM)
             self.rhs_scalar = QLineEdit()
             self.rhs_scalar.setPlaceholderText("value")
             self.rhs_scalar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1487,11 +1468,11 @@ class _RuleRow(QWidget, ThemedMixin):
             self.rhs_params.setVisible(False)
             rhs_layout.addWidget(self.rhs_params)
 
-            # Sub-column selector row — outside QStackedWidget, same pattern as LHS.
+            # Sub-column selector row
             rhs_sub_row = QHBoxLayout()
-            rhs_sub_row.setSpacing(self._sp.GAP_XS)
+            rhs_sub_row.setSpacing(self._sp.GAP_SM)
             rhs_sub_arrow = QLabel("↳ Output column:")
-            rhs_sub_arrow.setObjectName("sub_arrow")
+            rhs_sub_arrow.setStyleSheet(f"color:{self._c.PURPLE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
             rhs_sub_row.addWidget(rhs_sub_arrow)
             self.rhs_sub_col = SubColumnComboBox()
             rhs_sub_row.addWidget(self.rhs_sub_col)
@@ -1504,15 +1485,15 @@ class _RuleRow(QWidget, ThemedMixin):
             content_layout.addWidget(rhs_container, 4)
 
             # ── WEIGHT CONTROL (FEATURE 3) ────────────────────────────────────
-            weight_container = QWidget()
+            weight_container = ModernCard()
             weight_container.setFixedWidth(100)
             weight_layout = QVBoxLayout(weight_container)
-            weight_layout.setContentsMargins(0, 0, 0, 0)
+            weight_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
             weight_layout.setAlignment(Qt.AlignTop)
-            weight_layout.setSpacing(self._sp.GAP_XS)
+            weight_layout.setSpacing(self._sp.GAP_SM)
 
-            weight_header = QLabel("⚖️ WEIGHT")
-            weight_header.setObjectName("weight_header")
+            weight_header = QLabel("WEIGHT")
+            weight_header.setStyleSheet(f"color:{self._c.PURPLE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
             weight_header.setAlignment(Qt.AlignCenter)
             weight_layout.addWidget(weight_header)
 
@@ -1529,22 +1510,35 @@ class _RuleRow(QWidget, ThemedMixin):
 
             # Suggested weight indicator
             self.suggested_weight_lbl = QLabel("")
-            self.suggested_weight_lbl.setObjectName("suggested_weight")
+            self.suggested_weight_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt;")
             weight_layout.addWidget(self.suggested_weight_lbl)
 
             content_layout.addWidget(weight_container)
 
             # ── DELETE BUTTON ─────────────────────────────────────────────────
             del_container = QWidget()
-            del_container.setFixedWidth(36)
+            del_container.setFixedWidth(40)
             del_vlay = QVBoxLayout(del_container)
             del_vlay.setContentsMargins(0, 0, 0, 0)
             del_vlay.setSpacing(0)
             # Spacer to push button down to align with widgets (past the label row)
-            del_vlay.addSpacing(18)
+            del_vlay.addSpacing(30)
             del_btn = QPushButton("✕")
-            del_btn.setFixedSize(28, 32)
-            del_btn.setObjectName("deleteBtn")
+            del_btn.setFixedSize(28, 28)
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {self._c.RED}33;
+                    color: {self._c.RED};
+                    border: 1px solid {self._c.RED};
+                    border-radius: 14px;
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QPushButton:hover {{
+                    background: {self._c.RED}66;
+                }}
+            """)
             del_btn.clicked.connect(lambda: self.deleted.emit(self))
             del_vlay.addWidget(del_btn)
             del_vlay.addStretch()
@@ -1555,15 +1549,12 @@ class _RuleRow(QWidget, ThemedMixin):
             # Bottom description row
             desc_layout = QHBoxLayout()
             self.desc_label = QLabel("ⓘ This rule will be evaluated on each bar")
-            self.desc_label.setObjectName("desc")
+            self.desc_label.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; font-style:italic;")
             desc_layout.addWidget(self.desc_label)
             desc_layout.addStretch()
             main_layout.addLayout(desc_layout)
 
             # Connect signals
-            self.lhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("lhs", t))
-            self.rhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("rhs", t))
-
             self.lhs_params.params_changed.connect(lambda p: self._on_params_updated("lhs", p))
             self.rhs_params.params_changed.connect(lambda p: self._on_params_updated("rhs", p))
 
@@ -1611,48 +1602,6 @@ class _RuleRow(QWidget, ThemedMixin):
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the rule row."""
         try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            self.setStyleSheet(f"background:{c.BG_HOVER}; border-radius:{sp.RADIUS_MD}px; border:{sp.SEPARATOR}px solid {c.BORDER};")
-
-            # Update headers
-            lhs_header = self.findChild(QLabel, "lhs_header")
-            if lhs_header:
-                lhs_header.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
-
-            rhs_header = self.findChild(QLabel, "rhs_header")
-            if rhs_header:
-                rhs_header.setStyleSheet(f"color:{c.ORANGE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
-
-            op_header = self.findChild(QLabel, "op_header")
-            if op_header:
-                op_header.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
-
-            weight_header = self.findChild(QLabel, "weight_header")
-            if weight_header:
-                weight_header.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
-
-            sub_arrows = self.findChildren(QLabel, "sub_arrow")
-            for arrow in sub_arrows:
-                arrow.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD}; padding-left:34px;")
-
-            suggested = self.findChild(QLabel, "suggested_weight")
-            if suggested:
-                suggested.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-
-            desc = self.findChild(QLabel, "desc")
-            if desc:
-                desc.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; font-style:italic;")
-
-            delete_btn = self.findChild(QPushButton, "deleteBtn")
-            if delete_btn:
-                delete_btn.setStyleSheet(
-                    f"QPushButton{{background:{c.RED}33;color:{c.RED};border:{sp.SEPARATOR}px solid {c.RED};border-radius:{sp.RADIUS_SM}px;font-weight:{ty.WEIGHT_BOLD};padding:0;}}"
-                    f"QPushButton:hover{{background:{c.RED}66;}}"
-                )
-
             # Update description
             self._update_description()
         except Exception as e:
@@ -1709,7 +1658,6 @@ class _RuleRow(QWidget, ThemedMixin):
     def _update_side_visibility(self, side: str, type_text: str):
         """Update visibility of input widgets based on type"""
         try:
-            c = self._c
             if side == "lhs":
                 stack = self.lhs_input_container
                 params = self.lhs_params
@@ -1729,9 +1677,6 @@ class _RuleRow(QWidget, ThemedMixin):
                 params.setVisible(True)
                 if shift_widget:
                     shift_widget.setVisible(True)
-                # sub_col row visibility is controlled by _on_indicator_changed
-                # when the indicator selection changes — don't force-show here
-                # because the current indicator may be single-output.
             elif type_text == "column":
                 stack.setCurrentIndex(1)
                 params.setVisible(False)
@@ -1754,7 +1699,6 @@ class _RuleRow(QWidget, ThemedMixin):
     def _on_indicator_changed(self, side: str, indicator_text: str):
         """Handle indicator selection change"""
         try:
-            c = self._c
             if side == "lhs":
                 params_w = self.lhs_params
                 type_w = self.lhs_type
@@ -1777,8 +1721,6 @@ class _RuleRow(QWidget, ThemedMixin):
                 # Update sub-column selector — show row only for multi-output indicators
                 if sub_col_w and sub_row_w:
                     sub_col_w.set_indicator(indicator)
-                    # SubColumnComboBox.set_indicator() sets its own visibility;
-                    # mirror that to the wrapper row so the label shows/hides too
                     sub_row_w.setVisible(sub_col_w.isVisible())
 
                 # FEATURE 3: Update suggested weight
@@ -1830,25 +1772,11 @@ class _RuleRow(QWidget, ThemedMixin):
                     self.lhs_indicator.setEditText(ind.upper())
                 params = lhs_data.get("params", {})
                 if ind in ALL_INDICATORS and self.lhs_params:
-                    # Seed _params from saved data BEFORE set_indicator so that
-                    # _rebuild() picks up saved values via self._params.get()
-                    # instead of always falling back to indicator defaults.
+                    # Seed _params from saved data BEFORE set_indicator
                     if params:
                         self.lhs_params._params = dict(params)
                     self.lhs_params.set_indicator(ind)
-                    # Force _on_params_changed so get_params() returns
-                    # the populated values even if the user never edits a field.
                     self.lhs_params._on_params_changed()
-                    if safe_hasattr(self.lhs_params, '_param_widgets') and not params:
-                        for pname, (widget, ptype) in self.lhs_params._param_widgets.items():
-                            if pname in params:
-                                try:
-                                    if ptype == "bool":
-                                        widget.setChecked(bool(params[pname]))
-                                    else:
-                                        widget.setText(str(params[pname]))
-                                except Exception as e:
-                                    logger.warning(f"Failed to set param {pname}: {e}")
 
                 # Restore sub_col selection for multi-output indicators
                 if self.lhs_sub_col:
@@ -1856,7 +1784,6 @@ class _RuleRow(QWidget, ThemedMixin):
                     saved_sub_col = lhs_data.get("sub_col", "")
                     if saved_sub_col:
                         self.lhs_sub_col.set_sub_col(saved_sub_col)
-                    # Show/hide the row wrapper to match the combo's visibility
                     if self._lhs_sub_row_widget:
                         self._lhs_sub_row_widget.setVisible(self.lhs_sub_col.isVisible())
             elif lhs_type == "column":
@@ -1884,25 +1811,11 @@ class _RuleRow(QWidget, ThemedMixin):
                     self.rhs_indicator.setEditText(ind.upper())
                 params = rhs_data.get("params", {})
                 if ind in ALL_INDICATORS and self.rhs_params:
-                    # Seed _params from saved data BEFORE set_indicator so that
-                    # _rebuild() picks up saved values via self._params.get()
-                    # instead of always falling back to indicator defaults.
+                    # Seed _params from saved data BEFORE set_indicator
                     if params:
                         self.rhs_params._params = dict(params)
                     self.rhs_params.set_indicator(ind)
-                    # Force _on_params_changed so get_params() returns
-                    # the populated values even if the user never edits a field.
                     self.rhs_params._on_params_changed()
-                    if safe_hasattr(self.rhs_params, '_param_widgets') and not params:
-                        for pname, (widget, ptype) in self.rhs_params._param_widgets.items():
-                            if pname in params:
-                                try:
-                                    if ptype == "bool":
-                                        widget.setChecked(bool(params[pname]))
-                                    else:
-                                        widget.setText(str(params[pname]))
-                                except Exception as e:
-                                    logger.warning(f"Failed to set param {pname}: {e}")
 
                 # Restore sub_col selection for multi-output indicators
                 if self.rhs_sub_col:
@@ -1910,7 +1823,6 @@ class _RuleRow(QWidget, ThemedMixin):
                     saved_sub_col = rhs_data.get("sub_col", "")
                     if saved_sub_col:
                         self.rhs_sub_col.set_sub_col(saved_sub_col)
-                    # Show/hide the row wrapper to match the combo's visibility
                     if self._rhs_sub_row_widget:
                         self._rhs_sub_row_widget.setVisible(self.rhs_sub_col.isVisible())
             elif rhs_type == "column":
@@ -1940,7 +1852,6 @@ class _RuleRow(QWidget, ThemedMixin):
     def collect(self) -> Dict:
         """Collect rule data as dictionary"""
         try:
-            c = self._c
             # Collect LHS
             lhs_type = self.lhs_type.currentText() if self.lhs_type else "indicator"
             lhs_shift = self.lhs_shift.value() if self.lhs_shift else 0
@@ -2019,10 +1930,12 @@ class _RuleRow(QWidget, ThemedMixin):
             return {"lhs": {"type": "scalar", "value": 0}, "op": ">", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0}
 
 
-# ── Signal Group Panel ───────────────────────────────────────────────────────
+# ── Signal Group Panel (Themed) ───────────────────────────────────────────────────────
+
+# ── Signal Group Panel (Themed with proper scrollbar) ─────────────────────────────────
 
 class _SignalGroupPanel(QWidget, ThemedMixin):
-    """Panel for editing rules of a single signal group"""
+    """Panel for editing rules of a single signal group with scrollable rules area"""
 
     rules_changed = pyqtSignal()
 
@@ -2042,21 +1955,23 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
 
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-            layout.setSpacing(self._sp.PAD_MD)
+            # Main layout
+            main_layout = QVBoxLayout(self)
+            main_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD,
+                                          self._sp.PAD_MD, self._sp.PAD_MD)
+            main_layout.setSpacing(self._sp.PAD_MD)
 
             # Header with controls
             header = self._build_header(color)
-            layout.addLayout(header)
+            main_layout.addLayout(header)
 
-            # Rules container (scrollable)
-            self._build_rules_area()
-            layout.addWidget(self._rules_scroll, 1)
+            # Rules container (scrollable area)
+            self._build_rules_scroll_area()
+            main_layout.addWidget(self._rules_scroll, 1)  # Give it stretch factor
 
             # Quick actions bar
             actions = self._build_actions_bar(color)
-            layout.addWidget(actions)
+            main_layout.addWidget(actions)
 
             self.apply_theme()
 
@@ -2084,13 +1999,56 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             c = self._c
             sp = self._sp
 
+            # Update scrollbar styles
+            if self._rules_scroll:
+                self._rules_scroll.setStyleSheet(f"""
+                    QScrollArea {{
+                        background: transparent;
+                        border: none;
+                    }}
+                    QScrollBar:vertical {{
+                        background: {c.BG_PANEL};
+                        width: {sp.ICON_MD}px;
+                        border-radius: {sp.RADIUS_MD}px;
+                        margin: 0px;
+                    }}
+                    QScrollBar::handle:vertical {{
+                        background: {c.BORDER};
+                        min-height: {sp.BTN_HEIGHT_SM}px;
+                        border-radius: {sp.RADIUS_MD}px;
+                    }}
+                    QScrollBar::handle:vertical:hover {{
+                        background: {c.BORDER_STRONG};
+                    }}
+                    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                        height: 0px;
+                    }}
+                    QScrollBar:horizontal {{
+                        background: {c.BG_PANEL};
+                        height: {sp.ICON_MD}px;
+                        border-radius: {sp.RADIUS_MD}px;
+                        margin: 0px;
+                    }}
+                    QScrollBar::handle:horizontal {{
+                        background: {c.BORDER};
+                        min-width: {sp.BTN_HEIGHT_SM}px;
+                        border-radius: {sp.RADIUS_MD}px;
+                    }}
+                    QScrollBar::handle:horizontal:hover {{
+                        background: {c.BORDER_STRONG};
+                    }}
+                    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                        width: 0px;
+                    }}
+                """)
+
             # Update badge if exists
             if self._rule_count_badge and self._color:
                 self._rule_count_badge.setStyleSheet(f"""
                     QLabel {{
                         color: {self._color};
                         background: {self._color}22;
-                        border: {sp.SEPARATOR}px solid {self._color}55;
+                        border: 1px solid {self._color}55;
                         border-radius: {sp.RADIUS_PILL}px;
                         padding: {sp.PAD_XS}px {sp.PAD_MD}px;
                         font-size: {self._ty.SIZE_XS}pt;
@@ -2113,7 +2071,7 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
 
             # Logic selector
             logic_group = QHBoxLayout()
-            logic_group.setSpacing(self._sp.GAP_XS)
+            logic_group.setSpacing(self._sp.GAP_SM)
 
             lbl_logic = QLabel("🔀 Logic:")
             lbl_logic.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
@@ -2124,16 +2082,20 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             self.logic_combo.setFixedWidth(90)
             self.logic_combo.setStyleSheet(f"""
                 QComboBox {{
-                    background: {c.BG_HOVER};
+                    background: {c.BG_INPUT};
                     color: {c.TEXT_MAIN};
-                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    border: 1px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
                     font-size: {self._ty.SIZE_BODY}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
+                    min-height: {self._sp.INPUT_HEIGHT}px;
                 }}
                 QComboBox:hover {{
-                    border: {self._sp.SEPARATOR}px solid {color};
+                    border-color: {color};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {self._sp.ICON_LG}px;
                 }}
             """)
             logic_group.addWidget(self.logic_combo)
@@ -2156,12 +2118,12 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
                     border-radius: {self._sp.RADIUS_SM}px;
                 }}
                 QCheckBox::indicator:unchecked {{
-                    background: {c.BG_HOVER};
-                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
+                    background: {c.BG_INPUT};
+                    border: 2px solid {c.BORDER};
                 }}
                 QCheckBox::indicator:checked {{
                     background: {color};
-                    border: {self._sp.SEPARATOR}px solid {color};
+                    border: 2px solid {color};
                 }}
             """)
             header.addWidget(self.enabled_chk)
@@ -2177,60 +2139,52 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             logger.error(f"[_SignalGroupPanel._build_header] Failed: {e}", exc_info=True)
             return QHBoxLayout()
 
-    def _build_rules_area(self):
-        """Build scrollable area for rules"""
+    def _build_rules_scroll_area(self):
+        """Build scrollable area for rules with proper theming"""
         try:
-            c = self._c
+            # Create scroll area
             self._rules_scroll = QScrollArea()
             self._rules_scroll.setWidgetResizable(True)
-            self._rules_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self._rules_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self._rules_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self._rules_scroll.setFrameShape(QFrame.NoFrame)
 
+            # Container for rules
             self._rules_container = QWidget()
-            self._rules_container.setStyleSheet(f"background: transparent;")
+            self._rules_container.setStyleSheet("background: transparent;")
 
+            # Layout for rules (vertical)
             self._rules_layout = QVBoxLayout(self._rules_container)
-            self._rules_layout.setContentsMargins(0, 0, 0, 0)
+            self._rules_layout.setContentsMargins(0, 0, self._sp.PAD_SM, 0)  # Add right margin for scrollbar
             self._rules_layout.setSpacing(self._sp.PAD_MD)
             self._rules_layout.setAlignment(Qt.AlignTop)
 
-            # Empty state
+            # Empty state label
             self._empty_lbl = QLabel("  ✨ No rules yet — click '+ Add Rule' to begin")
             self._empty_lbl.setAlignment(Qt.AlignCenter)
+            self._empty_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; padding:{self._sp.PAD_XL}px;")
             self._rules_layout.addWidget(self._empty_lbl)
 
+            # Add stretch at the end to keep rules at the top
+            self._rules_layout.addStretch()
+
             self._rules_scroll.setWidget(self._rules_container)
+
         except Exception as e:
-            logger.error(f"[_SignalGroupPanel._build_rules_area] Failed: {e}", exc_info=True)
+            logger.error(f"[_SignalGroupPanel._build_rules_scroll_area] Failed: {e}", exc_info=True)
 
     def _build_actions_bar(self, color: str) -> QWidget:
         """Build actions bar with add rule button and presets"""
         try:
-            c = self._c
             bar = QFrame()
             bar.setFixedHeight(50)
-            bar.setStyleSheet(f"background: transparent;")
+            bar.setStyleSheet("background: transparent;")
 
             layout = QHBoxLayout(bar)
             layout.setContentsMargins(0, 0, 0, 0)
 
             # Add rule button
-            add_btn = QPushButton("＋ Add Rule")
-            add_btn.setFixedHeight(36)
-            add_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BG_HOVER};
-                    color: {color};
-                    border: {self._sp.SEPARATOR}px solid {color};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
-                QPushButton:hover {{
-                    background: {color}22;
-                }}
-            """)
+            add_btn = _btn("＋ Add Rule", "BG_HOVER", "BORDER", "TEXT_MAIN", 120)
             add_btn.clicked.connect(self._add_rule)
             layout.addWidget(add_btn)
 
@@ -2242,27 +2196,27 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             self._presets_combo.setFixedWidth(200)
             self._presets_combo.setStyleSheet(f"""
                 QComboBox {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_DIM};
-                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_SM}px;
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
                     padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
                     font-size: {self._ty.SIZE_BODY}pt;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                }}
+                QComboBox:hover {{
+                    border-color: {color};
                 }}
                 QComboBox::drop-down {{
                     border: none;
-                    width: 24px;
-                }}
-                QComboBox:hover {{
-                    border: {self._sp.SEPARATOR}px solid {color};
+                    width: {self._sp.ICON_LG}px;
                 }}
                 QComboBox QAbstractItemView {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_MAIN};
                     selection-background-color: {color}40;
-                    selection-color: {c.TEXT_MAIN};
-                    border: {self._sp.SEPARATOR}px solid {color};
-                    min-width: 250px;
+                    selection-color: {self._c.TEXT_MAIN};
+                    border: 1px solid {color};
                 }}
             """)
             self._presets_combo.currentIndexChanged.connect(self._load_preset)
@@ -2271,21 +2225,7 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             layout.addStretch()
 
             # Clear all button
-            clear_btn = QPushButton("🗑 Clear All")
-            clear_btn.setFixedHeight(32)
-            clear_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {c.RED};
-                    border: {self._sp.SEPARATOR}px solid {c.RED}55;
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                }}
-                QPushButton:hover {{
-                    background: {c.RED}22;
-                }}
-            """)
+            clear_btn = _btn("🗑 Clear All", "BG_HOVER", "BORDER", "RED", 100)
             clear_btn.clicked.connect(self._clear_all_rules)
             layout.addWidget(clear_btn)
 
@@ -2300,14 +2240,22 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             count = len(self._rule_rows)
             if self._rule_count_badge:
                 self._rule_count_badge.setText(f"{count} rule{'s' if count != 1 else ''}")
+
+            # Update empty label visibility
             if self._empty_lbl:
                 self._empty_lbl.setVisible(count == 0)
 
-            if count > 0 and self._rules_scroll:
-                height = min(700, 100 + 220 * count)  # 220px per row (params + sub_col)
-                self._rules_scroll.setMinimumHeight(height)
-            elif self._rules_scroll:
-                self._rules_scroll.setMinimumHeight(120)
+            # Remove stretch if there are rules, add stretch if empty
+            if self._rules_layout:
+                # Remove all stretches first
+                for i in reversed(range(self._rules_layout.count())):
+                    item = self._rules_layout.itemAt(i)
+                    if item.spacerItem():
+                        self._rules_layout.removeItem(item)
+
+                # Add stretch at the end if we have rules
+                if count > 0:
+                    self._rules_layout.addStretch()
 
             self.rules_changed.emit()
         except Exception as e:
@@ -2319,17 +2267,28 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             if self._rules_container is None or self._rules_layout is None:
                 return
 
+            # Create new rule row
             row = _RuleRow(rule, parent=self._rules_container)
             row.deleted.connect(self._remove_rule)
-            self._rule_rows.append(row)
 
-            if self._empty_lbl and self._empty_lbl.isVisible():
-                self._rules_layout.insertWidget(0, row)
-                self._empty_lbl.hide()
+            # Insert before the stretch (if any)
+            if self._rules_layout.count() > 1:
+                # Insert before the last item (which is stretch)
+                self._rules_layout.insertWidget(self._rules_layout.count() - 1, row)
             else:
                 self._rules_layout.addWidget(row)
 
+            self._rule_rows.append(row)
+
+            # Hide empty label if visible
+            if self._empty_lbl and self._empty_lbl.isVisible():
+                self._empty_lbl.hide()
+
             self._update_rule_count()
+
+            # Scroll to the new rule
+            QTimer.singleShot(100, lambda: self._rules_scroll.ensureWidgetVisible(row))
+
         except Exception as e:
             logger.error(f"[_SignalGroupPanel._add_rule] Failed: {e}", exc_info=True)
 
@@ -2399,7 +2358,7 @@ class _SignalGroupPanel(QWidget, ThemedMixin):
             return {"logic": "AND", "enabled": True, "rules": []}
 
 
-# ── Signal Rules Tab ─────────────────────────────────────────────────────────
+# ── Signal Rules Tab (Themed) ─────────────────────────────────────────────────────────
 
 class _SignalRulesTab(QWidget, ThemedMixin):
     """Signal rules editor with tabs for each signal type"""
@@ -2487,13 +2446,14 @@ class _SignalRulesTab(QWidget, ThemedMixin):
                         padding: {sp.PAD_MD}px {sp.PAD_XL}px;
                         margin-right: {sp.GAP_XS}px;
                         font-size: {self._ty.SIZE_BODY}pt;
-                        font-weight: {self._ty.WEIGHT_BOLD};
+                        font-weight: {self._ty.WEIGHT_NORMAL};
                         min-width: 120px;
                     }}
                     QTabBar::tab:selected {{
                         background: {c.BG_PANEL};
                         color: {c.TEXT_MAIN};
                         border-bottom: {sp.PAD_XS}px solid {c.BLUE};
+                        font-weight: {self._ty.WEIGHT_BOLD};
                     }}
                     QTabBar::tab:hover:!selected {{
                         background: {c.BORDER};
@@ -2523,15 +2483,20 @@ class _SignalRulesTab(QWidget, ThemedMixin):
             self.conflict_combo.setFixedWidth(130)
             self.conflict_combo.setStyleSheet(f"""
                 QComboBox {{
-                    background: {c.BG_HOVER};
+                    background: {c.BG_INPUT};
                     color: {c.TEXT_MAIN};
-                    border: {self._sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
+                    border: 1px solid {c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
                     font-size: {self._ty.SIZE_BODY}pt;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
                 }}
                 QComboBox:hover {{
-                    border: {self._sp.SEPARATOR}px solid {c.BLUE};
+                    border-color: {c.BORDER_FOCUS};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {self._sp.ICON_LG}px;
                 }}
             """)
             layout.addWidget(self.conflict_combo)
@@ -2569,39 +2534,11 @@ class _SignalRulesTab(QWidget, ThemedMixin):
             layout.addStretch()
 
             # Quick enable/disable all
-            self._enable_all_btn = QPushButton("✓ Enable All")
-            self._enable_all_btn.setFixedHeight(28)
-            self._enable_all_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BG_HOVER};
-                    color: {c.GREEN};
-                    border: {self._sp.SEPARATOR}px solid {c.GREEN}55;
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_XS}pt;
-                }}
-                QPushButton:hover {{
-                    background: {c.GREEN}22;
-                }}
-            """)
+            self._enable_all_btn = _btn("✓ Enable All", "BG_HOVER", "BORDER", "GREEN", 120)
             self._enable_all_btn.clicked.connect(self._toggle_all_enabled)
             layout.addWidget(self._enable_all_btn)
 
-            self._disable_all_btn = QPushButton("✗ Disable All")
-            self._disable_all_btn.setFixedHeight(28)
-            self._disable_all_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BG_HOVER};
-                    color: {c.RED};
-                    border: {self._sp.SEPARATOR}px solid {c.RED}55;
-                    border-radius: {self._sp.RADIUS_SM}px;
-                    padding: {self._sp.PAD_XS}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_XS}pt;
-                }}
-                QPushButton:hover {{
-                    background: {c.RED}22;
-                }}
-            """)
+            self._disable_all_btn = _btn("✗ Disable All", "BG_HOVER", "BORDER", "RED", 120)
             self._disable_all_btn.clicked.connect(self._toggle_all_disabled)
             layout.addWidget(self._disable_all_btn)
 
@@ -2665,7 +2602,7 @@ class _SignalRulesTab(QWidget, ThemedMixin):
             return {"conflict_resolution": "WAIT"}
 
 
-# ── Info Tab ─────────────────────────────────────────────────────────────────
+# ── Info Tab (Themed) ─────────────────────────────────────────────────────────────────
 
 class _InfoTab(QWidget, ThemedMixin):
     def __init__(self, parent=None):
@@ -2684,13 +2621,27 @@ class _InfoTab(QWidget, ThemedMixin):
             layout.setSpacing(self._sp.PAD_MD)
             layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-            lbl = QLabel("Strategy name and description.")
-            lbl.setObjectName("info_lbl")
-            layout.addRow("", lbl)
+            info_lbl = QLabel("Strategy name and description.")
+            info_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-style:italic; padding-bottom:{self._sp.PAD_MD}px;")
+            layout.addRow("", info_lbl)
 
             self.name_edit = QLineEdit()
             self.name_edit.setPlaceholderText("e.g. EMA Crossover Strategy")
             self.name_edit.setMinimumWidth(300)
+            self.name_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                }}
+                QLineEdit:focus {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
             layout.addRow("📝 Name:", self.name_edit)
 
             self.desc_edit = QTextEdit()
@@ -2698,35 +2649,46 @@ class _InfoTab(QWidget, ThemedMixin):
                 "Describe when this strategy fires, what market conditions it suits, etc."
             )
             self.desc_edit.setMaximumHeight(120)
+            self.desc_edit.setStyleSheet(f"""
+                QTextEdit {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QTextEdit:focus {{
+                    border-color: {self._c.BORDER_FOCUS};
+                }}
+            """)
             layout.addRow("📋 Description:", self.desc_edit)
 
+            # Separator
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
-            sep.setObjectName("sep")
+            sep.setStyleSheet(f"background:{self._c.BORDER}; max-height:{self._sp.SEPARATOR}px; margin:{self._sp.PAD_LG}px 0;")
             layout.addRow("", sep)
 
-            stats_lbl = QLabel("📊 Strategy Statistics")
-            stats_lbl.setObjectName("stats_header")
-            layout.addRow("", stats_lbl)
+            stats_header = QLabel("📊 Strategy Statistics")
+            stats_header.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_LG}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            layout.addRow("", stats_header)
 
-            self.total_rules_lbl = QLabel("0")
-            self.total_rules_lbl.setObjectName("stat_value")
+            self.total_rules_lbl = ValueLabel("0")
             layout.addRow("Total Rules:", self.total_rules_lbl)
 
-            self.unique_indicators_lbl = QLabel("0")
-            self.unique_indicators_lbl.setObjectName("stat_value")
+            self.unique_indicators_lbl = ValueLabel("0")
             layout.addRow("Unique Indicators:", self.unique_indicators_lbl)
 
-            self.enabled_groups_lbl = QLabel("0/5")
-            self.enabled_groups_lbl.setObjectName("stat_value")
+            self.enabled_groups_lbl = ValueLabel("0/5")
             layout.addRow("Enabled Groups:", self.enabled_groups_lbl)
 
             self.created_lbl = QLabel("—")
-            self.created_lbl.setObjectName("meta_value")
+            self.created_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt;")
             layout.addRow("Created:", self.created_lbl)
 
             self.updated_lbl = QLabel("—")
-            self.updated_lbl.setObjectName("meta_value")
+            self.updated_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt;")
             layout.addRow("Last saved:", self.updated_lbl)
 
             self.apply_theme()
@@ -2748,29 +2710,8 @@ class _InfoTab(QWidget, ThemedMixin):
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the info tab."""
         try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            info_lbl = self.findChild(QLabel, "info_lbl")
-            if info_lbl:
-                info_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; font-style:italic;")
-
-            sep = self.findChild(QFrame, "sep")
-            if sep:
-                sep.setStyleSheet(f"QFrame{{background:{c.BORDER};max-height:{sp.SEPARATOR}px;margin:{sp.PAD_LG}px 0;}}")
-
-            stats_header = self.findChild(QLabel, "stats_header")
-            if stats_header:
-                stats_header.setStyleSheet(f"color:{c.BLUE}; font-size:{ty.SIZE_LG}pt; font-weight:{ty.WEIGHT_BOLD};")
-
-            stat_values = self.findChildren(QLabel, "stat_value")
-            for lbl in stat_values:
-                lbl.setStyleSheet(f"color:{c.GREEN}; font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;")
-
-            meta_values = self.findChildren(QLabel, "meta_value")
-            for lbl in meta_values:
-                lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt;")
+            # Update value labels (they handle their own styling)
+            pass
         except Exception as e:
             logger.error(f"[_InfoTab.apply_theme] Failed: {e}", exc_info=True)
 
@@ -2842,7 +2783,7 @@ class _InfoTab(QWidget, ThemedMixin):
             return {"name": "", "description": ""}
 
 
-# ── Indicators Tab ───────────────────────────────────────────────────────────
+# ── Indicators Tab (Themed) ───────────────────────────────────────────────────────────
 
 class _IndicatorsTab(QScrollArea, ThemedMixin):
     """Dynamic Indicators Tab - Shows all indicators organized by category"""
@@ -2889,9 +2830,30 @@ class _IndicatorsTab(QScrollArea, ThemedMixin):
             sp = self._sp
             ty = self._ty
 
-            info_lbl = self.findChild(QLabel, "info_lbl")
-            if info_lbl:
-                info_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; padding:{sp.PAD_MD}px; background:{c.BG_HOVER}; border-radius:{sp.RADIUS_MD}px;")
+            # Set scrollbar styles
+            self.setStyleSheet(f"""
+                QScrollArea {{
+                    background: {c.BG_MAIN};
+                    border: none;
+                }}
+                QScrollBar:vertical {{
+                    background: {c.BG_PANEL};
+                    width: {sp.ICON_MD}px;
+                    border-radius: {sp.RADIUS_MD}px;
+                    margin: 0px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {c.BORDER};
+                    min-height: {sp.BTN_HEIGHT_SM}px;
+                    border-radius: {sp.RADIUS_MD}px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {c.BORDER_STRONG};
+                }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                    height: 0px;
+                }}
+            """)
         except Exception as e:
             logger.error(f"[_IndicatorsTab.apply_theme] Failed: {e}", exc_info=True)
 
@@ -2908,7 +2870,20 @@ class _IndicatorsTab(QScrollArea, ThemedMixin):
             search_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt;")
             self.search_edit = QLineEdit()
             self.search_edit.setPlaceholderText("Type to filter indicators...")
-            self.search_edit.setFixedHeight(32)
+            self.search_edit.setFixedHeight(36)
+            self.search_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background: {c.BG_INPUT};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                }}
+                QLineEdit:focus {{
+                    border-color: {c.BORDER_FOCUS};
+                }}
+            """)
             self.search_edit.textChanged.connect(self._filter_indicators)
             search_layout.addWidget(search_lbl)
             search_layout.addWidget(self.search_edit)
@@ -2919,7 +2894,7 @@ class _IndicatorsTab(QScrollArea, ThemedMixin):
                 "📊 AVAILABLE INDICATORS (pandas_ta)\n"
                 "The following indicators are available for your strategy rules."
             )
-            info_lbl.setObjectName("info_lbl")
+            info_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; padding:{sp.PAD_MD}px; background:{c.BG_HOVER}; border-radius:{sp.RADIUS_MD}px;")
             info_lbl.setWordWrap(True)
             self._layout.addWidget(info_lbl)
 
@@ -2967,28 +2942,14 @@ class _IndicatorsTab(QScrollArea, ThemedMixin):
             sp = self._sp
             ty = self._ty
 
-            card = QFrame()
-            card.setStyleSheet(f"""
-                QFrame {{
-                    background: {c.BG_PANEL};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_LG}px;
-                    padding: {sp.PAD_MD}px;
-                }}
-                QFrame:hover {{
-                    border: {sp.SEPARATOR}px solid {c.BLUE};
-                    background: {c.BG_HOVER};
-                }}
-            """)
-
-            # Taller card when sub-columns exist
+            card = ModernCard()
             sub_cols = get_indicator_sub_columns(indicator_name)
-            card_height = 240 if sub_cols else 200
+            card_height = 260 if sub_cols else 220
             card.setFixedSize(260, card_height)
 
             layout = QVBoxLayout(card)
             layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-            layout.setSpacing(sp.GAP_XS)
+            layout.setSpacing(sp.GAP_SM)
 
             # Indicator name
             name_lbl = QLabel(indicator_name.upper())
@@ -3073,7 +3034,7 @@ class _IndicatorsTab(QScrollArea, ThemedMixin):
         return {}
 
 
-# ── Strategy List Panel ──────────────────────────────────────────────────────
+# ── Strategy List Panel (Themed) ──────────────────────────────────────────────────────
 
 class _StrategyListPanel(QWidget, ThemedMixin):
     strategy_selected = pyqtSignal(str)
@@ -3091,7 +3052,7 @@ class _StrategyListPanel(QWidget, ThemedMixin):
             theme_manager.density_changed.connect(self.apply_theme)
 
             self._current_slug: Optional[str] = None
-            self.setFixedWidth(260)
+            self.setFixedWidth(280)
 
             root = QVBoxLayout(self)
             root.setContentsMargins(0, 0, 0, 0)
@@ -3099,17 +3060,17 @@ class _StrategyListPanel(QWidget, ThemedMixin):
 
             # Header
             hdr = QLabel("  📋 STRATEGIES")
-            hdr.setObjectName("header")
+            hdr.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{self._sp.PAD_MD}px; background:{self._c.BG_PANEL};")
             root.addWidget(hdr)
 
             # Action buttons
             btn_row = QHBoxLayout()
             btn_row.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_SM)
             btn_row.setSpacing(self._sp.GAP_SM)
-            self.new_btn = _btn("＋ New", "GREEN", "GREEN_BRIGHT", min_w=80)
-            self.new_btn.setFixedHeight(34)
-            self.dup_btn = _btn("⧉ Duplicate", "BG_HOVER", "BORDER", min_w=90)
-            self.dup_btn.setFixedHeight(34)
+            self.new_btn = _btn("＋ New", "GREEN", "GREEN_BRIGHT", "TEXT_INVERSE", 80)
+            self.new_btn.setFixedHeight(36)
+            self.dup_btn = _btn("⧉ Duplicate", "BG_HOVER", "BORDER", "TEXT_MAIN", 90)
+            self.dup_btn.setFixedHeight(36)
             self.new_btn.clicked.connect(self._on_new)
             self.dup_btn.clicked.connect(self._on_dup)
             btn_row.addWidget(self.new_btn)
@@ -3118,7 +3079,7 @@ class _StrategyListPanel(QWidget, ThemedMixin):
 
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
-            sep.setObjectName("sep")
+            sep.setStyleSheet(f"QFrame{{border:none;background:{self._c.BORDER};max-height:{self._sp.SEPARATOR}px;}}")
             root.addWidget(sep)
 
             # List
@@ -3126,22 +3087,42 @@ class _StrategyListPanel(QWidget, ThemedMixin):
             self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
             self.list_widget.currentItemChanged.connect(self._on_item_changed)
             self.list_widget.itemDoubleClicked.connect(self._on_double_click)
+            self.list_widget.setStyleSheet(f"""
+                QListWidget {{
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_MAIN};
+                    border: none;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    outline: none;
+                }}
+                QListWidget::item {{
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    border-bottom: 1px solid {self._c.BORDER};
+                }}
+                QListWidget::item:selected {{
+                    background: {self._c.BG_SELECTED};
+                    color: {self._c.BLUE};
+                }}
+                QListWidget::item:hover {{
+                    background: {self._c.BG_HOVER};
+                }}
+            """)
             root.addWidget(self.list_widget, 1)
 
             sep2 = QFrame()
             sep2.setFrameShape(QFrame.HLine)
-            sep2.setObjectName("sep")
+            sep2.setStyleSheet(f"QFrame{{border:none;background:{self._c.BORDER};max-height:{self._sp.SEPARATOR}px;}}")
             root.addWidget(sep2)
 
             # Bottom buttons
             foot = QVBoxLayout()
             foot.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_MD)
             foot.setSpacing(self._sp.GAP_SM)
-            self.activate_btn = _btn("⚡ Activate Strategy", "BLUE_DARK", "BLUE")
-            self.activate_btn.setFixedHeight(38)
+            self.activate_btn = _btn("⚡ Activate Strategy", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 160)
+            self.activate_btn.setFixedHeight(40)
             self.activate_btn.clicked.connect(self._on_activate)
-            self.delete_btn = _btn("🗑 Delete", "RED", "RED_BRIGHT", "RED")
-            self.delete_btn.setFixedHeight(34)
+            self.delete_btn = _btn("🗑 Delete", "RED", "RED_BRIGHT", "TEXT_INVERSE", 100)
+            self.delete_btn.setFixedHeight(36)
             self.delete_btn.clicked.connect(self._on_delete)
             foot.addWidget(self.activate_btn)
             foot.addWidget(self.delete_btn)
@@ -3170,14 +3151,6 @@ class _StrategyListPanel(QWidget, ThemedMixin):
             sp = self._sp
 
             self.setStyleSheet(f"background:{c.BG_PANEL}; border-right:{sp.SEPARATOR}px solid {c.BORDER};")
-
-            header = self.findChild(QLabel, "header")
-            if header:
-                header.setStyleSheet(f"color:{c.BLUE}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{sp.PAD_MD}px {sp.PAD_MD}px; background:{c.BG_PANEL};")
-
-            seps = self.findChildren(QFrame, "sep")
-            for sep in seps:
-                sep.setStyleSheet(f"QFrame{{border:none;background:{c.BORDER};max-height:{sp.SEPARATOR}px;}}")
 
             # Refresh list colors
             self._refresh_list_colors()
@@ -3339,13 +3312,14 @@ class _StrategyListPanel(QWidget, ThemedMixin):
             logger.error(f"[_StrategyListPanel._on_delete] Failed: {e}", exc_info=True)
 
 
-# ── Main Editor Window ───────────────────────────────────────────────────────
+# ── Main Editor Window (Themed) ───────────────────────────────────────────────────────
 
 class StrategyEditorWindow(QDialog, ThemedMixin):
     """
     Full-page strategy editor with import/export functionality.
     Uses database-backed strategy manager.
 
+    MODERN MINIMALIST DESIGN - Matches other dialogs.
     FEATURE 3: Supports rule weights and confidence threshold configuration.
     FEATURE: Shift controls for all indicators and columns
     FEATURE: Help & Documentation tab with interactive examples
@@ -3367,6 +3341,11 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             self._dirty = False
 
             self.setWindowTitle("📋 Strategy Editor")
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
             self.resize(1500, 900)
             self.setMinimumSize(1300, 700)
 
@@ -3381,22 +3360,7 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
 
         except Exception as e:
             logger.critical(f"[StrategyEditorWindow.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent, Qt.Window)
-            self.setWindowTitle("Strategy Editor - ERROR")
-            self.resize(800, 600)
-
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
-
-            error_label = QLabel(f"Failed to initialize strategy editor:\n{e}")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px;")
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.setObjectName("closeBtn")
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn)
+            self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
@@ -3419,6 +3383,83 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
         self.save_btn = None
         self.status_lbl = None
         self.confidence_threshold_spin = None
+        self.main_card = None
+
+    def _create_error_dialog(self, parent):
+        """Create error dialog if initialization fails"""
+        try:
+            super().__init__(parent, Qt.Window)
+            self.setWindowTitle("Strategy Editor - ERROR")
+            self.setMinimumSize(800, 600)
+
+            # Set window flags for modern look
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
+
+            main_card = ModernCard(self, elevated=True)
+            layout = QVBoxLayout(main_card)
+            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
+                                     self._sp.PAD_XL, self._sp.PAD_XL)
+
+            error_label = QLabel(f"❌ Failed to initialize strategy editor:")
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
+            layout.addWidget(error_label)
+
+            close_btn = _btn("Close", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 100)
+            close_btn.clicked.connect(self.reject)
+            layout.addWidget(close_btn, 0, Qt.AlignCenter)
+
+            root.addWidget(main_card)
+
+        except Exception as e:
+            logger.error(f"[StrategyEditorWindow._create_error_dialog] Failed: {e}", exc_info=True)
+
+    def _create_title_bar(self):
+        """Create custom title bar with close button."""
+        title_bar = QWidget()
+        title_bar.setFixedHeight(50)
+        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+
+        title = QLabel("📋 Strategy Editor")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {self._c.TEXT_MAIN};
+                font-size: {self._ty.SIZE_LG}pt;
+                font-weight: {self._ty.WEIGHT_BOLD};
+            }}
+        """)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {self._c.BG_HOVER};
+                color: {self._c.TEXT_DIM};
+                border: none;
+                border-radius: {self._sp.RADIUS_SM}px;
+                font-size: {self._ty.SIZE_MD}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {self._c.RED};
+                color: white;
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        return title_bar
 
     def apply_theme(self, _: str = None) -> None:
         """Apply theme colors to the editor window."""
@@ -3427,8 +3468,9 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             sp = self._sp
             ty = self._ty
 
-            # Apply main stylesheet
-            self.setStyleSheet(_ss())
+            # Update main card style
+            if hasattr(self, 'main_card') and self.main_card:
+                self.main_card._apply_style()
 
             # Update title bar elements
             if self._title_lbl:
@@ -3440,11 +3482,12 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                     QPushButton {{
                         background: {c.BG_HOVER};
                         color: {c.BLUE};
-                        border: {sp.SEPARATOR}px solid {c.BLUE};
+                        border: 1px solid {c.BLUE};
                         border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                         font-size: {ty.SIZE_BODY}pt;
                         font-weight: {ty.WEIGHT_BOLD};
+                        min-width: 100px;
                     }}
                     QPushButton:hover {{
                         background: {c.BLUE}22;
@@ -3456,11 +3499,12 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                     QPushButton {{
                         background: {c.BG_HOVER};
                         color: {c.GREEN};
-                        border: {sp.SEPARATOR}px solid {c.GREEN};
+                        border: 1px solid {c.GREEN};
                         border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                         font-size: {ty.SIZE_BODY}pt;
                         font-weight: {ty.WEIGHT_BOLD};
+                        min-width: 100px;
                     }}
                     QPushButton:hover {{
                         background: {c.GREEN}22;
@@ -3474,17 +3518,18 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             if self.activate_btn:
                 self.activate_btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: {c.BLUE_DARK};
+                        background: {c.BLUE};
                         color: {c.TEXT_INVERSE};
-                        border: {sp.SEPARATOR}px solid {c.BLUE};
+                        border: none;
                         border-radius: {sp.RADIUS_MD}px;
                         padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                         font-size: {ty.SIZE_BODY}pt;
                         font-weight: {ty.WEIGHT_BOLD};
-                        min-width: 220px;
+                        min-width: 200px;
+                        min-height: 40px;
                     }}
                     QPushButton:hover {{
-                        background: {c.BLUE};
+                        background: {c.BLUE_DARK};
                     }}
                 """)
 
@@ -3493,9 +3538,9 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                     QPushButton {{
                         background: {c.BG_HOVER};
                         color: {c.TEXT_MAIN};
-                        border: {sp.SEPARATOR}px solid {c.BORDER};
+                        border: 1px solid {c.BORDER};
                         border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                         font-size: {ty.SIZE_BODY}pt;
                         font-weight: {ty.WEIGHT_BOLD};
                         min-width: 100px;
@@ -3510,12 +3555,13 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                     QPushButton {{
                         background: {c.GREEN};
                         color: {c.TEXT_INVERSE};
-                        border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT};
+                        border: none;
                         border-radius: {sp.RADIUS_MD}px;
                         padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                         font-size: {ty.SIZE_BODY}pt;
                         font-weight: {ty.WEIGHT_BOLD};
                         min-width: 120px;
+                        min-height: 40px;
                     }}
                     QPushButton:hover {{
                         background: {c.GREEN_BRIGHT};
@@ -3525,23 +3571,6 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             if self.status_lbl:
                 self.status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
 
-            close_btn = self.findChild(QPushButton, "closeBtn")
-            if close_btn:
-                close_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.RED};
-                        color: {c.TEXT_INVERSE};
-                        border: {sp.SEPARATOR}px solid {c.RED_BRIGHT};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                    }}
-                    QPushButton:hover {{
-                        background: {c.RED_BRIGHT};
-                    }}
-                """)
-
             logger.debug("[StrategyEditorWindow.apply_theme] Applied theme")
         except Exception as e:
             logger.error(f"[StrategyEditorWindow.apply_theme] Failed: {e}", exc_info=True)
@@ -3549,18 +3578,38 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
     def _build_ui(self):
         """Build the main UI"""
         try:
-            c = self._c
-            sp = self._sp
-
-            root = QHBoxLayout(self)
-            root.setContentsMargins(0, 0, 0, 0)
+            # Root layout with margins for shadow effect
+            root = QVBoxLayout(self)
+            root.setContentsMargins(20, 20, 20, 20)
             root.setSpacing(0)
+
+            # Main container card
+            self.main_card = ModernCard(self, elevated=True)
+            main_layout = QVBoxLayout(self.main_card)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
+
+            # Custom title bar
+            title_bar = self._create_title_bar()
+            main_layout.addWidget(title_bar)
+
+            # Separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
+            main_layout.addWidget(separator)
+
+            # Content area
+            content = QWidget()
+            content_layout = QHBoxLayout(content)
+            content_layout.setContentsMargins(0, 0, 0, 0)
+            content_layout.setSpacing(0)
 
             # Left: strategy list
             self._list_panel = _StrategyListPanel()
             self._list_panel.strategy_selected.connect(self._on_strategy_selected)
             self._list_panel.strategy_activated.connect(self._on_strategy_activated)
-            root.addWidget(self._list_panel)
+            content_layout.addWidget(self._list_panel)
 
             # Right: editor
             right = QWidget()
@@ -3574,6 +3623,35 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
 
             # Tabs - Now with Help tab!
             self._tabs = QTabWidget()
+            self._tabs.setDocumentMode(True)
+            self._tabs.tabBar().setExpanding(True)
+            self._tabs.setStyleSheet(f"""
+                QTabWidget::pane {{
+                    border: none;
+                    background: {self._c.BG_PANEL};
+                }}
+                QTabBar::tab {{
+                    background: {self._c.BG_HOVER};
+                    color: {self._c.TEXT_DIM};
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
+                    border: none;
+                    border-right: 1px solid {self._c.BORDER};
+                    font-size: {self._ty.SIZE_BODY}pt;
+                    font-weight: {self._ty.WEIGHT_NORMAL};
+                    min-width: 100px;
+                }}
+                QTabBar::tab:selected {{
+                    background: {self._c.BG_PANEL};
+                    color: {self._c.TEXT_MAIN};
+                    border-bottom: 2px solid {self._c.BLUE};
+                    font-weight: {self._ty.WEIGHT_BOLD};
+                }}
+                QTabBar::tab:hover:!selected {{
+                    background: {self._c.BORDER};
+                    color: {self._c.TEXT_MAIN};
+                }}
+            """)
+
             self._info_tab = _InfoTab()
             self._ind_tab = _IndicatorsTab()
             self._rules_tab = _SignalRulesTab()
@@ -3589,7 +3667,10 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             # Footer
             right_layout.addWidget(self._build_footer())
 
-            root.addWidget(right, 1)
+            content_layout.addWidget(right, 1)
+
+            main_layout.addWidget(content)
+            root.addWidget(self.main_card)
         except Exception as e:
             logger.error(f"[StrategyEditorWindow._build_ui] Failed: {e}", exc_info=True)
 
@@ -3601,16 +3682,17 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             ty = self._ty
 
             bar = QFrame()
-            bar.setStyleSheet(f"QFrame{{background:{c.BG_PANEL}; border-bottom:{sp.SEPARATOR}px solid {c.BORDER};}}")
-            bar.setFixedHeight(60)
+            bar.setStyleSheet(f"QFrame{{background:{c.BG_PANEL}; border-bottom:1px solid {c.BORDER};}}")
+            bar.setFixedHeight(70)
             h = QHBoxLayout(bar)
             h.setContentsMargins(sp.PAD_XL, 0, sp.PAD_XL, 0)
             h.setSpacing(sp.PAD_MD)
 
             self._title_lbl = QLabel("Select a strategy →")
+            self._title_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_LG}pt; font-weight:{ty.WEIGHT_BOLD};")
             h.addWidget(self._title_lbl)
 
-            self._active_badge = QLabel()
+            self._active_badge = StatusBadge()
             self._active_badge.setFixedHeight(30)
             self._active_badge.hide()
             h.addWidget(self._active_badge)
@@ -3631,18 +3713,32 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             self.confidence_threshold_spin.setValue(0.6)
             self.confidence_threshold_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
             self.confidence_threshold_spin.valueChanged.connect(lambda: self._set_dirty(True))
+            self.confidence_threshold_spin.setStyleSheet(f"""
+                QDoubleSpinBox {{
+                    background: {c.BG_INPUT};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    padding: {sp.PAD_SM}px;
+                    font-size: {ty.SIZE_BODY}pt;
+                    min-width: 80px;
+                }}
+                QDoubleSpinBox:focus {{
+                    border-color: {c.BORDER_FOCUS};
+                }}
+            """)
             conf_group.addWidget(self.confidence_threshold_spin)
 
             h.addLayout(conf_group)
 
             # Import/Export buttons
             self._import_btn = QPushButton("📥 Import")
-            h.addWidget(self._import_btn)
             self._import_btn.clicked.connect(self._on_import)
+            h.addWidget(self._import_btn)
 
             self._export_btn = QPushButton("📤 Export")
-            h.addWidget(self._export_btn)
             self._export_btn.clicked.connect(self._on_export)
+            h.addWidget(self._export_btn)
 
             self._dirty_lbl = QLabel("● Unsaved changes")
             self._dirty_lbl.hide()
@@ -3656,30 +3752,27 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
     def _build_footer(self) -> QWidget:
         """Build the footer with action buttons"""
         try:
-            c = self._c
-            sp = self._sp
-
             bar = QFrame()
-            bar.setFixedHeight(70)
-            bar.setStyleSheet(f"QFrame{{background:{c.BG_PANEL}; border-top:{sp.SEPARATOR}px solid {c.BORDER};}}")
+            bar.setFixedHeight(80)
+            bar.setStyleSheet(f"QFrame{{background:{self._c.BG_PANEL}; border-top:1px solid {self._c.BORDER};}}")
             h = QHBoxLayout(bar)
-            h.setContentsMargins(sp.PAD_XL, sp.PAD_SM, sp.PAD_XL, sp.PAD_SM)
-            h.setSpacing(sp.PAD_MD)
+            h.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_SM, self._sp.PAD_XL, self._sp.PAD_SM)
+            h.setSpacing(self._sp.PAD_MD)
 
             self.activate_btn = QPushButton("⚡ Activate This Strategy")
-            self.activate_btn.setFixedHeight(42)
+            self.activate_btn.setFixedHeight(44)
             self.activate_btn.clicked.connect(self._on_activate)
             h.addWidget(self.activate_btn)
 
             h.addStretch()
 
             self.revert_btn = QPushButton("↺ Revert")
-            self.revert_btn.setFixedHeight(38)
+            self.revert_btn.setFixedHeight(40)
             self.revert_btn.clicked.connect(self._on_revert)
             h.addWidget(self.revert_btn)
 
             self.save_btn = QPushButton("💾 Save")
-            self.save_btn.setFixedHeight(42)
+            self.save_btn.setFixedHeight(44)
             self.save_btn.clicked.connect(self._on_save)
             h.addWidget(self.save_btn)
 
@@ -3739,14 +3832,12 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             name = strategy.get("name", slug) if strategy else slug
             if self._title_lbl:
                 self._title_lbl.setText(name)
+                self._title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{self._ty.SIZE_LG}pt; font-weight:{self._ty.WEIGHT_BOLD};")
 
             is_active = strategy_manager.get_active_slug() == slug
             if is_active and self._active_badge:
-                self._active_badge.setText("  ⚡ ACTIVE  ")
-                self._active_badge.setStyleSheet(
-                    f"color:{c.BLUE}; background:{c.BLUE}22; border:{self._sp.SEPARATOR}px solid {c.BLUE};"
-                    f" border-radius:{self._sp.RADIUS_MD}px; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{self._sp.PAD_XS}px {self._sp.PAD_MD}px;"
-                )
+                self._active_badge.setText("⚡ ACTIVE")
+                self._active_badge.set_status("success")
                 self._active_badge.show()
             elif self._active_badge:
                 self._active_badge.hide()
@@ -3812,11 +3903,8 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                 self._list_panel.refresh()
 
             if self._active_badge:
-                self._active_badge.setText("  ⚡ ACTIVE  ")
-                self._active_badge.setStyleSheet(
-                    f"color:{c.BLUE}; background:{c.BLUE}22; border:{self._sp.SEPARATOR}px solid {c.BLUE};"
-                    f" border-radius:{self._sp.RADIUS_MD}px; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{self._sp.PAD_XS}px {self._sp.PAD_MD}px;"
-                )
+                self._active_badge.setText("⚡ ACTIVE")
+                self._active_badge.set_status("success")
                 self._active_badge.show()
 
             if self.status_lbl:
@@ -3876,6 +3964,7 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                 self._set_dirty(False)
                 if self._title_lbl:
                     self._title_lbl.setText(name)
+                    self._title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{self._ty.SIZE_LG}pt; font-weight:{self._ty.WEIGHT_BOLD};")
                 if self._list_panel is not None:
                     self._list_panel.refresh()
                 if self.status_lbl:
@@ -3953,6 +4042,7 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
             self._rules_tab = None
             self._help_tab = None
             self._tabs = None
+            self.main_card = None
 
             logger.info("[StrategyEditorWindow] Cleanup completed")
 
@@ -3973,7 +4063,7 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                     return
 
             self.cleanup()
-            event.accept()
+            super().closeEvent(event)
 
         except Exception as e:
             logger.error(f"[StrategyEditorWindow.closeEvent] Failed: {e}", exc_info=True)

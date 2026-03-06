@@ -98,19 +98,21 @@ class TradeStateManager:
             logger.debug("[TradeStateManager] No backtest state to update")
             return
 
-        with self._lock:
-            try:
-                # Use the update_from_dict method that handles computed properties
-                self._state.update_from_dict(backtest_state)
-                logger.debug(f"[TradeStateManager] Updated state from backtest with {len(backtest_state)} fields")
-            except Exception as e:
-                logger.error(f"[TradeStateManager] Failed to update from backtest: {e}", exc_info=True)
+        # TradeState.update_from_dict() is already thread-safe internally.
+        # Do NOT hold self._lock here: it would create a lock-order dependency
+        # (manager lock → state lock) that can deadlock if any other path
+        # acquires them in the opposite order.
+        try:
+            self._state.update_from_dict(backtest_state)
+            logger.debug(f"[TradeStateManager] Updated state from backtest with {len(backtest_state)} fields")
+        except Exception as e:
+            logger.error(f"[TradeStateManager] Failed to update from backtest: {e}", exc_info=True)
 
     def reset_for_backtest(self) -> None:
         """Reset the state for a new backtest run."""
-        with self._lock:
-            self._state.reset_trade_attributes(None)
-            logger.debug("[TradeStateManager] Reset state for backtest")
+        # reset_trade_attributes() is internally thread-safe.
+        self._state.reset_trade_attributes(None)
+        logger.debug("[TradeStateManager] Reset state for backtest")
 
     def save_state(self) -> Dict[str, Any]:
         """
@@ -137,19 +139,17 @@ class TradeStateManager:
             logger.warning("[TradeStateManager] No saved state to restore")
             return
 
-        with self._lock:
-            try:
-                # Use update_from_dict that handles computed properties
-                self._state.update_from_dict(saved_state)
-                logger.debug(f"[TradeStateManager] Restored state with {len(saved_state)} fields")
-            except Exception as e:
-                logger.error(f"[TradeStateManager] Failed to restore state: {e}", exc_info=True)
+        # TradeState.update_from_dict() is internally thread-safe.
+        try:
+            self._state.update_from_dict(saved_state)
+            logger.debug(f"[TradeStateManager] Restored state with {len(saved_state)} fields")
+        except Exception as e:
+            logger.error(f"[TradeStateManager] Failed to restore state: {e}", exc_info=True)
 
     def clear_state(self) -> None:
         """Clear all state (use with caution)."""
-        with self._lock:
-            self._state.cleanup()
-            logger.debug("[TradeStateManager] State cleared")
+        self._state.cleanup()  # cleanup() is internally thread-safe
+        logger.debug("[TradeStateManager] State cleared")
 
     def get_value(self, key: str, default: Any = None) -> Any:
         """
@@ -183,12 +183,13 @@ class TradeStateManager:
         Returns:
             bool: True if successful, False otherwise
         """
+        # TradeState property setters are internally thread-safe.
+        # Do not wrap with self._lock here to avoid lock-order inversion.
         try:
-            with self._lock:
-                if safe_hasattr(self._state, key):
-                    safe_setattr(self._state, key, value)
-                    return True
-                return False
+            if safe_hasattr(self._state, key):
+                safe_setattr(self._state, key, value)
+                return True
+            return False
         except Exception as e:
             logger.error(f"[TradeStateManager] Failed to set {key}: {e}", exc_info=True)
             return False

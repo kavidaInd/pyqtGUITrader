@@ -28,6 +28,7 @@ from Utils.common import (
     get_market_end_time, get_time_of_day, to_date_str, get_epoch,
     MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE
 )
+from Utils.safe_getattr import safe_hasattr
 
 # Directories (re-export from common)
 STRATEGIES_DIR = BASE_DIR / 'Strategies'

@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Defines the operational modes for the trading bot system.
 # These modes determine how the bot interacts with the market and processes trades.
-# - SIM: Paper trading mode using real-time data but no actual money
 # - LIVE: Production mode with real money trading on actual exchanges
 # - PAPER: Alias for SIM mode for backward compatibility
 LIVE = "Live"
@@ -311,7 +310,7 @@ def is_valid_bot_mode(mode: str) -> bool:
     Validate bot operation mode string.
 
     Checks if the provided mode matches any of the predefined bot operation modes
-    (BACK, SIM, LIVE, OPTI, PAPER, BACKTEST).
+    (LIVE, PAPER, BACKTEST).
 
     Args:
         mode: Bot mode string to validate

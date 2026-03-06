@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any, Union
 import pandas as pd
 import numpy as np
 
+from Utils.safe_getattr import safe_hasattr, safe_getattr
 from strategy.dynamic_signal_engine import DynamicSignalEngine
 
 # Import state manager for updating state
@@ -326,7 +327,7 @@ class TrendDetector:
             if self.signal_engine is not None:
                 try:
                     option_signal_result = self.signal_engine.evaluate(df, current_position)
-
+                    print(option_signal_result)
                     if option_signal_result:
                         self._update_state_with_signal_result(option_signal_result)
 

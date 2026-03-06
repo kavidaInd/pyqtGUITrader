@@ -61,6 +61,7 @@ from typing import Any, Optional
 
 from BaseEnums import *
 from Utils.Utils import Utils
+from Utils.safe_getattr import safe_getattr, safe_hasattr
 
 from db.connector import get_db
 from db.crud import orders as orders_crud

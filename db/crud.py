@@ -502,10 +502,10 @@ class TradingModeCRUD:
     """
 
     TABLE = "trading_mode_setting"
-    VALID_MODES = {"SIM", "PAPER", "LIVE"}
+    VALID_MODES = {"BACKTEST", "PAPER", "LIVE"}
     BOOL_FIELDS = {"allow_live_trading", "confirm_live_trades", "simulate_slippage", "simulate_delay"}
     DEFAULTS = {
-        "mode": "SIM",
+        "mode": "PAPER",
         "paper_balance": 100000.0,
         "allow_live_trading": False,
         "confirm_live_trades": True,
@@ -548,10 +548,10 @@ class TradingModeCRUD:
         """
         db = db or get_db()
         merged = {**self.DEFAULTS, **data}
-        mode = str(merged.get("mode", "SIM")).upper()
+        mode = str(merged.get("mode", "PAPER")).upper()
         if mode not in self.VALID_MODES:
-            logger.warning(f"[TradingModeCRUD.save] Invalid mode {mode!r}, defaulting to SIM")
-            mode = "SIM"
+            logger.warning(f"[TradingModeCRUD.save] Invalid mode {mode!r}, defaulting to PAPER")
+            mode = "PAPER"
         try:
             db.execute(
                 f"""UPDATE {self.TABLE} SET

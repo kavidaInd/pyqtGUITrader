@@ -38,6 +38,7 @@ from trade.risk_manager import RiskManager
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
+
 class TradingApp:
 
     def __init__(self, config: Any, trading_mode_var: Optional[Any] = None, broker_setting: Optional[Any] = None):
@@ -184,6 +185,10 @@ class TradingApp:
         self._last_market_status_check = 0
         self._market_is_open = None
         self._backtest_mode = False
+        # Set to True by update_market_state when a 1-min bar is completed.
+        # Consumed (reset to False) by evaluate_trend_and_decision to gate
+        # the heavy (indicator) recomputation path.
+        self._last_bar_completed = False
 
     def _apply_trading_mode_to_executor(self) -> None:
         """
@@ -373,7 +378,8 @@ class TradingApp:
 
             # Calculate time until market opens
             now = datetime.now()
-            market_open = self.broker.get_market_start_time() if safe_hasattr(self.broker, 'get_market_start_time') else None
+            market_open = self.broker.get_market_start_time() if safe_hasattr(self.broker,
+                                                                              'get_market_start_time') else None
 
             if market_open and market_open > now:
                 wait_seconds = (market_open - now).total_seconds()
@@ -680,118 +686,217 @@ class TradingApp:
 
     def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float,
                             volume: float = 0.0) -> None:
+        """
+        Single source of truth: every price in state is read back from the
+        CandleStore after the tick is pushed there.  Nothing reads raw ltp
+        directly — the store is always authoritative.
+
+        Flow per tick
+        ─────────────
+        1. Push the tick into the appropriate CandleStore.
+        2. Read the current close back from that store.
+        3. Write the store-sourced price into state.
+
+        For option ticks the tick price used to push is the mid/ask/bid that
+        the broker supplies (same as before), but state.put/call_current_close
+        is then set from store.get_current_close(), keeping everything
+        consistent with the OHLCV data that the signal engine sees.
+
+        push_tick() returns bar_completed=True when a new 1-min bar is sealed.
+        We surface this via _last_bar_completed so evaluate_trend_and_decision
+        knows whether to schedule a heavy (indicator) recomputation.
+        """
         try:
             state = state_manager.get_state()
 
-            # Rule 6: Input validation
             if not symbol or ltp is None:
                 logger.warning(f"Invalid update_market_state params: symbol={symbol}, ltp={ltp}")
                 return
 
-            # Get full symbol for comparison
             full_symbol = self.symbol_full(symbol)
-
-            # Log the incoming tick for debugging
             logger.debug(f"Tick received - Symbol: {full_symbol}, LTP: {ltp}, Ask: {ask_price}, Bid: {bid_price}")
 
-            # Update derivative price
+            # ── Derivative (index) tick ────────────────────────────────────────
             deriv_full = self.symbol_full(state.derivative)
-            logger.debug(f"Derivative full symbol: {deriv_full}, Received symbol: {full_symbol}")
-
             if full_symbol == deriv_full:
-                old_price = state.derivative_current_price
-                state.derivative_current_price = ltp
-                logger.info(f"✅ Updated derivative price: {old_price} -> {ltp}")
+                derivative = state.derivative
+                if derivative:
+                    try:
+                        bar_completed = candle_store_manager.push_tick(
+                            derivative, ltp, volume=volume
+                        )
+                        # Signal the evaluate loop that a new bar just closed
+                        if bar_completed:
+                            self._last_bar_completed = True
 
-                # Push tick into the derivative's CandleStore
-                try:
-                    derivative = state.derivative
-                    if derivative:
-                        candle_store_manager.push_tick(derivative, ltp, volume=volume)
-                except Exception as e:
-                    logger.debug(f"CandleStore push error: {e}")
+                        # Read authoritative price back from the store
+                        store = candle_store_manager.get_store(derivative)
+                        store_price = store.get_current_close()
+                        old_price = state.derivative_current_price
+                        state.derivative_current_price = store_price if store_price is not None else ltp
+                        logger.debug(
+                            f"✅ Derivative price (from store): {old_price} -> "
+                            f"{state.derivative_current_price}"
+                            + (" [BAR CLOSED]" if bar_completed else "")
+                        )
+                    except Exception as e:
+                        logger.debug(f"CandleStore push/read error for derivative: {e}")
+                        # Fallback: keep raw ltp so state is never stale
+                        state.derivative_current_price = ltp
                 return
 
-            # --- Option chain tick ---
+            # ── Option chain tick ──────────────────────────────────────────────
             if self._option_chain_lock and safe_hasattr(state, "option_chain"):
                 with self._option_chain_lock:
-                    # Check if symbol exists in option_chain (exact match)
                     if full_symbol in state.option_chain:
-                        # Update the option chain
-                        old_data = state.option_chain[full_symbol]
                         state.update_option_chain_symbol(full_symbol, {
                             "ltp": ltp,
                             "ask": ask_price,
                             "bid": bid_price,
                         })
-
                         logger.debug(f"✅ Updated option chain for {full_symbol}: LTP={ltp}")
                     else:
-                        # Log if symbol not found in chain
                         logger.debug(
-                            f"Symbol {full_symbol} not in option chain. Available: {list(state.option_chain.keys())}")
+                            f"Symbol {full_symbol} not in option chain. "
+                            f"Available: {list(state.option_chain.keys())}"
+                        )
 
+            # ── ATM call / put option ticks ────────────────────────────────────
             use_ask = not bool(state.current_position)
             atm_put_sym = self.symbol_full(state.put_option)
             atm_call_sym = self.symbol_full(state.call_option)
 
-            logger.debug(f"ATM Call: {atm_call_sym}, ATM Put: {atm_put_sym}")
+            # The price we push into the option's candle store is the
+            # trade-relevant price: ask when flat (entry), bid when in position
+            # (exit). This matches what was previously stored directly.
+            option_price = ask_price if use_ask else bid_price
 
-            if full_symbol == atm_put_sym:
-                old_put = state.put_current_close
-                new_value = ask_price if use_ask else bid_price
-                if new_value is not None:
-                    state.put_current_close = new_value
-                    logger.info(f"✅ Updated PUT price: {old_put} -> {new_value}")
-            elif full_symbol == atm_call_sym:
-                old_call = state.call_current_close
-                new_value = ask_price if use_ask else bid_price
-                if new_value is not None:
-                    state.call_current_close = new_value
-                    logger.info(f"✅ Updated CALL price: {old_call} -> {new_value}")
+            if full_symbol == atm_put_sym and state.put_option:
+                try:
+                    tick_price = option_price if option_price is not None else ltp
+                    candle_store_manager.push_tick(state.put_option, tick_price, volume=volume)
+                    store = candle_store_manager.get_store(state.put_option)
+                    store_price = store.get_current_close()
+                    old_put = state.put_current_close
+                    state.put_current_close = store_price if store_price is not None else tick_price
+                    logger.debug(f"✅ PUT price (from store): {old_put} -> {state.put_current_close}")
+                except Exception as e:
+                    logger.debug(f"CandleStore push/read error for PUT: {e}")
+                    if option_price is not None:
+                        state.put_current_close = option_price
 
-            # Update current_price for open position P&L tracking
+            elif full_symbol == atm_call_sym and state.call_option:
+                try:
+                    tick_price = option_price if option_price is not None else ltp
+                    candle_store_manager.push_tick(state.call_option, tick_price, volume=volume)
+                    store = candle_store_manager.get_store(state.call_option)
+                    store_price = store.get_current_close()
+                    old_call = state.call_current_close
+                    state.call_current_close = store_price if store_price is not None else tick_price
+                    logger.debug(f"✅ CALL price (from store): {old_call} -> {state.call_current_close}")
+                except Exception as e:
+                    logger.debug(f"CandleStore push/read error for CALL: {e}")
+                    if option_price is not None:
+                        state.call_current_close = option_price
+
+            # ── Sync current_price for open position P&L ──────────────────────
+            # current_price is always sourced from the relevant option store,
+            # already updated above.
             if state.current_position:
                 cp = state.current_position
                 if cp == BaseEnums.CALL and state.call_current_close is not None:
                     old_current = state.current_price
                     state.current_price = state.call_current_close
                     if old_current != state.current_price:
-                        logger.debug(f"Updated current price (CALL): {old_current} -> {state.current_price}")
+                        logger.debug(f"current_price (CALL): {old_current} -> {state.current_price}")
                 elif cp == BaseEnums.PUT and state.put_current_close is not None:
                     old_current = state.current_price
                     state.current_price = state.put_current_close
                     if old_current != state.current_price:
-                        logger.debug(f"Updated current price (PUT): {old_current} -> {state.current_price}")
+                        logger.debug(f"current_price (PUT): {old_current} -> {state.current_price}")
 
         except Exception as e:
             logger.error(f"[TradingApp.update_market_state] Failed for symbol {symbol}: {e}", exc_info=True)
 
     def evaluate_trend_and_decision(self) -> None:
+        """
+        Two-tier evaluation strategy
+        ─────────────────────────────
+        Tier 1 — Heavy / bar-level  (runs once per completed bar):
+            Triggered when update_market_state() sets _last_bar_completed=True,
+            which happens when a 1-min candle is sealed in the CandleStore.
+            At that point a full historical re-fetch + indicator recalculation
+            is scheduled on the thread pool.  This is the ONLY place where
+            expensive computations like pandas_ta Supertrend are run.
+
+        Tier 2 — Tick-level close-price gate  (runs on every tick):
+            If any rule compares an indicator against a column (e.g. close),
+            the already-computed indicator value is compared against the
+            current close read back from the CandleStore — without
+            recomputing the indicator series.  This implements the spec:
+              "Supertrend signal is generated once per bar, then compared
+               against each tick's close until the next bar arrives."
+        """
         try:
-            # Check if we should stop
             if self.should_stop:
                 return
 
             state = state_manager.get_state()
 
-            if not Utils.is_history_updated(
+            # ── Tier 1: new bar just closed → schedule full recalculation ─────
+            bar_just_completed = self._last_bar_completed
+            if bar_just_completed:
+                self._last_bar_completed = False  # consume the flag immediately
+
+                # Also trigger if history is simply stale (handles startup / gaps)
+                history_stale = not Utils.is_history_updated(
                     last_updated=state.last_index_updated,
                     interval=state.interval
-            ):
+                )
+
                 if self._history_fetch_in_progress and not self._history_fetch_in_progress.is_set():
                     if self._fetch_executor:
                         try:
-                            self._fetch_executor.submit(self._fetch_history_and_detect)
+                            # Snapshot position NOW (submission time) so the
+                            # thread-pool worker uses a consistent position
+                            # context even if an order fills before it runs.
+                            position_at_submit = state.current_position
+                            self._fetch_executor.submit(
+                                self._fetch_history_and_detect, position_at_submit
+                            )
                             self._history_fetch_in_progress.set()
+                            logger.debug("Scheduled heavy indicator recomputation (bar completed)")
                         except Exception as submit_err:
                             logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
                     else:
                         logger.error("Thread pool not available for history fetch")
 
+            else:
+                # Even without a new bar, schedule if history is stale
+                # (covers app startup where no tick has completed a bar yet)
+                if not Utils.is_history_updated(
+                        last_updated=state.last_index_updated,
+                        interval=state.interval
+                ):
+                    if self._history_fetch_in_progress and not self._history_fetch_in_progress.is_set():
+                        if self._fetch_executor:
+                            try:
+                                position_at_submit = state.current_position
+                                self._fetch_executor.submit(
+                                    self._fetch_history_and_detect, position_at_submit
+                                )
+                                self._history_fetch_in_progress.set()
+                            except Exception as submit_err:
+                                logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
+
+            # ── Tier 2: tick-level close-price gate ───────────────────────────
+            # Re-evaluates column-type rule sides (e.g. "close") against the
+            # current candle-store close on every tick, without recomputing
+            # heavy indicator series.
+            self._evaluate_tick_close_gate(state)
+
             state.trend = self.determine_trend_from_signals()
 
-            # Execute based on trend (only for algo trading)
             if safe_hasattr(self, 'executor') and self.executor:
                 self.execute_based_on_trend()
 
@@ -800,10 +905,101 @@ class TradingApp:
         except Exception as trend_error:
             logger.info(f"Trend detection or decision logic error: {trend_error!r}", exc_info=True)
 
-    def _fetch_history_and_detect(self) -> None:
+    def _evaluate_tick_close_gate(self, state) -> None:
+        """
+        Tier 2: re-check only the rules that compare against a price column
+        (type=='column', e.g. close) on every tick.
+
+        The signal engine's cached indicator series from the last bar are reused
+        as-is; only the column-type side values are refreshed with the current
+        close from the CandleStore.  This means:
+
+        • Supertrend vs Supertrend  →  signal set once per bar, unchanged here.
+        • Supertrend vs close price →  Supertrend fixed, close updates per tick.
+
+        When no column-type rules exist the method is a fast no-op.
+        """
+        try:
+            if not state.dynamic_signals_active:
+                return
+            if not self.signal_engine or not self.detector:
+                return
+
+            # Fast path: skip if no rules use a column comparison
+            if not self._engine_has_column_rules():
+                return
+
+            derivative = state.derivative
+            if not derivative:
+                return
+
+            store = candle_store_manager.get_store(derivative)
+            current_close = store.get_current_close()
+            if current_close is None:
+                return
+
+            # Get the cached resampled DF — no broker call, just from store
+            try:
+                target_minutes = int(state.interval or "1")
+            except (TypeError, ValueError):
+                target_minutes = 1
+
+            df = store.resample(target_minutes)
+            if df is None or df.empty:
+                return
+
+            # Patch only the last row's close with the live tick close so
+            # column comparisons reflect the current price while completed-bar
+            # indicator columns stay exactly as computed during Tier 1.
+            df = df.copy()
+            df.loc[df.index[-1], "close"] = current_close
+
+            result = self.signal_engine.evaluate(df, state.current_position)
+            if result and result.get("available"):
+                # Update state — the detector method handles all state fields
+                if hasattr(self.detector, '_update_state_with_signal_result'):
+                    self.detector._update_state_with_signal_result(result)
+                else:
+                    state.option_signal_result = result
+                logger.debug(
+                    f"[TickGate] signal={result.get('signal_value')} "
+                    f"close={current_close:.2f}"
+                )
+
+        except Exception as e:
+            logger.debug(f"[_evaluate_tick_close_gate] {e}", exc_info=True)
+
+    def _engine_has_column_rules(self) -> bool:
+        """Return True if any rule side uses type=='column' (e.g. close price)."""
+        try:
+            if not self.signal_engine:
+                return False
+            for group_cfg in self.signal_engine.config.values():
+                for rule in group_cfg.get("rules", []):
+                    for side_key in ("lhs", "rhs"):
+                        side = rule.get(side_key, {})
+                        if isinstance(side, dict) and side.get("type") == "column":
+                            return True
+            return False
+        except Exception:
+            return False
+
+    def _fetch_history_and_detect(self, position_at_submit=None) -> None:
         """
         Runs on thread pool — fetches history and updates trend state.
         Uses CandleStoreManager as the single source of truth for OHLCV data.
+
+        position_at_submit
+            Snapshot of state.current_position taken at the moment this task
+            was submitted to the thread pool.  Because order execution can
+            complete in the time between submission and execution (typically
+            30-100 ms), we must:
+              1. Always pass this position to evaluate() so indicator signals
+                 are resolved with a consistent position context.
+              2. After evaluate() returns, check whether the live position
+                 still matches.  If it changed (trade just filled), re-run
+                 evaluate() with the NEW position before writing to state so
+                 we never persist a signal computed for the wrong position.
         """
         try:
             if self.should_stop:
@@ -813,6 +1009,11 @@ class TradingApp:
             state = state_manager.get_state()
             derivative = state.derivative
             interval = state.interval or "1"
+
+            # Use the snapshotted position for consistency.  Fall back to the
+            # live value when called without a snapshot (e.g. from tests).
+            eval_position = position_at_submit if position_at_submit is not None \
+                else state.current_position
 
             try:
                 target_minutes = int(interval)
@@ -880,11 +1081,11 @@ class TradingApp:
                     except (KeyError, IndexError, AttributeError) as e:
                         logger.error(f"Failed to get last index time: {e}", exc_info=True)
 
-                    # ── Run trend detection (read from CandleStore) ─
+                    # ── Run trend detection (read from CandleStore) ──────────
                     if self.detector:
                         try:
                             state.derivative_trend = self.detector.detect(
-                                deriv_df, derivative, state.current_position
+                                deriv_df, derivative, eval_position
                             )
                         except Exception as e:
                             logger.error(f"Derivative trend detection failed: {e}", exc_info=True)
@@ -895,7 +1096,7 @@ class TradingApp:
                                 call_store = candle_store_manager.get_store(call_opt_sym)
                                 df_call = call_store.resample(target_minutes) if not call_store.is_empty() else None
                                 state.call_trend = self.detector.detect(
-                                    df_call, call_opt_sym, state.current_position
+                                    df_call, call_opt_sym, eval_position
                                 )
                             else:
                                 logger.debug("call_option not yet set — skipping call trend detection")
@@ -908,12 +1109,33 @@ class TradingApp:
                                 put_store = candle_store_manager.get_store(put_opt_sym)
                                 df_put = put_store.resample(target_minutes) if not put_store.is_empty() else None
                                 state.put_trend = self.detector.detect(
-                                    df_put, put_opt_sym, state.current_position
+                                    df_put, put_opt_sym, eval_position
                                 )
                             else:
                                 logger.debug("put_option not yet set — skipping put trend detection")
                         except Exception as e:
                             logger.error(f"Put trend detection failed: {e}", exc_info=True)
+
+                        live_position = state.current_position
+                        if live_position != eval_position:
+                            logger.info(
+                                f"[FetchDetect] Position changed during fetch: "
+                                f"{eval_position!r} → {live_position!r}. "
+                                f"Re-evaluating signal with new position."
+                            )
+                            try:
+                                deriv_store2 = candle_store_manager.get_store(derivative)
+                                df_reeval = deriv_store2.resample(target_minutes) \
+                                    if not deriv_store2.is_empty() else None
+                                if df_reeval is not None and not df_reeval.empty:
+                                    state.derivative_trend = self.detector.detect(
+                                        df_reeval, derivative, live_position
+                                    )
+                            except Exception as reeval_err:
+                                logger.error(
+                                    f"Re-evaluation after position change failed: {reeval_err}",
+                                    exc_info=True
+                                )
 
                     if state.dynamic_signals_active:
                         logger.info(f"📊 Dynamic signal: {state.option_signal}")
@@ -962,6 +1184,21 @@ class TradingApp:
         """
         Determine trend direction based on dynamic option signals.
         Returns trend enum values (ENTER_CALL, ENTER_PUT, EXIT_CALL, EXIT_PUT, RESET_PREVIOUS_TRADE)
+
+        Position-consistency guard
+        ──────────────────────────
+        state.option_signal is the RESOLVED signal from the last evaluate()
+        call (e.g. "BUY_CALL", "EXIT_PUT").  Because evaluate() is
+        position-aware, a signal of "BUY_CALL" when there was no open position
+        means "enter a call trade".  The same raw indicator condition with an
+        open PUT position would instead resolve to "EXIT_PUT".
+
+        If a trade fills between the last evaluate() and this method reading
+        state.option_signal, the signal may have been computed for a different
+        position.  We detect this by comparing the position embedded in the
+        result's position_context with the live position and skip acting on
+        the signal if they disagree — the next tick's evaluate() will produce
+        the correct signal for the current position.
         """
         try:
             state = state_manager.get_state()
@@ -970,11 +1207,48 @@ class TradingApp:
                 return None
 
             signal_value = state.option_signal
-            signal_conflict = state.signal_conflict
-
             current_pos = state.current_position
             previous_pos = state.previous_position
 
+            # ── Position-consistency guard ────────────────────────────────────
+            # Check the position context the signal was computed for.
+            result = state.option_signal_result
+            if result and isinstance(result, dict):
+                signal_pos_ctx = result.get("position_context")  # "CALL", "PUT", or None
+                # BUG 4 FIX: The guard below must never suppress EXIT signals.
+                # If a BUY order fills mid-bar, position_context (captured at bar
+                # start) will be None while live_pos_str is "CALL" or "PUT".
+                # Without this carve-out the guard would silently drop EXIT_CALL /
+                # EXIT_PUT for the entire remainder of the bar.
+
+                if current_pos is None:
+                    live_pos_str = None
+                else:
+                    raw = getattr(current_pos, 'value', str(current_pos))
+                    live_pos_str = raw.split('.')[-1].upper().strip()
+
+                if signal_pos_ctx != live_pos_str:
+                    # BUG 4 FIX: EXIT signals are always safe to act on regardless
+                    # of position context mismatch. Suppressing them here would
+                    # prevent exits for the remainder of a bar when a fill happened
+                    # mid-bar (position_context=None but live position is now set).
+                    _exit_signals = ('EXIT_CALL', 'EXIT_PUT')
+                    if signal_value not in _exit_signals:
+                        logger.info(
+                            f"[SignalGuard] Skipping stale entry signal '{signal_value}' — "
+                            f"computed for pos={signal_pos_ctx!r}, "
+                            f"live pos={live_pos_str!r}. "
+                            f"Waiting for next evaluate() cycle."
+                        )
+                        return None
+                    else:
+                        logger.debug(
+                            f"[SignalGuard] Allowing EXIT signal '{signal_value}' despite "
+                            f"context mismatch (pos_ctx={signal_pos_ctx!r}, live={live_pos_str!r})."
+                        )
+            # ─────────────────────────────────────────────────────────────────
+
+            signal_conflict = state.signal_conflict
             trend = None
 
             logger.debug(f"Option signal: {signal_value}, conflict={signal_conflict}")
@@ -1007,7 +1281,6 @@ class TradingApp:
                     logger.debug("WAIT signal - no entry")
 
             elif current_pos is None and previous_pos in {BaseEnums.CALL, BaseEnums.PUT}:
-                # Opposite signal (reversal) → always reset
                 if previous_pos == BaseEnums.CALL and signal_value in ['BUY_PUT', 'EXIT_PUT']:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous CALL trade flag - opposite/reversal signal detected")
@@ -1070,6 +1343,19 @@ class TradingApp:
             return f"Exit triggered for {position_type}"
 
     def monitor_active_trade_status(self) -> None:
+        """
+        BUG 1 & 5 FIX: This method now handles ONLY safety-based exits:
+          - Market close auto-exit
+          - Index stop-loss safety exits (derivative price crossing Supertrend)
+
+        Signal-based exits (EXIT_CALL, EXIT_PUT, BUY_PUT while in CALL, etc.)
+        are exclusively owned by execute_based_on_trend(). Having both methods
+        call exit_position() on the same tick caused a race: the first call
+        succeeds and clears current_position; the second finds no position open,
+        returns False, and logs a misleading "Exit failed for CALL/PUT" error.
+        This also caused EXIT_CALL to appear broken because EXIT_PUT happened to
+        win the race more consistently due to signal engine evaluation order.
+        """
         try:
             # Check if we should stop
             if self.should_stop:
@@ -1081,6 +1367,7 @@ class TradingApp:
             current_derivative_price = state.derivative_current_price
 
             if state.current_trade_confirmed:
+                # ── Safety exit 1: market close approaching ────────────────────
                 if Utils.is_near_market_close(buffer_minutes=5):
                     if state.current_position:
                         logger.info("Market close approaching. Exiting active position.")
@@ -1096,21 +1383,13 @@ class TradingApp:
                                 logger.error(f"Exit error near market close: {e}", exc_info=True)
                         return
 
-                # Use dynamic signals for exit
+                # ── Safety exit 2: index stop-loss (derivative price) ──────────
+                # NOTE: Signal-based exits (EXIT_CALL/EXIT_PUT) are handled
+                # exclusively by execute_based_on_trend() to avoid double-exit races.
                 if state.current_position == BaseEnums.PUT:
-                    if state.should_sell_put or state.should_buy_call:
-                        state.reason_to_exit = f"PUT exit: {state.option_signal}"
-                        if safe_hasattr(self, 'executor') and self.executor:
-                            try:
-                                success = self.executor.exit_position()
-                                if not success:
-                                    logger.error("Exit failed for PUT")
-                            except TokenExpiredError:
-                                raise
-                            except Exception as e:
-                                logger.error(f"PUT exit error: {e}", exc_info=True)
-
-                    elif index_stop_loss is not None and current_derivative_price is not None and current_derivative_price >= index_stop_loss:
+                    if (index_stop_loss is not None
+                            and current_derivative_price is not None
+                            and current_derivative_price >= index_stop_loss):
                         state.reason_to_exit = "PUT exit: Derivative crossed above ST (safety)"
                         if safe_hasattr(self, 'executor') and self.executor:
                             try:
@@ -1123,19 +1402,9 @@ class TradingApp:
                                 logger.error(f"PUT safety exit error: {e}", exc_info=True)
 
                 elif state.current_position == BaseEnums.CALL:
-                    if state.should_sell_call or state.should_buy_put:
-                        state.reason_to_exit = f"CALL exit: {state.option_signal}"
-                        if safe_hasattr(self, 'executor') and self.executor:
-                            try:
-                                success = self.executor.exit_position()
-                                if not success:
-                                    logger.error("Exit failed for CALL")
-                            except TokenExpiredError:
-                                raise
-                            except Exception as e:
-                                logger.error(f"CALL exit error: {e}", exc_info=True)
-
-                    elif index_stop_loss is not None and current_derivative_price is not None and current_derivative_price <= index_stop_loss:
+                    if (index_stop_loss is not None
+                            and current_derivative_price is not None
+                            and current_derivative_price <= index_stop_loss):
                         state.reason_to_exit = "CALL exit: Derivative dropped below ST (safety)"
                         if safe_hasattr(self, 'executor') and self.executor:
                             try:
@@ -1293,13 +1562,34 @@ class TradingApp:
                     state.previous_position = None
 
             else:
+                # Position is open — handle exits driven by state.trend
                 if state.current_position == BaseEnums.CALL:
-                    if state.should_buy_put or state.should_sell_call:
+                    if trend == BaseEnums.EXIT_CALL:
+                        logger.info(f"🚪 EXIT_CALL confirmed — exiting CALL position")
+                        try:
+                            success = self.executor.exit_position()
+                            if not success:
+                                logger.error("exit_position() returned False for EXIT_CALL")
+                        except TokenExpiredError:
+                            raise
+                        except Exception as e:
+                            logger.error(f"Exit CALL failed: {e}", exc_info=True)
+                    elif state.should_buy_put or state.should_sell_call:
                         logger.warning(
                             f"Position CALL but signal is {state.option_signal} - will exit soon")
 
                 elif state.current_position == BaseEnums.PUT:
-                    if state.should_buy_call or state.should_sell_put:
+                    if trend == BaseEnums.EXIT_PUT:
+                        logger.info(f"🚪 EXIT_PUT confirmed — exiting PUT position")
+                        try:
+                            success = self.executor.exit_position()
+                            if not success:
+                                logger.error("exit_position() returned False for EXIT_PUT")
+                        except TokenExpiredError:
+                            raise
+                        except Exception as e:
+                            logger.error(f"Exit PUT failed: {e}", exc_info=True)
+                    elif state.should_buy_call or state.should_sell_put:
                         logger.warning(
                             f"Position PUT but signal is {state.option_signal} - will exit soon")
 
