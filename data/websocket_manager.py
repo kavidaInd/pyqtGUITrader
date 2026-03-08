@@ -2,28 +2,9 @@
 """
 websocket_manager.py
 ====================
-Broker-agnostic WebSocket manager.
+Broker-agnostic WebSocket manager with improved reconnect logic and error handling.
 
-Delegates all broker-specific WebSocket calls to the broker instance
-(create_websocket / ws_connect / ws_subscribe / ws_unsubscribe /
-ws_disconnect / normalize_tick) so this class works identically for all
-10 supported brokers.
-
-This replaces the former Fyers-only implementation.
-
-UPDATED: Added connection status callbacks for state manager integration.
-
-Usage:
-    broker = BrokerFactory.create(broker_setting, state)
-    ws = WebSocketManager(
-        broker=broker,
-        on_message_callback=my_handler,
-        symbols=["NSE:NIFTY50-INDEX"],
-    )
-    ws.connect()
-    ws.subscribe()
-    ...
-    ws.disconnect()
+FIXED: Added max retry limits, exponential backoff with jitter, and proper cleanup.
 """
 
 import logging
@@ -31,6 +12,7 @@ import threading
 import time
 import socket
 import requests
+import random
 from enum import Enum
 from functools import wraps
 from typing import Callable, List, Optional, Dict, Any
@@ -50,13 +32,9 @@ class ConnectionState(Enum):
 
 class WebSocketManager:
     """
-    Broker-agnostic WebSocket manager.
+    Broker-agnostic WebSocket manager with improved reconnect logic.
 
-    Handles connection lifecycle, auto-reconnect with exponential backoff,
-    heartbeat monitoring, and network-failure recovery for any broker
-    that implements the BaseBroker WebSocket interface.
-
-    UPDATED: Added connection status callbacks for state manager integration.
+    FIXED: Added max retry limits, exponential backoff with jitter, and proper cleanup.
     """
 
     def __init__(
@@ -92,7 +70,11 @@ class WebSocketManager:
             self.on_disconnected_callback = None
             self.on_reconnected_callback = None
 
-            # Bug #15 fix: Add stop events for monitoring threads
+            self._max_reconnect_attempts = 10
+            self._reconnect_attempts = 0
+            self._base_delay = 1
+            self._max_delay = 60
+
             self._stop_heartbeat = threading.Event()
             self._stop_network_monitor = threading.Event()
             self._stop_reconnect = threading.Event()
@@ -119,7 +101,11 @@ class WebSocketManager:
         self._manual_stop = False
         self._connection_lock = threading.RLock()
 
-        # Bug #15 fix: Add stop events
+        self._max_reconnect_attempts = 10
+        self._reconnect_attempts = 0
+        self._base_delay = 1
+        self._max_delay = 60
+
         self._stop_heartbeat = threading.Event()
         self._stop_network_monitor = threading.Event()
         self._stop_reconnect = threading.Event()
@@ -129,8 +115,7 @@ class WebSocketManager:
         self.on_disconnected_callback = None
         self.on_reconnected_callback = None
 
-        # Background threads
-        self._connect_thread = None  # thread running broker.ws_connect()
+        self._connect_thread = None
         self._heartbeat_thread = None
         self._network_monitor_thread = None
         self._reconnect_thread = None
@@ -138,7 +123,6 @@ class WebSocketManager:
         self._last_message_time = time.time()
         self._network_check_interval = 5
 
-        # The native broker WebSocket object (returned by broker.create_websocket)
         self._ws_obj = None
 
         # Statistics
@@ -156,7 +140,6 @@ class WebSocketManager:
     def set_state_callbacks(self, on_connected=None, on_disconnected=None, on_reconnected=None):
         """
         Set callbacks for connection state changes.
-        Used by state manager to update connection status in the trading state.
         """
         with self._connection_lock:
             self.on_connected_callback = on_connected
@@ -172,7 +155,7 @@ class WebSocketManager:
                     return
 
                 self._manual_stop = False
-                # Bug #15 fix: Clear stop events
+                self._reconnect_attempts = 0
                 self._stop_heartbeat.clear()
                 self._stop_network_monitor.clear()
                 self._stop_reconnect.clear()
@@ -294,7 +277,6 @@ class WebSocketManager:
                 old_state = self._state
                 self._state = ConnectionState.CLOSING
 
-                # Disconnect WebSocket with timeout
                 if self._ws_obj is not None and self.broker is not None:
                     try:
                         # Try to unsubscribe first
@@ -362,9 +344,9 @@ class WebSocketManager:
                 logger.info("WebSocket connected")
                 self._state = ConnectionState.CONNECTED
                 self._retries = 0
+                self._reconnect_attempts = 0
                 self._last_message_time = time.time()
 
-                # Re-subscribe on reconnect
                 if self._ws_obj and self.symbols:
                     try:
                         self.broker.ws_subscribe(self._ws_obj, self.symbols)
@@ -372,7 +354,6 @@ class WebSocketManager:
                     except Exception as e:
                         logger.error(f"Re-subscribe failed: {e}", exc_info=True)
 
-                # UPDATED: Call state manager callback
                 if self.on_connected_callback:
                     try:
                         self.on_connected_callback()
@@ -385,7 +366,7 @@ class WebSocketManager:
                     except Exception as e:
                         logger.error(f"on_reconnect_callback error: {e}", exc_info=True)
 
-                # UPDATED: Call reconnected callback
+                # Call reconnected callback
                 if self.on_reconnected_callback:
                     try:
                         self.on_reconnected_callback()
@@ -405,7 +386,7 @@ class WebSocketManager:
                 if self._state != ConnectionState.CLOSING:
                     self._state = ConnectionState.DISCONNECTED
 
-                # UPDATED: Call state manager callback
+                # Call state manager callback
                 if self.on_disconnected_callback:
                     try:
                         self.on_disconnected_callback()
@@ -437,7 +418,7 @@ class WebSocketManager:
                 if self._state != ConnectionState.CLOSING:
                     self._state = ConnectionState.DISCONNECTED
 
-                # UPDATED: Call state manager callback
+                # Call state manager callback
                 if self.on_disconnected_callback:
                     try:
                         self.on_disconnected_callback()
@@ -591,11 +572,26 @@ class WebSocketManager:
                 logger.error(f"_handle_network_disconnection: {e}", exc_info=True)
 
     def _schedule_reconnect(self):
-        try:
+        """Schedule reconnect with exponential backoff and max attempts."""
+        with self._connection_lock:
+            if self._reconnect_attempts >= self._max_reconnect_attempts:
+                logger.critical(f"Max reconnect attempts ({self._max_reconnect_attempts}) reached. Giving up.")
+                self._state = ConnectionState.DISCONNECTED
+                return
+
             if self._state == ConnectionState.RECONNECTING:
                 logger.info("Reconnect already in progress")
                 return
+
             self._state = ConnectionState.RECONNECTING
+            self._reconnect_attempts += 1
+
+            # Exponential backoff with jitter
+            delay = min(self._base_delay * (2 ** (self._reconnect_attempts - 1)), self._max_delay)
+            jitter = random.uniform(0.8, 1.2)
+            delay = delay * jitter
+
+            logger.info(f"Reconnecting in {delay:.1f}s (attempt {self._reconnect_attempts})...")
 
             # Bug #13 & #16 fix: Check if reconnect thread exists and is alive
             if self._reconnect_thread and self._reconnect_thread.is_alive():
@@ -603,47 +599,29 @@ class WebSocketManager:
                 return
 
             self._stop_reconnect.clear()
-
             self._reconnect_thread = threading.Thread(
-                target=self._reconnect_with_backoff,
+                target=self._reconnect_with_delay,
+                args=(delay,),
                 daemon=True,
                 name="WS-Reconnect",
             )
             self._reconnect_thread.start()
-        except Exception as e:
-            logger.error(f"_schedule_reconnect: {e}", exc_info=True)
-            self._state = ConnectionState.DISCONNECTED
 
-    def _reconnect_with_backoff(self):
+    def _reconnect_with_delay(self, delay: float):
+        """Reconnect after delay with stop event support."""
         try:
-            self._reconnect_count += 1
-            self._retries += 1
-
-            if self._retries > self.max_retries:
-                logger.critical("Max retries reached; giving up on reconnect")
-                self._state = ConnectionState.DISCONNECTED
-                return
-
-            if not self._wait_for_network_recovery():
-                self._state = ConnectionState.DISCONNECTED
-                return
-
-            delay = min(self.retry_delay * self._retries, 60)
-            logger.info(f"Reconnecting in {delay}s (attempt {self._retries})...")
-
-            # Bug #15 fix: Check stop event during sleep
-            for _ in range(int(delay)):
-                if self._manual_stop or self._stop_reconnect.is_set():
-                    logger.info("Reconnect cancelled by manual stop")
-                    return
-                time.sleep(1)
+            # Sleep in small increments to check stop event
+            slept = 0
+            interval = 0.5
+            while slept < delay and not self._manual_stop and not self._stop_reconnect.is_set():
+                time.sleep(interval)
+                slept += interval
 
             if not self._manual_stop and not self._stop_reconnect.is_set():
+                self._reconnect_count += 1
                 self.connect()
-
         except Exception as e:
-            logger.error(f"_reconnect_with_backoff: {e}", exc_info=True)
-            self._state = ConnectionState.DISCONNECTED
+            logger.error(f"_reconnect_with_delay: {e}", exc_info=True)
 
     def _wait_for_network_recovery(self) -> bool:
         try:
@@ -742,6 +720,7 @@ class WebSocketManager:
                 "reconnect_count": self._reconnect_count,
                 "state": self._state.value if self._state else "unknown",
                 "retries": self._retries,
+                "reconnect_attempts": self._reconnect_attempts,
                 "symbols_count": len(self.symbols),
                 "broker": repr(self.broker),
             }

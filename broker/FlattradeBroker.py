@@ -32,7 +32,7 @@ Authentication (OAuth token — daily refresh):
 API docs: https://pi.flattrade.in/docs
 GitHub:   https://github.com/flattrade/pythonAPI
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
@@ -48,6 +48,7 @@ from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -117,8 +118,11 @@ class FlattradeBroker(BaseBroker):
         secret_key   → API Secret
         redirect_uri → Registered redirect URI (e.g. https://127.0.0.1/callback)
 
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
+
+    # Flattrade tokens expire at midnight
+    SESSION_DURATION_HOURS = 8
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -148,6 +152,12 @@ class FlattradeBroker(BaseBroker):
             if not self.user_id:
                 raise ValueError("Flattrade user_id is required.")
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Initialize API
             self.api = _FlattradeApi()
 
@@ -161,7 +171,12 @@ class FlattradeBroker(BaseBroker):
                 )
                 if ret and ret.get("stat") == "Ok":
                     self.state.token = saved_token
+                    self._token_issued_at = self._parse_token_issued_at()
+                    self._token_expiry = self._parse_token_expiry()
                     logger.info("FlattradeBroker: session restored from DB")
+
+                    if self.is_token_expired:
+                        logger.warning("FlattradeBroker: restored token is expired")
                 else:
                     logger.warning("FlattradeBroker: saved token invalid, need fresh login")
             else:
@@ -173,6 +188,9 @@ class FlattradeBroker(BaseBroker):
             self._ws_cleanup_event = threading.Event()
             self._ws_api = None
 
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
+
             logger.info(f"FlattradeBroker initialized for user {self.user_id}")
 
         except Exception as e:
@@ -183,6 +201,16 @@ class FlattradeBroker(BaseBroker):
     def broker_type(self) -> str:
         return "flattrade"
 
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
+
     def _safe_defaults_init(self):
         self.state = None
         self.user_id = None
@@ -192,6 +220,9 @@ class FlattradeBroker(BaseBroker):
         self.api = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
         self._symbol_token_cache: Dict[str, str] = {}
 
         # WebSocket cleanup tracking
@@ -202,6 +233,67 @@ class FlattradeBroker(BaseBroker):
         self._ws_on_connect = None
         self._ws_on_close = None
         self._ws_on_error = None
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[FlattradeBroker] Token recovered, re-login required")
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -237,9 +329,20 @@ class FlattradeBroker(BaseBroker):
 
             if ret and ret.get("stat") == "Ok":
                 self.state.token = app_sha256
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
+
+                # Update token timestamps
+                issued_at = datetime.now()
+                expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+                self._token_issued_at = issued_at
+                self._token_expiry = expires_at
+
                 db = get_db()
-                tokens.save_token(app_sha256, "", expires_at=expires_at, db=db)
+                tokens.save_token(
+                    app_sha256, "",
+                    issued_at=issued_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    db=db
+                )
                 logger.info("FlattradeBroker: session set successfully")
                 return True
 
@@ -251,9 +354,20 @@ class FlattradeBroker(BaseBroker):
             )
             if ret2 and ret2.get("stat") == "Ok":
                 self.state.token = token
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
+
+                # Update token timestamps
+                issued_at = datetime.now()
+                expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+                self._token_issued_at = issued_at
+                self._token_expiry = expires_at
+
                 db = get_db()
-                tokens.save_token(token, "", expires_at=expires_at, db=db)
+                tokens.save_token(
+                    token, "",
+                    issued_at=issued_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    db=db
+                )
                 logger.info("FlattradeBroker: session set with raw token")
                 return True
 
@@ -349,6 +463,7 @@ class FlattradeBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return None
@@ -361,6 +476,7 @@ class FlattradeBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return 0.0
@@ -385,6 +501,7 @@ class FlattradeBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
+        self._check_token_before_request()
         try:
             if not symbol or not self.api:
                 return None
@@ -421,6 +538,7 @@ class FlattradeBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
+        self._check_token_before_request()
         try:
             if not symbol or not self.api:
                 return None
@@ -465,6 +583,7 @@ class FlattradeBroker(BaseBroker):
         return quote.get("ltp") if quote else None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.api:
                 return None
@@ -506,6 +625,7 @@ class FlattradeBroker(BaseBroker):
         return result
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return None
@@ -562,6 +682,7 @@ class FlattradeBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = float(kwargs.get('limit_price', 0) or 0)
@@ -588,6 +709,7 @@ class FlattradeBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self.api:
@@ -605,6 +727,7 @@ class FlattradeBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -615,18 +738,22 @@ class FlattradeBroker(BaseBroker):
                                 order_type=self.MARKET_ORDER_TYPE) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return []
@@ -641,6 +768,7 @@ class FlattradeBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return []
@@ -659,6 +787,7 @@ class FlattradeBroker(BaseBroker):
         Return order status as integer:
         2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
         """
+        self._check_token_before_request()
         try:
             orders = self.get_orderbook()
             for order in orders:
@@ -682,6 +811,7 @@ class FlattradeBroker(BaseBroker):
         Return the actual average fill price for a completed order.
         Flattrade orderbook includes 'avgprc' (average price) on filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.api:
                 return None
@@ -695,6 +825,7 @@ class FlattradeBroker(BaseBroker):
         except Exception as e:
             logger.error(f"[FlattradeBroker.get_fill_price] {e!r}", exc_info=True)
             return None
+
     # ── Broker-specific option symbol construction ────────────────────────────
 
     def build_option_symbol(
@@ -755,11 +886,12 @@ class FlattradeBroker(BaseBroker):
 
     def is_connected(self) -> bool:
         try:
+            if self.is_token_expired:
+                return False
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
-
             return False
 
     def cleanup(self) -> None:
@@ -854,6 +986,10 @@ class FlattradeBroker(BaseBroker):
             if not self.api:
                 logger.error("FlattradeBroker.create_websocket: api not initialized — set_session first")
                 return None
+
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False

@@ -23,7 +23,7 @@ Authentication (username + password + YOB + app_id + api_secret):
 API docs: https://ant.aliceblueonline.com/developers
 SDK:      pip install pya3
 
-FIXED: Added proper WebSocket cleanup with timeout and error handling.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
@@ -34,10 +34,12 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
+import pytz
 from requests.exceptions import Timeout, ConnectionError
 
-from Utils.safe_getattr import safe_hasattr
+from Utils.safe_getattr import safe_hasattr, safe_getattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -55,6 +57,7 @@ except ImportError:
         ALICE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+IST = pytz.timezone('Asia/Kolkata')
 
 # ── Alice Blue exchange / product / order constants ───────────────────────────
 ALICE_NSE = "NSE"
@@ -85,8 +88,11 @@ class AliceBlueBroker(BaseBroker):
         redirect_uri → "username|password|YOB" (pipe-separated)
                         YOB = year of birth used as 2FA answer
 
-    FIXED: Added proper WebSocket cleanup with timeout and error handling.
+    FIXED: Added proper token expiry tracking and propagation.
     """
+
+    # Alice Blue token expiry is session-based (typically 24 hours)
+    SESSION_DURATION_HOURS = 24
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -117,6 +123,12 @@ class AliceBlueBroker(BaseBroker):
                     "and username|password|YOB in redirect_uri."
                 )
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Try to restore saved session
             saved_session = self._load_token_from_db()
             if saved_session:
@@ -126,7 +138,12 @@ class AliceBlueBroker(BaseBroker):
                     session_id=saved_session
                 )
                 self.state.token = saved_session
+                self._token_issued_at = self._parse_token_issued_at()
+                self._token_expiry = self._calculate_token_expiry()
                 logger.info("AliceBlueBroker: session restored from DB")
+
+                if self.is_token_expired:
+                    logger.warning("AliceBlueBroker: restored token is expired")
             else:
                 logger.warning("AliceBlueBroker: no session — call broker.login()")
                 self.alice = None
@@ -135,6 +152,9 @@ class AliceBlueBroker(BaseBroker):
             self._ws_cleanup_event = threading.Event()
             self._ws_closed = False
             self._ws_connect_thread = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
             logger.info("AliceBlueBroker initialized")
 
@@ -146,6 +166,16 @@ class AliceBlueBroker(BaseBroker):
     def broker_type(self) -> str:
         return "aliceblue"
 
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
+
     def _safe_defaults_init(self):
         self.state = None
         self.app_id = None
@@ -156,6 +186,9 @@ class AliceBlueBroker(BaseBroker):
         self.alice = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
 
         # WebSocket cleanup tracking
         self._ws_cleanup_event = None
@@ -167,6 +200,68 @@ class AliceBlueBroker(BaseBroker):
         self._ws_on_error = None
 
         self._alice_inst_cache: Dict[str, Any] = {}
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+
+                for fmt in [
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S.%f"
+                ]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+
+                        if dt.tzinfo is None:
+                            dt = IST.localize(dt)
+
+                        return dt
+
+                    except ValueError:
+                        continue
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+
+    def _calculate_token_expiry(self) -> Optional[datetime]:
+        """Calculate token expiry based on issue time and session duration."""
+        if self._token_issued_at:
+            return self._token_issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+        return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[AliceBlueBroker] Token recovered, re-login required")
+        # Auto-login if credentials are available
+        if self.password and self.yob:
+            self.login()
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -205,9 +300,19 @@ class AliceBlueBroker(BaseBroker):
             )
             self.state.token = session_id
 
-            expires_at = (datetime.now() + timedelta(hours=10)).isoformat()
+            # Update token timestamps
+            issued_at = datetime.now()
+            expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+            self._token_issued_at = issued_at
+            self._token_expiry = expires_at
+
             db = get_db()
-            tokens.save_token(session_id, "", expires_at=expires_at, db=db)
+            tokens.save_token(
+                session_id, "",
+                issued_at=issued_at.isoformat(),
+                expires_at=expires_at.isoformat(),
+                db=db
+            )
             logger.info("AliceBlueBroker: login successful")
             return True
 
@@ -325,6 +430,7 @@ class AliceBlueBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.alice:
                 return None
@@ -339,6 +445,7 @@ class AliceBlueBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.alice:
                 return 0.0
@@ -377,6 +484,7 @@ class AliceBlueBroker(BaseBroker):
         return quote.get("ltp") if quote else None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.alice:
                 return None
@@ -416,6 +524,7 @@ class AliceBlueBroker(BaseBroker):
         return result
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             if not self.alice:
                 return None
@@ -469,6 +578,7 @@ class AliceBlueBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = float(kwargs.get('limit_price', 0) or 0)
@@ -501,6 +611,7 @@ class AliceBlueBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self.alice:
@@ -530,6 +641,7 @@ class AliceBlueBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -540,18 +652,22 @@ class AliceBlueBroker(BaseBroker):
                                 order_type=self.MARKET_ORDER_TYPE) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.alice:
                 return []
@@ -566,6 +682,7 @@ class AliceBlueBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.alice:
                 return []
@@ -593,10 +710,8 @@ class AliceBlueBroker(BaseBroker):
             "complete" / "COMPLETE"  → filled (maps to 2)
             "open"     / "OPEN"      → pending (maps to 1)
             "rejected" / "cancelled" → maps to -1
-
-        Returns the raw order dict as well under the key "__raw__" so callers
-        that need more detail can still access it.
         """
+        self._check_token_before_request()
         try:
             orders = self.get_orderbook()
             for order in orders:
@@ -625,6 +740,7 @@ class AliceBlueBroker(BaseBroker):
         order_executor so it uses real fill prices instead of tick prices for P&L.
         Alice Blue's order book includes 'Avgprc' (average price) on filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.alice:
                 return None
@@ -702,11 +818,12 @@ class AliceBlueBroker(BaseBroker):
 
     def is_connected(self) -> bool:
         try:
+            if self.is_token_expired:
+                return False
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
-
             return False
 
     def cleanup(self) -> None:
@@ -796,6 +913,10 @@ class AliceBlueBroker(BaseBroker):
             if not self.alice:
                 logger.error("AliceBlueBroker.create_websocket: alice not initialized — login first")
                 return None
+
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False

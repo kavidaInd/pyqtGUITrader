@@ -1573,7 +1573,7 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             # Save settings with safe defaults
             try:
                 if current_data is not None:
-                    self.trading_mode_setting.mode = TradingMode(current_data)
+                    self.trading_mode_setting.mode = current_data  # already TradingMode enum from combo userData
             except (ValueError, TypeError) as e:
                 logger.error(f"Invalid mode value: {e}")
                 self.trading_mode_setting.mode = TradingMode.PAPER

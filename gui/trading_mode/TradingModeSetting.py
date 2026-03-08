@@ -142,9 +142,42 @@ class TradingModeSetting:
             # Still set basic attributes to prevent crashes
             self._set_defaults()
 
+    # ── mode property ─────────────────────────────────────────────────────
+    # self._mode always holds a TradingMode enum member.
+    # External code may assign either an enum or a string — the setter
+    # normalises both.  Display / serialise with  .mode.value.
+
+    @property
+    def mode(self) -> 'TradingMode':
+        return self._mode
+
+    @mode.setter
+    def mode(self, value) -> None:
+        if isinstance(value, TradingMode):
+            self._mode = value
+            return
+        try:
+            # Normalise to title-case first so "PAPER", "paper", "Paper" all work.
+            # We do NOT call TradingMode(s) directly first because _missing_()
+            # swallows the ValueError and silently returns PAPER — masking bugs.
+            s = str(value).strip()
+            normalised = s.title()  # "PAPER" → "Paper", "live" → "Live"
+            # Valid TradingMode values are exactly "Live", "Paper", "Backtest"
+            _by_value = {m.value: m for m in TradingMode}
+            if normalised in _by_value:
+                self._mode = _by_value[normalised]
+            else:
+                raise ValueError(f"Unrecognised trading mode: {value!r}")
+        except (ValueError, TypeError):
+            logger.warning(
+                f"[TradingModeSetting.mode.setter] Unknown value {value!r}; "
+                "defaulting to PAPER"
+            )
+            self._mode = TradingMode.PAPER
+
     def _safe_defaults_init(self):
         """Rule 2: Initialize all attributes with safe defaults"""
-        self.mode = TradingMode.PAPER.value
+        self._mode = TradingMode.PAPER   # always an enum
         self.paper_balance = 100000.0
         self.allow_live_trading = False
         self.confirm_live_trades = True
@@ -173,7 +206,7 @@ class TradingModeSetting:
     def _set_defaults(self):
         """Set all attributes to default values"""
         try:
-            self.mode = TradingMode.PAPER.value
+            self.mode = TradingMode.PAPER
             self.paper_balance = 100000.0
             self.allow_live_trading = False
             self.confirm_live_trades = True
@@ -456,7 +489,7 @@ class TradingModeSetting:
             # Get state instance
             state = state_manager.get_state()
 
-            if self.mode != TradingMode.LIVE.value or not self.allow_live_trading:
+            if self.mode != TradingMode.LIVE or not self.allow_live_trading:
                 paper_bal = float(self.paper_balance) if self.paper_balance else 100000.0
                 state.account_balance = paper_bal
                 logger.info(
@@ -491,7 +524,7 @@ class TradingModeSetting:
         try:
             return {
                 # Original fields
-                "mode": self.mode if self.mode else TradingMode.PAPER.value,
+                "mode": self.mode.value if isinstance(self.mode, TradingMode) else TradingMode.PAPER.value,
                 "paper_balance": float(self.paper_balance) if self.paper_balance is not None else 100000.0,
                 "allow_live_trading": bool(self.allow_live_trading),
                 "confirm_live_trades": bool(self.confirm_live_trades),
@@ -679,7 +712,7 @@ class TradingModeSetting:
     def is_live(self) -> bool:
         """Check if live trading mode is active."""
         try:
-            return self.mode == TradingMode.LIVE.value and self.allow_live_trading
+            return self.mode == TradingMode.LIVE and self.allow_live_trading
         except Exception as e:
             logger.error(f"[TradingModeSetting.is_live] Failed: {e}", exc_info=True)
             return False
@@ -687,7 +720,7 @@ class TradingModeSetting:
     def is_sim(self) -> bool:
         """Check if simulation mode is active."""
         try:
-            return self.mode == TradingMode.PAPER.value
+            return self.mode == TradingMode.PAPER
         except Exception as e:
             logger.error(f"[TradingModeSetting.is_sim] Failed: {e}", exc_info=True)
             return True  # Default to SIM for safety
@@ -695,7 +728,7 @@ class TradingModeSetting:
     def is_backtest(self) -> bool:
         """Check if backtest mode is active."""
         try:
-            return self.mode == TradingMode.BACKTEST.value
+            return self.mode == TradingMode.BACKTEST
         except Exception as e:
             logger.error(f"[TradingModeSetting.is_backtest] Failed: {e}", exc_info=True)
             return False
@@ -703,7 +736,7 @@ class TradingModeSetting:
     def get_mode_name(self) -> str:
         """Get current mode name as string."""
         try:
-            return self.mode if self.mode else TradingMode.PAPER.value
+            return self.mode.value if isinstance(self.mode, TradingMode) else TradingMode.PAPER.value
         except Exception as e:
             logger.error(f"[TradingModeSetting.get_mode_name] Failed: {e}", exc_info=True)
             return TradingMode.PAPER.value
@@ -747,7 +780,7 @@ class TradingModeSetting:
     def __repr__(self) -> str:
         """String representation of TradingModeSetting."""
         try:
-            return f"<TradingModeSetting mode={self.mode if self.mode else 'Unknown'}>"
+            return f"<TradingModeSetting mode={self.mode.value if isinstance(self.mode, TradingMode) else self.mode}>"
         except Exception as e:
             logger.error(f"[TradingModeSetting.__repr__] Failed: {e}", exc_info=True)
             return "<TradingModeSetting Error>"

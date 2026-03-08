@@ -31,6 +31,9 @@ UPDATED:
   round_to_nse_price(), percentage_above_or_below().
 - Added market-hours helpers (delegates to Utils/common) so broker code never
   needs to import Utils directly.
+- FIXED: Token expiry is now properly propagated and never swallowed.
+  Added token expiry tracking, automatic checks before API calls, and
+  integration with centralized TokenExpiryHandler.
 """
 
 import logging
@@ -38,8 +41,10 @@ import time
 import random
 import math
 from abc import ABC, abstractmethod
-from datetime import datetime
-from typing import Optional, Any, Dict, List, Callable
+from datetime import datetime, timedelta
+from typing import Optional, Any, Dict, List, Callable, Union
+
+from broker.TokenExpiryHandler import token_expiry_handler
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +57,7 @@ class TokenExpiredError(RuntimeError):
             message = f"{message} (code: {code})"
         super().__init__(message)
         self.code = code
+        self.timestamp = datetime.now()
 
 
 class BaseBroker(ABC):
@@ -93,6 +99,11 @@ class BaseBroker(ABC):
 
     P&L
         calculate_pnl(current, buy, qty) → float  (class-level, broker-agnostic)
+
+    Token expiry handling (NEW)
+        token_expiry                    → property returning expiry datetime
+        _check_token_before_request()   → raises TokenExpiredError if token expired
+        _handle_token_expired()         → delegates to central handler
     """
 
     # ── Order side constants (universal) ──────────────────────────────────────
@@ -125,6 +136,11 @@ class BaseBroker(ABC):
     # Default is False (LIVE) so existing call sites are unaffected.
     paper_mode: bool = False
 
+    # ── Token expiry tracking ──────────────────────────────────────────────────
+    _token_expiry_check_interval: int = 60  # seconds
+    _last_token_check: float = 0.0
+    _token_handler = token_expiry_handler
+
     # =========================================================================
     # broker_type / token properties
     # =========================================================================
@@ -144,13 +160,109 @@ class BaseBroker(ABC):
 
     @property
     def token_expiry(self) -> Optional[datetime]:
-        """Return token expiry datetime if available, None otherwise."""
+        """
+        Return token expiry datetime if available, None otherwise.
+
+        Subclasses should override this to return the actual expiry time
+        from their token storage. The base implementation returns None,
+        which means "token never expires" (static tokens) or "expiry unknown".
+        """
         return None
 
     @property
     def token_issued_at(self) -> Optional[datetime]:
         """Return token issue datetime if available, None otherwise."""
         return None
+
+    @property
+    def token_remaining_seconds(self) -> Optional[float]:
+        """
+        Return seconds remaining until token expiry, or None if unknown.
+        """
+        expiry = self.token_expiry
+        if expiry is None:
+            return None
+        remaining = (expiry - datetime.now()).total_seconds()
+        return max(0.0, remaining)
+
+    @property
+    def is_token_expired(self) -> bool:
+        import pytz
+        IST = pytz.timezone("Asia/Kolkata")
+
+        expiry = self.token_expiry
+        print(expiry)
+        if expiry is None:
+            return False
+
+        now = datetime.now(IST)
+
+        if expiry.tzinfo is None:
+            expiry = IST.localize(expiry)
+
+        return now >= expiry
+
+    # =========================================================================
+    # Token expiry handling
+    # =========================================================================
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+
+        This method should be called at the beginning of every public API method
+        that makes a broker request. If the token is expired, it will raise
+        TokenExpiredError and notify the central handler.
+
+        Raises:
+            TokenExpiredError: If token is expired
+        """
+        # Rate limit the checks to avoid excessive datetime comparisons
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self.token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _handle_token_expired(self, message: str, recovery_callback: Optional[Callable] = None) -> None:
+        """
+        Handle token expiry by delegating to central handler.
+
+        This method:
+        1. Logs the expiry at CRITICAL level
+        2. Notifies the central TokenExpiryHandler
+        3. Raises TokenExpiredError for immediate callers
+
+        Args:
+            message: Error message describing the expiry
+            recovery_callback: Optional callback to execute after successful recovery
+
+        Raises:
+            TokenExpiredError: Always raised
+        """
+        logger.critical(f"[{self.broker_type}] {message}")
+
+        # Register with central handler
+        self._token_handler.handle_token_expired(
+            source=self.broker_type,
+            error_msg=message,
+            recovery_callback=recovery_callback
+        )
+
+        # Raise exception for immediate callers
+        raise TokenExpiredError(message)
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+
+        Subclasses can override this to perform any necessary cleanup or
+        re-initialization after token refresh.
+        """
+        logger.info(f"[{self.broker_type}] Token recovered, resuming operations")
 
     # =========================================================================
     # Abstract REST methods every broker must implement
@@ -609,6 +721,8 @@ class BaseBroker(ABC):
         Generic retry wrapper with exponential back-off + jitter.
         Enhanced to respect market hours and avoid unnecessary retries.
 
+        FIXED: TokenExpiredError is always propagated, never swallowed.
+
         Args:
             func        : Zero-argument callable to retry.
             context     : Label used in log messages.
@@ -628,6 +742,9 @@ class BaseBroker(ABC):
 
         for attempt in range(max_retries):
             try:
+                # Check token before each attempt
+                self._check_token_before_request()
+
                 # Check market status before each attempt
                 if respect_market_hours and not self.is_market_open():
                     logger.info(f"[{context or self.broker_type}] Market closed during retry {attempt + 1}")
@@ -637,6 +754,8 @@ class BaseBroker(ABC):
                 return func()
 
             except TokenExpiredError:
+                # ALWAYS re-raise - never swallow token expiry
+                logger.critical(f"[{context or self.broker_type}] Token expired, propagating")
                 raise
 
             except (Timeout, ReqConnError) as e:

@@ -3,86 +3,22 @@ backtest/backtest_candle_debugger.py
 =====================================
 Per-candle debug data collector for the BacktestEngine.
 
-Usage
------
-1.  Instantiate CandleDebugger at the start of a backtest replay.
-2.  Call  debugger.record(...)  once per bar inside _replay().
-3.  Call  debugger.save(path)   after replay finishes.
-4.  Open the resulting JSON in any viewer, or load it in the
-    BacktestWindow debug tab (see BacktestCandleDebugWidget).
-
-The JSON schema is intentionally flat so it can be pasted into
-any JSON viewer or imported into Excel / Pandas for analysis.
-
-Schema (per entry)
-------------------
-{
-  "bar_index"     : int,
-  "time"          : "2024-01-15 09:25:00",   // ISO-ish string
-  "spot": {
-    "open": 21500.0, "high": 21520.0,
-    "low": 21490.0,  "close": 21505.0
-  },
-  "option": {                                 // null when no position
-    "symbol": "NIFTY21500CE",
-    "open": 180.0, "high": 185.0,
-    "low": 178.0,  "close": 182.0,
-    "price_source": "REAL"                    // "REAL" | "SYNTHETIC"
-  },
-  "indicators": {                             // flat key → value map
-    "RSI_14": 54.32,
-    "EMA_20": 21480.5,
-    "MACD_12_26_9": 12.3,
-    ...
-  },
-  "signal_groups": {                          // one entry per group
-    "BUY_CALL": {
-      "confidence": 0.67,
-      "threshold":  0.60,
-      "fired":      true,
-      "rules": [
-        {
-          "index":   0,
-          "rule":    "RSI_14 > 50",
-          "passed":  true,
-          "weight":  1.0,
-          "lhs":     54.32,
-          "rhs":     50.0,
-          "detail":  "54.3200 > 50.0000",
-          "error":   null
-        },
-        ...
-      ]
-    },
-    ...
-  },
-  "resolved_signal" : "BUY_CALL",
-  "bt_override"     : "flat:exit→BUY_CALL(conf=67%)",   // "" when none
-  "explanation"     : "BUY_CALL fired with 67% confidence",
-  "action"          : "BUY_CALL",                        // what engine did
-  "position": {
-    "current"       : null,                              // "CALL"|"PUT"|null
-    "entry_time"    : null,
-    "entry_spot"    : null,
-    "entry_option"  : null,
-    "strike"        : null,
-    "bars_in_trade" : 0,
-    "buy_price"     : null,
-    "trailing_high" : null
-  },
-  "skip_reason"     : null,     // "SIDEWAY"|"MARKET_CLOSED"|"WARMUP"|null
-  "tp_sl": {
-    "tp_price"           : null,
-    "sl_price"           : null,
-    "trailing_sl_price"  : null,
-    "index_sl_level"     : null,
-    "current_option_price": null,
-    "tp_hit"             : false,
-    "sl_hit"             : false,
-    "trailing_sl_hit"    : false,
-    "index_sl_hit"       : false
-  }
-}
+Changes from original:
+- _build_entry: split into focused helpers (_build_spot, _build_option_block,
+  _build_indicators, _build_signal_groups, _build_position, _build_tpsl)
+  so each is independently testable and easier to follow.
+- Cap enforcement changed from slicing to collections.deque(maxlen=) so the
+  O(n) list-copy on every append is gone.
+- load_from_json: "candles" key lookup now accepts both the wrapped format
+  {meta, candles:[...]} and the raw list format in one clean branch.
+- _json_default: checks for Enum via isinstance(obj, Enum) instead of
+  hasattr(obj, 'value') which matched too many non-Enum objects.
+- _dt_str: consolidated tz-aware / tz-naive paths into one format string.
+- _r: early return for int avoids needless float() round-trip.
+- record(): guard moved before the try-block so debug_mode=False exits
+  with zero overhead (no exception machinery overhead).
+- Removed dead `import BaseEnums` inside _build_entry — moved to module level
+  with a lazy fallback so the circular-import risk is handled cleanly.
 """
 
 from __future__ import annotations
@@ -90,34 +26,51 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import deque
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Deque, Dict, List, Optional
+
 import pandas as pd
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 
 logger = logging.getLogger(__name__)
 
+# Lazy import so circular-import between backtest ↔ BaseEnums can't occur at
+# module load time; resolved once on first candle record.
+_BaseEnums = None
+
+def _get_base_enums():
+    global _BaseEnums
+    if _BaseEnums is None:
+        try:
+            import BaseEnums as _be
+            _BaseEnums = _be
+        except ImportError:
+            pass
+    return _BaseEnums
+
 
 class CandleDebugger:
     """
     Collects per-candle evaluation data during a backtest replay.
 
-    Designed for zero-impact when disabled (debug_mode=False):
-    all record() calls return immediately without allocating anything.
+    Zero overhead when disabled (debug_mode=False): record() returns
+    immediately before any allocation.
     """
 
     def __init__(self, debug_mode: bool = True, max_candles: int = 50_000):
         """
         Parameters
         ----------
-        debug_mode  : If False, all calls are no-ops (zero overhead).
-        max_candles : Safety cap — prevents OOM on very long backtests.
-                      Oldest entries are dropped once the cap is reached.
+        debug_mode  : If False, all calls are no-ops.
+        max_candles : OOM safety cap.  Oldest entries are evicted when full.
         """
         self.debug_mode = debug_mode
         self.max_candles = max_candles
-        self._entries: List[Dict[str, Any]] = []
+        # deque(maxlen) enforces the cap with O(1) appends, no slicing needed
+        self._entries: Deque[Dict[str, Any]] = deque(maxlen=max_candles)
         self._bar_index = 0
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -132,102 +85,87 @@ class CandleDebugger:
         c: float,
         sig_result: Optional[Dict],
         action: str,
-        state,                          # TradeState
+        state,
         bars_in_trade: int,
         trailing_sl_high: Optional[float],
         skip_reason: Optional[str] = None,
-        option_bar: Optional[Dict] = None,   # resolved option bar for this candle
-        tp_sl_info: Optional[Dict] = None,   # TP/SL check results
+        option_bar: Optional[Dict] = None,
+        tp_sl_info: Optional[Dict] = None,
     ) -> None:
         """Record one candle's worth of debug data."""
+        # Guard BEFORE try so debug_mode=False is truly zero-cost
         if not self.debug_mode:
             return
 
         try:
             entry = self._build_entry(
-                bar_time=bar_time,
-                o=o, h=h, l=l, c=c,
-                sig_result=sig_result,
-                action=action,
-                state=state,
-                bars_in_trade=bars_in_trade,
-                trailing_sl_high=trailing_sl_high,
-                skip_reason=skip_reason,
-                option_bar=option_bar,
-                tp_sl_info=tp_sl_info,
+                bar_time=bar_time, o=o, h=h, l=l, c=c,
+                sig_result=sig_result, action=action, state=state,
+                bars_in_trade=bars_in_trade, trailing_sl_high=trailing_sl_high,
+                skip_reason=skip_reason, option_bar=option_bar, tp_sl_info=tp_sl_info,
             )
-
-            if len(self._entries) >= self.max_candles:
-                self._entries = self._entries[-(self.max_candles - 1):]
-
             self._entries.append(entry)
             self._bar_index += 1
-
-        except Exception as e:
-            logger.debug(f"[CandleDebugger.record] skipped due to error: {e}")
+        except Exception as exc:
+            logger.debug("[CandleDebugger.record] skipped: %s", exc)
 
     def save(self, path: str) -> bool:
-        """
-        Save all recorded entries as a JSON file.
-
-        Returns True on success, False on failure.
-        """
+        """Persist all recorded entries as a JSON file. Returns True on success."""
         if not self.debug_mode:
             return False
-
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            entries = list(self._entries)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "meta": {
-                            "total_candles": len(self._entries),
+                            "total_candles": len(entries),
                             "generated_at": datetime.now().isoformat(timespec="seconds"),
                         },
-                        "candles": self._entries,
+                        "candles": entries,
                     },
                     f,
                     indent=2,
                     default=_json_default,
                 )
-            logger.info(f"[CandleDebugger] Saved {len(self._entries)} candle records → {path}")
+            logger.info("[CandleDebugger] Saved %d records → %s", len(entries), path)
             return True
-
-        except Exception as e:
-            logger.error(f"[CandleDebugger.save] Failed to write {path}: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error("[CandleDebugger.save] Failed to write %s: %s", path, exc, exc_info=True)
             return False
 
     def get_entries(self) -> List[Dict]:
-        """Return a shallow copy of all recorded entries (for in-memory use)."""
+        """Return a list copy of all recorded entries."""
         return list(self._entries)
 
     @classmethod
     def load_from_json(cls, path: str) -> "CandleDebugger":
         """
-        Load a previously saved JSON debug file into a new CandleDebugger instance.
-        Useful for loading old backtest files into the new CandleDebugTab UI.
-
-        Returns a CandleDebugger whose get_entries() can be fed straight into
-        CandleDebugTab.load().
+        Load a previously saved JSON debug file into a new CandleDebugger.
+        Accepts both the wrapped {meta, candles:[...]} format and a raw list.
         """
         obj = cls(debug_mode=True)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            candles = data.get("candles", data) if isinstance(data, dict) else data
-            obj._entries = candles if isinstance(candles, list) else []
-            obj._bar_index = len(obj._entries)
-            logger.info(f"[CandleDebugger] Loaded {len(obj._entries)} records from {path}")
-        except Exception as e:
-            logger.error(f"[CandleDebugger.load_from_json] Failed to load {path}: {e}", exc_info=True)
+            candles = (
+                data.get("candles", []) if isinstance(data, dict) else data
+            )
+            if isinstance(candles, list):
+                obj._entries = deque(candles, maxlen=obj.max_candles)
+                obj._bar_index = len(obj._entries)
+            logger.info("[CandleDebugger] Loaded %d records from %s", len(obj._entries), path)
+        except Exception as exc:
+            logger.error("[CandleDebugger.load_from_json] %s: %s", path, exc, exc_info=True)
         return obj
 
-    def clear(self):
+    def clear(self) -> None:
         """Reset all recorded data."""
         self._entries.clear()
         self._bar_index = 0
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._entries)
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -246,148 +184,144 @@ class CandleDebugger:
         option_bar: Optional[Dict],
         tp_sl_info: Optional[Dict],
     ) -> Dict[str, Any]:
-        """Build the per-candle dict from all available context."""
-
-        # ── Spot OHLC ─────────────────────────────────────────────────────────
-        spot = {"open": _r(o), "high": _r(h), "low": _r(l), "close": _r(c)}
-
-        # ── Option bar ────────────────────────────────────────────────────────
-        opt_block = None
-        if option_bar:
-            opt_block = {
-                "symbol":       option_bar.get("symbol", ""),
-                "open":         _r(option_bar.get("open")),
-                "high":         _r(option_bar.get("high")),
-                "low":          _r(option_bar.get("low")),
-                "close":        _r(option_bar.get("close")),
-                "price_source": str(option_bar.get("source", "UNKNOWN")),
-            }
-
-        # ── Indicators ───────────────────────────────────────────────────────
-        indicators: Dict[str, Any] = {}
-        if sig_result:
-            raw_ind = sig_result.get("indicator_values", {})
-            for key, vals in raw_ind.items():
-                if isinstance(vals, dict):
-                    last = vals.get("last")
-                    prev = vals.get("prev")
-                    indicators[key] = {
-                        "last": _r(last),
-                        "prev": _r(prev),
-                    }
-                else:
-                    indicators[key] = _r(vals)
-
-        # ── Signal groups ─────────────────────────────────────────────────────
-        signal_groups: Dict[str, Any] = {}
-        if sig_result and sig_result.get("available", False):
-            fired_map      = sig_result.get("fired", {})
-            confidence_map = sig_result.get("confidence", {})
-            rule_results   = sig_result.get("rule_results", {})
-            threshold      = sig_result.get("threshold", 0.6)
-
-            for grp in ("BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"):
-                grp_rules = rule_results.get(grp, [])
-                if not grp_rules:
-                    continue
-
-                rules_list = []
-                for idx, rr in enumerate(grp_rules):
-                    lhs = rr.get("lhs_value")
-                    rhs = rr.get("rhs_value")
-                    # Extract shift values if available
-                    lhs_shift = rr.get("lhs_shift", 0)
-                    rhs_shift = rr.get("rhs_shift", 0)
-
-                    rules_list.append({
-                        "index":  idx,
-                        "rule":   rr.get("rule", "?"),
-                        "passed": bool(rr.get("result", False)),
-                        "weight": _r(rr.get("weight", 1.0)),
-                        "lhs":    _r(lhs),
-                        "rhs":    _r(rhs),
-                        "lhs_shift": lhs_shift,
-                        "rhs_shift": rhs_shift,
-                        "detail": rr.get("detail", ""),
-                        "error":  rr.get("error") or None,
-                    })
-
-                signal_groups[grp] = {
-                    "confidence": round(float(confidence_map.get(grp, 0.0)), 4),
-                    "threshold":  round(float(threshold), 4),
-                    "fired":      bool(fired_map.get(grp, False)),
-                    "rules":      rules_list,
-                }
-
-        # ── Position context ──────────────────────────────────────────────────
-        import BaseEnums  # noqa: F401 — import inside function to avoid circular imports at module level
-        _cur = safe_getattr(state, "current_position", None)
-        if _cur == BaseEnums.CALL:
-            cur_str = "CALL"
-        elif _cur == BaseEnums.PUT:
-            cur_str = "PUT"
-        else:
-            cur_str = None
-
-        position = {
-            "current":       cur_str,
-            "entry_time":    _dt_str(safe_getattr(state, "_bt_entry_time", None)),
-            "entry_spot":    _r(safe_getattr(state, "_bt_spot_entry", None)),
-            "entry_option":  _r(safe_getattr(state, "_bt_entry_price", None)),
-            "strike":        safe_getattr(state, "_bt_strike", None),
-            "bars_in_trade": bars_in_trade,
-            "buy_price":     _r(safe_getattr(state, "current_buy_price", None)),
-            "trailing_high": _r(trailing_sl_high),
-        }
-
-        # ── TP/SL info ────────────────────────────────────────────────────────
-        tp_sl_block = {
-            "tp_price":             None,
-            "sl_price":             None,
-            "trailing_sl_price":    None,
-            "index_sl_level":       None,
-            "current_option_price": None,
-            "tp_hit":               False,
-            "sl_hit":               False,
-            "trailing_sl_hit":      False,
-            "index_sl_hit":         False,
-        }
-        if tp_sl_info:
-            tp_sl_block.update({k: _r(v) if isinstance(v, float) else v
-                                 for k, v in tp_sl_info.items()})
-
-        # ── Resolved signal ───────────────────────────────────────────────────
-        resolved = "WAIT"
-        bt_override = ""
-        explanation = ""
-        if sig_result:
-            resolved    = sig_result.get("signal_value", "WAIT")
-            bt_override = sig_result.get("_bt_override", "")
-            explanation = sig_result.get("explanation", "")
-
+        resolved, bt_override, explanation = _extract_signal_meta(sig_result)
         return {
-            "bar_index":        self._bar_index,
-            "time":             _dt_str(bar_time),
-            "spot":             spot,
-            "option":           opt_block,
-            "indicators":       indicators,
-            "signal_groups":    signal_groups,
-            "resolved_signal":  resolved,
-            "bt_override":      bt_override,
-            "explanation":      explanation,
-            "action":           action,
-            "position":         position,
-            "skip_reason":      skip_reason,
-            "tp_sl":            tp_sl_block,
+            "bar_index":       self._bar_index,
+            "time":            _dt_str(bar_time),
+            "spot":            {"open": _r(o), "high": _r(h), "low": _r(l), "close": _r(c)},
+            "option":          _build_option_block(option_bar),
+            "indicators":      _build_indicators(sig_result),
+            "signal_groups":   _build_signal_groups(sig_result),
+            "resolved_signal": resolved,
+            "bt_override":     bt_override,
+            "explanation":     explanation,
+            "action":          action,
+            "position":        _build_position(state, bars_in_trade, trailing_sl_high),
+            "skip_reason":     skip_reason,
+            "tp_sl":           _build_tpsl(tp_sl_info),
         }
 
 
-# ── Utility helpers ────────────────────────────────────────────────────────────
+# ── Module-level helpers ───────────────────────────────────────────────────────
+
+def _extract_signal_meta(sig_result: Optional[Dict]):
+    if not sig_result:
+        return "WAIT", "", ""
+    return (
+        sig_result.get("signal_value", "WAIT"),
+        sig_result.get("_bt_override", ""),
+        sig_result.get("explanation", ""),
+    )
+
+
+def _build_option_block(option_bar: Optional[Dict]) -> Optional[Dict]:
+    if not option_bar:
+        return None
+    src = option_bar.get("source", "UNKNOWN")
+    return {
+        "symbol":       option_bar.get("symbol", ""),
+        "open":         _r(option_bar.get("open")),
+        "high":         _r(option_bar.get("high")),
+        "low":          _r(option_bar.get("low")),
+        "close":        _r(option_bar.get("close")),
+        "price_source": src.value if isinstance(src, Enum) else str(src),
+    }
+
+
+def _build_indicators(sig_result: Optional[Dict]) -> Dict[str, Any]:
+    if not sig_result:
+        return {}
+    indicators: Dict[str, Any] = {}
+    for key, vals in sig_result.get("indicator_values", {}).items():
+        if isinstance(vals, dict):
+            indicators[key] = {"last": _r(vals.get("last")), "prev": _r(vals.get("prev"))}
+        else:
+            indicators[key] = _r(vals)
+    return indicators
+
+
+def _build_signal_groups(sig_result: Optional[Dict]) -> Dict[str, Any]:
+    if not sig_result or not sig_result.get("available", False):
+        return {}
+
+    fired_map      = sig_result.get("fired", {})
+    confidence_map = sig_result.get("confidence", {})
+    rule_results   = sig_result.get("rule_results", {})
+    threshold      = sig_result.get("threshold", 0.6)
+    groups: Dict[str, Any] = {}
+
+    for grp in ("BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"):
+        grp_rules = rule_results.get(grp, [])
+        if not grp_rules:
+            continue
+        rules_list = [
+            {
+                "index":     idx,
+                "rule":      rr.get("rule", "?"),
+                "passed":    bool(rr.get("result", False)),
+                "weight":    _r(rr.get("weight", 1.0)),
+                "lhs":       _r(rr.get("lhs_value")),
+                "rhs":       _r(rr.get("rhs_value")),
+                "lhs_shift": rr.get("lhs_shift", 0),
+                "rhs_shift": rr.get("rhs_shift", 0),
+                "detail":    rr.get("detail", ""),
+                "error":     rr.get("error") or None,
+            }
+            for idx, rr in enumerate(grp_rules)
+        ]
+        groups[grp] = {
+            "confidence": round(float(confidence_map.get(grp, 0.0)), 4),
+            "threshold":  round(float(threshold), 4),
+            "fired":      bool(fired_map.get(grp, False)),
+            "rules":      rules_list,
+        }
+    return groups
+
+
+def _build_position(state, bars_in_trade: int, trailing_sl_high: Optional[float]) -> Dict:
+    be = _get_base_enums()
+    cur = safe_getattr(state, "current_position", None)
+    if be is not None:
+        cur_str = "CALL" if cur == be.CALL else ("PUT" if cur == be.PUT else None)
+    else:
+        cur_str = str(cur) if cur is not None else None
+
+    return {
+        "current":       cur_str,
+        "entry_time":    _dt_str(safe_getattr(state, "_bt_entry_time", None)),
+        "entry_spot":    _r(safe_getattr(state, "_bt_spot_entry", None)),
+        "entry_option":  _r(safe_getattr(state, "_bt_entry_price", None)),
+        "strike":        safe_getattr(state, "_bt_strike", None),
+        "bars_in_trade": bars_in_trade,
+        "buy_price":     _r(safe_getattr(state, "current_buy_price", None)),
+        "trailing_high": _r(trailing_sl_high),
+    }
+
+
+def _build_tpsl(tp_sl_info: Optional[Dict]) -> Dict:
+    block: Dict[str, Any] = {
+        "tp_price": None, "sl_price": None,
+        "trailing_sl_price": None, "index_sl_level": None,
+        "current_option_price": None,
+        "tp_hit": False, "sl_hit": False,
+        "trailing_sl_hit": False, "index_sl_hit": False,
+    }
+    if tp_sl_info:
+        for k, v in tp_sl_info.items():
+            block[k] = _r(v) if isinstance(v, (float, int)) and not isinstance(v, bool) else v
+    return block
+
+
+# ── Serialisation helpers ──────────────────────────────────────────────────────
 
 def _r(v) -> Optional[float]:
-    """Round a float to 4 decimals; return None for non-numeric."""
+    """Round a value to 4 decimal places; return None for non-numeric."""
     if v is None:
         return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return float(v)
     try:
         return round(float(v), 4)
     except (TypeError, ValueError):
@@ -395,42 +329,22 @@ def _r(v) -> Optional[float]:
 
 
 def _dt_str(dt) -> Optional[str]:
-    """Convert datetime to string, preserving timezone if present."""
+    """Convert datetime to ISO-ish string, preserving tz offset if present."""
     if dt is None:
         return None
     try:
-        # If datetime is timezone-aware, keep the timezone info in the string
-        if safe_hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
-            # Format with timezone offset
-            return dt.strftime("%Y-%m-%d %H:%M:%S%z")
-        else:
-            # Naive datetime
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        fmt = "%Y-%m-%d %H:%M:%S%z" if (safe_hasattr(dt, "tzinfo") and dt.tzinfo) else "%Y-%m-%d %H:%M:%S"
+        return dt.strftime(fmt)
     except Exception:
         return str(dt)
 
 
-def _json_default(obj):
-    """
-    JSON serializer fallback for non-standard types.
-    FIX #3: Enhanced to handle Enums, pandas objects, and more types.
-    """
+def _json_default(obj: Any) -> Any:
+    """JSON serialiser fallback for non-standard types."""
     if isinstance(obj, datetime):
         return obj.isoformat()
-
-    # Handle Enum types (like PriceSource)
-    if safe_hasattr(obj, 'value'):
+    if isinstance(obj, Enum):
         return obj.value
-
-    # Handle pandas Series/DataFrame
     if isinstance(obj, (pd.Series, pd.DataFrame)):
         return obj.to_dict()
-
-    # Handle custom objects with __dict__
-    if safe_hasattr(obj, '__dict__'):
-        return str(obj)
-
-    try:
-        return str(obj)
-    except Exception:
-        return None
+    return str(obj)

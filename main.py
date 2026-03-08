@@ -1,18 +1,21 @@
-# main.py (updated version with proper onboarding integration and ThemeManager)
+# main.py (updated version with global exception handler)
 """
 Application entry point with splash screen and first-time onboarding.
-Fully integrated with ThemeManager for consistent theming.
+FIXED: Added global exception handler for uncaught exceptions.
 """
 
 import logging.handlers
 import os
 import sys
+import threading
+import traceback
 from datetime import datetime
 from typing import Optional
 
 import PyQt5.QtCore
 from PyQt5.QtWidgets import QMessageBox
 
+from Utils.safe_getattr import safe_hasattr
 from Utils.session_utils import generate_session_id
 from data.trade_state_manager import state_manager
 from gui.theme_manager import show_themed_message_box
@@ -46,6 +49,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ── Global exception handler ──────────────────────────────────────────────────
+
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    """
+    Global exception handler for all uncaught exceptions.
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        # Let KeyboardInterrupt through
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+    # Try to show error dialog if GUI is running
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app:
+            error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            msg_box = QMessageBox()
+            msg_box.setWindowTitle("Fatal Error")
+            msg_box.setText(f"An unhandled exception occurred:\n\n{exc_type.__name__}: {exc_value}")
+            msg_box.setInformativeText("Check logs for details.\n\nThe application will now exit.")
+            msg_box.setDetailedText(error_msg)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
+    except:
+        pass
+
+    # Exit with error code
+    sys.exit(1)
+
+
+def thread_exception_handler(args):
+    """
+    Handler for uncaught exceptions in threads.
+    """
+    logger.critical(f"Unhandled exception in thread {args.thread.name}: {args.exc_value}",
+                    exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+# Install global exception handlers
+sys.excepthook = global_exception_handler
+threading.excepthook = thread_exception_handler
+
+
 # ── Deferred Qt import ──────────────────────────────────────────────────────
 def _qt_app():
     """Create or get the QApplication instance."""
@@ -67,7 +117,6 @@ def _qt_app():
 def _apply_saved_theme(app):
     """
     Rule 13.2: Load saved theme preference and apply it before any window opens.
-    This prevents flashing of wrong theme during startup.
     """
     try:
         from gui.theme_manager import theme_manager
@@ -417,6 +466,113 @@ def _reload_all_settings():
         logger.error(f"[main._reload_all_settings] Failed to reload settings: {e}", exc_info=True)
 
 
+# ── Token Gate ─────────────────────────────────────────────────────────────
+
+def _run_token_gate(qt_app, splash=None) -> bool:
+    """
+    Verify the stored broker token before opening the main window.
+
+    - If a valid, non-expired token exists  → return True immediately.
+    - If the token is absent or expired     → close the splash, show the
+      BrokerLoginPopup modally, and return True only after the user completes
+      authentication.  If the user cancels, return False (app exits).
+
+    This guarantees the main GUI always opens with a live broker session so
+    historical chart data can be fetched immediately on startup.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        from db.crud import tokens
+        from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
+        from gui.brokerage_settings.Brokerloginpopup import BrokerLoginPopup
+        from PyQt5.QtWidgets import QDialog, QMessageBox
+
+        # ── Check stored token ────────────────────────────────────────────────
+        token_data = tokens.get()
+        token_ok = False
+
+        if token_data:
+            access_token = token_data.get('access_token', '')
+            expires_at   = token_data.get('expires_at')
+
+            if access_token:
+                if not expires_at:
+                    # No expiry recorded — assume valid (some brokers don't set it)
+                    token_ok = True
+                else:
+                    try:
+                        exp_str = str(expires_at)
+                        if exp_str.endswith('Z'):
+                            exp_str = exp_str.replace('Z', '+00:00')
+                        expiry = datetime.fromisoformat(exp_str)
+                        if expiry.tzinfo is None:
+                            expiry = expiry.replace(tzinfo=timezone.utc)
+                        # 5-minute buffer — treat nearly-expired as expired
+                        token_ok = datetime.now(timezone.utc) < (expiry - timedelta(minutes=5))
+                    except Exception:
+                        token_ok = False  # Can't parse → treat as expired
+
+        if token_ok:
+            logger.info("[main._run_token_gate] Token valid — proceeding to main window")
+            return True
+
+        # ── Token missing or expired — force login ────────────────────────────
+        logger.warning("[main._run_token_gate] Token absent or expired — showing login dialog")
+
+        if splash:
+            try:
+                splash.close()
+            except Exception:
+                pass
+
+        brokerage_setting = BrokerageSetting()
+        brokerage_setting.load()
+        brokerage_setting._load_token_info()
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            reason = (
+                "Your broker access token has expired or has not been generated yet. "
+                "Please login to continue."
+            )
+            dlg = BrokerLoginPopup(None, brokerage_setting, reason=reason)
+            result = dlg.exec_()
+
+            if result == QDialog.Accepted:
+                logger.info(
+                    f"[main._run_token_gate] Login succeeded on attempt {attempt}"
+                )
+                return True
+
+            # User cancelled
+            if attempt < max_attempts:
+                reply = QMessageBox.question(
+                    None,
+                    "Login Required",
+                    "A valid broker token is required to use this application.\n\n"                    "Would you like to try again?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply != QMessageBox.Yes:
+                    logger.info("[main._run_token_gate] User chose not to retry login — exiting")
+                    return False
+            else:
+                QMessageBox.critical(
+                    None,
+                    "Login Required",
+                    "Login was not completed.\nThe application cannot start without a valid broker token.",
+                )
+                logger.warning("[main._run_token_gate] Max login attempts reached — exiting")
+                return False
+
+        return False
+
+    except Exception as e:
+        logger.error(f"[main._run_token_gate] Unexpected error: {e}", exc_info=True)
+        # Don't block startup on unexpected error — let TradingGUI handle it
+        return True
+
+
 # ── Main Window ────────────────────────────────────────────────────────────
 def _launch_main_window(qt_app, splash=None, update_info=None) -> int:
     """Create TradingGUI, inject optional update banner, enter event loop."""
@@ -637,7 +793,15 @@ def main() -> int:
             logger.warning("[main.main] Database session creation failed, continuing with limited functionality")
             # Not critical for UI, but orders won't work
 
-        # ── Step 10: Main window ────────────────────────────────────────────────
+        # ── Step 10: Token gate ─────────────────────────────────────────────────
+        # Verify broker token before opening the main window.  If expired, the
+        # user must complete login now so the main window always opens with a
+        # live session and can load chart data immediately.
+        if not _run_token_gate(qt_app, splash):
+            logger.info("[main.main] Token gate rejected — exiting")
+            return _exit(1)
+
+        # ── Step 11: Main window ────────────────────────────────────────────────
         exit_code = _launch_main_window(qt_app, splash)
         logger.info(f"[main.main] Application exited with code {exit_code}")
         return exit_code

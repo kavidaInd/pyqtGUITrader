@@ -12,7 +12,6 @@ Uses the existing CandleStore implementation from candle_store.py.
 
 import logging
 import threading
-import weakref
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any
 
@@ -20,8 +19,7 @@ import pandas as pd
 
 from Utils.safe_getattr import safe_hasattr
 from broker.BaseBroker import TokenExpiredError
-# Use the existing CandleStore implementation
-from data.candle_store import CandleStore, resample_df
+from data.candle_store import CandleStore, resample_df, convert_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +81,6 @@ class CandleStoreManager:
                 # Default max bars for new stores
                 self._default_max_bars = 2000
 
-                # Bug #17 fix: Remove unused weak references
-                # self._store_refs: Dict[str, weakref.ref] = {}
-
                 self._initialized = True
                 logger.info("CandleStoreManager initialized")
 
@@ -105,11 +100,30 @@ class CandleStoreManager:
         Args:
             broker: Broker instance for fetching historical data
             backtest_mode: If True, stores can be created without broker
+
+        Note on re-initialization:
+            This method may be called twice: once at GUI startup with broker=None
+            (before TradingApp.initialize() runs) and again from
+            TradingGUI._on_trading_app_initialized() once the broker is live.
+            The second call also pushes the broker into all already-created
+            CandleStore instances, so they can fetch data without being recreated.
         """
         with self._lock:
             self._broker = broker
             self._backtest_mode = backtest_mode
             logger.info(f"CandleStoreManager initialized with broker: {broker.__class__.__name__ if broker else 'None'}")
+
+            # Push broker into pre-existing stores so they can fetch immediately.
+            # This handles the race where get_store() was called before initialize(broker)
+            # had a live broker (e.g. during chart setup at GUI startup).
+            if broker is not None:
+                updated = 0
+                for store in self._stores.values():
+                    if safe_hasattr(store, 'broker') and store.broker is None:
+                        store.broker = broker
+                        updated += 1
+                if updated:
+                    logger.info(f"CandleStoreManager: broker injected into {updated} pre-existing store(s)")
 
     def initialize_for_backtest(self) -> None:
         """Initialize the manager for backtest mode (no broker needed)."""
@@ -151,7 +165,7 @@ class CandleStoreManager:
 
                 logger.info(f"Creating new CandleStore for {symbol} with max_bars={max_bars}")
 
-                # Bug #1 fix: Pass max_bars to constructor consistently
+                # Pass max_bars to constructor consistently
                 store = CandleStore(
                     symbol=symbol,
                     broker=self._broker if not self._backtest_mode else None,
@@ -188,7 +202,7 @@ class CandleStoreManager:
                 if not self._backtest_mode and self._broker is not None:
                     logger.warning("Creating store from DataFrame in non-backtest mode - this may indicate an issue")
 
-                # Bug #1 fix: Pass max_bars to from_dataframe constructor
+                # Pass max_bars to from_dataframe constructor
                 if max_bars is None:
                     max_bars = self._default_max_bars
 
@@ -498,35 +512,3 @@ class CandleStoreManager:
 # ------------------------------------------------------------------
 
 candle_store_manager = CandleStoreManager()
-
-
-# ------------------------------------------------------------------
-# Convenience functions (re-export from candle_store for backward compatibility)
-# ------------------------------------------------------------------
-
-def resample_df(df_1min: pd.DataFrame, minutes: int) -> Optional[pd.DataFrame]:
-    """
-    Convenience function: resample any 1-min DataFrame to a higher timeframe.
-
-    This is a re-export of the function from candle_store.py for backward compatibility.
-
-    Parameters
-    ----------
-    df_1min : DataFrame with columns [time, open, high, low, close, volume]
-    minutes : target candle width
-
-    Returns resampled DataFrame or None on error.
-    """
-    from data.candle_store import resample_df as _resample
-    return _resample(df_1min, minutes)
-
-
-def convert_timezone(df: pd.DataFrame, time_col: str = 'time',
-                     from_tz: Optional[str] = None, to_tz: str = 'Asia/Kolkata') -> pd.DataFrame:
-    """
-    Convenience function: convert timezone of a DataFrame's time column.
-
-    This is a re-export of the function from candle_store.py for backward compatibility.
-    """
-    from data.candle_store import convert_timezone as _convert
-    return _convert(df, time_col, from_tz, to_tz)

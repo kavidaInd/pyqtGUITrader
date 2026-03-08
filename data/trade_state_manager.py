@@ -4,24 +4,7 @@ Trade State Manager Module
 Manages the TradeState singleton with thread-safe access and convenience methods
 for different parts of the application.
 
-This module provides a centralized manager for the TradeState singleton, making
-it easy to access and update state from anywhere in the application, including
-the backtest engine.
-
-Usage:
-    from data.trade_state_manager import state_manager
-
-    # Get the current state
-    state = state_manager.get_state()
-
-    # Get a thread-safe snapshot
-    snapshot = state_manager.get_snapshot()
-
-    # Update from backtest
-    state_manager.update_from_backtest(backtest_state)
-
-    # Reset for clean backtest
-    state_manager.reset_for_backtest()
+FIXED: Eliminated lock-order inversion - never hold manager lock when calling state methods.
 """
 
 import threading
@@ -39,11 +22,8 @@ class TradeStateManager:
     Manages the trade state singleton with thread-safe access and
     snapshot capabilities for different parts of the application.
 
-    This manager provides:
-    - Thread-safe access to the singleton TradeState
-    - Snapshot creation and restoration
-    - Safe state updates that handle computed properties
-    - Backtest-specific operations (reset, restore)
+    CRITICAL: This manager NEVER holds its own lock when calling state methods
+    to prevent lock-order inversion deadlocks.
     """
 
     _instance = None
@@ -89,7 +69,9 @@ class TradeStateManager:
     def update_from_backtest(self, backtest_state: Dict[str, Any]) -> None:
         """
         Update the state from backtest results.
-        This allows the backtest engine to modify the singleton state.
+
+        IMPORTANT: This method does NOT hold the manager lock when calling
+        state.update_from_dict() to avoid lock-order inversion.
 
         Args:
             backtest_state: Dictionary of state updates from backtest
@@ -98,12 +80,12 @@ class TradeStateManager:
             logger.debug("[TradeStateManager] No backtest state to update")
             return
 
-        # TradeState.update_from_dict() is already thread-safe internally.
-        # Do NOT hold self._lock here: it would create a lock-order dependency
-        # (manager lock → state lock) that can deadlock if any other path
-        # acquires them in the opposite order.
+        # Get a local reference (safe even without lock)
+        state = self._state
+
+        # Call state method WITHOUT holding manager lock
         try:
-            self._state.update_from_dict(backtest_state)
+            state.update_from_dict(backtest_state)
             logger.debug(f"[TradeStateManager] Updated state from backtest with {len(backtest_state)} fields")
         except Exception as e:
             logger.error(f"[TradeStateManager] Failed to update from backtest: {e}", exc_info=True)
@@ -127,11 +109,6 @@ class TradeStateManager:
         """
         Restore a previously saved state.
 
-        This method safely restores state by:
-        1. Validating the input
-        2. Using update_from_dict to handle computed properties
-        3. Logging the operation for debugging
-
         Args:
             saved_state: State snapshot to restore
         """
@@ -139,7 +116,7 @@ class TradeStateManager:
             logger.warning("[TradeStateManager] No saved state to restore")
             return
 
-        # TradeState.update_from_dict() is internally thread-safe.
+        # Call state method WITHOUT holding manager lock
         try:
             self._state.update_from_dict(saved_state)
             logger.debug(f"[TradeStateManager] Restored state with {len(saved_state)} fields")
@@ -173,8 +150,7 @@ class TradeStateManager:
         """
         Set a specific value in state by key.
 
-        Note: This bypasses the update_from_dict method and may not handle
-        computed properties correctly. Prefer restore_state for batch updates.
+        Does NOT hold manager lock to avoid inversion.
 
         Args:
             key: Attribute name to set
@@ -183,8 +159,6 @@ class TradeStateManager:
         Returns:
             bool: True if successful, False otherwise
         """
-        # TradeState property setters are internally thread-safe.
-        # Do not wrap with self._lock here to avoid lock-order inversion.
         try:
             if safe_hasattr(self._state, key):
                 safe_setattr(self._state, key, value)

@@ -1,4 +1,28 @@
-import logging.handlers
+"""
+trading_thread.py
+=================
+QThread wrapper for TradingApp with safe shutdown and correct timer ownership.
+
+FIXES APPLIED
+=============
+FIX-3a  [CRITICAL] stop() called _perform_stop_operations() synchronously on the
+         main thread, which issued broker API calls (exit_position, WS unsubscribe)
+         blocking the GUI.  Fixed: stop() now ONLY sets the should_stop flag and
+         arms the force-stop timer.  All cleanup runs inside TradingThread.run()'s
+         finally block on the worker thread.
+
+FIX-3b  [CRITICAL] QTimer() was constructed inside stop(), which may be called
+         from any thread (e.g. risk_breach signal chain).  QTimers must be created
+         on the GUI/main thread.  Fixed: replaced QTimer() construction with the
+         thread-safe QTimer.singleShot() class method which is safe to call from
+         any thread.
+
+FIX-11a [LOW]     CooperativeTradingApp example class and __main__ test block
+         removed — dead illustration code inflated the file and could confuse
+         readers.
+"""
+
+import logging
 import traceback
 from typing import Any, Dict, Optional
 
@@ -6,281 +30,210 @@ from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import TokenExpiredError
-
-# Import state manager for cleanup
 from data.trade_state_manager import state_manager
 
-# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
 
 class TradingThread(QThread):
     """
-    # PYQT: Wraps TradingApp.run() in a QThread so it never blocks the GUI.
-    # Signals are the only safe way to communicate results back to the main thread.
+    QThread wrapper for TradingApp.run().
 
-    UPDATED: Ensures state manager is properly cleaned up on thread termination.
+    THREADING CONTRACT
+    ------------------
+    - __init__  : called on the GUI thread
+    - run()     : executes on the worker thread — no Qt widget access
+    - stop()    : called from the GUI thread (or any thread) — only sets
+                  flags, never does I/O or constructs QObjects
+    - cleanup() : called from the GUI thread after the thread has stopped
+
+    SHUTDOWN SEQUENCE
+    -----------------
+    1. Caller invokes stop() (GUI thread or any thread).
+    2. stop() sets trading_app.should_stop = True and wakes _stop_event,
+       then arms a QTimer.singleShot force-stop watchdog.
+    3. TradingApp.run()'s keep-alive loop exits because should_stop=True.
+    4. TradingThread.run() falls into its finally block which calls
+       _do_worker_cleanup() on the worker thread.
+    5. QThread.finished signal fires, GUI resets its state.
+    6. If the thread has not finished within _stop_timeout ms the
+       QTimer.singleShot watchdog fires _force_stop() on the GUI thread.
     """
 
-    # Status signals - Rule 3: Typed signals
+    # Qt signals
     started = pyqtSignal()
     finished = pyqtSignal()
+    initialized = pyqtSignal()    # emitted after TradingApp.initialize() succeeds
     error_occurred = pyqtSignal(str)
-    token_expired = pyqtSignal(str)  # Dedicated signal: emitted ONLY on TokenExpiredError
-    status_update = pyqtSignal(str)  # For general status messages
-    position_closed = pyqtSignal(str, float)  # symbol, pnl
-
-    # FEATURE 1: Risk breach signal
-    risk_breach = pyqtSignal(str)  # risk breach reason
-
-    # FEATURE 4: Telegram status signals
-    telegram_status = pyqtSignal(str, bool)  # message, is_success
-
-    # Progress signals
-    stop_progress = pyqtSignal(int)  # Progress percentage during stop
+    token_expired = pyqtSignal(str)          # emitted ONLY on TokenExpiredError
+    status_update = pyqtSignal(str)
+    position_closed = pyqtSignal(str, float) # symbol, pnl
+    risk_breach = pyqtSignal(str)
+    telegram_status = pyqtSignal(str, bool)
+    stop_progress = pyqtSignal(int)
 
     def __init__(self, trading_app, parent=None):
-        # Rule 2: Safe defaults first
         self._safe_defaults_init()
-
         try:
             super().__init__(parent)
             self.trading_app = trading_app
             self._is_stopping = False
-            self._stop_timeout = 10000  # 10 seconds timeout for stop operation
-            self._stop_timer = None
-            # Rule 5: Thread safety with QMutex
+            self._stop_timeout = 10_000   # ms before force-stop fires
             self._mutex = QMutex()
             self._shared_state: Dict[str, Any] = {}
-
-            # FEATURE 1: Connect risk manager signals if available
             self._connect_risk_signals()
-
-            # FEATURE 6: MTF filter state
             self._mtf_enabled = False
-
-            logger.info("TradingThread initialized with state_manager integration")
-
+            logger.info("TradingThread initialised")
         except Exception as e:
             logger.critical(f"[TradingThread.__init__] Failed: {e}", exc_info=True)
-            # Still try to set up basic object
             super().__init__(parent)
             self.trading_app = trading_app
             self._is_stopping = False
-            self._stop_timeout = 10000
-            self._stop_timer = None
+            self._stop_timeout = 10_000
             self._mutex = QMutex()
             self._shared_state = {}
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
         self.trading_app = None
         self._is_stopping = False
-        self._stop_timeout = 10000
-        self._stop_timer = None
+        self._stop_timeout = 10_000
         self._mutex = None
-        self._shared_state = {}
+        self._shared_state: Dict[str, Any] = {}
         self._stop_attempts = 0
         self.MAX_STOP_ATTEMPTS = 3
         self._mtf_enabled = False
 
     def _connect_risk_signals(self):
-        """FEATURE 1: Connect risk manager signals to thread signals"""
         try:
             if (self.trading_app and
                     safe_hasattr(self.trading_app, 'risk_manager') and
                     self.trading_app.risk_manager):
-                # Connect risk breach signal to our own signal
                 self.trading_app.risk_manager.risk_breach.connect(self.risk_breach.emit)
                 logger.debug("Risk manager signals connected")
         except Exception as e:
             logger.error(f"[TradingThread._connect_risk_signals] Failed: {e}", exc_info=True)
 
+    # -------------------------------------------------------------------------
+    # Worker thread entry point
+    # -------------------------------------------------------------------------
+
     def run(self):
-        """
-        # PYQT: This method runs on the background thread
-        Main trading loop - should never directly interact with GUI
-        """
+        """Runs on the background worker thread."""
         try:
-            # Validate trading_app exists
             if self.trading_app is None:
-                error_msg = "Trading app is None, cannot run thread"
-                logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
-                self.finished.emit()
+                msg = "Trading app is None, cannot run thread"
+                logger.error(msg)
+                self.error_occurred.emit(msg)
                 return
 
-            # Emit started signal
             self.started.emit()
             self.status_update.emit("Trading thread started")
             logger.info("Trading thread started")
 
-            # FEATURE 6: Check MTF filter status
             if safe_hasattr(self.trading_app, 'config'):
                 self._mtf_enabled = self.trading_app.config.get('use_mtf_filter', False)
                 if self._mtf_enabled:
                     self.status_update.emit("Multi-Timeframe Filter enabled")
 
-            # Run the main trading application
+            # FIX-6: Run broker/network initialisation on the worker thread
+            # so TradingApp.__init__() (called on the GUI thread) stays fast.
+            if safe_hasattr(self.trading_app, 'initialize'):
+                self.trading_app.initialize()
+
+            # Signal GUI that broker is now live — safe to re-inject into
+            # candle_store_manager and trigger initial chart fetch.
+            self.initialized.emit()
+
             self.trading_app.run()
 
         except TokenExpiredError as e:
-            # Emit dedicated token_expired signal so the GUI can open the
-            # re-authentication popup directly, without fragile string-matching.
-            error_msg = f"Token expired or invalid — re-authentication required. Details: {e}"
-            logger.critical(error_msg, exc_info=True)
-            self.token_expired.emit(error_msg)  # ← dedicated signal
+            msg = f"Token expired or invalid — re-authentication required. Details: {e}"
+            logger.critical(msg, exc_info=True)
+            self.token_expired.emit(msg)
             self.status_update.emit("Trading stopped: Token expired — please re-login")
 
         except AttributeError as e:
-            error_msg = f"TradingThread attribute error: {e}"
-            logger.error(error_msg, exc_info=True)
+            msg = f"TradingThread attribute error: {e}"
+            logger.error(msg, exc_info=True)
             self.error_occurred.emit(f"Internal error in trading thread: {e}")
 
         except Exception as e:
-            # Log full traceback for debugging
-            error_msg = f"TradingThread crashed: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            logger.error(traceback.format_exc())
-
-            # Emit error signal (safe because it's a Qt signal)
-            self.error_occurred.emit(f"{error_msg}\n\n{traceback.format_exc()}")
+            msg = f"TradingThread crashed: {e}"
+            logger.error(msg, exc_info=True)
+            self.error_occurred.emit(f"{msg}\n\n{traceback.format_exc()}")
 
         finally:
-            # Always emit finished signal
+            # FIX-3a: All I/O cleanup runs HERE on the worker thread.
+            self._do_worker_cleanup()
             self.status_update.emit("Trading thread finished")
             logger.info("Trading thread finished")
             self.finished.emit()
 
-    def stop(self):
+    def _do_worker_cleanup(self):
         """
-        Gracefully stop trading thread.
-        This method is called from the main thread but schedules work on the worker thread.
-        """
-        try:
-            # Rule 6: Input validation
-            if self._is_stopping or not self.isRunning():
-                logger.debug(
-                    f"Stop called but thread not running or already stopping. is_stopping={self._is_stopping}, isRunning={self.isRunning()}")
-                return
+        I/O cleanup on the WORKER THREAD inside run()'s finally block.
 
-            self._is_stopping = True
-            self._stop_attempts = 0
-            self.status_update.emit("Initiating graceful shutdown...")
-            logger.info("Initiating graceful thread shutdown")
-
-            # Set up timeout timer
-            self._stop_timer = QTimer()
-            self._stop_timer.setSingleShot(True)
-            self._stop_timer.timeout.connect(self._force_stop)
-            self._stop_timer.start(self._stop_timeout)
-
-            # Schedule the stop work to run in the thread
-            # We use a custom event or signal to execute in thread context
-            self._schedule_stop_in_thread()
-
-        except Exception as e:
-            logger.error(f"[TradingThread.stop] Failed: {e}", exc_info=True)
-            self.error_occurred.emit(f"Failed to initiate stop: {e}")
-
-    def _schedule_stop_in_thread(self):
-        """Schedule stop operations to run in the worker thread"""
-        try:
-            # Since we can't directly call methods in the thread, we use a signal
-            # that's connected to a slot that runs in this thread's context
-            # For simplicity, we'll create a custom event in a real implementation
-            self.stop_progress.emit(10)
-
-            # This would ideally be done with a custom QEvent or by setting a flag
-            # that the trading loop checks periodically
-            self._perform_stop_operations()
-
-        except Exception as e:
-            logger.error(f"[TradingThread._schedule_stop_in_thread] Failed: {e}", exc_info=True)
-            self.error_occurred.emit(f"Error scheduling stop operations: {e}")
-
-    def _perform_stop_operations(self):
-        """
-        Actual stop operations - should be called from within the thread context.
-        In practice, you'd want the trading_app to check a 'should_stop' flag
-        periodically rather than calling this directly.
+        This replaces the old _perform_stop_operations() which was incorrectly
+        called from the GUI thread via stop() -> _schedule_stop_in_thread().
         """
         try:
-            self.status_update.emit("Closing positions...")
             self.stop_progress.emit(30)
 
-            # Rule 5: Thread-safe access to trading_app
             if self.trading_app is None:
-                logger.warning("Trading app is None during stop operations")
                 self.stop_progress.emit(100)
                 return
 
-            # Access state safely (if thread-safe)
-            state = safe_getattr(self.trading_app, "state", None)
-
-            # Check if there's an open position to exit
-            current_position = None
-            if state and safe_hasattr(state, "current_position"):
-                current_position = state.current_position
+            # Exit any open position
+            try:
+                state = state_manager.get_state()
+                current_position = getattr(state, 'current_position', None)
+            except Exception:
+                current_position = None
 
             if current_position:
                 self.status_update.emit(f"Exiting position: {current_position}")
                 logger.info(f"Exiting position during shutdown: {current_position}")
-
-                # Execute position exit
-                if safe_hasattr(self.trading_app, "executor") and self.trading_app.executor:
+                executor = safe_getattr(self.trading_app, 'executor', None)
+                if executor:
                     try:
-                        # This would ideally be a non-blocking call or run in thread
-                        pnl = self.trading_app.executor.exit_position(
-                            reason="Manual stop - app exit"
-                        )
+                        pnl = executor.exit_position(reason="Manual stop - app exit")
                         if pnl is not None:
                             self.position_closed.emit(str(current_position), float(pnl))
-                            logger.info(f"Position closed with P&L: {pnl}")
                     except TokenExpiredError as e:
-                        # Emit dedicated signal so GUI opens login popup immediately
                         logger.critical(f"Token expired while exiting position: {e}", exc_info=True)
                         self.token_expired.emit(
                             f"Token expired during position exit — re-authentication required. Details: {e}"
                         )
-                    except AttributeError as e:
-                        logger.error(f"Executor attribute error during exit: {e}", exc_info=True)
                     except Exception as e:
                         logger.error(f"Error exiting position: {e}", exc_info=True)
                         self.error_occurred.emit(f"Error during position exit: {e}")
 
-                self.stop_progress.emit(60)
+            self.stop_progress.emit(60)
 
-            # Unsubscribe from WebSocket
+            # Unsubscribe WebSocket
             self.status_update.emit("Disconnecting from WebSocket...")
-            if safe_hasattr(self.trading_app, "ws") and self.trading_app.ws:
+            ws = safe_getattr(self.trading_app, 'ws', None)
+            if ws and safe_hasattr(ws, 'unsubscribe'):
                 try:
-                    if safe_hasattr(self.trading_app.ws, "unsubscribe"):
-                        self.trading_app.ws.unsubscribe()
-                        logger.info("WebSocket unsubscribed")
-                except AttributeError as e:
-                    logger.warning(f"WebSocket unsubscribe method not available: {e}")
+                    ws.unsubscribe()
+                    logger.info("WebSocket unsubscribed")
                 except Exception as e:
                     logger.error(f"WebSocket unsubscribe error: {e}", exc_info=True)
 
-            self.stop_progress.emit(90)
-
-            # FEATURE 1: Log risk summary on shutdown
+            self.stop_progress.emit(80)
             self._log_risk_summary()
-
-            # FEATURE 4: Send shutdown notification
             self._send_shutdown_notification()
 
-            # Additional cleanup
+            # Full app cleanup
             self.status_update.emit("Cleaning up resources...")
-            if safe_hasattr(self.trading_app, "cleanup"):
+            if safe_hasattr(self.trading_app, 'cleanup'):
                 try:
                     self.trading_app.cleanup()
                     logger.info("Trading app cleanup completed")
                 except Exception as e:
                     logger.error(f"Cleanup error: {e}", exc_info=True)
 
-            # Reset state manager for clean state
+            # Reset state manager
             self.status_update.emit("Resetting state manager...")
             try:
                 state_manager.reset_for_backtest()
@@ -290,100 +243,97 @@ class TradingThread(QThread):
 
             self.stop_progress.emit(100)
             self.status_update.emit("Shutdown complete")
-            logger.info("Graceful shutdown completed successfully")
-
-            # Cancel timeout timer since we finished successfully
-            if self._stop_timer:
-                try:
-                    self._stop_timer.stop()
-                    self._stop_timer = None
-                except Exception as e:
-                    logger.warning(f"Timer cleanup error: {e}")
+            logger.info("Graceful shutdown completed")
 
         except Exception as e:
-            logger.error(f"Error during stop operations: {e}", exc_info=True)
-            self.error_occurred.emit(f"Error during shutdown: {str(e)}")
+            logger.error(f"Error during worker cleanup: {e}", exc_info=True)
+            self.error_occurred.emit(f"Error during shutdown: {e}")
 
-    def _log_risk_summary(self):
-        """FEATURE 1: Log risk summary on shutdown"""
+    # -------------------------------------------------------------------------
+    # Stop API (safe to call from any thread)
+    # -------------------------------------------------------------------------
+
+    def stop(self):
+        """
+        Request graceful shutdown.
+
+        FIX-3a: Only sets flags — does NOT call broker APIs or do any I/O.
+        FIX-3b: Uses QTimer.singleShot() (thread-safe) instead of
+                constructing a QTimer() object (requires GUI thread).
+        """
         try:
-            if (self.trading_app and
-                    safe_hasattr(self.trading_app, 'risk_manager') and
-                    self.trading_app.risk_manager):
-                risk_summary = self.trading_app.risk_manager.get_risk_summary(self.trading_app.config)
-                logger.info(f"Risk summary at shutdown: {risk_summary}")
-
-                # Emit as status update
-                self.status_update.emit(
-                    f"Daily P&L: ₹{risk_summary.get('pnl_today', 0):.2f} | "
-                    f"Trades: {risk_summary.get('trades_today', 0)}"
+            if self._is_stopping or not self.isRunning():
+                logger.debug(
+                    f"Stop called but not applicable. "
+                    f"is_stopping={self._is_stopping}, isRunning={self.isRunning()}"
                 )
-        except Exception as e:
-            logger.error(f"[TradingThread._log_risk_summary] Failed: {e}", exc_info=True)
+                return
 
-    def _send_shutdown_notification(self):
-        """FEATURE 4: Send shutdown notification via Telegram"""
+            self._is_stopping = True
+            self._stop_attempts = 0
+            self.status_update.emit("Initiating graceful shutdown...")
+            logger.info("Initiating graceful thread shutdown")
+
+            # Signal TradingApp.run()'s keep-alive loop to exit.
+            if self.trading_app is not None:
+                self.trading_app.should_stop = True
+                stop_event = safe_getattr(self.trading_app, '_stop_event', None)
+                if stop_event is not None:
+                    stop_event.set()
+
+            # FIX-3b: QTimer.singleShot() is thread-safe; QTimer() is not.
+            QTimer.singleShot(self._stop_timeout, self._force_stop)
+
+        except Exception as e:
+            logger.error(f"[TradingThread.stop] Failed: {e}", exc_info=True)
+            self.error_occurred.emit(f"Failed to initiate stop: {e}")
+
+    def request_stop(self):
+        """Preferred stop entry point; sets should_stop flag then delegates to stop()."""
         try:
-            if (self.trading_app and
-                    safe_hasattr(self.trading_app, 'notifier') and
-                    self.trading_app.notifier):
-
-                # Get final P&L
-                pnl = 0.0
-                state = safe_getattr(self.trading_app, 'state', None)
-                if state and safe_hasattr(state, 'current_pnl') and state.current_pnl:
-                    pnl = state.current_pnl
-
-                emoji = '✅' if pnl >= 0 else '❌'
-                msg = f"{emoji} *BOT SHUTDOWN*\nFinal P&L: ₹{pnl:.2f}"
-
-                # Use notifier's internal send method
-                self.trading_app.notifier._pool.submit(
-                    self.trading_app.notifier._send, msg
-                )
-                logger.info("Shutdown notification sent")
+            if self.trading_app and safe_hasattr(self.trading_app, 'should_stop'):
+                self.trading_app.should_stop = True
+                self.status_update.emit("Stop requested")
+                logger.info("Stop requested via should_stop flag")
+                self._send_stop_notification()
+            self.stop()
         except Exception as e:
-            logger.error(f"[TradingThread._send_shutdown_notification] Failed: {e}", exc_info=True)
+            logger.error(f"[TradingThread.request_stop] Failed: {e}", exc_info=True)
+            self.stop()
 
     def _force_stop(self):
         """
-        Force stop if graceful shutdown times out.
-        This runs in the main thread and forcefully terminates the thread.
+        Force-terminate if graceful shutdown exceeded _stop_timeout.
+        Runs on the GUI thread (fired by QTimer.singleShot).
         """
         try:
-            if self.isRunning() and self._is_stopping:
-                self._stop_attempts += 1
-                logger.warning(f"Forcing thread termination due to timeout (attempt {self._stop_attempts})")
-                self.status_update.emit("Force stopping thread (timeout)")
+            if not self.isRunning() or not self._is_stopping:
+                return   # Thread already finished cleanly
 
-                # Log warning
-                self.error_occurred.emit(
-                    "Thread did not stop gracefully within timeout. "
-                    "Force terminating. Some resources may not be cleaned up properly."
-                )
+            self._stop_attempts += 1
+            logger.warning(
+                f"Force-stopping thread (attempt {self._stop_attempts}): "
+                f"did not finish within {self._stop_timeout}ms"
+            )
+            self.status_update.emit("Force stopping thread (timeout)")
+            self.error_occurred.emit(
+                "Thread did not stop gracefully within timeout. "
+                "Force terminating. Some resources may not be cleaned up properly."
+            )
 
-                # Force terminate (use with caution!)
-                self.terminate()
+            self.terminate()
 
-                # Wait up to 2 seconds for termination
-                if not self.wait(2000):
-                    logger.error("Thread refused to terminate after force stop")
+            if not self.wait(2_000):
+                logger.error("Thread refused to terminate after force stop")
+                if self._stop_attempts < self.MAX_STOP_ATTEMPTS:
+                    QTimer.singleShot(200, self._force_stop)
+                    return
 
-                    if self._stop_attempts < self.MAX_STOP_ATTEMPTS:
-                        # Try again with shorter timeout
-                        logger.info(f"Retrying force stop (attempt {self._stop_attempts + 1})")
-                        QTimer.singleShot(100, self._force_stop)
-                        return
-
-                if self.isRunning():
-                    logger.error("Thread still running after multiple termination attempts")
-
-                self._stop_timer = None
-                self._is_stopping = False
-
-                # Emit finished (we're done, even if not clean)
+            self._is_stopping = False
+            if not self.isRunning():
                 self.finished.emit()
-                logger.warning("Thread force stop completed")
+
+            logger.warning("Thread force stop completed")
 
         except Exception as e:
             logger.error(f"[TradingThread._force_stop] Failed: {e}", exc_info=True)
@@ -391,149 +341,119 @@ class TradingThread(QThread):
             self.finished.emit()
 
     def is_stopping(self) -> bool:
-        """Check if thread is in the process of stopping"""
+        return self._is_stopping
+
+    def wait_for_finished(self, timeout: int = 30_000) -> bool:
         try:
-            return self._is_stopping
-        except Exception as e:
-            logger.error(f"[TradingThread.is_stopping] Failed: {e}", exc_info=True)
-            return False
-
-    def request_stop(self):
-        """
-        Request the trading loop to stop by setting a flag.
-        This is the preferred way to stop - the trading loop should check
-        a 'should_stop' flag periodically.
-        """
-        try:
-            if self.trading_app and safe_hasattr(self.trading_app, 'should_stop'):
-                self.trading_app.should_stop = True
-                self.status_update.emit("Stop requested")
-                logger.info("Stop requested via should_stop flag")
-
-                # FEATURE 4: Send stop request notification
-                self._send_stop_notification()
-            else:
-                # Fall back to old stop method
-                logger.warning("Trading app does not support should_stop flag, using fallback stop")
-                self.stop()
-
-        except AttributeError as e:
-            logger.error(f"Attribute error in request_stop: {e}", exc_info=True)
-            self.stop()
-        except Exception as e:
-            logger.error(f"[TradingThread.request_stop] Failed: {e}", exc_info=True)
-            self.stop()
-
-    def _send_stop_notification(self):
-        """FEATURE 4: Send stop request notification"""
-        try:
-            if (self.trading_app and
-                    safe_hasattr(self.trading_app, 'notifier') and
-                    self.trading_app.notifier):
-                msg = "🛑 *STOP REQUESTED*\nBot is shutting down gracefully..."
-                self.trading_app.notifier._pool.submit(
-                    self.trading_app.notifier._send, msg
-                )
-        except Exception as e:
-            logger.error(f"[TradingThread._send_stop_notification] Failed: {e}", exc_info=True)
-
-    def wait_for_finished(self, timeout: int = 30000) -> bool:
-        """
-        Wait for thread to finish with timeout.
-
-        Args:
-            timeout: Maximum time to wait in milliseconds
-
-        Returns:
-            True if finished, False if timeout
-        """
-        try:
-            # Rule 6: Input validation
             if timeout <= 0:
-                logger.warning(f"Invalid timeout value {timeout}, using default 30000")
-                timeout = 30000
-
+                timeout = 30_000
             return self.wait(timeout)
-
         except Exception as e:
             logger.error(f"[TradingThread.wait_for_finished] Failed: {e}", exc_info=True)
             return False
 
-    # Rule 5: Thread-safe state access methods
+    # -------------------------------------------------------------------------
+    # Thread-safe shared state
+    # -------------------------------------------------------------------------
+
     def set_shared_state(self, key: str, value: Any) -> None:
-        """Thread-safe method to set shared state"""
         try:
             if self._mutex:
                 locker = QMutexLocker(self._mutex)
                 self._shared_state[key] = value
-                logger.debug(f"Shared state updated: {key}={value}")
         except Exception as e:
-            logger.error(f"[TradingThread.set_shared_state] Failed for key={key}: {e}", exc_info=True)
+            logger.error(f"[TradingThread.set_shared_state] key={key}: {e}", exc_info=True)
 
     def get_shared_state(self, key: str, default: Any = None) -> Any:
-        """Thread-safe method to get shared state"""
         try:
             if self._mutex:
                 locker = QMutexLocker(self._mutex)
                 return self._shared_state.get(key, default)
             return default
         except Exception as e:
-            logger.error(f"[TradingThread.get_shared_state] Failed for key={key}: {e}", exc_info=True)
+            logger.error(f"[TradingThread.get_shared_state] key={key}: {e}", exc_info=True)
             return default
 
-    # Rule 8: Cleanup method
-    def cleanup(self):
-        """Graceful cleanup of resources"""
+    # -------------------------------------------------------------------------
+    # Notification helpers
+    # -------------------------------------------------------------------------
+
+    def _log_risk_summary(self):
         try:
-            logger.info("[TradingThread] Starting cleanup")
+            risk_manager = safe_getattr(self.trading_app, 'risk_manager', None) if self.trading_app else None
+            if risk_manager:
+                summary = risk_manager.get_risk_summary(self.trading_app.config)
+                logger.info(f"Risk summary at shutdown: {summary}")
+                self.status_update.emit(
+                    f"Daily P&L: ₹{summary.get('pnl_today', 0):.2f} | "
+                    f"Trades: {summary.get('trades_today', 0)}"
+                )
+        except Exception as e:
+            logger.error(f"[TradingThread._log_risk_summary] Failed: {e}", exc_info=True)
 
-            # Stop timer if running
-            if safe_hasattr(self, '_stop_timer') and self._stop_timer:
-                try:
-                    if self._stop_timer.isActive():
-                        self._stop_timer.stop()
-                    self._stop_timer = None
-                except Exception as e:
-                    logger.warning(f"Timer cleanup error: {e}")
+    def _send_shutdown_notification(self):
+        try:
+            notifier = safe_getattr(self.trading_app, 'notifier', None) if self.trading_app else None
+            if not notifier:
+                return
+            try:
+                state = state_manager.get_state()
+                pnl = getattr(state, 'current_pnl', 0.0) or 0.0
+            except Exception:
+                pnl = 0.0
+            emoji = '✅' if pnl >= 0 else '❌'
+            msg = f"{emoji} *BOT SHUTDOWN*\nFinal P&L: ₹{pnl:.2f}"
+            if safe_hasattr(notifier, 'notify_shutdown'):
+                notifier.notify_shutdown(pnl)
+            elif safe_hasattr(notifier, '_pool') and safe_hasattr(notifier, '_send'):
+                notifier._pool.submit(notifier._send, msg)
+        except Exception as e:
+            logger.error(f"[TradingThread._send_shutdown_notification] Failed: {e}", exc_info=True)
 
-            # Request thread stop if running
+    def _send_stop_notification(self):
+        try:
+            notifier = safe_getattr(self.trading_app, 'notifier', None) if self.trading_app else None
+            if not notifier:
+                return
+            msg = "🛑 *STOP REQUESTED*\nBot is shutting down gracefully..."
+            if safe_hasattr(notifier, '_pool') and safe_hasattr(notifier, '_send'):
+                notifier._pool.submit(notifier._send, msg)
+        except Exception as e:
+            logger.error(f"[TradingThread._send_stop_notification] Failed: {e}", exc_info=True)
+
+    # -------------------------------------------------------------------------
+    # Cleanup (called from GUI thread after thread has stopped)
+    # -------------------------------------------------------------------------
+
+    def cleanup(self):
+        """GUI-thread cleanup after the worker has already stopped."""
+        try:
+            logger.info("[TradingThread] Starting GUI-thread cleanup")
             if self.isRunning():
                 self.request_stop()
-                if not self.wait(5000):  # Wait up to 5 seconds
+                if not self.wait(5_000):
                     logger.warning("Thread did not stop during cleanup, terminating")
                     self.terminate()
-                    self.wait(2000)
-
-            # Reset state manager as final cleanup
-            try:
-                state_manager.reset_for_backtest()
-                logger.info("State manager reset in cleanup")
-            except Exception as e:
-                logger.error(f"State manager reset error in cleanup: {e}", exc_info=True)
-
+                    self.wait(2_000)
             logger.info("[TradingThread] Cleanup completed")
-
         except Exception as e:
             logger.error(f"[TradingThread.cleanup] Error: {e}", exc_info=True)
 
 
-# Optional: Context manager for safe thread handling
+# ── Context manager ───────────────────────────────────────────────────────────
+
 class TradingThreadManager:
-    """Context manager for safe TradingThread lifecycle management"""
+    """Context manager for safe TradingThread lifecycle management."""
 
     def __init__(self, trading_thread: TradingThread):
-        # Rule 2: Safe defaults
-        self.thread = None
-
+        self.thread: Optional[TradingThread] = None
         try:
-            # Rule 6: Input validation
             if trading_thread is None:
                 raise ValueError("trading_thread cannot be None")
             self.thread = trading_thread
-            logger.debug("TradingThreadManager initialized")
         except Exception as e:
             logger.error(f"[TradingThreadManager.__init__] Failed: {e}", exc_info=True)
-            self.thread = trading_thread  # Still try to set it
+            self.thread = trading_thread
 
     def __enter__(self):
         return self.thread
@@ -542,228 +462,16 @@ class TradingThreadManager:
         try:
             if self.thread and self.thread.isRunning():
                 logger.info("TradingThreadManager cleaning up thread")
-
-                # Request stop
                 self.thread.request_stop()
-
-                # Wait for finish with timeout
-                if not self.thread.wait_for_finished(10000):
-                    # Force stop if timeout
+                if not self.thread.wait_for_finished(10_000):
                     if self.thread.isRunning():
                         logger.warning("Thread timeout in context manager, forcing termination")
                         self.thread.terminate()
-                        self.thread.wait(2000)
-
-            # Log any exception that occurred in the context
+                        self.thread.wait(2_000)
             if exc_type:
-                logger.error(f"Exception in context: {exc_type.__name__}: {exc_val}", exc_info=exc_val)
-
+                logger.error(
+                    f"Exception in context: {exc_type.__name__}: {exc_val}",
+                    exc_info=exc_val
+                )
         except Exception as e:
             logger.error(f"[TradingThreadManager.__exit__] Failed: {e}", exc_info=True)
-
-
-# Example of how TradingApp could support cooperative stopping
-class CooperativeTradingApp:
-    """
-    Example of a TradingApp that supports cooperative stopping.
-    This is just an illustration - integrate with your actual TradingApp.
-    """
-
-    def __init__(self):
-        # Rule 2: Safe defaults
-        self._safe_defaults_init()
-
-        try:
-            self.should_stop = False
-            self.state = None
-            self.executor = None
-            self.ws = None
-            self.risk_manager = None
-            self.notifier = None
-            self.config = None
-            logger.info("CooperativeTradingApp initialized")
-        except Exception as e:
-            logger.error(f"[CooperativeTradingApp.__init__] Failed: {e}", exc_info=True)
-
-    def _safe_defaults_init(self):
-        """Initialize all attributes with safe defaults"""
-        self.should_stop = False
-        self.state = None
-        self.executor = None
-        self.ws = None
-        self.risk_manager = None
-        self.notifier = None
-        self.config = None
-        self._cycle_count = 0
-        self.MAX_CYCLES = 1000
-
-    def run(self):
-        """Main trading loop that checks should_stop periodically"""
-        try:
-            logger.info("CooperativeTradingApp run started")
-
-            while not self.should_stop:
-                try:
-                    # Do trading work in small chunks
-                    self._process_trading_cycle()
-
-                    self._cycle_count += 1
-
-                    # Prevent infinite loops
-                    if self._cycle_count > self.MAX_CYCLES:
-                        logger.warning(f"Reached max cycles ({self.MAX_CYCLES}), stopping")
-                        break
-
-                    # Check stop flag frequently
-                    if self.should_stop:
-                        logger.info("Stop requested, exiting trading loop")
-                        break
-
-                except TokenExpiredError as e:
-                    # Handle token expiration
-                    logger.error(f"Token expired in trading loop: {e}", exc_info=True)
-                    # Re-raise to be caught by outer handler
-                    raise
-                except Exception as e:
-                    logger.error(f"Trading cycle error: {e}", exc_info=True)
-                    # Don't break on errors, but maybe limit retries
-
-            # Cleanup after loop ends
-            self._cleanup()
-
-            logger.info("CooperativeTradingApp run finished")
-
-        except Exception as e:
-            logger.error(f"[CooperativeTradingApp.run] Failed: {e}", exc_info=True)
-            raise
-
-    def _process_trading_cycle(self):
-        """One iteration of trading logic"""
-        try:
-            # Your existing trading logic here
-            # Check risk limits
-            if self.risk_manager:
-                allowed, reason = self.risk_manager.should_allow_trade(self.config)
-                if not allowed:
-                    logger.warning(f"Risk limit reached: {reason}")
-                    # Optionally stop trading
-                    self.should_stop = True
-                    return
-
-            # Check MTF filter if enabled
-            if self.config and self.config.get('use_mtf_filter', False):
-                # MTF logic would go here
-                pass
-
-        except Exception as e:
-            logger.error(f"[CooperativeTradingApp._process_trading_cycle] Failed: {e}", exc_info=True)
-
-    def _cleanup(self):
-        """Cleanup resources"""
-        try:
-            if self.ws:
-                try:
-                    if safe_hasattr(self.ws, "unsubscribe"):
-                        self.ws.unsubscribe()
-                    logger.info("WebSocket cleaned up")
-                except Exception as e:
-                    logger.warning(f"WebSocket cleanup error: {e}")
-
-            if self.notifier:
-                try:
-                    self.notifier.cleanup()
-                    logger.info("Notifier cleaned up")
-                except Exception as e:
-                    logger.warning(f"Notifier cleanup error: {e}")
-
-            if self.risk_manager:
-                try:
-                    self.risk_manager.cleanup()
-                    logger.info("Risk manager cleaned up")
-                except Exception as e:
-                    logger.warning(f"Risk manager cleanup error: {e}")
-
-        except Exception as e:
-            logger.error(f"[CooperativeTradingApp._cleanup] Failed: {e}", exc_info=True)
-
-
-# Test code (for debugging)
-if __name__ == "__main__":
-    # This test won't run in PyQt environment but shows usage
-    import sys
-    from PyQt5.QtWidgets import QApplication
-
-
-    class MockTradingApp:
-        def __init__(self):
-            # Rule 2: Safe defaults
-            self.state = None
-            self.executor = None
-            self.ws = None
-            self.should_stop = False
-            self.risk_manager = None
-            self.notifier = None
-            self.config = None
-
-            try:
-                self.state = type('State', (), {'current_position': 'NIFTY'})()
-                self.executor = type('Executor', (), {'exit_position': lambda r: 100})()
-                self.ws = type('WS', (), {'unsubscribe': lambda: None})()
-
-                # Mock risk manager
-                risk_manager_type = type('RiskManager', (), {
-                    'get_risk_summary': lambda s, c: {'pnl_today': 500, 'trades_today': 2},
-                    'cleanup': lambda: None
-                })
-                self.risk_manager = risk_manager_type()
-
-                # Mock notifier
-                notifier_type = type('Notifier', (), {
-                    '_pool': type('Pool', (), {'submit': lambda f, m: None})(),
-                    'cleanup': lambda: None
-                })
-                self.notifier = notifier_type()
-
-            except Exception as e:
-                logger.error(f"[MockTradingApp.__init__] Failed: {e}", exc_info=True)
-
-        def run(self):
-            try:
-                import time
-                for i in range(10):
-                    if self.should_stop:
-                        logger.info("Stop requested, breaking")
-                        break
-                    time.sleep(1)
-                    print(f"Trading... {i}")
-                    # Simulate token expiration for testing
-                    if i == 5:
-                        raise TokenExpiredError("Test token expiration")
-            except Exception as e:
-                logger.error(f"[MockTradingApp.run] Failed: {e}", exc_info=True)
-                raise
-
-
-    # Set up logging for test
-    logging.basicConfig(level=logging.DEBUG)
-
-    app = QApplication(sys.argv)
-
-    # Create and start thread
-    trading_app = MockTradingApp()
-    thread = TradingThread(trading_app)
-
-    # Connect signals
-    thread.started.connect(lambda: print("Thread started"))
-    thread.finished.connect(lambda: print("Thread finished"))
-    thread.error_occurred.connect(lambda e: print(f"Error: {e}"))
-    thread.status_update.connect(lambda s: print(f"Status: {s}"))
-    thread.risk_breach.connect(lambda r: print(f"Risk breach: {r}"))
-
-    # Start thread
-    thread.start()
-
-    # Stop after 3 seconds
-    QTimer.singleShot(3000, thread.request_stop)
-
-    sys.exit(app.exec_())

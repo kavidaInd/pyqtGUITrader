@@ -32,7 +32,7 @@ Authentication (session token — semi-manual):
 API docs: https://api.icicidirect.com
 SDK:      pip install breeze-connect
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
@@ -47,6 +47,7 @@ from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -107,8 +108,11 @@ class IciciBroker(BaseBroker):
 
     get_login_url() returns the URL the user should visit to obtain the token.
 
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
+
+    # Breeze tokens expire at the end of the trading day
+    SESSION_DURATION_HOURS = 8
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -129,6 +133,12 @@ class IciciBroker(BaseBroker):
             if not self.api_key:
                 raise ValueError("ICICI Breeze api_key (client_id) is required.")
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Initialize SDK
             self.breeze = BreezeConnect(api_key=self.api_key)
 
@@ -141,7 +151,12 @@ class IciciBroker(BaseBroker):
                         session_token=saved_token
                     )
                     self.state.token = saved_token
+                    self._token_issued_at = self._parse_token_issued_at()
+                    self._token_expiry = self._parse_token_expiry()
                     logger.info("IciciBroker: session restored from DB")
+
+                    if self.is_token_expired:
+                        logger.warning("IciciBroker: restored token is expired")
                 except Exception:
                     logger.warning("IciciBroker: saved token invalid, need fresh session")
             else:
@@ -151,6 +166,9 @@ class IciciBroker(BaseBroker):
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
             self._ws_breeze = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
             logger.info("IciciBroker initialized")
 
@@ -162,6 +180,16 @@ class IciciBroker(BaseBroker):
     def broker_type(self) -> str:
         return "icici"
 
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
+
     def _safe_defaults_init(self):
         self.state = None
         self.api_key = None
@@ -169,6 +197,9 @@ class IciciBroker(BaseBroker):
         self.breeze = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
 
         # WebSocket cleanup tracking
         self._ws_closed = False
@@ -178,6 +209,67 @@ class IciciBroker(BaseBroker):
         self._ws_on_connect = None
         self._ws_on_close = None
         self._ws_on_error = None
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[IciciBroker] Token recovered, re-login required")
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -203,9 +295,20 @@ class IciciBroker(BaseBroker):
                 session_token=session_token
             )
             self.state.token = session_token
-            expires_at = (datetime.now() + timedelta(hours=10)).isoformat()
+
+            # Update token timestamps
+            issued_at = datetime.now()
+            expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+            self._token_issued_at = issued_at
+            self._token_expiry = expires_at
+
             db = get_db()
-            tokens.save_token(session_token, "", expires_at=expires_at, db=db)
+            tokens.save_token(
+                session_token, "",
+                issued_at=issued_at.isoformat(),
+                expires_at=expires_at.isoformat(),
+                db=db
+            )
             logger.info("IciciBroker: session generated successfully")
             return True
         except Exception as e:
@@ -278,6 +381,7 @@ class IciciBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.breeze:
                 return None
@@ -293,6 +397,7 @@ class IciciBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.breeze:
                 return 0.0
@@ -319,6 +424,7 @@ class IciciBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
+        self._check_token_before_request()
         try:
             if not symbol or not self.breeze:
                 return None
@@ -361,6 +467,7 @@ class IciciBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
+        self._check_token_before_request()
         try:
             if not symbol or not self.breeze:
                 return None
@@ -417,6 +524,7 @@ class IciciBroker(BaseBroker):
             "NFO:NIFTY:25JAN2024:21000:CE"  (exchange:symbol:expiry:strike:right)
         Or pass as standard NSE:SYMBOL and this method will attempt to get index quotes.
         """
+        self._check_token_before_request()
         try:
             if not option_name or not self.breeze:
                 return None
@@ -499,6 +607,7 @@ class IciciBroker(BaseBroker):
             right (str):        "call" or "put"
             product_type (str): "options" (default for NFO)
         """
+        self._check_token_before_request()
         try:
             if not self.breeze:
                 return None
@@ -570,6 +679,7 @@ class IciciBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = str(float(kwargs.get('limit_price', 0) or 0))
@@ -599,6 +709,7 @@ class IciciBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self.breeze:
@@ -619,6 +730,7 @@ class IciciBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -632,18 +744,22 @@ class IciciBroker(BaseBroker):
                                ) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.breeze:
                 return []
@@ -662,6 +778,7 @@ class IciciBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.breeze:
                 return []
@@ -688,6 +805,7 @@ class IciciBroker(BaseBroker):
         Return order status as integer:
         2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
         """
+        self._check_token_before_request()
         try:
             if not order_id or not self.breeze:
                 return None
@@ -730,6 +848,7 @@ class IciciBroker(BaseBroker):
         Return the actual average fill price for a completed order.
         Breeze order detail includes 'average_price' for filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.breeze:
                 return None
@@ -829,11 +948,12 @@ class IciciBroker(BaseBroker):
 
     def is_connected(self) -> bool:
         try:
+            if self.is_token_expired:
+                return False
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
-
             return False
 
     def cleanup(self) -> None:
@@ -924,6 +1044,10 @@ class IciciBroker(BaseBroker):
             if not self.breeze:
                 logger.error("IciciBroker.create_websocket: breeze not initialized — call generate_session first")
                 return None
+
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False
@@ -1139,12 +1263,3 @@ class IciciBroker(BaseBroker):
             return exch, stock_code
         except Exception:
             return "NSE", None
-
-    def _check_token_error(self, response: Any):
-        if isinstance(response, dict):
-            error = str(response.get("Error", "") or "").lower()
-            code = str(response.get("Code", ""))
-            if "session" in error or "token" in error or "login" in error or "expired" in error:
-                raise TokenExpiredError(response.get("Error", "Session expired"))
-            if code in ["401", "403", "1001", "1002"]:  # Add Breeze error codes
-                raise TokenExpiredError(f"Token error code: {code}")

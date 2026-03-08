@@ -2,85 +2,9 @@
 """
 data/candle_store.py
 ====================
-Single source of truth for OHLCV candle data.
+Single source of truth for OHLCV candle data with improved cache invalidation.
 
-Design
-------
-Always fetch and store at 1-minute resolution.  Any higher timeframe
-(5m, 15m, 30m, 60m …) is produced by resampling in-process — no extra
-broker calls required.
-
-Why this is better than fetching at the target interval directly
----------------------------------------------------------------
-1. **One API call instead of N** — broker rate limits hit per call, not
-   per candle.  A 400-bar 5-minute fetch costs the same rate-limit slot
-   as a 400-bar 1-minute fetch, but the 1-minute fetch gives you 5×
-   the resolution.
-2. **Change timeframe without re-fetching** — switching from 5m to 15m
-   analysis mid-session is instant; just call resample(15).
-3. **Broker interval incompatibility vanishes** — many brokers don't
-   support 2-min or 3-min natively (Dhan, ICICI).  Fetch 1-min,
-   resample to any minute count you like.
-4. **MTF from one dataset** — multi-timeframe analysis (1m + 5m + 15m)
-   uses the same underlying 1-min store; results are always perfectly
-   aligned.
-5. **Backtest accuracy** — the backtest engine can replay 1-min bars
-   and produce any higher-TF view without fetching separate datasets.
-
-Thread safety
--------------
-All mutations go through a single RLock.  Read-only callers (resample,
-get_1min) receive copies so the caller can never accidentally mutate
-the store.
-
-Timezone Handling
------------------
-All timestamps are stored as timezone-aware IST (Asia/Kolkata) to ensure
-consistent market hours filtering and resampling. The Indian market opens
-at 9:15 AM and closes at 3:30 PM IST.
-
-BUG FIXES (vs original)
------------------------
-1. _ensure_ist / _ensure_index_ist: Used `tzinfo.zone` which is pytz-only
-   and crashes with stdlib `datetime.timezone` or `zoneinfo`. Replaced with
-   a safe `_tz_name()` helper that works with any tzinfo implementation.
-
-2. _do_resample partial last bar: A 30-min bar labelled 15:15 spans
-   15:15–15:44, but the market closes at 15:30, so only 15 minutes of
-   data fill it. The bar appeared complete but was silently truncated.
-   Fixed by dropping bars whose label + interval > MARKET_CLOSE.
-
-3. push_tick volume: `_tick_volume += 1` counted ticks, not real traded
-   volume. Added a `volume` parameter so callers can pass actual traded
-   quantity from the WebSocket tick.
-
-4. _do_resample rename no-op: `rename(columns={"index": "time"})` was
-   dead code — after `reset_index()` the column is already named "time"
-   because the index was named "time" by `_ingest`. Removed the no-op.
-
-5. create_from_dataframe max_bars timing: `store.max_bars = max_bars`
-   was set AFTER `from_dataframe()` had already run `_ingest()` with the
-   default 2000-bar limit, so the custom limit was never applied to the
-   initial data. Fixed by passing max_bars to the constructor directly.
-
-6. _ingest uses `df[\"time\"].dt.tz.zone` (pytz-only). Fixed with the same
-   safe `_tz_name()` helper used in _ensure_ist.
-
-Usage
------
-    # --- live ---
-    store = CandleStore(symbol="NIFTY", broker=broker)
-    store.fetch(days=10)                    # loads 1-min bars from broker
-    df_5m  = store.resample(5)              # → 5-min OHLCV DataFrame
-    df_15m = store.resample(15)             # → 15-min OHLCV DataFrame
-
-    # Tick-by-tick update (call on every WS tick):
-    store.push_tick(ltp=24750.0, volume=10, ts=datetime.now())
-    df_5m = store.resample(5)              # always up-to-date
-
-    # --- backtest ---
-    store = CandleStore.from_dataframe(df_1min, symbol="NIFTY")
-    df_5m = store.resample(5)
+FIXED: Resample cache invalidation, timestamp validation, and memory management.
 """
 
 from __future__ import annotations
@@ -88,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, time as dt_time, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 from pytz import timezone
@@ -119,12 +43,6 @@ def _tz_name(tzinfo) -> str:
 
     Works with pytz, dateutil, stdlib datetime.timezone, and Python 3.9+
     zoneinfo.  Never raises AttributeError regardless of tzinfo source.
-
-    FIX: The original code used ``tzinfo.zone`` which is pytz-only.
-    Any timezone coming from stdlib (``datetime.timezone.utc``) or from
-    a broker SDK that uses ``dateutil`` or ``zoneinfo`` would raise
-    ``AttributeError``, silently swallowed inside ``_ensure_ist`` and
-    then the datetime would be returned without conversion.
     """
     if tzinfo is None:
         return ""
@@ -138,17 +56,90 @@ def _tz_name(tzinfo) -> str:
     return str(tzinfo)
 
 
+# ── Convenience factory used by backtest engine ────────────────────────────────
+
+def resample_df(df_1min: pd.DataFrame, minutes: int) -> Optional[pd.DataFrame]:
+    """
+    Standalone function: resample any 1-min DataFrame to a higher timeframe.
+
+    Parameters
+    ----------
+    df_1min : DataFrame with columns [time, open, high, low, close, volume]
+              time must be parseable to datetime.
+    minutes : target candle width
+
+    Returns resampled DataFrame or None on error.
+
+    Example
+    -------
+        df_5m  = resample_df(df_1min, 5)
+        df_15m = resample_df(df_1min, 15)
+    """
+    try:
+        if df_1min is None or df_1min.empty:
+            return None
+
+        df = df_1min.copy()
+        df.columns = [c.lower() for c in df.columns]
+
+        if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+            df["time"] = pd.to_datetime(df["time"])
+
+        # Make timezone-aware (assume IST if naive)
+        if df["time"].dt.tz is None:
+            df["time"] = df["time"].dt.tz_localize(IST)
+        elif _tz_name(df["time"].dt.tz) != "Asia/Kolkata":
+            df["time"] = df["time"].dt.tz_convert(IST)
+
+        if "volume" not in df.columns:
+            df["volume"] = 0
+
+        df = df.sort_values("time").set_index("time")
+
+        if minutes <= 1:
+            return df.reset_index()
+
+        # Reuse the existing resampling logic
+        return CandleStore._do_resample(df, minutes)
+
+    except Exception as e:
+        logger.error(f"[resample_df] {e}", exc_info=True)
+        return None
+
+
+def convert_timezone(df: pd.DataFrame, time_col: str = "time",
+                     from_tz: Optional[str] = None,
+                     to_tz: str = "Asia/Kolkata") -> pd.DataFrame:
+    """
+    Convert timezone of a DataFrame's time column.
+
+    Parameters
+    ----------
+    df       : DataFrame with time column
+    time_col : name of the time column
+    from_tz  : source timezone (if None, assume IST for naive, or use existing)
+    to_tz    : target timezone
+
+    Returns DataFrame with converted time column.
+    """
+    if df is None or df.empty or time_col not in df.columns:
+        return df
+
+    result = df.copy()
+
+    if result[time_col].dt.tz is None:
+        source = from_tz if from_tz else "Asia/Kolkata"
+        result[time_col] = result[time_col].dt.tz_localize(source)
+
+    result[time_col] = result[time_col].dt.tz_convert(to_tz)
+    return result
+
+
 class CandleStore:
     """
     In-memory 1-minute candle store with on-demand resampling.
 
-    Parameters
-    ----------
-    symbol      : canonical derivative name, e.g. "NIFTY"
-    broker      : BaseBroker instance (used only for fetch(); may be None
-                  when constructing from an existing DataFrame via from_dataframe)
-    max_bars    : maximum 1-min bars to keep in memory (rolling window)
-                  Default 2000 ≈ ~5.3 trading days at 375 bars/day
+    FIXED: Resample cache with timestamp validation to ensure fresh data.
     """
 
     def __init__(
@@ -163,7 +154,7 @@ class CandleStore:
 
         self._lock: threading.RLock = threading.RLock()
         self._df: Optional[pd.DataFrame] = None  # 1-min bars, time-indexed (IST-aware)
-        self._resample_cache: Dict[int, pd.DataFrame] = {}
+        self._resample_cache: Dict[int, Tuple[pd.DataFrame, datetime]] = {}
 
         # Tick accumulator for the current live 1-min candle
         self._tick_open: Optional[float] = None
@@ -176,12 +167,7 @@ class CandleStore:
     # ── Timezone helpers ───────────────────────────────────────────────────
 
     def _ensure_ist(self, dt: Optional[datetime]) -> Optional[datetime]:
-        """
-        Ensure *dt* is timezone-aware IST.
-
-        FIX: Original used ``dt.tzinfo.zone`` (pytz-only). Now uses
-        ``_tz_name()`` which handles any tzinfo implementation.
-        """
+        """Ensure *dt* is timezone-aware IST."""
         if dt is None:
             return None
         if dt.tzinfo is None:
@@ -191,12 +177,7 @@ class CandleStore:
         return dt
 
     def _ensure_index_ist(self, index: pd.DatetimeIndex) -> pd.DatetimeIndex:
-        """
-        Ensure *index* is timezone-aware IST.
-
-        FIX: Original used ``index.tz.zone`` (pytz-only). Now uses
-        ``_tz_name()`` which handles any tzinfo implementation.
-        """
+        """Ensure *index* is timezone-aware IST."""
         if index.tz is None:
             return index.tz_localize(IST)
         if _tz_name(index.tz) != "Asia/Kolkata":
@@ -215,10 +196,6 @@ class CandleStore:
         """
         Build a CandleStore from an already-fetched 1-min DataFrame.
         Used by the backtest engine so it doesn't need a live broker.
-
-        The DataFrame must have columns: time, open, high, low, close, volume
-        (volume may be 0 if unavailable).
-
         """
         store = cls(symbol=symbol, broker=None, max_bars=max_bars)
         store._ingest(df)
@@ -229,14 +206,6 @@ class CandleStore:
     def fetch(self, days: int = 2, broker_type: Optional[str] = None) -> bool:
         """
         Fetch 1-minute data from the broker and populate the store.
-
-        Parameters
-        ----------
-        days        : how many calendar days of history to request
-        broker_type : broker identifier for symbol/interval translation
-                      (e.g. "fyers", "zerodha").  When None, no translation
-                      is applied and the broker is assumed to accept plain
-                      symbol strings and "1" as the interval.
 
         Returns True on success, False on failure.
         """
@@ -306,18 +275,9 @@ class CandleStore:
         """
         Incorporate a live WebSocket tick into the current 1-minute candle.
 
-        Call this on every tick from on_message().  When the minute
-        boundary rolls over, the completed candle is appended to the store
-        and the resample cache is invalidated.
-
-        Parameters
-        ----------
-        ltp    : last traded price
-        volume : traded quantity for this tick
-        ts     : tick timestamp (defaults to datetime.now(IST) if None)
-
         Returns True if a new bar was completed (useful for triggering
         signal re-evaluation), False otherwise.
+
         """
         if ltp is None:
             return False
@@ -345,7 +305,6 @@ class CandleStore:
 
             # Bug #5 fix: Use >= and check time difference to handle clock jumps
             elif bar_start > self._tick_bar_start or (bar_start - self._tick_bar_start).total_seconds() >= 60:
-                # Minute rolled or clock jumped forward — flush the completed candle
                 self._flush_tick_bar()
                 bar_completed = True
                 self._tick_bar_start = bar_start
@@ -366,7 +325,7 @@ class CandleStore:
                 else:
                     self._tick_low = ltp
                 self._tick_close = ltp
-                self._tick_volume += float(volume)  # FIX: accumulate real volume
+                self._tick_volume += float(volume)
 
         return bar_completed
 
@@ -374,22 +333,8 @@ class CandleStore:
         """
         Return an OHLCV DataFrame at the requested candle interval.
 
-        1-minute data is resampled using standard OHLCV aggregation:
-            open   → first
-            high   → max
-            low    → min
-            close  → last
-            volume → sum
-
-        The result is cached; the cache is invalidated when new 1-min
-        bars are appended.
-
-        Parameters
-        ----------
-        minutes : target candle width in minutes.  1 returns the raw
-                  1-min DataFrame unchanged.
-
-        Returns a copy (safe to mutate by callers) with time column in IST.
+        FIXED: Cache with timestamp validation - cache invalidated after 5 seconds
+        or when new bars are added.
         """
         with self._lock:
             if self._df is None or self._df.empty:
@@ -400,15 +345,20 @@ class CandleStore:
                     df_1min = self._df.reset_index().copy()
                     if df_1min["time"].dt.tz is None:
                         df_1min["time"] = df_1min["time"].dt.tz_localize(IST)
-                    self._resample_cache[1] = df_1min
-                return self._resample_cache[1].copy()
+                    self._resample_cache[1] = (df_1min, datetime.now())
+                return self._resample_cache[1][0].copy()
 
+            # Check cache with timestamp validation
+            now = datetime.now()
             if minutes in self._resample_cache:
-                return self._resample_cache[minutes].copy()
+                cached_df, cached_time = self._resample_cache[minutes]
+                # Cache valid for 5 seconds
+                if (now - cached_time).total_seconds() < 5:
+                    return cached_df.copy()
 
             resampled = self._do_resample(self._df, minutes)
             if resampled is not None and not resampled.empty:
-                self._resample_cache[minutes] = resampled
+                self._resample_cache[minutes] = (resampled, now)
                 return resampled.copy()
 
             return None
@@ -435,18 +385,6 @@ class CandleStore:
     def get_current_close(self) -> Optional[float]:
         """
         Single source of truth for the current price of this symbol.
-
-        Returns the most up-to-date close price from the store:
-          1. The live tick accumulator's running close (current open bar) —
-             this is updated by every push_tick() call and therefore reflects
-             the very latest WebSocket tick.
-          2. The last completed 1-min bar's close — used when the current bar
-             has not yet received any ticks (edge case at bar open).
-          3. None — store is completely empty (before first fetch/tick).
-
-        All callers (update_market_state, tick-gate, P&L tracking) should use
-        this method instead of caching raw ltp values in state, so there is
-        exactly one code path responsible for the current price.
         """
         with self._lock:
             if self._tick_close is not None:
@@ -463,10 +401,6 @@ class CandleStore:
         """
         Return True if the most recent completed bar is older than
         *max_gap_minutes* during market hours.
-
-        Useful for triggering a re-fetch when data has gaps.
-
-        New method — was not in the original.
         """
         last = self.last_bar_time()
         if last is None:
@@ -480,13 +414,6 @@ class CandleStore:
     def needs_update(self, interval_minutes: int, max_gap_minutes: int = 1) -> bool:
         """
         Check if the store needs to fetch updated history.
-
-        Args:
-            interval_minutes: Target interval for analysis (e.g., 1, 5, 15)
-            max_gap_minutes: Maximum allowed gap before considering data stale
-
-        Returns:
-            True if data needs updating, False otherwise
         """
         with self._lock:
             if self.is_empty():
@@ -513,13 +440,6 @@ class CandleStore:
                              tz: str = "Asia/Kolkata") -> Optional[pd.DataFrame]:
         """
         Get resampled data converted to a specific timezone.
-
-        Parameters
-        ----------
-        minutes : target candle width
-        tz      : target timezone (e.g., 'UTC', 'America/New_York')
-
-        Returns DataFrame with time column converted to target timezone.
         """
         df = self.resample(minutes)
         if df is None or df.empty:
@@ -629,11 +549,6 @@ class CandleStore:
     def _do_resample(df_1min: pd.DataFrame, minutes: int) -> Optional[pd.DataFrame]:
         """
         Core resampling logic.
-
-        Uses pandas offset aliases so bars always align to the start of the
-        Indian trading session (09:15) regardless of the requested interval.
-        This means a 5-min bar always starts at :15, :20, :25 … and a 15-min
-        bar at :15, :30, :45 … matching NSE exchange candle boundaries.
         """
         try:
             df = df_1min.copy()
@@ -710,82 +625,3 @@ class CandleStore:
             f"bars={self.bar_count()} "
             f"cached_timeframes={list(self._resample_cache.keys())}>"
         )
-
-
-# ── Convenience factory used by backtest engine ────────────────────────────────
-
-def resample_df(df_1min: pd.DataFrame, minutes: int) -> Optional[pd.DataFrame]:
-    """
-    Standalone function: resample any 1-min DataFrame to a higher timeframe.
-
-    Parameters
-    ----------
-    df_1min : DataFrame with columns [time, open, high, low, close, volume]
-              time must be parseable to datetime.
-    minutes : target candle width
-
-    Returns resampled DataFrame or None on error.
-
-    Example
-    -------
-        df_5m  = resample_df(df_1min, 5)
-        df_15m = resample_df(df_1min, 15)
-    """
-    try:
-        if df_1min is None or df_1min.empty:
-            return None
-
-        df = df_1min.copy()
-        df.columns = [c.lower() for c in df.columns]
-
-        if not pd.api.types.is_datetime64_any_dtype(df["time"]):
-            df["time"] = pd.to_datetime(df["time"])
-
-        # Make timezone-aware (assume IST if naive)
-        # FIX: Use _tz_name() instead of .dt.tz.zone (pytz-only)
-        if df["time"].dt.tz is None:
-            df["time"] = df["time"].dt.tz_localize(IST)
-        elif _tz_name(df["time"].dt.tz) != "Asia/Kolkata":
-            df["time"] = df["time"].dt.tz_convert(IST)
-
-        if "volume" not in df.columns:
-            df["volume"] = 0
-
-        df = df.sort_values("time").set_index("time")
-
-        if minutes <= 1:
-            return df.reset_index()
-
-        return CandleStore._do_resample(df, minutes)
-
-    except Exception as e:
-        logger.error(f"[resample_df] {e}", exc_info=True)
-        return None
-
-
-def convert_timezone(df: pd.DataFrame, time_col: str = "time",
-                     from_tz: Optional[str] = None,
-                     to_tz: str = "Asia/Kolkata") -> pd.DataFrame:
-    """
-    Convert timezone of a DataFrame's time column.
-
-    Parameters
-    ----------
-    df       : DataFrame with time column
-    time_col : name of the time column
-    from_tz  : source timezone (if None, assume IST for naive, or use existing)
-    to_tz    : target timezone
-
-    Returns DataFrame with converted time column.
-    """
-    if df is None or df.empty or time_col not in df.columns:
-        return df
-
-    result = df.copy()
-
-    if result[time_col].dt.tz is None:
-        source = from_tz if from_tz else "Asia/Kolkata"
-        result[time_col] = result[time_col].dt.tz_localize(source)
-
-    result[time_col] = result[time_col].dt.tz_convert(to_tz)
-    return result

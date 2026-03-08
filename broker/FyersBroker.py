@@ -4,7 +4,7 @@ brokers/FyersBroker.py
 Fyers (fyers_apiv3) implementation of BaseBroker with full broker-aware
 symbol translation and timezone handling.
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
@@ -22,6 +22,7 @@ import pytz
 from Utils.OptionUtils import OptionUtils
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
@@ -34,13 +35,6 @@ except ImportError:
     FYERS_AVAILABLE = False
     data_ws = None
 
-try:
-    import BaseEnums
-    from Utils.Utils import Utils
-except ImportError:
-    BaseEnums = None
-    Utils = None
-
 logger = logging.getLogger(__name__)
 
 # Timezone constants
@@ -50,9 +44,7 @@ IST = pytz.timezone('Asia/Kolkata')
 class FyersBroker(BaseBroker):
     """
     Fyers broker implementation with broker-aware symbol translation.
-    Preserves all original Broker behaviour while conforming to BaseBroker.
-
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
 
     # Constants
@@ -66,8 +58,9 @@ class FyersBroker(BaseBroker):
     PRODUCT_TYPE_CNC = "CNC"   # Delivery
     MAX_REQUESTS_PER_SECOND = 3
 
+    # Token expiry codes from Fyers API
+    TOKEN_EXPIRY_CODES = {-8, -15, -16, -17, -100, -101, -102}
     RETRYABLE_CODES = {-429, 500, 502, 503, 504}
-    FATAL_CODES = {-8, -15, -16, -17, -100, -101, -102}
     RATE_LIMIT_CODES = {-429, 429}
 
     def __init__(self, state, broker_setting: BrokerageSetting = None):
@@ -81,18 +74,19 @@ class FyersBroker(BaseBroker):
             if broker_setting is None:
                 raise ValueError("BrokerageSetting must be provided.")
 
-            # self.username = safe_getattr(broker_setting, 'username', None)
             self.client_id = safe_getattr(broker_setting, 'client_id', None)
             self.secret_key = safe_getattr(broker_setting, 'secret_key', None)
             self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', None)
 
-            try:
-                self.state.token = self._load_token_from_db()
-                if not self.state.token:
-                    logger.warning("Fyers access token is empty or None")
-            except Exception as e:
-                logger.error(f"Failed to load Fyers token: {e}", exc_info=True)
-                self.state.token = None
+            # Load token and check expiry
+            self.state.token = self._load_token_from_db()
+            self._token_expiry = self._parse_token_expiry()
+            self._token_issued_at = self._parse_token_issued_at()
+
+            if not self.state.token:
+                logger.warning("Fyers access token is empty or None")
+            elif self.is_token_expired:
+                logger.warning("Fyers token is expired at load time")
 
             try:
                 self.fyers = fyersModel.FyersModel(
@@ -105,10 +99,17 @@ class FyersBroker(BaseBroker):
                 logger.critical(f"Failed initializing FyersModel: {e!r}", exc_info=True)
                 self.fyers = None
 
+            # Token expiry tracking
+            self._token_expiry_check_interval = 60  # seconds
+            self._last_token_check = 0
+
             # WebSocket cleanup tracking
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
             self._ws_socket = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
         except Exception as e:
             logger.critical(f"[FyersBroker.__init__] Failed: {e}", exc_info=True)
@@ -118,9 +119,18 @@ class FyersBroker(BaseBroker):
     def broker_type(self) -> str:
         return "fyers"
 
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
+
     def _safe_defaults_init(self):
         self.state = None
-        # self.username = None
         self.client_id = None
         self.secret_key = None
         self.redirect_uri = None
@@ -128,6 +138,9 @@ class FyersBroker(BaseBroker):
         self._last_request_time = 0
         self._request_count = 0
         self._retry_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
 
         # WebSocket cleanup tracking
         self._ws_closed = False
@@ -151,6 +164,106 @@ class FyersBroker(BaseBroker):
             logger.error(f"Error loading Fyers token from DB: {e}", exc_info=True)
             return None
 
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+
+                for fmt in [
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S.%f"
+                ]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+
+                        # attach timezone correctly
+                        if dt.tzinfo is None:
+                            dt = IST.localize(dt)
+
+                        return dt
+
+                    except ValueError:
+                        continue
+
+                logger.warning(f"Could not parse token expiry: {expiry_str}")
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+
+                for fmt in [
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S.%f"
+                ]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+
+                        if dt.tzinfo is None:
+                            dt = IST.localize(dt)
+
+                        return dt
+
+                    except ValueError:
+                        continue
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        Overrides BaseBroker._check_token_before_request with Fyers-specific checks.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[FyersBroker] Token recovered, reloading from DB")
+        # Reload token from DB
+        self.state.token = self._load_token_from_db()
+        self._token_expiry = self._parse_token_expiry()
+
+        # Re-initialize fyers client with new token
+        if self.state.token:
+            try:
+                self.fyers = fyersModel.FyersModel(
+                    client_id=self.client_id,
+                    token=self.state.token,
+                    log_path='logs'
+                )
+                logger.info("[FyersBroker] Fyers client re-initialized with new token")
+            except Exception as e:
+                logger.error(f"[FyersBroker] Failed to re-initialize fyers client: {e}", exc_info=True)
+
     # ── Rate limiting ─────────────────────────────────────────────────────────
 
     def _check_rate_limit(self):
@@ -171,8 +284,6 @@ class FyersBroker(BaseBroker):
             logger.error(f"[_check_rate_limit] {e}", exc_info=True)
 
     # ── Symbol formatting ────────────────────────────────────────────────────
-
-    # ── Broker-specific option symbol construction ────────────────────────────
 
     def build_option_symbol(
         self,
@@ -233,23 +344,7 @@ class FyersBroker(BaseBroker):
             return []
 
     def _format_symbol(self, symbol: str) -> Optional[str]:
-        """
-        Format any symbol for the Fyers API.
-
-        Delegates to BaseBroker._format_symbol() which calls
-        OptionUtils.get_symbol_for_broker(symbol, "fyers").  That function:
-          • Strips any existing exchange prefix first (idempotency guard), so
-            symbols that already carry "NSE:" are never double-prefixed.
-          • Maps index aliases (NIFTY, NIFTY50-INDEX, …) to the full Fyers
-            index string ("NSE:NIFTY50-INDEX").
-          • Prepends "NSE:" to option/futures core symbols ("NIFTY25021CE"
-            → "NSE:NIFTY25021CE").
-
-        The old in-place guard `symbol if symbol.startswith("NSE:") else
-        f"NSE:{symbol}"` was removed because it only handled the "NSE:"
-        case — BSE-listed symbols ("BSE:SENSEX-INDEX") would still be
-        double-prefixed by it, and it bypassed the index-map lookup entirely.
-        """
+        """Format any symbol for the Fyers API."""
         return super()._format_symbol(symbol)
 
     @staticmethod
@@ -268,6 +363,7 @@ class FyersBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.fyers:
                 return None
@@ -279,6 +375,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.fyers:
                 return 0.0
@@ -299,10 +396,7 @@ class FyersBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
-        """
-        Get historical data with broker-aware symbol/interval translation.
-        Returns DataFrame with timezone-aware timestamps in IST.
-        """
+        self._check_token_before_request()
         try:
             if not symbol or not self.fyers:
                 return None
@@ -345,10 +439,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
-        """
-        Get historical data for a specific timeframe with broker-aware translation.
-        Returns DataFrame with timezone-aware timestamps in IST.
-        """
+        self._check_token_before_request()
         try:
             if not symbol or not self.fyers:
                 return None
@@ -389,6 +480,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_option_current_price(self, option_name: str) -> Optional[float]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.fyers:
                 return None
@@ -408,6 +500,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.fyers:
                 return None
@@ -438,6 +531,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_option_chain_quotes(self, symbols: List[str]) -> Dict[str, Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not symbols or not self.fyers:
                 return {}
@@ -469,27 +563,35 @@ class FyersBroker(BaseBroker):
             return {}
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         return self._place_order(**kwargs)
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self._modify_order_with_id(**kwargs)
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self._cancel_order_with_id(**kwargs)
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self._exit_position_with_symbol(**kwargs)
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self._place_order_with_stoploss(**kwargs)
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self._cancel_order_with_id(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self._place_order_with_side(side=self.SIDE_SELL, **kwargs)
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.fyers:
                 return []
@@ -504,6 +606,7 @@ class FyersBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.fyers:
                 return []
@@ -518,10 +621,7 @@ class FyersBroker(BaseBroker):
             return []
 
     def get_current_order_status(self, order_id: str) -> Optional[int]:
-        """
-        Return order status as integer:
-        2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
-        """
+        self._check_token_before_request()
         try:
             if not order_id or not self.fyers:
                 return None
@@ -552,10 +652,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def get_fill_price(self, broker_order_id: str) -> Optional[float]:
-        """
-        Return the actual average fill price for a completed order.
-        Fyers orderbook includes 'traded_price' for filled orders.
-        """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.fyers:
                 return None
@@ -582,6 +679,8 @@ class FyersBroker(BaseBroker):
     def is_connected(self) -> bool:
         try:
             if not self.fyers or not self.state or not self.state.token:
+                return False
+            if self.is_token_expired:
                 return False
             return self.get_profile() is not None
         except TokenExpiredError:
@@ -646,6 +745,7 @@ class FyersBroker(BaseBroker):
     # ── Internal order helpers ───────────────────────────────────────────────
 
     def _place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             symbol = kwargs.get('symbol')
             qty = kwargs.get('qty', 75)
@@ -684,6 +784,7 @@ class FyersBroker(BaseBroker):
             return None
 
     def _place_order_with_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         price = kwargs.get('price')
         qty = kwargs.get('qty', 75)
@@ -700,6 +801,7 @@ class FyersBroker(BaseBroker):
         return bool(order_id)
 
     def _place_order_with_side(self, side: int, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 75)
         if not symbol or qty <= 0:
@@ -714,6 +816,7 @@ class FyersBroker(BaseBroker):
         return bool(order_id)
 
     def _cancel_order_with_id(self, **kwargs) -> bool:
+        self._check_token_before_request()
         order_id = kwargs.get('order_id')
         if not order_id or not self.fyers:
             return False
@@ -724,6 +827,7 @@ class FyersBroker(BaseBroker):
         return bool(response and response.get('s') == self.OK)
 
     def _modify_order_with_id(self, **kwargs) -> bool:
+        self._check_token_before_request()
         order_id = kwargs.get('order_id')
         limit_price = kwargs.get('limit_price', 0)
         if not order_id or limit_price <= 0 or not self.fyers:
@@ -736,6 +840,7 @@ class FyersBroker(BaseBroker):
         return bool(response and response.get('s') == self.OK)
 
     def _exit_position_with_symbol(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         position_type = kwargs.get('position_type', self.PRODUCT_TYPE_MARGIN)
         if not symbol or not self.fyers:
@@ -754,6 +859,7 @@ class FyersBroker(BaseBroker):
                          max_retries: int = 3, base_delay: int = 1):
         for attempt in range(max_retries):
             try:
+                self._check_token_before_request()
                 self._check_rate_limit()
                 response = func()
 
@@ -813,6 +919,10 @@ class FyersBroker(BaseBroker):
             if not self.client_id or not token:
                 logger.error("FyersBroker.create_websocket: missing client_id or token")
                 return None
+
+            # Check token expiry before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False

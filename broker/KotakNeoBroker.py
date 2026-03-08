@@ -28,7 +28,7 @@ Authentication (TOTP + MPIN, no browser OAuth):
 API docs: https://github.com/Kotak-Neo/kotak-neo-api
 SDK:      pip install "git+https://github.com/Kotak-Neo/kotak-neo-api.git#egg=neo_api_client"
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
@@ -43,6 +43,7 @@ from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -90,8 +91,11 @@ class KotakNeoBroker(BaseBroker):
     Extended setup — store "mobile|UCC" in username field (if available):
         call broker.login_totp(mobile="+91XXXXXXXXXX", ucc="XXXXXXX", mpin="XXXX")
 
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
+
+    # Kotak Neo tokens expire at the end of the trading day
+    SESSION_DURATION_HOURS = 8
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -114,6 +118,12 @@ class KotakNeoBroker(BaseBroker):
             if not self.consumer_key:
                 raise ValueError("Kotak Neo consumer_key (client_id) is required.")
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Load any saved access token
             saved_token = self._load_token_from_db()
 
@@ -128,7 +138,12 @@ class KotakNeoBroker(BaseBroker):
 
             if saved_token:
                 self.state.token = saved_token
+                self._token_issued_at = self._parse_token_issued_at()
+                self._token_expiry = self._parse_token_expiry()
                 logger.info("KotakNeoBroker: token loaded from DB")
+
+                if self.is_token_expired:
+                    logger.warning("KotakNeoBroker: token is expired")
             else:
                 logger.warning("KotakNeoBroker: no token found — call broker.login_totp()")
 
@@ -136,6 +151,9 @@ class KotakNeoBroker(BaseBroker):
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
             self._ws_client = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
             logger.info("KotakNeoBroker initialized")
 
@@ -145,7 +163,17 @@ class KotakNeoBroker(BaseBroker):
 
     @property
     def broker_type(self) -> str:
-        return "kitak_neo"
+        return "kotak"  # Must return "kotak" not "kotakneo" for BrokerType.KOTAK matching
+
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
 
     def _safe_defaults_init(self):
         self.state = None
@@ -155,6 +183,9 @@ class KotakNeoBroker(BaseBroker):
         self.client = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
 
         # WebSocket cleanup tracking
         self._ws_closed = False
@@ -164,6 +195,67 @@ class KotakNeoBroker(BaseBroker):
         self._ws_on_connect = None
         self._ws_on_close = None
         self._ws_on_error = None
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[KotakNeoBroker] Token recovered, re-login required")
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -197,9 +289,20 @@ class KotakNeoBroker(BaseBroker):
                 # Extract token from response
                 access_token = ret.get("data", {}).get("token") or str(ret)
                 self.state.token = access_token
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
+
+                # Update token timestamps
+                issued_at = datetime.now()
+                expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+                self._token_issued_at = issued_at
+                self._token_expiry = expires_at
+
                 db = get_db()
-                tokens.save_token(access_token, "", expires_at=expires_at, db=db)
+                tokens.save_token(
+                    access_token, "",
+                    issued_at=issued_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    db=db
+                )
                 logger.info("KotakNeoBroker: TOTP session generated")
                 return True
             else:
@@ -230,9 +333,20 @@ class KotakNeoBroker(BaseBroker):
             if ret:
                 access_token = ret.get("data", {}).get("token") or str(ret)
                 self.state.token = access_token
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
+
+                # Update token timestamps
+                issued_at = datetime.now()
+                expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+                self._token_issued_at = issued_at
+                self._token_expiry = expires_at
+
                 db = get_db()
-                tokens.save_token(access_token, "", expires_at=expires_at, db=db)
+                tokens.save_token(
+                    access_token, "",
+                    issued_at=issued_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    db=db
+                )
                 logger.info("KotakNeoBroker: OTP session completed")
                 return True
             return False
@@ -311,6 +425,7 @@ class KotakNeoBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.client:
                 return None
@@ -323,6 +438,7 @@ class KotakNeoBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.client:
                 return 0.0
@@ -353,6 +469,7 @@ class KotakNeoBroker(BaseBroker):
         return None
 
     def get_option_current_price(self, option_name: str) -> Optional[float]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.client:
                 return None
@@ -381,6 +498,7 @@ class KotakNeoBroker(BaseBroker):
             return None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.client:
                 return None
@@ -427,6 +545,7 @@ class KotakNeoBroker(BaseBroker):
         return out
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             if not self.client:
                 return None
@@ -484,6 +603,7 @@ class KotakNeoBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = str(float(kwargs.get('limit_price', 0) or 0))
@@ -515,6 +635,7 @@ class KotakNeoBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self.client:
@@ -532,6 +653,7 @@ class KotakNeoBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -542,18 +664,22 @@ class KotakNeoBroker(BaseBroker):
                                 order_type=self.MARKET_ORDER_TYPE) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.client:
                 return []
@@ -568,6 +694,7 @@ class KotakNeoBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.client:
                 return []
@@ -586,6 +713,7 @@ class KotakNeoBroker(BaseBroker):
         Return order status as integer:
         2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
         """
+        self._check_token_before_request()
         try:
             orders = self.get_orderbook()
             for order in orders:
@@ -609,6 +737,7 @@ class KotakNeoBroker(BaseBroker):
         Return the actual average fill price for a completed order.
         Kotak Neo orderbook includes 'avgPrice' for filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.client:
                 return None
@@ -622,6 +751,7 @@ class KotakNeoBroker(BaseBroker):
         except Exception as e:
             logger.error(f"[KotakNeoBroker.get_fill_price] {e!r}", exc_info=True)
             return None
+
     # ── Broker-specific option symbol construction ────────────────────────────
 
     def build_option_symbol(
@@ -682,11 +812,12 @@ class KotakNeoBroker(BaseBroker):
 
     def is_connected(self) -> bool:
         try:
+            if self.is_token_expired:
+                return False
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
-
             return False
 
     def cleanup(self) -> None:
@@ -774,6 +905,10 @@ class KotakNeoBroker(BaseBroker):
             if not safe_hasattr(self, 'client') or self.client is None:
                 logger.error("KotakNeoBroker.create_websocket: client not initialized — login first")
                 return None
+
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False

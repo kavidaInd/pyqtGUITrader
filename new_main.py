@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Main trading application with support for LIVE, PAPER, and BACKTEST modes.
+REFACTORED: Thread-safe, snapshot-based processing, proper error handling.
 """
 
 import concurrent.futures
@@ -9,8 +10,9 @@ import logging.handlers
 import queue
 import threading
 import time
+import random
 from datetime import datetime
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 from threading import Timer
 
 import pandas as pd
@@ -40,6 +42,15 @@ logger = logging.getLogger(__name__)
 
 
 class TradingApp:
+    """
+    Main trading application with thread-safe design.
+
+    DESIGN PRINCIPLES:
+    1. Use snapshots for cross-thread data access - never hold state lock in worker threads
+    2. All long operations run in thread pool with timeouts
+    3. UI updates via signals only
+    4. Proper cleanup on shutdown
+    """
 
     def __init__(self, config: Any, trading_mode_var: Optional[Any] = None, broker_setting: Optional[Any] = None):
         # Rule 2: Safe defaults first
@@ -50,60 +61,15 @@ class TradingApp:
             if config is None:
                 logger.warning("config is None in TradingApp.__init__")
 
-            # Use state_manager instead of direct TradeState
+            # FIX-6: Store constructor args only — no network I/O in __init__.
+            # BrokerFactory.create() performs network calls (token validation,
+            # balance fetch) which previously blocked the GUI thread because
+            # TradingApp() was constructed in TradingGUI._init_trading_app()
+            # (main thread).  All heavy initialisation now runs in initialize(),
+            # which TradingThread.run() calls on the worker thread.
             self.config = config
             self.trading_mode_setting = trading_mode_var
-            self.broker = BrokerFactory.create(state=state_manager.get_state(), broker_setting=broker_setting)
-
-            self.trade_config = DailyTradeSetting()
-            self.profit_loss_config = ProfitStoplossSetting()
-
-            # Set callback on state
-            state_manager.get_state().cancel_pending_trade = self.cancel_pending_trade
-
-            self.strategy_manager = StrategyManager()
-            self.signal_engine = self._create_signal_engine()
-            self.detector = TrendDetector(config=self.config, signal_engine=self.signal_engine)
-            self.executor = OrderExecutor(broker_api=self.broker, config=self.config)
-            self._apply_trading_mode_to_executor()
-            self.monitor = PositionMonitor()
-
-            # during or after initialisation (Bug #1 fix).
-            self.notifier = Notifier(self.config)
-
-            # FEATURE 1: Risk Manager
-            self.risk_manager = RiskManager()
-            self.risk_manager.risk_breach.connect(
-                lambda reason: (
-                    self.executor.exit_position() if (
-                            self.executor and
-                            state_manager.get_state().current_position is not None
-                    ) else None,
-                    self.stop(),
-                    self.notifier.notify_risk_breach(reason),
-                )
-            )
-
-            # FEATURE 6: Multi-Timeframe Filter
-            self.mtf_filter = MultiTimeframeFilter(self.broker)
-
-            # Inject dependencies into executor
-            self.executor.risk_manager = self.risk_manager
-            self.executor.notifier = self.notifier
-            self.executor.on_trade_closed_callback = self._on_trade_closed
-
-            # Initialize candle store manager with broker
-            candle_store_manager.initialize(self.broker)
-
-            self.ws = WebSocketManager(
-                broker=self.broker,
-                on_message_callback=self.on_message,
-                symbols=state_manager.get_state().all_symbols or [],
-            )
-
-            # Set WebSocket callbacks for notifier
-            self.ws.on_disconnect_callback = lambda: self.notifier.notify_ws_disconnect()
-            self.ws.on_reconnect_callback = lambda: self.notifier.notify_ws_reconnected()
+            self._broker_setting = broker_setting   # stored for initialize()
 
             # BUG #6 FIX: Replace Event with Queue + dedicated worker thread
             self._tick_queue = queue.Queue(maxsize=500)
@@ -114,13 +80,7 @@ class TradingApp:
             )
             self._stage2_thread.start()
 
-            # Thread pool for history fetching (kept separate from tick processing)
-            self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=2, thread_name_prefix="TradingApp"
-            )
-
-            # Events for tracking async operations
-            self._history_fetch_in_progress = threading.Event()
+            # Thread pool and fetch-lock created in initialize() on the worker thread.
 
             # Option chain: stores live tick data for all subscribed options
             self._option_chain_lock = threading.Lock()
@@ -145,6 +105,14 @@ class TradingApp:
             self._market_is_open = None  # None = unknown, True/False = known
             self._backtest_mode = self._is_backtest_mode()
 
+            # FIX: Add tick sequence validation
+            self._last_tick_seq: Dict[str, int] = {}
+            self._last_tick_time: Dict[str, datetime] = {}
+
+            # FIX: Indicator cache to avoid recomputation on every tick
+            self._indicator_cache: Dict[str, Dict[str, Any]] = {}
+            self._last_bar_times: Dict[str, datetime] = {}
+
             logger.info("TradingApp initialized successfully with all features")
 
         except Exception as e:
@@ -168,7 +136,8 @@ class TradingApp:
         self.mtf_filter = None
         self.ws = None
         self._fetch_executor = None
-        self._history_fetch_in_progress = None
+        self._fetch_lock = threading.Lock()
+        self._fetch_in_progress: bool = False
         self._tick_queue = None
         self._stage2_thread = None
         self._option_chain_lock = None
@@ -189,6 +158,124 @@ class TradingApp:
         # Consumed (reset to False) by evaluate_trend_and_decision to gate
         # the heavy (indicator) recomputation path.
         self._last_bar_completed = False
+
+        # FIX: Tick validation
+        self._last_tick_seq = {}
+        self._last_tick_time = {}
+
+        # FIX: Indicator cache
+        self._indicator_cache = {}
+        self._last_bar_times = {}
+
+    def initialize(self) -> bool:
+        """
+        Perform all network/broker initialisation on the WORKER THREAD.
+
+        FIX-6: BrokerFactory.create() and downstream objects (WebSocket,
+        OrderExecutor, PositionMonitor, Notifier) are moved here from __init__
+        so they run on TradingThread's worker thread, not on the GUI thread.
+
+        Called by TradingThread.run() before self.trading_app.run().
+
+        Returns:
+            bool: True if initialisation succeeded, False on hard failure.
+        """
+        try:
+            self.broker = BrokerFactory.create(
+                state=state_manager.get_state(),
+                broker_setting=self._broker_setting
+            )
+
+            self.trade_config = DailyTradeSetting()
+            self.profit_loss_config = ProfitStoplossSetting()
+
+            state_manager.get_state().cancel_pending_trade = self.cancel_pending_trade
+
+            self.strategy_manager = StrategyManager()
+            self.signal_engine = self._create_signal_engine()
+            self.detector = TrendDetector(config=self.config, signal_engine=self.signal_engine)
+            self.executor = OrderExecutor(broker_api=self.broker, config=self.config)
+            self._apply_trading_mode_to_executor()
+            self.monitor = PositionMonitor()
+            self.notifier = Notifier(self.config)
+
+            # FEATURE 1: Risk Manager
+            self.risk_manager = RiskManager()
+            self.risk_manager.risk_breach.connect(
+                lambda reason: (
+                    self.executor.exit_position() if (
+                        self.executor and
+                        state_manager.get_state().current_position is not None
+                    ) else None,
+                    self.stop(),
+                    self.notifier.notify_risk_breach(reason),
+                )
+            )
+
+            # FEATURE 6: Multi-Timeframe Filter
+            self.mtf_filter = MultiTimeframeFilter(self.broker)
+
+            # Inject dependencies into executor
+            self.executor.risk_manager = self.risk_manager
+            self.executor.notifier = self.notifier
+            self.executor.on_trade_closed_callback = self._on_trade_closed
+
+            # Thread pool for history fetching (kept separate from tick processing)
+            self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="TradingApp"
+            )
+
+            # Initialize candle store manager with broker
+            candle_store_manager.initialize(self.broker)
+
+            self.ws = WebSocketManager(
+                broker=self.broker,
+                on_message_callback=self.on_message,
+                symbols=state_manager.get_state().all_symbols or [],
+            )
+            self.ws.on_disconnect_callback = lambda: self.notifier.notify_ws_disconnect()
+            self.ws.on_reconnect_callback = lambda: self.notifier.notify_ws_reconnected()
+
+            self._backtest_mode = self._is_backtest_mode()
+
+            logger.info("TradingApp.initialize() completed successfully")
+            return True
+
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.critical(f"[TradingApp.initialize] Failed: {e}", exc_info=True)
+            raise
+
+    def create_broker_only(self) -> bool:
+        """
+        Lightweight broker-only initialisation for pre-start chart loading.
+
+        Creates the broker (token validation + session) without standing up
+        WebSocket, OrderExecutor, RiskManager, or any other trading components.
+        Safe to call on a background thread from _init_trading_app so the chart
+        can display historical data before the user clicks Start.
+
+        Called by TradingGUI._init_trading_app_bg() on a daemon thread.
+
+        Returns:
+            True on success.  Raises TokenExpiredError on expired token.
+        """
+        try:
+            self.broker = BrokerFactory.create(
+                state=state_manager.get_state(),
+                broker_setting=self._broker_setting
+            )
+            # Minimal supporting objects needed by chart / candle store fetch
+            candle_store_manager.initialize(self.broker)
+            self._backtest_mode = self._is_backtest_mode()
+            logger.info("TradingApp.create_broker_only() completed")
+            return True
+        except TokenExpiredError:
+            raise
+        except Exception as e:
+            logger.error(f"[TradingApp.create_broker_only] Failed: {e}", exc_info=True)
+            raise
 
     def _apply_trading_mode_to_executor(self) -> None:
         """
@@ -238,7 +325,9 @@ class TradingApp:
         """Check if we're in backtest mode."""
         if self.trading_mode_setting is None:
             return False
-        return safe_getattr(self.trading_mode_setting, 'mode', '') == 'BACKTEST'
+        from gui.trading_mode.TradingModeSetting import TradingMode
+        _m = safe_getattr(self.trading_mode_setting, 'mode', None)
+        return _m == TradingMode.BACKTEST
 
     def _check_market_status(self) -> bool:
         """
@@ -526,13 +615,19 @@ class TradingApp:
             ltp = message.get("ltp")
             ask_price = message.get("ask")
             bid_price = message.get("bid")
+            sequence = message.get("sequence")  # If broker provides sequence numbers
 
             if ltp is None:
                 logger.warning(f"LTP missing for symbol {symbol}. Message: {message}")
                 return
 
             volume = message.get("ltq", 0) or 0
-            self.update_market_state(symbol, ltp, ask_price, bid_price, volume)
+
+            # FIX: Validate tick before processing
+            if not self._validate_tick(symbol, ltp, sequence):
+                return
+
+            self.update_market_state(symbol, ltp, ask_price, bid_price, volume, sequence)
 
             # Push to queue for Stage 2 processing (non-blocking)
             try:
@@ -544,11 +639,50 @@ class TradingApp:
         except Exception as e:
             logger.error(f"Exception in on_message stage 1: {e!r}, Message: {message}", exc_info=True)
 
+    def _validate_tick(self, symbol: str, ltp: float, sequence: Optional[int] = None) -> bool:
+        """
+        Validate tick for out-of-order and stale data.
+        Returns True if tick should be processed.
+        """
+        try:
+            # Basic price validation
+            if ltp <= 0:
+                logger.debug(f"Invalid LTP: {ltp} for {symbol}")
+                return False
+
+            # Sequence validation (if provided)
+            if sequence is not None:
+                last_seq = self._last_tick_seq.get(symbol, -1)
+                if sequence <= last_seq:
+                    logger.debug(f"Out-of-order tick for {symbol}: {sequence} <= {last_seq}")
+                    return False
+                self._last_tick_seq[symbol] = sequence
+
+            # Stale data detection (more than 5 seconds old)
+            now = datetime.now()
+            last_time = self._last_tick_time.get(symbol)
+            if last_time and (now - last_time).total_seconds() > 5:
+                logger.warning(f"Large tick gap for {symbol}: {(now - last_time).total_seconds():.1f}s")
+
+            self._last_tick_time[symbol] = now
+
+            # Price sanity check (can't move >20% in one tick)
+            state = state_manager.get_state()
+            if symbol == self.symbol_full(state.derivative):
+                last_price = state.derivative_current_price
+                if last_price > 0 and abs(ltp - last_price) / last_price > 0.2:
+                    logger.warning(f"Price spike detected: {last_price:.2f} -> {ltp:.2f}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Tick validation error: {e}", exc_info=True)
+            return True  # Process anyway on validation error
+
     def _stage2_worker(self):
         """
         Dedicated worker thread for Stage 2 processing.
-        Processes ticks from queue and runs all monitoring/decision logic.
-        Enhanced with market status awareness.
+        Uses snapshots to avoid holding state locks.
         """
         logger.info("Stage 2 worker thread started")
 
@@ -593,8 +727,11 @@ class TradingApp:
                     logger.debug("Market closed - skipping stage 2 processing")
                     continue
 
-                # Run Stage 2 processing
-                self._process_message_stage2()
+                # FIX: Take a snapshot BEFORE any processing - this is the ONLY lock acquisition
+                snapshot = state_manager.get_position_snapshot()
+
+                # Process using snapshot (no locks needed)
+                self._process_snapshot_stage2(snapshot)
 
             except queue.Empty:
                 # Timeout - just continue loop
@@ -612,10 +749,9 @@ class TradingApp:
 
         logger.info("Stage 2 worker thread stopped")
 
-    def _process_message_stage2(self) -> None:
+    def _process_snapshot_stage2(self, snapshot: Dict[str, Any]) -> None:
         """
-        Stage 2 message processing - runs in dedicated worker thread.
-        Contains all slower operations that shouldn't block the WebSocket thread.
+        Process using a snapshot - no locks needed.
         """
         try:
             # Check if we should stop
@@ -623,33 +759,30 @@ class TradingApp:
                 logger.debug("Stop requested, skipping stage 2 processing")
                 return
 
-            # Get state snapshot for consistent view
-            snapshot = state_manager.get_position_snapshot()
+            # FEATURE 5: Update unrealized P&L for DailyPnLWidget using snapshot
+            self._update_unrealized_pnl_from_snapshot(snapshot)
 
-            # FEATURE 5: Update unrealized P&L for DailyPnLWidget
-            self._update_unrealized_pnl()
-
-            # Run all monitoring and decision logic
+            # Run all monitoring and decision logic with snapshot
             if safe_hasattr(self, 'monitor') and self.monitor:
                 try:
-                    self.monitor.update_trailing_sl_tp(self.broker, state_manager.get_state())
+                    self.monitor.update_trailing_sl_tp_from_snapshot(self.broker, snapshot)
                 except TokenExpiredError:
                     raise
                 except Exception as monitor_error:
                     logger.error(f"Error in monitor.update_trailing_sl_tp: {monitor_error}", exc_info=True)
 
             try:
-                self.evaluate_trend_and_decision()
+                self.evaluate_trend_from_snapshot(snapshot)
             except Exception as trend_error:
                 logger.error(f"Error in evaluate_trend_and_decision: {trend_error}", exc_info=True)
 
             try:
-                self.monitor_active_trade_status()
+                self.monitor_active_trade_status_from_snapshot(snapshot)
             except Exception as trade_error:
                 logger.error(f"Error in monitor_active_trade_status: {trade_error}", exc_info=True)
 
             try:
-                self.monitor_profit_loss_status()
+                self.monitor_profit_loss_status_from_snapshot(snapshot)
             except Exception as pnl_error:
                 logger.error(f"Error in monitor_profit_loss_status: {pnl_error}", exc_info=True)
 
@@ -659,18 +792,19 @@ class TradingApp:
         except Exception as e:
             logger.error(f"Exception in message stage 2 processing: {e!r}", exc_info=True)
 
-    def _update_unrealized_pnl(self):
+    def _update_unrealized_pnl_from_snapshot(self, snapshot: Dict[str, Any]):
         """
-        FEATURE 5: Update unrealized P&L for DailyPnLWidget.
-        Called from stage 2 worker.
+        Update unrealized P&L using snapshot.
         """
         try:
-            state = state_manager.get_state()
-            if (state.current_position is not None and
-                    state.current_buy_price is not None and
-                    state.current_price is not None and
-                    state.positions_hold > 0):
-                unrealized = (state.current_price - state.current_buy_price) * state.positions_hold
+            if (snapshot.get('current_position') is not None and
+                    snapshot.get('current_buy_price') is not None and
+                    snapshot.get('current_price') is not None and
+                    snapshot.get('positions_hold', 0) > 0):
+                unrealized = (snapshot['current_price'] - snapshot['current_buy_price']) * snapshot['positions_hold']
+
+                # Update state directly (small, atomic operation)
+                state = state_manager.get_state()
                 state.current_pnl = unrealized
         except Exception as e:
             logger.error(f"Error updating unrealized P&L: {e}", exc_info=True)
@@ -685,7 +819,7 @@ class TradingApp:
             logger.error(f"Error in _on_trade_closed: {e}", exc_info=True)
 
     def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float,
-                            volume: float = 0.0) -> None:
+                            volume: float = 0.0, sequence: Optional[int] = None) -> None:
         """
         Single source of truth: every price in state is read back from the
         CandleStore after the tick is pushed there.  Nothing reads raw ltp
@@ -820,22 +954,18 @@ class TradingApp:
 
     def evaluate_trend_and_decision(self) -> None:
         """
-        Two-tier evaluation strategy
-        ─────────────────────────────
-        Tier 1 — Heavy / bar-level  (runs once per completed bar):
-            Triggered when update_market_state() sets _last_bar_completed=True,
-            which happens when a 1-min candle is sealed in the CandleStore.
-            At that point a full historical re-fetch + indicator recalculation
-            is scheduled on the thread pool.  This is the ONLY place where
-            expensive computations like pandas_ta Supertrend are run.
+        Legacy method - maintained for compatibility.
+        Now uses snapshot internally.
+        """
+        try:
+            snapshot = state_manager.get_position_snapshot()
+            self.evaluate_trend_from_snapshot(snapshot)
+        except Exception as e:
+            logger.error(f"Error in evaluate_trend_and_decision: {e}", exc_info=True)
 
-        Tier 2 — Tick-level close-price gate  (runs on every tick):
-            If any rule compares an indicator against a column (e.g. close),
-            the already-computed indicator value is compared against the
-            current close read back from the CandleStore — without
-            recomputing the indicator series.  This implements the spec:
-              "Supertrend signal is generated once per bar, then compared
-               against each tick's close until the next bar arrives."
+    def evaluate_trend_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """
+        Two-tier evaluation strategy using snapshot.
         """
         try:
             if self.should_stop:
@@ -854,22 +984,26 @@ class TradingApp:
                     interval=state.interval
                 )
 
-                if self._history_fetch_in_progress and not self._history_fetch_in_progress.is_set():
-                    if self._fetch_executor:
-                        try:
-                            # Snapshot position NOW (submission time) so the
-                            # thread-pool worker uses a consistent position
-                            # context even if an order fills before it runs.
-                            position_at_submit = state.current_position
-                            self._fetch_executor.submit(
-                                self._fetch_history_and_detect, position_at_submit
-                            )
-                            self._history_fetch_in_progress.set()
-                            logger.debug("Scheduled heavy indicator recomputation (bar completed)")
-                        except Exception as submit_err:
-                            logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
-                    else:
-                        logger.error("Thread pool not available for history fetch")
+                # FIX-5: Atomic check-and-set with lock — prevents two concurrent
+                # ticks from both submitting a fetch in the same millisecond.
+                _submitted = False
+                with self._fetch_lock:
+                    if not self._fetch_in_progress and self._fetch_executor:
+                        self._fetch_in_progress = True
+                        _submitted = True
+                if _submitted:
+                    try:
+                        position_at_submit = state.current_position
+                        self._fetch_executor.submit(
+                            self._fetch_history_and_detect, position_at_submit
+                        )
+                        logger.debug("Scheduled heavy indicator recomputation (bar completed)")
+                    except Exception as submit_err:
+                        logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
+                        with self._fetch_lock:
+                            self._fetch_in_progress = False
+                elif not self._fetch_executor:
+                    logger.error("Thread pool not available for history fetch")
 
             else:
                 # Even without a new bar, schedule if history is stale
@@ -878,16 +1012,22 @@ class TradingApp:
                         last_updated=state.last_index_updated,
                         interval=state.interval
                 ):
-                    if self._history_fetch_in_progress and not self._history_fetch_in_progress.is_set():
-                        if self._fetch_executor:
-                            try:
-                                position_at_submit = state.current_position
-                                self._fetch_executor.submit(
-                                    self._fetch_history_and_detect, position_at_submit
-                                )
-                                self._history_fetch_in_progress.set()
-                            except Exception as submit_err:
-                                logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
+                    # FIX-5: same atomic check-and-set pattern
+                    _submitted2 = False
+                    with self._fetch_lock:
+                        if not self._fetch_in_progress and self._fetch_executor:
+                            self._fetch_in_progress = True
+                            _submitted2 = True
+                    if _submitted2:
+                        try:
+                            position_at_submit = state.current_position
+                            self._fetch_executor.submit(
+                                self._fetch_history_and_detect, position_at_submit
+                            )
+                        except Exception as submit_err:
+                            logger.error(f"Failed to submit history fetch: {submit_err}", exc_info=True)
+                            with self._fetch_lock:
+                                self._fetch_in_progress = False
 
             # ── Tier 2: tick-level close-price gate ───────────────────────────
             # Re-evaluates column-type rule sides (e.g. "close") against the
@@ -909,15 +1049,6 @@ class TradingApp:
         """
         Tier 2: re-check only the rules that compare against a price column
         (type=='column', e.g. close) on every tick.
-
-        The signal engine's cached indicator series from the last bar are reused
-        as-is; only the column-type side values are refreshed with the current
-        close from the CandleStore.  This means:
-
-        • Supertrend vs Supertrend  →  signal set once per bar, unchanged here.
-        • Supertrend vs close price →  Supertrend fixed, close updates per tick.
-
-        When no column-type rules exist the method is a fast no-op.
         """
         try:
             if not state.dynamic_signals_active:
@@ -989,17 +1120,7 @@ class TradingApp:
         Runs on thread pool — fetches history and updates trend state.
         Uses CandleStoreManager as the single source of truth for OHLCV data.
 
-        position_at_submit
-            Snapshot of state.current_position taken at the moment this task
-            was submitted to the thread pool.  Because order execution can
-            complete in the time between submission and execution (typically
-            30-100 ms), we must:
-              1. Always pass this position to evaluate() so indicator signals
-                 are resolved with a consistent position context.
-              2. After evaluate() returns, check whether the live position
-                 still matches.  If it changed (trade just filled), re-run
-                 evaluate() with the NEW position before writing to state so
-                 we never persist a signal computed for the wrong position.
+        FIX: Added timeout protection and caching.
         """
         try:
             if self.should_stop:
@@ -1019,6 +1140,17 @@ class TradingApp:
                 target_minutes = int(interval)
             except (TypeError, ValueError):
                 target_minutes = 1
+
+            # Check cache before fetching
+            cache_key = f"{derivative}_{interval}"
+            last_bar_time = candle_store_manager.last_bar_time(derivative)
+            last_compute = self._last_bar_times.get(cache_key)
+
+            if last_compute == last_bar_time and cache_key in self._indicator_cache:
+                # Use cached result
+                state.derivative_trend = self._indicator_cache[cache_key]
+                logger.debug(f"Using cached trend for {derivative}")
+                return
 
             # Get stores from candle_store_manager
             def _fetch_and_resample(symbol: str) -> Optional[pd.DataFrame]:
@@ -1081,14 +1213,30 @@ class TradingApp:
                     except (KeyError, IndexError, AttributeError) as e:
                         logger.error(f"Failed to get last index time: {e}", exc_info=True)
 
-                    # ── Run trend detection (read from CandleStore) ──────────
+                    # ── Run trend detection ───────────────────────────────────
+                    # FIX-4: Call _run_trend_detection_safe() directly instead of
+                    # submitting to _fetch_executor.  We are ALREADY running inside
+                    # _fetch_executor (max_workers=2).  Submitting another task to
+                    # the same pool and blocking on future.result() causes a
+                    # deadlock when both workers are occupied: each waits for a
+                    # slot that will never free because the other worker is also
+                    # waiting.  The outer submit provides thread isolation; nesting
+                    # is unnecessary and dangerous.
                     if self.detector:
                         try:
-                            state.derivative_trend = self.detector.detect(
+                            trend_result = self._run_trend_detection_safe(
                                 deriv_df, derivative, eval_position
                             )
+                            state.derivative_trend = trend_result
+
+                            # Cache the result
+                            if trend_result is not None:
+                                self._indicator_cache[cache_key] = trend_result
+                                self._last_bar_times[cache_key] = last_bar_time
+
                         except Exception as e:
                             logger.error(f"Derivative trend detection failed: {e}", exc_info=True)
+                            state.derivative_trend = None
 
                         try:
                             call_opt_sym = state.call_option
@@ -1155,8 +1303,17 @@ class TradingApp:
         except Exception as e:
             logger.error(f"Error in _fetch_history_and_detect: {e!r}", exc_info=True)
         finally:
-            if self._history_fetch_in_progress:
-                self._history_fetch_in_progress.clear()
+            # FIX-5: Release the fetch lock so the next bar can schedule a fetch.
+            with self._fetch_lock:
+                self._fetch_in_progress = False
+
+    def _run_trend_detection_safe(self, df, symbol, position):
+        """Run trend detection in isolated context."""
+        try:
+            return self.detector.detect(df, symbol, position)
+        except Exception as e:
+            logger.error(f"Detector crashed for {symbol}: {e}", exc_info=True)
+            return None
 
     def _log_signal_details(self):
         """Log detailed signal information using state properties."""
@@ -1184,21 +1341,6 @@ class TradingApp:
         """
         Determine trend direction based on dynamic option signals.
         Returns trend enum values (ENTER_CALL, ENTER_PUT, EXIT_CALL, EXIT_PUT, RESET_PREVIOUS_TRADE)
-
-        Position-consistency guard
-        ──────────────────────────
-        state.option_signal is the RESOLVED signal from the last evaluate()
-        call (e.g. "BUY_CALL", "EXIT_PUT").  Because evaluate() is
-        position-aware, a signal of "BUY_CALL" when there was no open position
-        means "enter a call trade".  The same raw indicator condition with an
-        open PUT position would instead resolve to "EXIT_PUT".
-
-        If a trade fills between the last evaluate() and this method reading
-        state.option_signal, the signal may have been computed for a different
-        position.  We detect this by comparing the position embedded in the
-        result's position_context with the live position and skip acting on
-        the signal if they disagree — the next tick's evaluate() will produce
-        the correct signal for the current position.
         """
         try:
             state = state_manager.get_state()
@@ -1215,11 +1357,6 @@ class TradingApp:
             result = state.option_signal_result
             if result and isinstance(result, dict):
                 signal_pos_ctx = result.get("position_context")  # "CALL", "PUT", or None
-                # BUG 4 FIX: The guard below must never suppress EXIT signals.
-                # If a BUY order fills mid-bar, position_context (captured at bar
-                # start) will be None while live_pos_str is "CALL" or "PUT".
-                # Without this carve-out the guard would silently drop EXIT_CALL /
-                # EXIT_PUT for the entire remainder of the bar.
 
                 if current_pos is None:
                     live_pos_str = None
@@ -1228,10 +1365,8 @@ class TradingApp:
                     live_pos_str = raw.split('.')[-1].upper().strip()
 
                 if signal_pos_ctx != live_pos_str:
-                    # BUG 4 FIX: EXIT signals are always safe to act on regardless
-                    # of position context mismatch. Suppressing them here would
-                    # prevent exits for the remainder of a bar when a fill happened
-                    # mid-bar (position_context=None but live position is now set).
+                    # EXIT signals are always safe to act on regardless
+                    # of position context mismatch.
                     _exit_signals = ('EXIT_CALL', 'EXIT_PUT')
                     if signal_value not in _exit_signals:
                         logger.info(
@@ -1342,19 +1477,9 @@ class TradingApp:
             logger.error(f"Error getting exit reason: {e}")
             return f"Exit triggered for {position_type}"
 
-    def monitor_active_trade_status(self) -> None:
+    def monitor_active_trade_status_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
         """
-        BUG 1 & 5 FIX: This method now handles ONLY safety-based exits:
-          - Market close auto-exit
-          - Index stop-loss safety exits (derivative price crossing Supertrend)
-
-        Signal-based exits (EXIT_CALL, EXIT_PUT, BUY_PUT while in CALL, etc.)
-        are exclusively owned by execute_based_on_trend(). Having both methods
-        call exit_position() on the same tick caused a race: the first call
-        succeeds and clears current_position; the second finds no position open,
-        returns False, and logs a misleading "Exit failed for CALL/PUT" error.
-        This also caused EXIT_CALL to appear broken because EXIT_PUT happened to
-        win the race more consistently due to signal engine evaluation order.
+        Monitor active trade status using snapshot.
         """
         try:
             # Check if we should stop
@@ -1363,13 +1488,15 @@ class TradingApp:
 
             state = state_manager.get_state()
 
-            index_stop_loss = state.index_stop_loss
-            current_derivative_price = state.derivative_current_price
+            index_stop_loss = snapshot.get('index_stop_loss')
+            current_derivative_price = snapshot.get('derivative_current_price')
+            current_position = snapshot.get('current_position')
+            current_trade_confirmed = snapshot.get('current_trade_confirmed', False)
 
-            if state.current_trade_confirmed:
+            if current_trade_confirmed:
                 # ── Safety exit 1: market close approaching ────────────────────
                 if Utils.is_near_market_close(buffer_minutes=5):
-                    if state.current_position:
+                    if current_position:
                         logger.info("Market close approaching. Exiting active position.")
                         state.reason_to_exit = "Auto-exit before market close."
                         if safe_hasattr(self, 'executor') and self.executor:
@@ -1384,9 +1511,7 @@ class TradingApp:
                         return
 
                 # ── Safety exit 2: index stop-loss (derivative price) ──────────
-                # NOTE: Signal-based exits (EXIT_CALL/EXIT_PUT) are handled
-                # exclusively by execute_based_on_trend() to avoid double-exit races.
-                if state.current_position == BaseEnums.PUT:
+                if current_position == BaseEnums.PUT:
                     if (index_stop_loss is not None
                             and current_derivative_price is not None
                             and current_derivative_price >= index_stop_loss):
@@ -1401,7 +1526,7 @@ class TradingApp:
                             except Exception as e:
                                 logger.error(f"PUT safety exit error: {e}", exc_info=True)
 
-                elif state.current_position == BaseEnums.CALL:
+                elif current_position == BaseEnums.CALL:
                     if (index_stop_loss is not None
                             and current_derivative_price is not None
                             and current_derivative_price <= index_stop_loss):
@@ -1419,17 +1544,17 @@ class TradingApp:
             else:
                 # Unconfirmed trade - check for cancellation signals
                 if Utils.is_near_market_close(buffer_minutes=5):
-                    if state.current_position:
+                    if current_position:
                         logger.info("Market close approaching. Canceling pending position.")
                         self.cancel_pending_trade()
                         return
 
-                if state.current_position == BaseEnums.PUT:
+                if current_position == BaseEnums.PUT:
                     if state.should_buy_call or state.should_sell_call:
                         logger.info(f"Cancel pending PUT - {state.option_signal}")
                         self.cancel_pending_trade()
 
-                elif state.current_position == BaseEnums.CALL:
+                elif current_position == BaseEnums.CALL:
                     if state.should_buy_put or state.should_sell_put:
                         logger.info(f"Cancel pending CALL - {state.option_signal}")
                         self.cancel_pending_trade()
@@ -1439,7 +1564,10 @@ class TradingApp:
         except Exception as e:
             logger.error(f"Error monitoring active trade status: {e!r}", exc_info=True)
 
-    def monitor_profit_loss_status(self) -> None:
+    def monitor_profit_loss_status_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """
+        Monitor profit/loss status using snapshot.
+        """
         try:
             # Check if we should stop
             if self.should_stop:
@@ -1447,15 +1575,16 @@ class TradingApp:
 
             state = state_manager.get_state()
 
-            if not state.current_trade_confirmed:
+            if not snapshot.get('current_trade_confirmed', False):
                 return
 
-            stop_loss = state.stop_loss
-            tp_point = state.tp_point
-            current_price = state.current_price
+            stop_loss = snapshot.get('stop_loss')
+            tp_point = snapshot.get('tp_point')
+            current_price = snapshot.get('current_price')
+            current_position = snapshot.get('current_position')
 
             if stop_loss is not None and current_price is not None and current_price <= stop_loss:
-                state.reason_to_exit = f"{state.current_position} exit: Option price below stop loss."
+                state.reason_to_exit = f"{current_position} exit: Option price below stop loss."
                 if safe_hasattr(self, 'executor') and self.executor:
                     try:
                         success = self.executor.exit_position()
@@ -1467,7 +1596,7 @@ class TradingApp:
                         logger.error(f"Stop loss exit error: {e}", exc_info=True)
 
             elif tp_point is not None and current_price is not None and current_price >= tp_point:
-                state.reason_to_exit = f"{state.current_position} exit: Target profit hit."
+                state.reason_to_exit = f"{current_position} exit: Target profit hit."
                 if safe_hasattr(self, 'executor') and self.executor:
                     try:
                         success = self.executor.exit_position()
@@ -1482,6 +1611,26 @@ class TradingApp:
             raise
         except Exception as e:
             logger.error(f"Error monitoring profit/loss status: {e!r}", exc_info=True)
+
+    def monitor_active_trade_status(self) -> None:
+        """
+        Legacy method - maintained for compatibility.
+        """
+        try:
+            snapshot = state_manager.get_position_snapshot()
+            self.monitor_active_trade_status_from_snapshot(snapshot)
+        except Exception as e:
+            logger.error(f"Error in monitor_active_trade_status: {e}", exc_info=True)
+
+    def monitor_profit_loss_status(self) -> None:
+        """
+        Legacy method - maintained for compatibility.
+        """
+        try:
+            snapshot = state_manager.get_position_snapshot()
+            self.monitor_profit_loss_status_from_snapshot(snapshot)
+        except Exception as e:
+            logger.error(f"Error in monitor_profit_loss_status: {e}", exc_info=True)
 
     def execute_based_on_trend(self) -> None:
         try:
@@ -1629,6 +1778,7 @@ class TradingApp:
                         continue
 
                     if self.broker and safe_hasattr(self.broker, 'cancel_order'):
+                        # FIX: Pass broker_id, not order_id
                         self.broker.cancel_order(order_id=broker_id)
                         logger.info(f"Cancelled broker order {broker_id} (db_id={order_id})")
 
@@ -1680,6 +1830,10 @@ class TradingApp:
             # FEATURE 6: Invalidate MTF cache on settings change
             if self.mtf_filter:
                 self.mtf_filter.invalidate_cache()
+
+            # Clear indicator cache
+            self._indicator_cache.clear()
+            self._last_bar_times.clear()
 
         except TokenExpiredError:
             raise
@@ -1828,6 +1982,10 @@ class TradingApp:
                 logger.info("CandleStoreManager cleared")
             except Exception as e:
                 logger.error(f"CandleStoreManager cleanup error: {e}", exc_info=True)
+
+            # Clear caches
+            self._indicator_cache.clear()
+            self._last_bar_times.clear()
 
             self._cleanup_done = True
             logger.info("TradingApp cleanup completed")

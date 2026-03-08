@@ -21,10 +21,12 @@ UPDATED: Added integration with state_manager for automatic state updates.
 """
 
 import logging
+import threading
 from typing import Any, Dict, Optional
 
 from db.config_crud import config_crud
 from db.connector import get_db
+from Utils.safe_getattr import safe_setattr  # Fix 1: was missing, caused NameError in _sync_to_state
 
 logger = logging.getLogger(__name__)
 
@@ -778,30 +780,35 @@ class ConfigContext:
 # Convenience functions for common config operations
 # ============================================================================
 
+_config_instance: Optional[Config] = None
+_config_instance_lock = threading.Lock()
+
+
 def get_config() -> Config:
     """
-    Get the global Config instance (singleton pattern).
+    Get the global Config instance (thread-safe singleton).
 
-    Provides a simple singleton accessor for the configuration manager.
-    In production, consider implementing a proper thread-safe singleton.
+    Uses double-checked locking so the singleton is initialised exactly once
+    regardless of how many threads call get_config() concurrently.  The old
+    implementation returned a *new* Config() on every call, triggering an
+    _ensure_defaults() DB scan on every config read/write in hot paths.
 
     Returns:
-        Config: Global configuration instance
+        Config: The single global configuration instance.
 
     Raises:
-        Exception: If configuration initialization fails
-
-    Example:
-        >>> config = get_config()
-        >>> bot_mode = config.get('bot_type', 'PAPER')
+        Exception: If the first-time initialisation fails.
     """
-    try:
-        # This is a simple implementation - in practice you might want
-        # a proper singleton with thread safety
-        return Config()
-    except Exception as e:
-        logger.error(f"[get_config] Failed: {e}", exc_info=True)
-        raise
+    global _config_instance
+    if _config_instance is None:
+        with _config_instance_lock:
+            if _config_instance is None:
+                try:
+                    _config_instance = Config()
+                except Exception as e:
+                    logger.error(f"[get_config] Failed to create Config singleton: {e}", exc_info=True)
+                    raise
+    return _config_instance
 
 
 def update_config_from_dict(config_dict: Dict[str, Any]) -> bool:

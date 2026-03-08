@@ -97,6 +97,7 @@ from gui.trading_mode.TradingModeSetting import TradingModeSetting
 from gui.trading_mode.TradingModeSettingGUI import TradingModeSettingGUI
 from license.license_manager import license_manager
 from new_main import TradingApp
+from broker.BaseBroker import TokenExpiredError
 from strategy.strategy_editor_window import StrategyEditorWindow
 from strategy.strategy_manager import StrategyManager
 from strategy.strategy_picker_sidebar import StrategyPickerSidebar
@@ -121,6 +122,8 @@ class TradingGUI(QMainWindow):
     # BUG-1 FIX: Signal used to marshal chart data from background thread → main thread.
     # Never emit this directly; use _fetch_chart_data_bg instead.
     _chart_data_ready = pyqtSignal(dict)
+    _broker_ready     = pyqtSignal()        # emitted by BrokerInitThread on success
+    _broker_failed    = pyqtSignal(str, bool)  # (error_msg, is_token_expired)
 
     def __init__(self):
         self._safe_defaults_init()
@@ -661,6 +664,8 @@ class TradingGUI(QMainWindow):
 
             # BUG-1 FIX: connect background-fetch → main-thread chart render
             self._chart_data_ready.connect(self._on_chart_data_ready)
+            self._broker_ready.connect(self._on_broker_ready)
+            self._broker_failed.connect(self._on_broker_failed)
 
             logger.debug("[TradingGUI._setup_internal_signals] Signals connected")
         except Exception as e:
@@ -982,7 +987,7 @@ class TradingGUI(QMainWindow):
             mode_layout.addWidget(lbl)
 
             self.mode_label = QLabel(
-                f"Mode: {self.trading_mode_setting.mode if self.trading_mode_setting else 'algo'}")
+                f"Mode: {self.trading_mode_setting.mode.value if self.trading_mode_setting else 'Algo'}")
             mode_color = c.RED_BRIGHT if (
                     self.trading_mode_setting and self.trading_mode_setting.is_live()) else c.GREEN_BRIGHT
             self.mode_label.setStyleSheet(f"""
@@ -1381,7 +1386,27 @@ class TradingGUI(QMainWindow):
 
             from data.candle_store_manager import candle_store_manager
 
+            # Guard: don't attempt a broker fetch before TradingApp.initialize()
+            # has run on the worker thread.  Before that point, candle_store_manager
+            # holds broker=None, so every store.fetch() would log an ERROR on every
+            # chart timer tick (every 5 s) — producing the log spam seen in the
+            # "No broker configured" issue.
+            #
+            # We check the manager's own _broker rather than self.trading_app.broker
+            # because the manager is the authoritative gate for fetch permission.
+            # _on_trading_app_initialized() injects the live broker into the manager
+            # after TradingThread emits its initialized signal.
             if candle_store_manager.is_empty(symbol):
+                broker_ready = (
+                    safe_hasattr(candle_store_manager, '_broker') and
+                    candle_store_manager._broker is not None
+                )
+                if not broker_ready:
+                    logger.debug(
+                        f"[ChartFetch] Broker not ready yet for {symbol}, skipping fetch"
+                    )
+                    return
+
                 logger.info(f"[ChartFetch] CandleStore empty for {symbol}, fetching...")
                 result = candle_store_manager.fetch_all(
                     days=2, symbols=[symbol], broker_type=broker_type
@@ -1504,7 +1529,8 @@ class TradingGUI(QMainWindow):
             if self.trading_mode_setting:
                 mode_val = safe_getattr(self.trading_mode_setting, 'mode', None)
                 if mode_val is not None:
-                    is_backtest = str(getattr(mode_val, 'value', mode_val)).upper() == "BACKTEST"
+                    from gui.trading_mode.TradingModeSetting import TradingMode as _TM
+                    is_backtest = (mode_val == _TM.BACKTEST)
 
             market_open = self._market_status == "OPEN"
 
@@ -1556,7 +1582,11 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._update_button_states] Failed: {e}", exc_info=True)
 
     def _init_trading_app(self):
-        """Create the trading app instance"""
+        """
+        Create TradingApp (lightweight __init__, no network I/O) then immediately
+        spawn a daemon thread that calls create_broker_only() so historical chart
+        data is available before the user clicks Start.
+        """
         try:
             if self._closing:
                 return
@@ -1567,40 +1597,36 @@ class TradingGUI(QMainWindow):
             logger.info(f"  Daily: derivative={self.daily_setting.derivative}, lot_size={self.daily_setting.lot_size}")
             logger.info(
                 f"  P&L: tp={self.profit_loss_setting.tp_percentage}%, sl={self.profit_loss_setting.stoploss_percentage}%")
-            logger.info(f"  Mode: {self.trading_mode_setting.mode}")
+            _mode_raw = self.trading_mode_setting.mode
+            logger.info(f"  Mode: {_mode_raw.value if hasattr(_mode_raw, 'value') else _mode_raw}")
 
+            # Fast __init__ — stores settings only, no network I/O.
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,
                 trading_mode_var=self.trading_mode_setting,
             )
 
-            if safe_hasattr(self.trading_app, 'broker') and self.trading_app.broker:
-                from data.candle_store_manager import candle_store_manager
-                candle_store_manager.initialize(self.trading_app.broker)
-                logger.info(
-                    f"[TradingGUI._init_trading_app] CandleStoreManager initialized with broker for symbol: {self.daily_setting.derivative}")
-
-            if safe_hasattr(self.trading_app, 'executor'):
-                self.trading_app.executor.on_trade_closed_callback = self._on_trade_closed
-
+            # Chart starts with engine=None (detector created in initialize()).
             try:
-                engine = safe_getattr(
-                    safe_getattr(self.trading_app, 'detector', None),
-                    'signal_engine', None
-                )
-                self.chart_widget.set_config(self.config, engine)
-                logger.info("[TradingGUI._init_trading_app] Chart config set from trading app")
+                self.chart_widget.set_config(self.config, None)
             except Exception as e:
                 logger.warning(f"[TradingGUI._init_trading_app] Could not set chart config: {e}")
-                self.chart_widget.set_config(self.config, None)
 
             self.app_status_bar.update_status({
                 'initialized': True,
-                'status': 'App initialized'
+                'status': 'Connecting to broker…'
             }, self.trading_mode, False)
 
-            logger.info("[TradingGUI._init_trading_app] TradingApp initialized successfully")
+            logger.info("[TradingGUI._init_trading_app] TradingApp shell created — starting background broker init")
+
+            # Spawn background thread: create broker + load chart data without
+            # blocking the GUI thread.  Result arrives via _broker_ready signal.
+            threading.Thread(
+                target=self._init_broker_bg,
+                daemon=True,
+                name="BrokerInitThread",
+            ).start()
 
         except Exception as e:
             logger.critical(f"[TradingGUI._init_trading_app] Failed to create TradingApp: {e}", exc_info=True)
@@ -1632,7 +1658,8 @@ class TradingGUI(QMainWindow):
             if self.trading_mode_setting:
                 mode_val = safe_getattr(self.trading_mode_setting, 'mode', None)
                 if mode_val is not None:
-                    is_backtest = str(getattr(mode_val, 'value', mode_val)).upper() == "BACKTEST"
+                    from gui.trading_mode.TradingModeSetting import TradingMode as _TM
+                    is_backtest = (mode_val == _TM.BACKTEST)
 
             if self._is_live_mode() and not license_manager.is_live_trading_allowed():
                 self._show_live_upgrade_dialog()
@@ -1666,6 +1693,9 @@ class TradingGUI(QMainWindow):
             # longer posts a duplicate QTimer.singleShot(0, _on_engine_finished).
             self.trading_thread.finished.connect(self._on_engine_finished)
             self.trading_thread.started.connect(self._on_thread_started)
+            # Re-inject broker into candle_store_manager once initialize() finishes
+            # on the worker thread, then trigger the first chart load.
+            self.trading_thread.initialized.connect(self._on_trading_app_initialized)
 
             self.trading_thread.position_closed.connect(
                 lambda sym, pnl: self.trade_closed.emit(pnl, pnl > 0)
@@ -1712,13 +1742,159 @@ class TradingGUI(QMainWindow):
         except Exception as e:
             logger.error(f"[TradingGUI._on_thread_started] Failed: {e}", exc_info=True)
 
+    def _on_trading_app_initialized(self):
+        """
+        Called (on GUI thread) after TradingApp.initialize() completes on the
+        worker thread, meaning the broker is now live.
+
+        Re-injects the broker into candle_store_manager so existing CandleStore
+        instances (created before the broker existed) can fetch data.  Then
+        triggers an immediate chart refresh.
+
+        ROOT CAUSE of log error "[CandleStore.fetch] No broker configured":
+            _initialize_infrastructure() calls candle_store_manager.initialize(None)
+            because no broker exists yet at GUI startup.  The chart fetch timer
+            fires before TradingApp.initialize() finishes, so all store.fetch()
+            calls find broker=None.  This slot is the bridge: once the broker is
+            ready we push it into the manager and kick the chart.
+        """
+        try:
+            if self._closing:
+                return
+
+            # Pull the live broker from trading_app (set by initialize())
+            broker = None
+            if self.trading_app and safe_hasattr(self.trading_app, 'broker'):
+                broker = self.trading_app.broker
+
+            if broker is None:
+                logger.warning("[TradingGUI._on_trading_app_initialized] Broker still None after initialize()")
+                return
+
+            # Re-inject into manager — this also updates broker on existing stores
+            from data.candle_store_manager import candle_store_manager
+            candle_store_manager.initialize(broker)
+            logger.info("[TradingGUI._on_trading_app_initialized] candle_store_manager re-initialized with live broker")
+
+            # Update chart widget with the real signal engine now that initialize() ran.
+            # At __init__ time this was None; now detector and signal_engine are live.
+            try:
+                detector = getattr(self.trading_app, 'detector', None)
+                engine   = getattr(detector, 'signal_engine', None) if detector else None
+                self.chart_widget.set_config(self.config, engine)
+                logger.info("[TradingGUI._on_trading_app_initialized] Chart widget config updated with live engine")
+            except Exception as e:
+                logger.warning(f"[TradingGUI._on_trading_app_initialized] Could not update chart config: {e}")
+
+            # Trigger immediate chart refresh now that the broker is available
+            self._do_chart_update()
+            logger.info("[TradingGUI._on_trading_app_initialized] Initial chart refresh triggered")
+
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_trading_app_initialized] Failed: {e}", exc_info=True)
+
+    # ── Background broker initialisation ────────────────────────────────────
+
+    def _init_broker_bg(self):
+        """
+        Runs on a daemon thread (BrokerInitThread).
+
+        Calls trading_app.create_broker_only():
+          - validates / restores the stored token
+          - creates the broker session (lightweight, no WS / executor)
+          - calls candle_store_manager.initialize(broker)
+
+        On success  → emits _broker_ready  (handled on GUI thread)
+        On TokenExpiredError → emits _broker_failed(msg, True)
+        On other error       → emits _broker_failed(msg, False)
+        """
+        try:
+            if self.trading_app is None or self._closing:
+                return
+            self.trading_app.create_broker_only()
+            self._broker_ready.emit()
+        except TokenExpiredError as e:
+            self._broker_failed.emit(str(e), True)
+        except Exception as e:
+            logger.error(f"[TradingGUI._init_broker_bg] Broker init failed: {e}", exc_info=True)
+            self._broker_failed.emit(str(e), False)
+
+    @pyqtSlot()
+    def _on_broker_ready(self):
+        """
+        GUI-thread slot — broker is live and candle_store_manager is initialized.
+
+        Updates the status bar, re-configures the chart, and triggers the first
+        historical data fetch so the chart shows data before Start is clicked.
+        """
+        try:
+            if self._closing:
+                return
+
+            logger.info("[TradingGUI._on_broker_ready] Broker ready — triggering initial chart load")
+
+            self.app_status_bar.update_status({
+                'initialized': True,
+                'status': 'App initialized'
+            }, self.trading_mode, False)
+
+            # chart_widget now gets the real engine (still None — detector is created
+            # in full initialize(), but the chart can render price data without it)
+            try:
+                detector = getattr(self.trading_app, 'detector', None)
+                engine   = getattr(detector, 'signal_engine', None) if detector else None
+                self.chart_widget.set_config(self.config, engine)
+            except Exception:
+                pass
+
+            # Allow _tick_chart to proceed (broker is now in candle_store_manager)
+            # and kick off an immediate fetch without waiting for the 5-s timer.
+            self._do_chart_update()
+
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_broker_ready] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(str, bool)
+    def _on_broker_failed(self, error_msg: str, is_token_expired: bool):
+        """
+        GUI-thread slot — broker initialisation failed.
+
+        If the token is expired we force the login dialog immediately.
+        Otherwise we show a status-bar warning and let the user retry via Settings.
+        """
+        try:
+            if self._closing:
+                return
+
+            if is_token_expired:
+                logger.warning("[TradingGUI._on_broker_failed] Token expired — forcing login dialog")
+                self.app_status_bar.update_status(
+                    {'status': '⚠️ Token expired — please login', 'error': True},
+                    self.trading_mode, False
+                )
+                # Force login.  On completion _reload_broker is called which
+                # re-creates broker and triggers chart load.
+                QTimer.singleShot(200, lambda: self._open_login_for_token_expiry(
+                    "Your broker token has expired. Please login to continue."
+                ))
+            else:
+                logger.error(f"[TradingGUI._on_broker_failed] Broker init error: {error_msg}")
+                self.app_status_bar.update_status(
+                    {'status': f'⚠️ Broker error: {error_msg[:60]}', 'error': True},
+                    self.trading_mode, False
+                )
+
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_broker_failed] Failed: {e}", exc_info=True)
+
     def _is_live_mode(self) -> bool:
         """Return True when the trading mode setting is set to LIVE"""
         try:
             if self.trading_mode_setting and safe_hasattr(self.trading_mode_setting, 'is_live'):
                 return self.trading_mode_setting.is_live()
             if self.trading_mode_setting and safe_hasattr(self.trading_mode_setting, 'mode'):
-                return str(self.trading_mode_setting.mode.value).upper() == "LIVE"
+                from gui.trading_mode.TradingModeSetting import TradingMode
+                return self.trading_mode_setting.mode == TradingMode.LIVE
         except Exception as e:
             logger.warning(f"[TradingGUI._is_live_mode] {e}")
         return False
@@ -2250,7 +2426,7 @@ class TradingGUI(QMainWindow):
                 return
             if not self.trading_mode_setting:
                 return
-            mode = self.trading_mode_setting.mode if self.trading_mode_setting else "algo"
+            mode = self.trading_mode_setting.mode.value if self.trading_mode_setting else "Algo"
             c = self._c
             ty = self._ty
             color = c.RED_BRIGHT if (self.trading_mode_setting and self.trading_mode_setting.is_live()) else c.GREEN_BRIGHT
@@ -2321,10 +2497,17 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._open_login] Failed: {e}", exc_info=True)
 
     def _reload_broker(self):
+        """
+        Called after a successful login (token refresh).
+        Tears down any running trading state, creates a fresh TradingApp shell,
+        then re-runs create_broker_only() on a background thread so the chart
+        reloads automatically.
+        """
         try:
             if self._closing:
                 return
 
+            # ── Teardown ──────────────────────────────────────────────────────
             if self.trading_app is not None:
                 try:
                     if self.trading_thread and self.trading_thread.isRunning():
@@ -2342,21 +2525,30 @@ class TradingGUI(QMainWindow):
                     self.trading_app = None
                     self.app_running = False
 
+            # ── Reload brokerage settings (fresh token is now in DB) ──────────
+            self.brokerage_setting.load()
+            self.brokerage_setting._load_token_info()
+
+            # ── New lightweight TradingApp ─────────────────────────────────────
             self.trading_app = TradingApp(
                 config=self.config,
                 broker_setting=self.brokerage_setting,
                 trading_mode_var=self.trading_mode_setting,
             )
 
-            if safe_hasattr(self.trading_app, 'broker') and self.trading_app.broker:
-                from data.candle_store_manager import candle_store_manager
-                candle_store_manager.initialize(self.trading_app.broker)
+            logger.info("[TradingGUI._reload_broker] New TradingApp created — starting broker init thread")
 
-            if safe_hasattr(self.trading_app, 'executor'):
-                self.trading_app.executor.on_trade_closed_callback = self._on_trade_closed
+            self.app_status_bar.update_status(
+                {'status': 'Connecting to broker…'}, self.trading_mode, False
+            )
 
-            QMessageBox.information(self, "Reloaded", "Broker reloaded successfully.")
-            logger.info("[TradingGUI._reload_broker] Broker reloaded successfully")
+            # Re-run background broker init → chart reloads via _on_broker_ready
+            threading.Thread(
+                target=self._init_broker_bg,
+                daemon=True,
+                name="BrokerReloadThread",
+            ).start()
+
         except Exception as e:
             logger.error(f"[TradingGUI._reload_broker] Failed: {e}", exc_info=True)
             QMessageBox.critical(self, "Reload Error", str(e))

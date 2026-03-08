@@ -17,17 +17,15 @@ Symbol format:
 
 API docs: https://dhanhq.co/docs/v2/
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
 import time
 import random
 import threading
-from datetime import datetime, timedelta  # BUG FIX: import timedelta from stdlib datetime,
-                                          # not from Utils.common — that import was fragile
-                                          # and would fail if Utils.common didn't re-export it.
-from Utils.common import to_date_str      # to_date_str stays here; it's a project utility
+from datetime import datetime, timedelta
+from Utils.common import to_date_str
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
@@ -35,6 +33,7 @@ from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -93,8 +92,11 @@ class DhanBroker(BaseBroker):
         secret_key  → Dhan access token (static, generated from the portal)
         redirect_uri → Not used by Dhan
 
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
+
+    # Dhan tokens are static but can expire if revoked
+    TOKEN_VALIDITY_DAYS = 30  # Typical validity period
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -113,6 +115,12 @@ class DhanBroker(BaseBroker):
             # For Dhan the "secret_key" field carries the access token
             access_token = safe_getattr(broker_setting, 'secret_key', None)
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Also check the DB for a fresher token (in case it was updated)
             db_token = self._load_token_from_db()
             if db_token:
@@ -124,6 +132,18 @@ class DhanBroker(BaseBroker):
             self.dhan = dhanhq(self.client_id, access_token)
             self.state.token = access_token
 
+            # Parse token timestamps from DB
+            self._token_issued_at = self._parse_token_issued_at()
+            self._token_expiry = self._parse_token_expiry()
+
+            if not self._token_expiry and access_token:
+                # If no expiry in DB, assume token is valid for TOKEN_VALIDITY_DAYS from now
+                self._token_issued_at = datetime.now()
+                self._token_expiry = self._token_issued_at + timedelta(days=self.TOKEN_VALIDITY_DAYS)
+
+            if self.is_token_expired:
+                logger.warning("DhanBroker: token is expired")
+
             # WebSocket cleanup tracking
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
@@ -131,6 +151,9 @@ class DhanBroker(BaseBroker):
             self._ws_thread = None
             self._ws_client_id = None
             self._ws_token = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
             logger.info(f"DhanBroker initialized for client {self.client_id}")
 
@@ -142,12 +165,25 @@ class DhanBroker(BaseBroker):
     def broker_type(self) -> str:
         return "dhan"
 
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
+
     def _safe_defaults_init(self):
         self.state = None
         self.client_id = None
         self.dhan = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
         # Dhan instrument cache: "NSE:SYMBOL" -> security_id
         self._instrument_cache: Dict[str, str] = {}
 
@@ -164,6 +200,74 @@ class DhanBroker(BaseBroker):
         self._ws_on_error = None
 
         self._dhan_sec_cache: Dict[str, Any] = {}
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[DhanBroker] Token recovered, reloading from DB")
+        # Reload token from DB
+        access_token = self._load_token_from_db()
+        if access_token:
+            self.dhan = dhanhq(self.client_id, access_token)
+            self.state.token = access_token
+            self._token_expiry = self._parse_token_expiry()
+            logger.info("[DhanBroker] Dhan client re-initialized with new token")
 
     def _load_token_from_db(self) -> Optional[str]:
         try:
@@ -271,6 +375,7 @@ class DhanBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.dhan:
                 return None
@@ -284,6 +389,7 @@ class DhanBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.dhan:
                 return 0.0
@@ -302,6 +408,7 @@ class DhanBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
+        self._check_token_before_request()
         try:
             if not symbol or not self.dhan:
                 return None
@@ -338,6 +445,7 @@ class DhanBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
+        self._check_token_before_request()
         try:
             if not symbol or not self.dhan:
                 return None
@@ -377,6 +485,7 @@ class DhanBroker(BaseBroker):
         return quote.get("ltp") if quote else None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.dhan:
                 return None
@@ -421,6 +530,7 @@ class DhanBroker(BaseBroker):
         return result
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             if not self.dhan:
                 return None
@@ -473,6 +583,7 @@ class DhanBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = kwargs.get('limit_price', 0)
@@ -501,6 +612,7 @@ class DhanBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self.dhan:
@@ -518,6 +630,7 @@ class DhanBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -528,18 +641,22 @@ class DhanBroker(BaseBroker):
                                 order_type=self.MARKET_ORDER_TYPE) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.dhan:
                 return []
@@ -554,6 +671,7 @@ class DhanBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.dhan:
                 return []
@@ -567,20 +685,16 @@ class DhanBroker(BaseBroker):
             logger.error(f"[DhanBroker.get_orderbook] {e!r}", exc_info=True)
             return []
 
-    def get_current_order_status(self, order_id: str) -> Optional[Any]:
+    def get_current_order_status(self, order_id: str) -> Optional[int]:
         """
         Return the integer fill status for the given order_id.
-
-        BUG FIX: The original returned `result.get("data")` — the raw order dict.
-        order_executor checks `self.api.get_current_order_status(broker_id) == 2`
-        to detect fills. A dict never equals 2, so _wait_for_fill() always timed
-        out and every Dhan limit order fell back to the market-order fallback.
 
         Dhan orderstatus values (from dhanhq docs):
             "TRADED"    → filled  (maps to 2)
             "PENDING"   → open    (maps to 1)
             "REJECTED" / "CANCELLED" → maps to -1
         """
+        self._check_token_before_request()
         try:
             if not order_id or not self.dhan:
                 return None
@@ -606,11 +720,8 @@ class DhanBroker(BaseBroker):
     def get_fill_price(self, broker_order_id: str) -> Optional[float]:
         """
         Return the actual average fill price for a completed order.
-
-        Implements BaseBroker.get_fill_price() so order_executor uses real fill
-        prices instead of tick prices for P&L.  Dhan's get_order_by_id response
-        includes 'averageTradedPrice' (or 'tradedPrice') for filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.dhan:
                 return None
@@ -699,6 +810,13 @@ class DhanBroker(BaseBroker):
             return []
 
     def is_connected(self) -> bool:
+        try:
+            if self.is_token_expired:
+                return False
+            return self.get_profile() is not None
+        except TokenExpiredError:
+            return False
+        except Exception:
             return False
 
     def cleanup(self) -> None:
@@ -807,6 +925,10 @@ class DhanBroker(BaseBroker):
                 logger.error("DhanBroker.create_websocket: missing client_id or token")
                 return None
 
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
+
             # Reset WebSocket state
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
@@ -839,13 +961,6 @@ class DhanBroker(BaseBroker):
 
         Builds a DhanFeed instance with the given instruments and starts it.
         Dhan requires (exchange_segment, security_id, subscription_type) tuples.
-
-        symbol format → Dhan security_id resolution:
-          - Uses _resolve_dhan_security() which looks up the Dhan instrument file.
-          - Falls back to stripping NSE: prefix and using as security_id directly
-            (works for index symbols like NIFTY 50 → security_id "13").
-
-        FIXED: Run feed in a separate thread to prevent blocking.
         """
         try:
             from dhanhq import marketfeed  # type: ignore
@@ -944,11 +1059,7 @@ class DhanBroker(BaseBroker):
             self._ws_feed = None
             ws_obj["__feed__"] = None
 
-            # BUG FIX: Original guard was `if self._ws_on_close and not self._ws_closed`.
-            # _ws_closed was set to True several lines above, so `not self._ws_closed`
-            # was always False and the close callback was never called on user disconnect.
-            # WebSocketManager's _on_close handler (which drives reconnect logic) was
-            # therefore never notified of a clean shutdown. Remove the inverted guard.
+            # Call on_close callback
             if self._ws_on_close:
                 try:
                     self._ws_on_close("disconnected by user")
@@ -1026,12 +1137,3 @@ class DhanBroker(BaseBroker):
             return result
         except Exception:
             return (None, None)
-
-    def _check_token_error(self, response: Any):
-        if isinstance(response, dict):
-            msg = response.get("remarks", "")
-            code = response.get("errorCode", "")
-            if "invalid" in str(msg).lower() or "unauthori" in str(msg).lower():
-                raise TokenExpiredError(str(msg))
-            if code in ["E8001", "E8002", "E8003"]:
-                raise TokenExpiredError(f"Token error code: {code}")
