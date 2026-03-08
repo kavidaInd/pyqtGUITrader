@@ -23,7 +23,7 @@ Symbol format (Upstox instrument_key):
 API docs: https://upstox.com/developer/api-documentation/
 SDK:      pip install upstox-python-sdk
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import logging
@@ -39,6 +39,7 @@ from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -91,11 +92,14 @@ class UpstoxBroker(BaseBroker):
         secret_key   → Upstox API Secret
         redirect_uri → OAuth2 redirect URI registered in developer console
 
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
 
     UPSTOX_AUTH_URL = "https://api.upstox.com/v2/login/authorization/dialog"
     UPSTOX_TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
+
+    # Upstox tokens expire at the end of the trading day
+    SESSION_DURATION_HOURS = 8
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -114,6 +118,12 @@ class UpstoxBroker(BaseBroker):
             self.api_secret = safe_getattr(broker_setting, 'secret_key', None)
             self.redirect_uri = safe_getattr(broker_setting, 'redirect_uri', None)
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Load saved token
             access_token = self._load_token_from_db()
 
@@ -122,8 +132,13 @@ class UpstoxBroker(BaseBroker):
             if access_token:
                 self._config.access_token = access_token
                 self.state.token = access_token
+                self._token_issued_at = self._parse_token_issued_at()
+                self._token_expiry = self._parse_token_expiry()
                 self._build_api_clients()
                 logger.info("UpstoxBroker: token loaded from DB")
+
+                if self.is_token_expired:
+                    logger.warning("UpstoxBroker: token is expired")
             else:
                 logger.warning("UpstoxBroker: no token found — call generate_session(code)")
 
@@ -131,6 +146,9 @@ class UpstoxBroker(BaseBroker):
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
             self._ws_streamer = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
             logger.info("UpstoxBroker initialized")
 
@@ -141,6 +159,16 @@ class UpstoxBroker(BaseBroker):
     @property
     def broker_type(self) -> str:
         return "upstox"
+
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
 
     def _safe_defaults_init(self):
         self.state = None
@@ -156,6 +184,9 @@ class UpstoxBroker(BaseBroker):
         self._user_api = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
         self._instrument_cache: Dict[str, str] = {}
 
         # WebSocket cleanup tracking
@@ -166,6 +197,67 @@ class UpstoxBroker(BaseBroker):
         self._ws_on_connect = None
         self._ws_on_close = None
         self._ws_on_error = None
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[UpstoxBroker] Token recovered, re-login required")
 
     def _build_api_clients(self):
         """Instantiate all Upstox API sub-clients."""
@@ -207,10 +299,21 @@ class UpstoxBroker(BaseBroker):
             if access_token:
                 self._config.access_token = access_token
                 self.state.token = access_token
+
+                # Update token timestamps
+                issued_at = datetime.now()
+                expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+                self._token_issued_at = issued_at
+                self._token_expiry = expires_at
+
                 self._build_api_clients()
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
                 db = get_db()
-                tokens.save_token(access_token, "", expires_at=expires_at, db=db)
+                tokens.save_token(
+                    access_token, "",
+                    issued_at=issued_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    db=db
+                )
                 logger.info("UpstoxBroker: session generated and token saved")
                 return access_token
             return None
@@ -297,6 +400,7 @@ class UpstoxBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self._user_api:
                 return None
@@ -312,6 +416,7 @@ class UpstoxBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self._user_api:
                 return 0.0
@@ -332,6 +437,7 @@ class UpstoxBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
+        self._check_token_before_request()
         try:
             if not symbol or not self._history_api:
                 return None
@@ -360,6 +466,7 @@ class UpstoxBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
+        self._check_token_before_request()
         try:
             if not symbol or not self._history_api:
                 return None
@@ -400,6 +507,7 @@ class UpstoxBroker(BaseBroker):
         return quote.get("ltp") if quote else None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self._market_quote_api:
                 return None
@@ -441,6 +549,7 @@ class UpstoxBroker(BaseBroker):
             return None
 
     def get_option_chain_quotes(self, symbols: List[str]) -> Dict[str, Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not symbols or not self._market_quote_api:
                 return {}
@@ -481,6 +590,7 @@ class UpstoxBroker(BaseBroker):
             return {}
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             if not self._order_api:
                 return None
@@ -533,6 +643,7 @@ class UpstoxBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = float(kwargs.get('limit_price', 0) or 0)
@@ -557,6 +668,7 @@ class UpstoxBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self._order_api:
@@ -574,6 +686,7 @@ class UpstoxBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -584,18 +697,22 @@ class UpstoxBroker(BaseBroker):
                                 order_type=self.MARKET_ORDER_TYPE) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self._portfolio_api:
                 return []
@@ -623,6 +740,7 @@ class UpstoxBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self._order_api:
                 return []
@@ -658,6 +776,7 @@ class UpstoxBroker(BaseBroker):
         Return order status as integer:
         2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
         """
+        self._check_token_before_request()
         try:
             if not order_id or not self._order_api:
                 return None
@@ -690,6 +809,7 @@ class UpstoxBroker(BaseBroker):
         Return the actual average fill price for a completed order.
         Upstox order details include 'average_price' for filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self._order_api:
                 return None
@@ -781,11 +901,12 @@ class UpstoxBroker(BaseBroker):
 
     def is_connected(self) -> bool:
         try:
+            if self.is_token_expired:
+                return False
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
-
             return False
 
     def cleanup(self) -> None:
@@ -884,6 +1005,10 @@ class UpstoxBroker(BaseBroker):
             if not access_token:
                 logger.error("UpstoxBroker.create_websocket: no access_token — call login first")
                 return None
+
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False

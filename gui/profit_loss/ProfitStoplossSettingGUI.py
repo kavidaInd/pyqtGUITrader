@@ -92,6 +92,8 @@ class ModernHeader(QLabel):
 
 class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
     save_completed = pyqtSignal(bool, str)
+    # Emitted after a successful save so TradingGUI can refresh dependent widgets
+    settings_saved = pyqtSignal()
 
     # Rule 3: Additional signals
     error_occurred = pyqtSignal(str)
@@ -1035,6 +1037,8 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         if success:
             self.show_success_feedback()
             self.save_btn.setEnabled(True)
+            # Notify any connected slot (e.g. TradingGUI._on_pnl_settings_saved)
+            self.settings_saved.emit()
             # Refresh app if available
             if self.app is not None and safe_hasattr(self.app, "refresh_settings_live"):
                 try:

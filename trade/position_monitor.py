@@ -4,55 +4,6 @@ position_monitor_db.py
 Position monitor that works with database-backed orders.
 Monitors positions, updates trailing stops, and confirms/cancels orders.
 
-UPDATED: Fully migrated to state_manager, removed legacy state parameter.
-
-BUG FIXES
----------
-confirm_trade — Bug #1 (CRITICAL):
-    `trading.get_current_order_status(order_id)` was passing the DB primary
-    key. The broker API expects the broker-side order ID. Also, the return
-    value was treated as a list-of-dicts (`status_list[0].get("status")`),
-    but every broker implementation returns a plain int (2=filled, 1=pending,
-    -1=rejected, None=not found). This meant NO order was EVER confirmed —
-    all orders fell into the unconfirmed list on every poll cycle.
-    Fix: use `order.get("broker_id")` and compare result directly to
-    ORDER_STATUS_EXECUTED (int 2).
-
-confirm_trade — Bug #2 (HIGH):
-    Paper orders (broker_id=None) were routed through the broker status-check
-    path. Since there is no broker to query, they always ended up unconfirmed
-    and were eventually cancelled by the timeout/drift logic.
-    Fix: auto-confirm paper orders immediately when broker_id is None.
-
-confirm_trade — Bug #3 (HIGH):
-    Confirmed orders were moved from state.orders to state.confirmed_orders
-    while unconfirmed orders stayed in state.orders. exit_position only
-    iterates state.orders, so confirmed orders were never sold — positions
-    leaked silently with no exit ever attempted.
-    Fix: keep ALL orders in state.orders at all times. Use
-    state.confirmed_orders as a read-only status mirror only.
-
-cancel_pending_trade — Bug #7 (CRITICAL):
-    `trading.cancel_order(order_id=order_id)` was passing the DB primary
-    key as the broker cancel target. The broker's cancel_order() expects the
-    broker-side order ID. All cancel requests silently failed or cancelled
-    the wrong order.
-    Fix: use `order.get("broker_id")` for the broker call and
-    `order.get("id")` only for orders_crud.cancel().
-
-update_trailing_sl_tp — Bug #4 (HIGH):
-    Trailing stop-loss was calculated from buy_price (entry price), not from
-    highest_current_price. If price moved 100→200→180, the SL was still
-    anchored at 100*(1-sl%), never trailing the 200 peak.
-    Fix: use state.highest_current_price as the price basis for the SL
-    (and TP) point calculation.
-
-update_trailing_sl_tp — Bug #5 (MEDIUM):
-    The SL/TP recalculation block was nested inside `if price_increased:`.
-    When price dropped after a new high, stop_loss was not recalculated —
-    the value stayed stale from the last rising tick.
-    Fix: move the SL/TP point recalculation (and _update_orders_stop_loss)
-    OUTSIDE the price_increased block so it runs on every tick.
 """
 
 import logging
@@ -103,7 +54,7 @@ class PositionMonitor:
                 return
 
             current_price = safe_getattr(state, "current_price", None)
-            buy_price     = safe_getattr(state, "current_buy_price", None)
+            buy_price = safe_getattr(state, "current_buy_price", None)
 
             if buy_price is None or current_price is None:
                 logger.info("Cannot update trailing SL/TP: Missing buy/current price.")
@@ -130,20 +81,18 @@ class PositionMonitor:
 
             try:
                 price_increased = current_price > state.highest_current_price
-                tp_point        = safe_getattr(state, "tp_point", float("inf"))
-                crossed_tp      = (current_price >= tp_point) if tp_point is not None else False
+                tp_point = safe_getattr(state, "tp_point", float("inf"))
+                crossed_tp = (current_price >= tp_point) if tp_point is not None else False
 
                 # ── Update the all-time high for this trade ────────────────────
                 if price_increased:
                     state.highest_current_price = current_price
 
                 # ── Adjust trailing percentages when in profit ─────────────────
-                # (Only step the percentages when price is rising — but always
-                #  recalculate the actual SL/TP price points below.)
                 if price_increased and crossed_tp and safe_getattr(state, "take_profit_type", None) == TRAILING:
                     original_profit = safe_getattr(state, "original_profit_per", 0)
-                    max_profit      = safe_getattr(state, "max_profit", 100)
-                    change_pct      = safe_getattr(state, "percentage_change", 0)
+                    max_profit = safe_getattr(state, "max_profit", 100)
+                    change_pct = safe_getattr(state, "percentage_change", 0)
 
                     if original_profit <= change_pct <= max_profit:
                         if state.stoploss_percentage == safe_getattr(state, "original_stoploss_per", 0):
@@ -159,23 +108,18 @@ class PositionMonitor:
                             state.stoploss_percentage = max(state.stoploss_percentage, max_profit - 5)
                         state.tp_percentage += profit_step
 
-                # ── Recalculate SL/TP price points every tick ──────────────────
-                # BUG #4 FIX: use highest_current_price as the basis so SL truly
-                # trails the peak, not the entry price.
-                # BUG #5 FIX: this block is now OUTSIDE the `if price_increased:`
-                # guard so it runs on every call, including when price is falling.
                 try:
                     peak_price = state.highest_current_price
 
                     state.stop_loss = Utils.percentage_above_or_below(
                         price=peak_price,
-                        side=NEGATIVE,        # SL is BELOW the trailing peak
+                        side=NEGATIVE,
                         percentage=state.stoploss_percentage,
                     )
 
                     state.tp_point = Utils.percentage_above_or_below(
                         price=peak_price,
-                        side=POSITIVE,        # TP is ABOVE the trailing peak
+                        side=POSITIVE,
                         percentage=state.tp_percentage,
                     )
 
@@ -200,7 +144,7 @@ class PositionMonitor:
     def _update_orders_stop_loss(self, stop_loss: float) -> None:
         """Update stop loss in the database for all open orders."""
         try:
-            state  = state_manager.get_state()
+            state = state_manager.get_state()
             orders = safe_getattr(state, "orders", [])
             if not orders:
                 return
@@ -217,17 +161,6 @@ class PositionMonitor:
     def confirm_trade(self, trading: Any, state: Any = None) -> None:
         """
         Confirm executed orders; cancel pending ones on price drift or timeout.
-
-        BUG #1 FIX: Now passes broker_order_id to get_current_order_status()
-        (not the DB primary key), and checks the returned int directly against
-        ORDER_STATUS_EXECUTED instead of treating it as a list-of-dicts.
-
-        BUG #2 FIX: Paper orders (broker_id=None) are auto-confirmed
-        immediately without querying the broker.
-
-        BUG #3 FIX: Confirmed orders remain in state.orders so exit_position
-        always sees the full position. state.confirmed_orders is a read-only
-        status mirror and is never used as the exclusive source of truth.
         """
         try:
             state = state_manager.get_state()
@@ -240,7 +173,7 @@ class PositionMonitor:
                 return
 
             current_price = safe_getattr(state, "current_price", None)
-            buy_price     = safe_getattr(state, "current_buy_price", None)
+            buy_price = safe_getattr(state, "current_buy_price", None)
 
             if current_price is None or buy_price is None:
                 logger.warning("Price data missing during trade confirmation.")
@@ -261,9 +194,9 @@ class PositionMonitor:
                 state.current_trade_confirmed = True
                 return
 
-            db           = get_db()
-            confirmed    = []
-            unconfirmed  = []
+            db = get_db()
+            confirmed = []
+            unconfirmed = []
 
             for order in order_list:
                 try:
@@ -272,22 +205,19 @@ class PositionMonitor:
                         unconfirmed.append(order)
                         continue
 
-                    order_id    = order.get("id")
-                    broker_id   = order.get("broker_id")
+                    order_id = order.get("id")
+                    broker_id = order.get("broker_id")
 
                     if not order_id:
                         logger.warning("Order missing 'id'; skipping.")
                         continue
 
-                    # ── BUG #2 FIX: paper orders have no broker ID ─────────────
                     if broker_id is None:
-                        # Paper trade — auto-confirm without a broker round-trip
                         orders_crud.confirm(order_id, db=db)
                         confirmed.append(order)
                         logger.debug(f"Paper order {order_id} auto-confirmed.")
                         continue
 
-                    # ── BUG #1 FIX: pass broker_id, check int result ───────────
                     status = None
                     try:
                         status = trading.get_current_order_status(broker_id)
@@ -312,12 +242,7 @@ class PositionMonitor:
                     )
                     unconfirmed.append(order)
 
-            # ── BUG #3 FIX: keep ALL orders in state.orders ───────────────────
-            # exit_position iterates state.orders to sell. Moving confirmed orders
-            # out of that list means they are never exited. Keep the full list;
-            # use state.confirmed_orders only as a status mirror.
             state.confirmed_orders = confirmed
-            # state.orders stays unchanged — do NOT overwrite it with only unconfirmed
 
             if confirmed:
                 logger.info(f"✅ Confirmed {len(confirmed)} order(s).")
@@ -335,9 +260,9 @@ class PositionMonitor:
                 change = 0
 
             trade_start_time = safe_getattr(state, "current_trade_started_time", now) or now
-            cancel_after     = safe_getattr(state, "cancel_after", 5)
-            deadline         = trade_start_time + timedelta(minutes=cancel_after)
-            lower_per        = safe_getattr(state, "lower_percentage", 0)
+            cancel_after = safe_getattr(state, "cancel_after", 5)
+            deadline = trade_start_time + timedelta(seconds=cancel_after)
+            lower_per = safe_getattr(state, "lower_percentage", 0)
 
             if now > deadline or change > (3 + lower_per):
                 logger.warning(
@@ -357,10 +282,6 @@ class PositionMonitor:
     def cancel_pending_trade(self, trading: Any, state: Any = None) -> None:
         """
         Cancel all unconfirmed orders in state.orders.
-
-        BUG #7 FIX: The broker cancel call now passes broker_order_id
-        (order.get("broker_id")), not the DB primary key. The DB cancel
-        (orders_crud.cancel) continues to use the DB id as before.
         """
         try:
             state = state_manager.get_state()
@@ -370,9 +291,9 @@ class PositionMonitor:
                 return
 
             # Only cancel orders that are NOT yet confirmed
-            all_orders       = safe_getattr(state, "orders", [])
-            confirmed_ids    = {o.get("id") for o in safe_getattr(state, "confirmed_orders", []) if isinstance(o, dict)}
-            pending_orders   = [o for o in all_orders if isinstance(o, dict) and o.get("id") not in confirmed_ids]
+            all_orders = safe_getattr(state, "orders", [])
+            confirmed_ids = {o.get("id") for o in safe_getattr(state, "confirmed_orders", []) if isinstance(o, dict)}
+            pending_orders = [o for o in all_orders if isinstance(o, dict) and o.get("id") not in confirmed_ids]
 
             if not pending_orders:
                 logger.info("No pending (unconfirmed) orders to cancel.")
@@ -389,8 +310,8 @@ class PositionMonitor:
 
             for order in pending_orders:
                 try:
-                    order_id  = order.get("id")
-                    broker_id = order.get("broker_id")   # BUG #7 FIX
+                    order_id = order.get("id")
+                    broker_id = order.get("broker_id")  # BUG #7 FIX
 
                     if not order_id:
                         logger.warning("Pending order missing 'id'; skipping cancel.")
@@ -401,7 +322,7 @@ class PositionMonitor:
                     broker_cancelled = True
                     if broker_id and safe_hasattr(trading, "cancel_order") and callable(trading.cancel_order):
                         try:
-                            trading.cancel_order(order_id=broker_id)   # broker-side ID
+                            trading.cancel_order(order_id=broker_id)  # broker-side ID
                             logger.info(f"Broker cancel sent for broker_id={broker_id} (db_id={order_id})")
                         except Exception as e:
                             logger.error(
@@ -421,7 +342,7 @@ class PositionMonitor:
                         orders_crud.cancel(order_id, "Trade not confirmed - cancelled", db)
                         logger.info(f"DB order {order_id} marked cancelled.")
                     else:
-                        remaining_orders.append(order)   # keep for retry
+                        remaining_orders.append(order)  # keep for retry
 
                 except Exception as e:
                     logger.error(f"Error processing order for cancellation: {e}", exc_info=True)

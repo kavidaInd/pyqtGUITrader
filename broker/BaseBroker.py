@@ -191,7 +191,6 @@ class BaseBroker(ABC):
         IST = pytz.timezone("Asia/Kolkata")
 
         expiry = self.token_expiry
-        print(expiry)
         if expiry is None:
             return False
 

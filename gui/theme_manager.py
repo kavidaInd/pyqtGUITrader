@@ -98,6 +98,11 @@ DARK_TOKENS: Dict[str, str] = {
     "CHART_AXIS":    "#8b949e",
     "CHART_CANDLE_UP":   "#2ea043",
     "CHART_CANDLE_DOWN": "#f85149",
+
+    # PnL widget specific
+    "PNL_CARD_BG":   "#1c2128",
+    "PNL_ACCENT":    "#1f6feb",
+    "PNL_DIVIDER":   "#30363d",
 }
 
 # ── Light palette (GitHub Light) ──────────────────────────────────────────────
@@ -146,6 +151,11 @@ LIGHT_TOKENS: Dict[str, str] = {
     "CHART_AXIS":    "#636c76",
     "CHART_CANDLE_UP":   "#1a7f37",
     "CHART_CANDLE_DOWN": "#cf222e",
+
+    # PnL widget specific
+    "PNL_CARD_BG":   "#f0f3f6",
+    "PNL_ACCENT":    "#0550ae",
+    "PNL_DIVIDER":   "#d0d7de",
 }
 
 
@@ -339,6 +349,7 @@ SPACING_NORMAL: Dict[str, int] = {
     "BUTTON_PANEL_H":  68,   # Button panel below chart
     "HEADER_H":        40,   # Panel / section headers
     "TAB_H":           36,   # Tab bar height
+    "PNL_WIDGET_H":    100,  # P&L widget height
 
     # Icon sizes
     "ICON_SM":   12,
@@ -388,6 +399,7 @@ SPACING_COMPACT: Dict[str, int] = {
     "BUTTON_PANEL_H":  56,
     "HEADER_H":        32,
     "TAB_H":           28,
+    "PNL_WIDGET_H":    82,
 
     "ICON_SM":   10,
     "ICON_MD":   14,
@@ -432,6 +444,7 @@ SPACING_RELAXED: Dict[str, int] = {
     "BUTTON_PANEL_H":  80,
     "HEADER_H":        48,
     "TAB_H":           42,
+    "PNL_WIDGET_H":    120,
 
     "ICON_SM":   14,
     "ICON_MD":   18,
@@ -628,7 +641,14 @@ class ThemeManager(QObject):
             logger.warning(f"[ThemeManager.save_preference] Failed: {e}")
 
     def load_preference(self) -> None:
-        """Load and apply persisted theme + density from QSettings."""
+        """
+        Load and apply persisted theme + density from QSettings.
+
+        IMPORTANT: After loading, always force-pushes the full app stylesheet to
+        QApplication so widgets are correctly styled on first paint — even when the
+        saved values match the defaults (both guards in set_theme / set_density would
+        otherwise skip the stylesheet write).
+        """
         try:
             from PyQt5.QtCore import QSettings
             s = QSettings("YourCompany", "AlgoTradingPro")
@@ -636,9 +656,36 @@ class ThemeManager(QObject):
             density = s.value("density", "normal")
             self.set_density(density)
             self.set_theme(theme)
+            # Force-apply regardless of whether set_theme/set_density detected a change.
+            # This is the critical call that paints buttons/navbar correctly on startup.
+            self.apply_startup_theme()
             logger.info(f"[ThemeManager] Preferences loaded (theme={theme}, density={density})")
         except Exception as e:
             logger.warning(f"[ThemeManager.load_preference] Failed: {e}")
+
+    def apply_startup_theme(self) -> None:
+        """
+        Unconditionally push the current palette + spacing + typography to
+        QApplication.setStyleSheet() and emit both signals so every widget
+        that connected apply_theme() gets called on first paint.
+
+        Call this once after all widgets are constructed and signals are connected.
+        Unlike set_theme() / set_density() this method has NO same-value guard,
+        so it always fires even when dark+normal are already the defaults.
+        """
+        try:
+            app = QApplication.instance()
+            if app:
+                app.setStyleSheet(self._build_app_stylesheet())
+            # Emit both signals so every connected apply_theme() slot fires
+            self.theme_changed.emit(self._current_theme)
+            self.density_changed.emit(self._current_density)
+            logger.info(
+                f"[ThemeManager] Startup theme applied "
+                f"(theme={self._current_theme}, density={self._current_density})"
+            )
+        except Exception as e:
+            logger.error(f"[ThemeManager.apply_startup_theme] Failed: {e}", exc_info=True)
 
     # ── Stylesheet builder ─────────────────────────────────────────────────────
 
@@ -860,6 +907,62 @@ class ThemeManager(QObject):
                 border-color: {c.BORDER};
             }}
 
+            /* Named semantic buttons — use setObjectName() for zero-cost theme propagation */
+            QPushButton#startBtn {{
+                background: {c.GREEN}; color: {c.TEXT_INVERSE}; border: none;
+            }}
+            QPushButton#startBtn:hover {{ background: {c.GREEN_BRIGHT}; }}
+            QPushButton#startBtn:disabled {{
+                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+            }}
+            QPushButton#stopBtn {{
+                background: {c.RED}; color: {c.TEXT_INVERSE}; border: none;
+            }}
+            QPushButton#stopBtn:hover {{ background: {c.RED_BRIGHT}; }}
+            QPushButton#stopBtn:disabled {{
+                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+            }}
+            QPushButton#strategyBtn {{
+                background: {c.BLUE_DARK}; color: {c.TEXT_INVERSE}; border: none;
+            }}
+            QPushButton#strategyBtn:hover {{ background: {c.BLUE}; }}
+            QPushButton#strategyBtn:disabled {{
+                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+            }}
+            QPushButton#callBtn {{
+                background: {c.BLUE_DARK}; color: {c.TEXT_INVERSE}; border: none;
+            }}
+            QPushButton#callBtn:hover {{ background: {c.BLUE}; }}
+            QPushButton#callBtn:disabled {{
+                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+            }}
+            QPushButton#putBtn {{
+                background: {c.PURPLE}; color: {c.TEXT_INVERSE}; border: none;
+            }}
+            QPushButton#putBtn:hover:enabled {{ background: {c.BLUE}; }}
+            QPushButton#putBtn:disabled {{
+                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+            }}
+            QPushButton#exitBtn {{
+                background: {c.YELLOW}; color: {c.TEXT_INVERSE}; border: none;
+            }}
+            QPushButton#exitBtn:hover:enabled {{ background: {c.YELLOW_BRIGHT}; }}
+            QPushButton#exitBtn:disabled {{
+                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+            }}
+            QPushButton#connectionBtn {{
+                background: {c.BG_PANEL}; color: {c.TEXT_DIM};
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+            }}
+            QPushButton#connectionBtnConnected {{
+                background: {c.GREEN}22; color: {c.GREEN};
+                border: 1px solid {c.GREEN}44;
+            }}
+            QPushButton#connectionBtnDisconnected {{
+                background: {c.RED}22; color: {c.RED};
+                border: 1px solid {c.RED}44;
+            }}
+
             /* ── Progress bars ───────────────────────────────────────────────── */
             QProgressBar {{
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
@@ -1036,6 +1139,39 @@ class ThemeManager(QObject):
                 selection-background-color: {c.BG_SELECTED};
             }}
         """
+
+    def pnl_progress_stylesheet(self, positive: bool = True) -> str:
+        """Return a styled progress bar stylesheet for P&L widget."""
+        c  = self._palette
+        sp = self._spacing
+        chunk_color = c.GREEN if positive else c.RED
+        bg_color = c.GREEN + "22" if positive else c.RED + "22"
+        return f"""
+            QProgressBar {{
+                border:        none;
+                border-radius: {sp.RADIUS_SM}px;
+                background:    {bg_color};
+                text-align:    center;
+            }}
+            QProgressBar::chunk {{
+                background:    {chunk_color};
+                border-radius: {sp.RADIUS_SM}px;
+            }}
+        """
+
+    def pnl_stat_chip_stylesheet(self) -> str:
+        """Return stylesheet for inline stat chips in P&L widget."""
+        c  = self._palette
+        ty = self._typography
+        sp = self._spacing
+        return (
+            f"color: {c.TEXT_DIM}; "
+            f"background: {c.BG_HOVER}; "
+            f"border-radius: {sp.RADIUS_SM}px; "
+            f"font-size: {ty.SIZE_XS}pt; "
+            f"padding: 1px {sp.PAD_SM}px; "
+            f"border: none;"
+        )
 
 
 # Module-level singleton — import this everywhere

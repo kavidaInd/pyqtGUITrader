@@ -465,8 +465,6 @@ class OrderExecutor:
 
         # Generate a unique client order ID
         client_order_id = f"ORD_{int(time.time()*1000)}_{random.randint(1000, 9999)}"
-
-        # Place order with broker
         try:
             broker_order_id = self.api.place_order(
                 symbol=symbol,
@@ -476,20 +474,9 @@ class OrderExecutor:
             )
 
             if broker_order_id:
-                # Store mapping
+                # Store mapping — caller uses this to write the single DB record
                 self._idempotency_keys[idempotency_key] = broker_order_id
                 self._submitted_order_ids.add(broker_order_id)
-
-                # Create order record
-                order_id = orders_crud.create(
-                    session_id=state_manager.get_state().session_id,
-                    symbol=symbol,
-                    position_type=option_type or state.current_position or "UNKNOWN",
-                    quantity=quantity,
-                    broker_order_id=broker_order_id,
-                    entry_price=price
-                )
-
                 return broker_order_id
 
         except Exception as e:
@@ -533,8 +520,7 @@ class OrderExecutor:
                 )
 
                 for i, qty in enumerate(chunks, start=1):
-                    # Generate idempotency key for this chunk
-                    idempotency_key = f"{symbol}_{qty}_{price}_{int(time.time()/10)}"
+                    idempotency_key = f"{symbol}_{qty}_{price}_{i}_{int(time.time()*1000)}"
 
                     try:
                         # Use idempotent order placement
@@ -997,11 +983,6 @@ class OrderExecutor:
     def cleanup(self):
         try:
             logger.info("[OrderExecutor] Starting cleanup")
-            if self._order_lock and self._order_lock.locked():
-                try:
-                    self._order_lock.release()
-                except Exception:
-                    pass
             self.api = None
             self.config = None
             self.notifier = None

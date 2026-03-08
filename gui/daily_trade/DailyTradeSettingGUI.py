@@ -112,6 +112,8 @@ class ModernHeader(QLabel):
 
 class DailyTradeSettingGUI(QDialog, ThemedMixin):
     save_completed = pyqtSignal(bool, str)
+    # Emitted after a successful save so TradingGUI can refresh dependent widgets
+    settings_saved = pyqtSignal()
 
     # Rule 3: Additional signals for error handling
     error_occurred = pyqtSignal(str)
@@ -247,7 +249,7 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             status_save_layout.addWidget(self.status_label, 1)
 
             self.save_btn = self._create_modern_button(
-                "💾 Save Settings",
+                "Save Settings",
                 primary=True,
                 icon="💾"
             )
@@ -360,7 +362,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         tabs.addTab(self._build_settings_tab(), "⚙️ Core")
         tabs.addTab(self._build_risk_tab(), "⚠️ Risk")
         tabs.addTab(self._build_mtf_tab(), "📈 MTF")
-        tabs.addTab(self._build_signal_tab(), "🎯 Signal")
         tabs.addTab(self._build_info_tab(), "ℹ️ Info")
 
         return tabs
@@ -1420,77 +1421,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[DailyTradeSettingGUI._build_mtf_tab] Failed: {e}", exc_info=True)
             return self._create_error_scroll(f"Error building MTF tab: {e}")
 
-    # ── Signal Confidence Tab ─────────────────────────────────────────────────
-
-    def _build_signal_tab(self):
-        """Build signal confidence settings tab."""
-        try:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QScrollArea.NoFrame)
-
-            container = QWidget()
-            container.setStyleSheet("background: transparent;")
-            layout = QVBoxLayout(container)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(self._sp.GAP_LG)
-
-            # Confidence Card
-            conf_card = ModernCard()
-            conf_layout = QVBoxLayout(conf_card)
-            conf_layout.setSpacing(self._sp.GAP_MD)
-
-            conf_header = QLabel("🎯 Signal Confidence")
-            conf_header.setStyleSheet(f"""
-                QLabel {{
-                    color: {self._c.TEXT_MAIN};
-                    font-size: {self._ty.SIZE_MD}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
-            """)
-            conf_layout.addWidget(conf_header)
-
-            conf_form = QFormLayout()
-            conf_form.setSpacing(self._sp.GAP_MD)
-            conf_form.setLabelAlignment(Qt.AlignRight)
-
-            conf_spin = QDoubleSpinBox()
-            conf_spin.setRange(0.0, 1.0)
-            conf_spin.setSingleStep(0.05)
-            conf_spin.setDecimals(2)
-            conf_spin.setStyleSheet(self._get_spinbox_style())
-            current_conf = 0.6
-            if self.daily_setting and safe_hasattr(self.daily_setting, 'min_confidence'):
-                current_conf = self.daily_setting.min_confidence
-            conf_spin.setValue(current_conf)
-            conf_form.addRow("Min Confidence:", conf_spin)
-            self.vars["min_confidence"] = (conf_spin, float)
-
-            conf_layout.addLayout(conf_form)
-
-            conf_hint = QLabel("Signals below this confidence are suppressed (0.0-1.0)")
-            conf_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
-            conf_layout.addWidget(conf_hint)
-
-            layout.addWidget(conf_card)
-
-            # Info Card
-            info_card = self._create_info_card(
-                "📘 About Signal Confidence",
-                "• Confidence Score: Weighted average of rule results\n"
-                "• Min Confidence: Signals below threshold are ignored\n"
-                "• Rule Weights: Configured in Strategy Editor"
-            )
-            layout.addWidget(info_card)
-
-            layout.addStretch()
-            scroll.setWidget(container)
-            return scroll
-
-        except Exception as e:
-            logger.error(f"[DailyTradeSettingGUI._build_signal_tab] Failed: {e}", exc_info=True)
-            return self._create_error_scroll(f"Error building signal tab: {e}")
-
     # ── Information Tab ───────────────────────────────────────────────────────
 
     def _build_info_tab(self):
@@ -1852,6 +1782,9 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             if success:
                 self.show_success_feedback()
                 self.save_btn.setEnabled(True)
+
+                # Notify any connected slot (e.g. TradingGUI._on_daily_settings_saved)
+                self.settings_saved.emit()
 
                 if self.app is not None and safe_hasattr(self.app, "refresh_settings_live"):
                     try:

@@ -279,9 +279,9 @@ class TradeState:
                 self._stop_loss: Optional[float] = None
                 self._tp_point: Optional[float] = None
                 self._tp_percentage: float = 15.0
-                self._stoploss_percentage: float = -7.0
+                self._stoploss_percentage: float = 7.0
                 self._original_profit_per: float = 15.0
-                self._original_stoploss_per: float = -7.0
+                self._original_stoploss_per: float = 7.0
                 self._trailing_first_profit: float = 3.0
                 self._max_profit: float = 30.0
                 self._profit_step: float = 2.0

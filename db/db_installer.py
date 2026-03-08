@@ -14,17 +14,45 @@ What it does on each startup
 2. Opens (or creates) trading.db.
 3. Applies the embedded schema — every statement uses IF NOT EXISTS,
    so existing tables and data are never touched or dropped.
-4. Seeds default singleton rows for settings tables (INSERT OR IGNORE).
+4. Seeds all settings defaults into app_kv (INSERT OR IGNORE — never
+   overwrites user data).
 5. Runs a column-level health-check on every expected table.
 6. Returns an InstallResult the caller can inspect or show in a dialog.
 
-Usage (add to the very top of your main / GUI entry-point)
+Architecture (v3.0)
+───────────────────
+Settings-like singletons are stored in app_kv using namespaced keys.
+The following tables were removed and their data moved to app_kv:
+
+  Removed tables             → app_kv namespace
+  ─────────────────────────────────────────────
+  brokerage_setting          → brokerage:<field>
+  daily_trade_setting        → daily_trade:<field>
+  profit_stoploss_setting    → profit_stoploss:<field>
+  trading_mode_setting       → trading_mode:<field>
+  strategy_active            → strategy:active_slug
+  broker_tokens              → token:<field>
+  license_activations        → license:<field>   (already in kv in license_manager)
+  risk_settings              → (direct kv keys)
+  signal_settings            → (direct kv keys)
+  telegram_settings          → (direct kv keys)
+  mtf_settings               → (direct kv keys)
+
+  Remaining full tables (relational / time-series data)
+  ──────────────────────────────────────────────────────
+  strategies      — strategy definitions
+  trade_sessions  — one row per session
+  orders          — individual orders
+  daily_pnl       — daily P&L cache
+  ws_stats        — WebSocket monitoring
+  app_kv          — generic key-value store
+
+Usage
 ──────────────────────────────────────────────────────────
     from db.db_installer import run_startup_check
-
     result = run_startup_check()
     if not result.ok:
-        print(result.summary())   # or show a QMessageBox
+        print(result.summary())
         sys.exit(1)
 
 CLI
@@ -43,87 +71,18 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Database path — override via env var or pass explicitly to run_startup_check
-# ─────────────────────────────────────────────────────────────────────────────
 DEFAULT_DB_PATH: str = os.environ.get("TRADING_DB_PATH", "config/trading.db")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EMBEDDED SCHEMA
-# All CREATE TABLE / CREATE INDEX statements use IF NOT EXISTS so this block
-# is always safe to execute against an existing database.
+# EMBEDDED SCHEMA  (v3.0 — settings singletons removed, only full tables kept)
 # ─────────────────────────────────────────────────────────────────────────────
 SCHEMA_SQL: str = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 -- ============================================================
--- 1. Brokerage credentials (Fyers)
--- ============================================================
-CREATE TABLE IF NOT EXISTS brokerage_setting (
-    id           INTEGER PRIMARY KEY CHECK (id = 1),
-    broker_type TEXT DEFAULT 'fyers',
-    client_id    TEXT    NOT NULL DEFAULT '',
-    secret_key   TEXT    NOT NULL DEFAULT '',
-    redirect_uri TEXT    NOT NULL DEFAULT '',
-    updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 2. Daily trade settings
--- ============================================================
-CREATE TABLE IF NOT EXISTS daily_trade_setting (
-    id                 INTEGER PRIMARY KEY CHECK (id = 1),
-    exchange           TEXT    NOT NULL DEFAULT 'NSE',
-    week               INTEGER NOT NULL DEFAULT 0,
-    derivative         TEXT    NOT NULL DEFAULT 'NIFTY50-INDEX',
-    lot_size           INTEGER NOT NULL DEFAULT 75,
-    call_lookback      INTEGER NOT NULL DEFAULT 0,
-    put_lookback       INTEGER NOT NULL DEFAULT 0,
-    history_interval   TEXT    NOT NULL DEFAULT '2m',
-    max_num_of_option  INTEGER NOT NULL DEFAULT 1800,
-    lower_percentage   REAL    NOT NULL DEFAULT 0.0,
-    cancel_after       INTEGER NOT NULL DEFAULT 5,
-    capital_reserve    INTEGER NOT NULL DEFAULT 0,
-    sideway_zone_trade INTEGER NOT NULL DEFAULT 0,
-    updated_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 3. Profit / Stoploss settings
--- ============================================================
-CREATE TABLE IF NOT EXISTS profit_stoploss_setting (
-    id                     INTEGER PRIMARY KEY CHECK (id = 1),
-    profit_type            TEXT    NOT NULL DEFAULT 'STOP',
-    tp_percentage          REAL    NOT NULL DEFAULT 15.0,
-    stoploss_percentage    REAL    NOT NULL DEFAULT 7.0,
-    trailing_first_profit  REAL    NOT NULL DEFAULT 3.0,
-    max_profit             REAL    NOT NULL DEFAULT 30.0,
-    profit_step            REAL    NOT NULL DEFAULT 2.0,
-    loss_step              REAL    NOT NULL DEFAULT 2.0,
-    updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 4. Trading mode settings
--- ============================================================
-CREATE TABLE IF NOT EXISTS trading_mode_setting (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    mode                 TEXT    NOT NULL DEFAULT 'PAPER'
-                         CHECK (mode IN ('BACKTEST', 'PAPER', 'LIVE')),
-    paper_balance        REAL    NOT NULL DEFAULT 100000.0,
-    allow_live_trading   INTEGER NOT NULL DEFAULT 0,
-    confirm_live_trades  INTEGER NOT NULL DEFAULT 1,
-    simulate_slippage    INTEGER NOT NULL DEFAULT 1,
-    slippage_percent     REAL    NOT NULL DEFAULT 0.05,
-    simulate_delay       INTEGER NOT NULL DEFAULT 1,
-    delay_ms             INTEGER NOT NULL DEFAULT 500,
-    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 5. Strategies  (replaces per-slug JSON files)
+-- 1. Strategies  (relational — slug is the primary key)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS strategies (
     slug         TEXT    PRIMARY KEY,
@@ -135,27 +94,8 @@ CREATE TABLE IF NOT EXISTS strategies (
     updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 
--- Active strategy pointer
-CREATE TABLE IF NOT EXISTS strategy_active (
-    id           INTEGER PRIMARY KEY CHECK (id = 1),
-    active_slug  TEXT    REFERENCES strategies(slug) ON DELETE SET NULL,
-    updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
 -- ============================================================
--- 6. Broker auth tokens  (replaces config/access_token file)
--- ============================================================
-CREATE TABLE IF NOT EXISTS broker_tokens (
-    id              INTEGER PRIMARY KEY CHECK (id = 1),
-    access_token    TEXT    NOT NULL DEFAULT '',
-    refresh_token   TEXT,
-    issued_at       TEXT,
-    expires_at      TEXT,
-    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 7. Trade sessions  (one row per trading session / day run)
+-- 2. Trade sessions  (one row per trading session / day run)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS trade_sessions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,7 +115,7 @@ CREATE TABLE IF NOT EXISTS trade_sessions (
 );
 
 -- ============================================================
--- 8. Orders  (one row per individual order placed)
+-- 3. Orders  (one row per individual order placed)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS orders (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,12 +141,12 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status  ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_orders_exited_at ON orders(exited_at);
+CREATE INDEX IF NOT EXISTS idx_orders_session    ON orders(session_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status     ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_exited_at  ON orders(exited_at);
 
 -- ============================================================
--- 9. Generic key-value store  (replaces Config / strategy_setting.json)
+-- 4. Generic key-value store  (all settings live here)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS app_kv (
     key        TEXT    PRIMARY KEY,
@@ -215,155 +155,160 @@ CREATE TABLE IF NOT EXISTS app_kv (
 );
 
 -- ============================================================
--- 10. Risk Manager settings  (FEATURE 1)
--- ============================================================
-CREATE TABLE IF NOT EXISTS risk_settings (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    max_daily_loss       REAL    NOT NULL DEFAULT -5000.0,
-    max_trades_per_day   INTEGER NOT NULL DEFAULT 10,
-    daily_target         REAL    NOT NULL DEFAULT 5000.0,
-    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 11. Signal Engine settings  (FEATURE 3)
--- ============================================================
-CREATE TABLE IF NOT EXISTS signal_settings (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    min_confidence       REAL    NOT NULL DEFAULT 0.6,
-    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 12. Telegram Notifier settings  (FEATURE 4)
--- ============================================================
-CREATE TABLE IF NOT EXISTS telegram_settings (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    bot_token            TEXT    NOT NULL DEFAULT '',
-    chat_id              TEXT    NOT NULL DEFAULT '',
-    enabled              INTEGER NOT NULL DEFAULT 0,
-    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 13. Multi-Timeframe Filter settings  (FEATURE 6)
--- ============================================================
-CREATE TABLE IF NOT EXISTS mtf_settings (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    enabled              INTEGER NOT NULL DEFAULT 0,
-    timeframes           TEXT    NOT NULL DEFAULT '["1","5","15"]',
-    ema_fast             INTEGER NOT NULL DEFAULT 9,
-    ema_slow             INTEGER NOT NULL DEFAULT 21,
-    agreement_required   INTEGER NOT NULL DEFAULT 2,
-    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
--- ============================================================
--- 14. Daily P&L tracking  (FEATURE 5 - cached values)
+-- 5. Daily P&L tracking  (time-series cache)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS daily_pnl (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    date                 TEXT    NOT NULL UNIQUE,
-    realized_pnl         REAL    NOT NULL DEFAULT 0.0,
-    unrealized_pnl       REAL    NOT NULL DEFAULT 0.0,
-    trades_count         INTEGER NOT NULL DEFAULT 0,
-    winners_count        INTEGER NOT NULL DEFAULT 0,
-    max_drawdown         REAL    NOT NULL DEFAULT 0.0,
-    peak                 REAL    NOT NULL DEFAULT 0.0,
-    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    date           TEXT    NOT NULL UNIQUE,
+    realized_pnl   REAL    NOT NULL DEFAULT 0.0,
+    unrealized_pnl REAL    NOT NULL DEFAULT 0.0,
+    trades_count   INTEGER NOT NULL DEFAULT 0,
+    winners_count  INTEGER NOT NULL DEFAULT 0,
+    max_drawdown   REAL    NOT NULL DEFAULT 0.0,
+    peak           REAL    NOT NULL DEFAULT 0.0,
+    updated_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_pnl_date ON daily_pnl(date);
 
 -- ============================================================
--- 15. WebSocket connection stats  (for monitoring)
+-- 6. WebSocket connection stats  (monitoring)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ws_stats (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id           INTEGER REFERENCES trade_sessions(id) ON DELETE CASCADE,
-    connected_at         TEXT,
-    disconnected_at      TEXT,
-    messages_received    INTEGER NOT NULL DEFAULT 0,
-    errors_count         INTEGER NOT NULL DEFAULT 0,
-    reconnects_count     INTEGER NOT NULL DEFAULT 0,
-    created_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id        INTEGER REFERENCES trade_sessions(id) ON DELETE CASCADE,
+    connected_at      TEXT,
+    disconnected_at   TEXT,
+    messages_received INTEGER NOT NULL DEFAULT 0,
+    errors_count      INTEGER NOT NULL DEFAULT 0,
+    reconnects_count  INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
 );
-
--- ============================================================
--- License activation record  (SaaS license system)
--- ============================================================
-CREATE TABLE IF NOT EXISTS license_activations (
-    id             INTEGER PRIMARY KEY CHECK (id = 1),
-    license_key    TEXT    NOT NULL DEFAULT '',
-    order_id       TEXT    NOT NULL DEFAULT '',
-    email          TEXT    NOT NULL DEFAULT '',
-    plan           TEXT    NOT NULL DEFAULT '',
-    customer_name  TEXT    NOT NULL DEFAULT '',
-    expires_at     TEXT    NOT NULL DEFAULT '',
-    activated_at   TEXT    NOT NULL DEFAULT '',
-    last_verified  TEXT    NOT NULL DEFAULT '',
-    machine_id     TEXT    NOT NULL DEFAULT '',
-    updated_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
-
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Seed statements — INSERT OR IGNORE so user data is never overwritten
+# app_kv default seeds
+#
+# All settings-like singletons are stored here.  INSERT OR IGNORE means
+# existing user values are never overwritten.
+#
+# Namespaces
+#   brokerage:*        — broker credentials
+#   daily_trade:*      — daily trade config
+#   profit_stoploss:*  — TP/SL settings
+#   trading_mode:*     — paper / live / backtest
+#   token:*            — broker auth tokens
+#   strategy:*         — active strategy pointer
+#   license:*          — license activation record
+#   (bare keys)        — risk, signal, telegram, mtf (legacy flat names kept)
 # ─────────────────────────────────────────────────────────────────────────────
-_SINGLETON_SEEDS: Dict[str, str] = {
-    "brokerage_setting":
-        "INSERT OR IGNORE INTO brokerage_setting (id) VALUES (1)",
-    "daily_trade_setting":
-        "INSERT OR IGNORE INTO daily_trade_setting (id) VALUES (1)",
-    "profit_stoploss_setting":
-        "INSERT OR IGNORE INTO profit_stoploss_setting (id) VALUES (1)",
-    "trading_mode_setting":
-        "INSERT OR IGNORE INTO trading_mode_setting (id) VALUES (1)",
-    "strategy_active":
-        "INSERT OR IGNORE INTO strategy_active (id, active_slug) VALUES (1, NULL)",
-    "broker_tokens":
-        "INSERT OR IGNORE INTO broker_tokens (id) VALUES (1)",
-    "risk_settings":
-        "INSERT OR IGNORE INTO risk_settings (id) VALUES (1)",
-    "signal_settings":
-        "INSERT OR IGNORE INTO signal_settings (id) VALUES (1)",
-    "telegram_settings":
-        "INSERT OR IGNORE INTO telegram_settings (id) VALUES (1)",
-    "mtf_settings":
-        "INSERT OR IGNORE INTO mtf_settings (id) VALUES (1)",
+_KV_SEEDS: Dict[str, str] = {
+    # ── Brokerage credentials ──────────────────────────────────────────────
+    "brokerage:broker_type":   '"fyers"',
+    "brokerage:client_id":     '""',
+    "brokerage:secret_key":    '""',
+    "brokerage:redirect_uri":  '""',
+
+    # ── Daily trade settings ───────────────────────────────────────────────
+    "daily_trade:exchange":           '"NSE"',
+    "daily_trade:week":               "0",
+    "daily_trade:derivative":         '"NIFTY50"',
+    "daily_trade:lot_size":           "75",
+    "daily_trade:call_lookback":      "0",
+    "daily_trade:put_lookback":       "0",
+    "daily_trade:history_interval":   '"2m"',
+    "daily_trade:max_num_of_option":  "1800",
+    "daily_trade:lower_percentage":   "0.0",
+    "daily_trade:cancel_after":       "5",
+    "daily_trade:capital_reserve":    "0",
+    "daily_trade:sideway_zone_trade": "false",
+
+    # ── Profit / Stoploss settings ─────────────────────────────────────────
+    "profit_stoploss:profit_type":           '"STOP"',
+    "profit_stoploss:tp_percentage":         "15.0",
+    "profit_stoploss:stoploss_percentage":   "7.0",
+    "profit_stoploss:trailing_first_profit": "3.0",
+    "profit_stoploss:max_profit":            "30.0",
+    "profit_stoploss:profit_step":           "2.0",
+    "profit_stoploss:loss_step":             "2.0",
+
+    # ── Trading mode settings ──────────────────────────────────────────────
+    "trading_mode:mode":               '"Paper"',
+    "trading_mode:paper_balance":      "100000.0",
+    "trading_mode:allow_live_trading": "false",
+    "trading_mode:confirm_live_trades":"true",
+    "trading_mode:simulate_slippage":  "true",
+    "trading_mode:slippage_percent":   "0.05",
+    "trading_mode:simulate_delay":     "true",
+    "trading_mode:delay_ms":           "500",
+
+    # ── Broker auth tokens ─────────────────────────────────────────────────
+    "token:access_token":  '""',
+    "token:refresh_token": '""',
+    "token:issued_at":     '""',
+    "token:expires_at":    '""',
+
+    # ── Active strategy pointer ────────────────────────────────────────────
+    "strategy:active_slug": '""',
+
+    # ── License activation record ──────────────────────────────────────────
+    "license:license_key":    '""',
+    "license:order_id":       '""',
+    "license:email":          '""',
+    "license:machine_id":     '""',
+    "license:plan":           '""',
+    "license:customer_name":  '""',
+    "license:expires_at":     '""',
+    "license:last_verify_at": '""',
+    "license:last_verify_ok": "false",
+    "license:days_remaining": "0",
+
+    # ── Risk Manager (Feature 1) ───────────────────────────────────────────
+    "max_daily_loss":        "-5000",
+    "max_trades_per_day":    "10",
+    "daily_target":          "5000",
+
+    # ── Signal Engine (Feature 3) ──────────────────────────────────────────
+    "min_confidence":        "0.6",
+
+    # ── Telegram Notifier (Feature 4) ─────────────────────────────────────
+    "telegram_bot_token":    '""',
+    "telegram_chat_id":      '""',
+    "telegram_enabled":      "false",
+
+    # ── Multi-Timeframe Filter (Feature 6) ────────────────────────────────
+    "use_mtf_filter":         "false",
+    "mtf_timeframes":         '["1","5","15"]',
+    "mtf_ema_fast":           "9",
+    "mtf_ema_slow":           "21",
+    "mtf_agreement_required": "2",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Health-check manifest  (table -> minimum expected columns)
+# Legacy tables to drop on upgrade
+# All of these have been replaced by app_kv entries above.
+# ─────────────────────────────────────────────────────────────────────────────
+_LEGACY_TABLES: List[str] = [
+    "brokerage_setting",
+    "daily_trade_setting",
+    "profit_stoploss_setting",
+    "trading_mode_setting",
+    "strategy_active",
+    "broker_tokens",
+    "license_activations",
+    "risk_settings",
+    "signal_settings",
+    "telegram_settings",
+    "mtf_settings",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Health-check manifest  (only the tables that still exist)
 # ─────────────────────────────────────────────────────────────────────────────
 EXPECTED_TABLES: Dict[str, List[str]] = {
-    "brokerage_setting": [
-        "id", "broker_type", "client_id", "secret_key", "redirect_uri", "updated_at",
-    ],
-    "daily_trade_setting": [
-        "id", "exchange", "week", "derivative", "lot_size",
-        "call_lookback", "put_lookback", "history_interval",
-        "max_num_of_option", "lower_percentage", "cancel_after",
-        "capital_reserve", "sideway_zone_trade", "updated_at",
-    ],
-    "profit_stoploss_setting": [
-        "id", "profit_type", "tp_percentage", "stoploss_percentage",
-        "trailing_first_profit", "max_profit", "profit_step",
-        "loss_step", "updated_at",
-    ],
-    "trading_mode_setting": [
-        "id", "mode", "paper_balance", "allow_live_trading",
-        "confirm_live_trades", "simulate_slippage", "slippage_percent",
-        "simulate_delay", "delay_ms", "updated_at",
-    ],
     "strategies": [
         "slug", "name", "description", "indicators", "engine",
         "created_at", "updated_at",
-    ],
-    "strategy_active": ["id", "active_slug", "updated_at"],
-    "broker_tokens": [
-        "id", "access_token", "refresh_token", "issued_at", "expires_at", "updated_at",
     ],
     "trade_sessions": [
         "id", "started_at", "ended_at", "mode", "exchange",
@@ -375,26 +320,13 @@ EXPECTED_TABLES: Dict[str, List[str]] = {
         "id", "session_id", "broker_order_id", "symbol",
         "position_type", "quantity", "entry_price", "exit_price",
         "stop_loss", "take_profit", "pnl", "status",
-        "is_confirmed", "entered_at", "exited_at", "confirmed_at", "cancelled_at",
-        "reason_to_exit", "created_at", "updated_at",
+        "is_confirmed", "entered_at", "exited_at", "confirmed_at",
+        "cancelled_at", "reason_to_exit", "created_at", "updated_at",
     ],
-    "app_kv": ["key", "value", "updated_at"],
-    "license_activations": ["id", "license_key", "order_id", "email", "plan", "expires_at", "machine_id"],
-    "risk_settings": [
-        "id", "max_daily_loss", "max_trades_per_day", "daily_target", "updated_at",
-    ],
-    "signal_settings": [
-        "id", "min_confidence", "updated_at",
-    ],
-    "telegram_settings": [
-        "id", "bot_token", "chat_id", "enabled", "updated_at",
-    ],
-    "mtf_settings": [
-        "id", "enabled", "timeframes", "ema_fast", "ema_slow", "agreement_required", "updated_at",
-    ],
+    "app_kv":    ["key", "value", "updated_at"],
     "daily_pnl": [
-        "id", "date", "realized_pnl", "unrealized_pnl", "trades_count",
-        "winners_count", "max_drawdown", "peak", "updated_at",
+        "id", "date", "realized_pnl", "unrealized_pnl",
+        "trades_count", "winners_count", "max_drawdown", "peak", "updated_at",
     ],
     "ws_stats": [
         "id", "session_id", "connected_at", "disconnected_at",
@@ -453,13 +385,7 @@ class DatabaseInstaller:
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
 
-    # ── Public ───────────────────────────────────────────────────────────────
-
     def run(self) -> InstallResult:
-        """
-        Execute the full install + health-check pipeline.
-        Always returns an InstallResult — never raises.
-        """
         result = InstallResult(db_path=self.db_path)
         try:
             self._ensure_directory(result)
@@ -470,7 +396,8 @@ class DatabaseInstaller:
                 return result
 
             self._apply_schema(result)
-            self._seed_singletons(result)
+            self._drop_legacy_tables(result)
+            self._seed_kv(result)
             self._health_check(result)
 
         except Exception as exc:
@@ -478,7 +405,6 @@ class DatabaseInstaller:
             logger.critical(f"[DB Installer] {msg}", exc_info=True)
             result.errors.append(msg)
             result.ok = False
-
         finally:
             self._close_connection()
 
@@ -489,13 +415,11 @@ class DatabaseInstaller:
                 f"[DB Installer] Problems detected -> {self.db_path}\n"
                 f"{result.summary()}"
             )
-
         return result
 
-    # ── Pipeline steps ────────────────────────────────────────────────────────
+    # ── Pipeline steps ────────────────────────────────────────────────────
 
     def _ensure_directory(self, result: InstallResult) -> None:
-        """Create parent directory for the DB file if it does not exist."""
         db_dir = Path(self.db_path).parent
         try:
             if db_dir and not db_dir.exists():
@@ -508,7 +432,6 @@ class DatabaseInstaller:
             logger.error(f"[DB Installer] {msg}")
 
     def _open_connection(self, result: InstallResult) -> None:
-        """Open (or create) the SQLite file and configure pragmas."""
         db_file = Path(self.db_path)
         result.db_created = not db_file.exists()
         try:
@@ -530,15 +453,7 @@ class DatabaseInstaller:
             self._conn = None
 
     def _apply_schema(self, result: InstallResult) -> None:
-        """
-        Execute the embedded SCHEMA_SQL against the open connection.
-
-        Every statement uses IF NOT EXISTS — running this against a database
-        that already has tables is completely safe; no data is lost.
-        After applying the schema, runs column-level migrations so that
-        existing databases gain any new columns (e.g. broker_type) without
-        being recreated.
-        """
+        """Execute the embedded SCHEMA_SQL (all IF NOT EXISTS — always safe)."""
         before = self._existing_tables()
         try:
             self._conn.executescript(SCHEMA_SQL)
@@ -557,40 +472,42 @@ class DatabaseInstaller:
         if new_tables:
             logger.info(f"[DB Installer] New tables installed: {new_tables}")
 
-        # ── Column-level migrations for existing databases ────────────────────
-        # Each entry: (table, column, add_sql)
-        # ALTER TABLE is a no-op if the column already exists (caught silently).
-        _COLUMN_MIGRATIONS = [
-            (
-                "brokerage_setting",
-                "broker_type",
-                "ALTER TABLE brokerage_setting ADD COLUMN broker_type TEXT DEFAULT 'fyers'",
-            ),
-        ]
-        for table, column, alter_sql in _COLUMN_MIGRATIONS:
-            existing_cols = self._existing_columns(table)
-            if column not in existing_cols:
-                try:
-                    self._conn.execute(alter_sql)
-                    self._conn.commit()
-                    logger.info(f"[DB Installer] Migration: added '{table}.{column}'")
-                    result.warnings.append(f"Column '{table}.{column}' was missing — added by migration.")
-                except Exception as exc:
-                    # SQLite ALTER TABLE does not support IF NOT EXISTS, so race
-                    # conditions (two processes starting simultaneously) are safe
-                    # to ignore; any other error is logged as a warning.
-                    logger.warning(f"[DB Installer] Column migration '{table}.{column}' skipped: {exc}")
-
-    def _seed_singletons(self, result: InstallResult) -> None:
+    def _drop_legacy_tables(self, result: InstallResult) -> None:
         """
-        Guarantee exactly one row exists in each singleton settings table.
-        INSERT OR IGNORE — never overwrites existing user data.
+        Drop tables that have been superseded by app_kv.
+        This migration is applied once to existing databases; it is a no-op
+        when the tables do not exist.
         """
-        for table, sql in _SINGLETON_SEEDS.items():
+        existing = self._existing_tables()
+        for tbl in _LEGACY_TABLES:
+            if tbl not in existing:
+                continue
             try:
-                self._conn.execute(sql)
+                self._conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+                self._conn.commit()
+                result.warnings.append(
+                    f"Dropped legacy table '{tbl}' (data now in app_kv)."
+                )
+                logger.info(f"[DB Installer] Dropped legacy table: {tbl}")
             except Exception as exc:
-                msg = f"Could not seed singleton row in '{table}': {exc}"
+                logger.warning(
+                    f"[DB Installer] Could not drop legacy table '{tbl}': {exc}"
+                )
+
+    def _seed_kv(self, result: InstallResult) -> None:
+        """
+        Guarantee all default app_kv entries exist.
+        INSERT OR IGNORE — never overwrites existing user values.
+        """
+        for key, default_value in _KV_SEEDS.items():
+            try:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO app_kv (key, value, updated_at) "
+                    "VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%S', 'now'))",
+                    (key, default_value),
+                )
+            except Exception as exc:
+                msg = f"Could not seed app_kv key '{key}': {exc}"
                 result.warnings.append(msg)
                 logger.warning(f"[DB Installer] {msg}")
         try:
@@ -599,10 +516,7 @@ class DatabaseInstaller:
             logger.warning(f"[DB Installer] Commit after seeding failed: {exc}")
 
     def _health_check(self, result: InstallResult) -> None:
-        """
-        Verify every expected table and its required columns exist.
-        Also confirms singleton rows are present in settings tables.
-        """
+        """Verify every expected table and its required columns exist."""
         existing_tables = self._existing_tables()
 
         for table, expected_cols in EXPECTED_TABLES.items():
@@ -621,29 +535,13 @@ class DatabaseInstaller:
             else:
                 logger.debug(f"[DB Installer] OK: {table}")
 
-        for table in _SINGLETON_SEEDS:
-            if table not in existing_tables:
-                continue
-            try:
-                row = self._conn.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE id = 1"
-                ).fetchone()
-                if row and row[0] == 0:
-                    msg = f"Singleton row missing in '{table}' (id=1)"
-                    result.warnings.append(msg)
-                    logger.warning(f"[DB Installer] {msg}")
-            except Exception as exc:
-                logger.warning(
-                    f"[DB Installer] Could not verify singleton in '{table}': {exc}"
-                )
-
         if result.ok:
             logger.info(
-                f"[DB Installer] Health-check passed - "
+                f"[DB Installer] Health-check passed — "
                 f"{len(EXPECTED_TABLES)} tables verified"
             )
 
-    # ── Introspection helpers ─────────────────────────────────────────────────
+    # ── Introspection helpers ─────────────────────────────────────────────
 
     def _existing_tables(self) -> set:
         try:
@@ -658,7 +556,7 @@ class DatabaseInstaller:
     def _existing_columns(self, table: str) -> set:
         try:
             rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
-            return {r[1] for r in rows}   # index 1 = column name
+            return {r[1] for r in rows}
         except Exception as exc:
             logger.error(
                 f"[DB Installer] _existing_columns failed for '{table}': {exc}"
@@ -685,17 +583,8 @@ _startup_result: Optional[InstallResult] = None
 def run_startup_check(db_path: str = DEFAULT_DB_PATH) -> InstallResult:
     """
     Run the installer / health-check and cache the result.
-
     Subsequent calls within the same process return the cached result
-    immediately (no I/O).  Call reset_startup_check() to force a re-run
-    (useful in tests).
-
-    Args:
-        db_path: Path to the SQLite file.  Defaults to config/trading.db
-                 or the TRADING_DB_PATH environment variable.
-
-    Returns:
-        InstallResult with .ok, .summary(), and detailed diagnostic fields.
+    (no I/O).  Call reset_startup_check() to force a re-run (useful in tests).
     """
     global _startup_result
     if _startup_result is not None:

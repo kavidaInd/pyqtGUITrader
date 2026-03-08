@@ -28,7 +28,7 @@ Authentication (TOTP-based, no browser OAuth):
 API docs: https://www.shoonya.com/api-documentation
 SDK:      pip install NorenRestApiPy
 
-FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+FIXED: Added proper token expiry tracking and propagation to central handler.
 """
 
 import hashlib
@@ -44,6 +44,7 @@ from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_hasattr, safe_getattr
 from broker.BaseBroker import BaseBroker, TokenExpiredError
+from broker.TokenExpiryHandler import token_expiry_handler
 from db.connector import get_db
 from db.crud import tokens
 
@@ -108,11 +109,14 @@ class ShoonyaBroker(BaseBroker):
         secret_key  → Password in plain text (broker will hash it) OR pre-hashed SHA256
         redirect_uri → TOTP secret (base32) for auto-TOTP generation
 
-    FIXED: Added proper WebSocket cleanup with timeout and state tracking.
+    FIXED: Added proper token expiry tracking and propagation.
     """
 
     SHOONYA_URL = "https://api.shoonya.com/NorenWClientTP/"
     WS_URL      = "wss://api.shoonya.com/NorenWSTP/"
+
+    # Shoonya tokens expire at the end of the trading day
+    SESSION_DURATION_HOURS = 8
 
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
@@ -142,6 +146,12 @@ class ShoonyaBroker(BaseBroker):
             if not self.user_id:
                 raise ValueError("Shoonya user_id is required.")
 
+            # Token expiry tracking
+            self._token_expiry = None
+            self._token_issued_at = None
+            self._last_token_check = 0
+            self._token_expiry_check_interval = 60  # seconds
+
             # Initialize API
             self.api = NorenApi(host=self.SHOONYA_URL, websocket=self.WS_URL)
 
@@ -151,7 +161,12 @@ class ShoonyaBroker(BaseBroker):
                 self.state.token = saved_token
                 self.api.susertoken = saved_token          # inject saved token
                 self.api.userid = self.user_id
+                self._token_issued_at = self._parse_token_issued_at()
+                self._token_expiry = self._parse_token_expiry()
                 logger.info("ShoonyaBroker: restored token from DB")
+
+                if self.is_token_expired:
+                    logger.warning("ShoonyaBroker: restored token is expired")
             else:
                 logger.warning("ShoonyaBroker: no token found — call broker.login()")
 
@@ -159,6 +174,9 @@ class ShoonyaBroker(BaseBroker):
             self._ws_closed = False
             self._ws_cleanup_event = threading.Event()
             self._ws_api = None
+
+            # Register with token expiry handler
+            self._token_handler = token_expiry_handler
 
             logger.info(f"ShoonyaBroker initialized for user {self.user_id}")
 
@@ -170,6 +188,16 @@ class ShoonyaBroker(BaseBroker):
     def broker_type(self) -> str:
         return "shoonya"
 
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        """Return token expiry datetime if available."""
+        return self._token_expiry
+
+    @property
+    def token_issued_at(self) -> Optional[datetime]:
+        """Return token issue datetime if available."""
+        return self._token_issued_at
+
     def _safe_defaults_init(self):
         self.state = None
         self.user_id = None
@@ -179,6 +207,9 @@ class ShoonyaBroker(BaseBroker):
         self.api = None
         self._last_request_time = 0
         self._request_count = 0
+        self._token_expiry = None
+        self._token_issued_at = None
+        self._last_token_check = 0
         self._symbol_token_cache: Dict[str, str] = {}
 
         # WebSocket cleanup tracking
@@ -189,6 +220,67 @@ class ShoonyaBroker(BaseBroker):
         self._ws_on_connect = None
         self._ws_on_close = None
         self._ws_on_error = None
+
+    # ── Token management ───────────────────────────────────────────────────────
+
+    def _parse_token_expiry(self) -> Optional[datetime]:
+        """Parse token expiry from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("expires_at"):
+                expiry_str = token_data["expires_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(expiry_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token expiry: {e}", exc_info=True)
+            return None
+
+    def _parse_token_issued_at(self) -> Optional[datetime]:
+        """Parse token issue time from token data."""
+        try:
+            db = get_db()
+            token_data = tokens.get(db)
+            if token_data and token_data.get("issued_at"):
+                issued_str = token_data["issued_at"]
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    try:
+                        dt = datetime.strptime(issued_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        return dt
+                    except ValueError:
+                        continue
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing token issued at: {e}", exc_info=True)
+            return None
+
+    def _check_token_before_request(self) -> None:
+        """
+        Check token validity before making any API request.
+        """
+        now = time.time()
+        if now - self._last_token_check > self._token_expiry_check_interval:
+            self._last_token_check = now
+            if self.is_token_expired:
+                self._handle_token_expired(
+                    f"Token expired at {self._token_expiry}",
+                    recovery_callback=self._on_token_recovered
+                )
+
+    def _on_token_recovered(self) -> None:
+        """
+        Callback executed after token has been successfully refreshed.
+        """
+        logger.info("[ShoonyaBroker] Token recovered, re-login required")
 
     # ── Authentication ────────────────────────────────────────────────────────
 
@@ -224,9 +316,19 @@ class ShoonyaBroker(BaseBroker):
                 token = ret.get("susertoken")
                 self.state.token = token
 
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
+                # Update token timestamps
+                issued_at = datetime.now()
+                expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
+                self._token_issued_at = issued_at
+                self._token_expiry = expires_at
+
                 db = get_db()
-                tokens.save_token(token, "", expires_at=expires_at, db=db)
+                tokens.save_token(
+                    token, "",
+                    issued_at=issued_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    db=db
+                )
                 logger.info("ShoonyaBroker: session generated successfully")
                 return True
             else:
@@ -332,6 +434,7 @@ class ShoonyaBroker(BaseBroker):
     # ── BaseBroker implementation ─────────────────────────────────────────────
 
     def get_profile(self) -> Optional[Dict]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return None
@@ -347,6 +450,7 @@ class ShoonyaBroker(BaseBroker):
             return None
 
     def get_balance(self, capital_reserve: float = 0.0) -> float:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return 0.0
@@ -371,6 +475,7 @@ class ShoonyaBroker(BaseBroker):
             return 0.0
 
     def get_history(self, symbol: str, interval: str = "2", length: int = 400):
+        self._check_token_before_request()
         try:
             if not symbol or not self.api:
                 return None
@@ -407,6 +512,7 @@ class ShoonyaBroker(BaseBroker):
             return None
 
     def get_history_for_timeframe(self, symbol: str, interval: str, days: int = 30):
+        self._check_token_before_request()
         try:
             if not symbol or not self.api:
                 return None
@@ -451,6 +557,7 @@ class ShoonyaBroker(BaseBroker):
         return quote.get("ltp") if quote else None
 
     def get_option_quote(self, option_name: str) -> Optional[Dict[str, float]]:
+        self._check_token_before_request()
         try:
             if not option_name or not self.api:
                 return None
@@ -492,6 +599,7 @@ class ShoonyaBroker(BaseBroker):
         return result
 
     def place_order(self, **kwargs) -> Optional[str]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return None
@@ -548,6 +656,7 @@ class ShoonyaBroker(BaseBroker):
             return None
 
     def modify_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             limit_price = float(kwargs.get('limit_price', 0) or 0)
@@ -574,6 +683,7 @@ class ShoonyaBroker(BaseBroker):
             return False
 
     def cancel_order(self, **kwargs) -> bool:
+        self._check_token_before_request()
         try:
             order_id = kwargs.get('order_id')
             if not order_id or not self.api:
@@ -591,6 +701,7 @@ class ShoonyaBroker(BaseBroker):
             return False
 
     def exit_position(self, **kwargs) -> bool:
+        self._check_token_before_request()
         symbol = kwargs.get('symbol')
         qty = kwargs.get('qty', 0)
         current_side = kwargs.get('side', self.SIDE_BUY)
@@ -601,18 +712,22 @@ class ShoonyaBroker(BaseBroker):
                                 order_type=self.MARKET_ORDER_TYPE) is not None
 
     def add_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         kwargs['order_type'] = self.STOPLOSS_MARKET_ORDER_TYPE
         kwargs.setdefault('side', self.SIDE_SELL)
         return self.place_order(**kwargs) is not None
 
     def remove_stoploss(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.cancel_order(**kwargs)
 
     def sell_at_current(self, **kwargs) -> bool:
+        self._check_token_before_request()
         return self.place_order(order_type=self.MARKET_ORDER_TYPE,
                                 side=self.SIDE_SELL, **kwargs) is not None
 
     def get_positions(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return []
@@ -627,6 +742,7 @@ class ShoonyaBroker(BaseBroker):
             return []
 
     def get_orderbook(self) -> List[Dict[str, Any]]:
+        self._check_token_before_request()
         try:
             if not self.api:
                 return []
@@ -645,6 +761,7 @@ class ShoonyaBroker(BaseBroker):
         Return order status as integer:
         2 = filled, 1 = pending/open, -1 = rejected/cancelled, None = not found
         """
+        self._check_token_before_request()
         try:
             orders = self.get_orderbook()
             for order in orders:
@@ -668,6 +785,7 @@ class ShoonyaBroker(BaseBroker):
         Return the actual average fill price for a completed order.
         Shoonya orderbook includes 'avgprc' (average price) on filled orders.
         """
+        self._check_token_before_request()
         try:
             if not broker_order_id or not self.api:
                 return None
@@ -742,11 +860,12 @@ class ShoonyaBroker(BaseBroker):
 
     def is_connected(self) -> bool:
         try:
+            if self.is_token_expired:
+                return False
             return self.get_profile() is not None
         except TokenExpiredError:
             return False
         except Exception:
-
             return False
 
     def cleanup(self) -> None:
@@ -842,6 +961,10 @@ class ShoonyaBroker(BaseBroker):
             if not self.api:
                 logger.error("ShoonyaBroker.create_websocket: api not initialized — login first")
                 return None
+
+            # Check token before creating websocket
+            if self.is_token_expired:
+                self._handle_token_expired("Cannot create websocket with expired token")
 
             # Reset WebSocket state
             self._ws_closed = False

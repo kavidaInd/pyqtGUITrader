@@ -561,6 +561,11 @@ class CandleStore:
 
             rule = f"{minutes}min"
 
+            # label="left": each bar is stamped with its OPEN time — the standard
+            # convention for Indian markets (Zerodha/Kite, Fyers, Dhan, etc.).
+            # The 5-min bar covering 15:25–15:30 is shown as "15:25".
+            # closed="left" + offset="9h15min" anchors bins at 09:15 so the first
+            # bar of the session is always 09:15 and the last aligns to market close.
             ohlcv = df.resample(
                 rule,
                 closed="left",
@@ -577,15 +582,22 @@ class CandleStore:
             # Drop bars with no data (gaps / holidays)
             ohlcv = ohlcv.dropna(subset=["open", "close"])
 
-            ohlcv = ohlcv[ohlcv.index.time >= _MARKET_OPEN]
-
+            # Keep only bars fully within the trading session.
+            # bar_time = bar OPEN time (label="left").
+            # bar end  = bar_time + (minutes - 1) minutes (last 1-min bar in this bucket).
+            #
+            # IMPORTANT: use .time() for comparison — never datetime.combine(tzinfo=pytz_tz)
+            # because pytz uses the historical LMT offset (+5:53:20) instead of IST (+5:30)
+            # when tzinfo= is passed directly to datetime.combine(), causing bars after
+            # ~15:06 IST to be incorrectly dropped (manifests as last bar = 15:03/15:05).
             def bar_ends_after_close(bar_time):
-                bar_date = bar_time.date()
-                close_time = datetime.combine(bar_date, _MARKET_CLOSE, tzinfo=IST)
-                bar_end = bar_time + timedelta(minutes=minutes - 1)
-                return bar_end <= close_time
+                """True if this left-labelled bar fits within the trading session."""
+                bar_open_t = bar_time.time()
+                # Last 1-min bar inside this N-min bucket ends (minutes-1) later
+                bar_end_t  = (bar_time + timedelta(minutes=minutes - 1)).time()
+                return bar_open_t >= _MARKET_OPEN and bar_end_t <= _MARKET_CLOSE
 
-            # Apply the filter using a mask
+            ohlcv = ohlcv[ohlcv.index.time >= _MARKET_OPEN]  # fast pre-filter
             mask = [bar_ends_after_close(idx) for idx in ohlcv.index]
             ohlcv = ohlcv[mask]
 

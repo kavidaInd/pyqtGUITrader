@@ -178,9 +178,13 @@ class TradingGUI(QMainWindow):
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
 
+            # load_preference() internally calls apply_startup_theme() which:
+            #   1. Pushes the global QApplication stylesheet unconditionally
+            #   2. Emits theme_changed + density_changed → triggers self.apply_theme()
+            # This guarantees buttons, navbar and all widgets are painted correctly
+            # on first show, even when saved theme == default ("dark"+"normal") and
+            # set_theme/set_density would otherwise skip the stylesheet write.
             theme_manager.load_preference()
-
-            self.apply_theme()
 
             # Set initial status
             self.status_updated.emit("Application initialized successfully")
@@ -318,158 +322,26 @@ class TradingGUI(QMainWindow):
             if self.app_status_bar and safe_hasattr(self.app_status_bar, 'apply_theme'):
                 self.app_status_bar.apply_theme()
 
+            # The global app stylesheet (set by theme_manager._build_app_stylesheet)
+            # handles ALL widget types including buttons, inputs, tabs etc.
+            # Here we only need to ensure the window background is correct and
+            # forward density-dependent layout updates.
+            # DO NOT re-specify button colors here — they are in the global stylesheet
+            # via object-name selectors (startBtn, stopBtn, etc.) which update
+            # automatically when theme_manager.set_theme() rebuilds the global sheet.
             self.setStyleSheet(f"""
-                QMainWindow, QWidget {{ 
-                    background-color: {c.BG_MAIN}; 
-                    color: {c.TEXT_MAIN}; 
-                }}
-                QPushButton {{ 
-                    border-radius: {sp.RADIUS_MD}px; 
-                    padding: {sp.PAD_SM}px {sp.PAD_LG}px;
-                    font-weight: {ty.WEIGHT_BOLD}; 
-                    font-size: {ty.SIZE_BODY}pt; 
-                    background-color: {c.BG_PANEL};
-                    color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                }}
-                QPushButton:hover {{
-                    background-color: {c.BG_HOVER};
-                }}
-                QPushButton:pressed {{
-                    background-color: {c.BG_ROW_B};
-                }}
-                QPushButton:disabled {{ 
-                    background-color: {c.BG_PANEL}; 
-                    color: {c.TEXT_DISABLED}; 
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                }}
-                QPushButton#successBtn {{
-                    background-color: {c.GREEN};
-                    color: white;
-                    border: none;
-                }}
-                QPushButton#successBtn:hover {{
-                    background-color: {c.GREEN_BRIGHT};
-                }}
-                QPushButton#dangerBtn {{
-                    background-color: {c.RED};
-                    color: white;
-                    border: none;
-                }}
-                QPushButton#dangerBtn:hover {{
-                    background-color: {c.RED_BRIGHT};
-                }}
-                QPushButton#warningBtn {{
-                    background-color: {c.YELLOW};
-                    color: white;
-                    border: none;
-                }}
-                QPushButton#warningBtn:hover {{
-                    background-color: {c.YELLOW_BRIGHT};
-                }}
-                QSplitter::handle {{
-                    background-color: {c.BORDER};
-                    height: {sp.SPLITTER}px;
-                }}
-                QMenuBar {{
-                    background-color: {c.BAR_BG};
-                    color: {c.TEXT_MAIN};
-                    border-bottom: {sp.SEPARATOR}px solid {c.BAR_BORDER};
-                }}
-                QMenuBar::item {{
-                    padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                    background: transparent;
-                }}
-                QMenuBar::item:selected {{
-                    background-color: {c.BG_HOVER};
-                }}
-                QMenu {{
-                    background-color: {c.BG_PANEL};
-                    color: {c.TEXT_MAIN};
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                }}
-                QMenu::item {{
-                    padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                }}
-                QMenu::item:selected {{
-                    background-color: {c.BG_HOVER};
-                }}
-                QMenu::separator {{
-                    height: {sp.SEPARATOR}px;
-                    background-color: {c.BORDER};
-                    margin: {sp.PAD_SM}px 0px;
-                }}
-                QStatusBar {{
-                    background-color: {c.BAR_BG};
-                    color: {c.TEXT_DIM};
-                    border-top: {sp.SEPARATOR}px solid {c.BAR_BORDER};
-                }}
-                QTabWidget::pane {{
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                QMainWindow {{
                     background-color: {c.BG_MAIN};
                 }}
-                QTabBar::tab {{
-                    background-color: {c.BG_PANEL};
-                    color: {c.TEXT_DIM};
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
-                    font-size: {ty.SIZE_SM}pt;
-                }}
-                QTabBar::tab:selected {{
-                    background-color: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
-                    border-bottom: 2px solid {c.BLUE};
-                }}
-                QTabBar::tab:hover {{
-                    background-color: {c.BG_HOVER};
-                }}
-                QScrollBar:vertical {{
-                    border: none;
-                    background-color: {c.BG_PANEL};
-                    width: {sp.ICON_MD}px;
-                    border-radius: {sp.RADIUS_MD}px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background-color: {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    min-height: {sp.BTN_HEIGHT_SM}px;
-                }}
-                QScrollBar::handle:vertical:hover {{
-                    background-color: {c.TEXT_DISABLED};
-                }}
-                QScrollBar:horizontal {{
-                    border: none;
-                    background-color: {c.BG_PANEL};
-                    height: {sp.ICON_MD}px;
-                    border-radius: {sp.RADIUS_MD}px;
-                }}
-                QScrollBar::handle:horizontal {{
-                    background-color: {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    min-width: {sp.BTN_HEIGHT_SM}px;
-                }}
-                QScrollBar::handle:horizontal:hover {{
-                    background-color: {c.TEXT_DISABLED};
-                }}
-                QRadioButton {{
-                    color: {c.TEXT_MAIN};
-                    font-size: {ty.SIZE_SM}pt;
-                    spacing: {sp.GAP_XS}px;
-                }}
-                QRadioButton::indicator {{
-                    width: 12px;
-                    height: 12px;
-                }}
-                QRadioButton::indicator:checked {{
-                    background-color: {c.BLUE};
-                    border: {sp.SEPARATOR}px solid {c.BLUE};
+                QWidget#centralWidget {{
+                    background-color: {c.BG_MAIN};
                 }}
                 QFrame#buttonPanel {{
                     background-color: {c.BG_PANEL};
                     border: {sp.SEPARATOR}px solid {c.BORDER};
                     border-radius: {sp.RADIUS_MD}px;
                 }}
-                QFrame[frameShape="5"] {{  /* VLine */
+                QFrame[frameShape="5"] {{
                     border: none;
                     background-color: {c.BORDER};
                     width: {sp.SEPARATOR}px;
@@ -484,22 +356,10 @@ class TradingGUI(QMainWindow):
             self._update_connection_button()
 
             if self.radio_algo and self.radio_manual:
-                for rb in [self.radio_algo, self.radio_manual]:
-                    rb.setStyleSheet(f"""
-                        QRadioButton {{
-                            color: {c.TEXT_MAIN};
-                            font-size: {ty.SIZE_SM}pt;
-                            spacing: {sp.GAP_XS}px;
-                        }}
-                        QRadioButton::indicator {{
-                            width: 12px;
-                            height: 12px;
-                        }}
-                        QRadioButton::indicator:checked {{
-                            background-color: {c.BLUE};
-                            border: {sp.SEPARATOR}px solid {c.BLUE};
-                        }}
-                    """)
+                # Radio buttons are styled by the global stylesheet via QRadioButton selector.
+                # No per-widget setStyleSheet needed — this ensures theme changes propagate
+                # without stale inline styles overriding the new palette.
+                pass
 
             self._update_mode_display()
 
@@ -522,42 +382,20 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
 
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
             if self._connection_status == "Connected":
-                self.btn_connection.setText("🔌 Connected")
+                self.btn_connection.setText("🔗 Connected")
                 self.btn_connection.setToolTip("Connected to broker - click for details")
-                self.btn_connection.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: {c.GREEN};
-                        color: white;
-                        border: {sp.SEPARATOR}px solid {c.GREEN_BRIGHT};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-weight: {ty.WEIGHT_BOLD};
-                    }}
-                    QPushButton:hover {{
-                        background-color: {c.GREEN_BRIGHT};
-                    }}
-                """)
+                # Use object name so global stylesheet handles all theme variants
+                self.btn_connection.setObjectName("connectionBtnConnected")
+                # Force stylesheet refresh by re-polishing
+                self.btn_connection.style().unpolish(self.btn_connection)
+                self.btn_connection.style().polish(self.btn_connection)
             else:
                 self.btn_connection.setText("🔌 Disconnected")
                 self.btn_connection.setToolTip("Disconnected from broker - click for details")
-                self.btn_connection.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: {c.BG_PANEL};
-                        color: {c.RED_BRIGHT};
-                        border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-weight: {ty.WEIGHT_BOLD};
-                    }}
-                    QPushButton:hover {{
-                        background-color: {c.BG_HOVER};
-                    }}
-                """)
+                self.btn_connection.setObjectName("connectionBtnDisconnected")
+                self.btn_connection.style().unpolish(self.btn_connection)
+                self.btn_connection.style().polish(self.btn_connection)
         except RuntimeError as e:
             if "wrapped C/C++ object" in str(e):
                 self._closing = True
@@ -931,9 +769,10 @@ class TradingGUI(QMainWindow):
             self._splitter.setSizes([1060, 340])
             root_layout.addWidget(self._splitter, 1)
 
-            self.daily_pnl_widget = DailyPnLWidget(self.config)
-            self.daily_pnl_widget.setMinimumHeight(60)
-            self.daily_pnl_widget.setMaximumHeight(90)
+            self.daily_pnl_widget = DailyPnLWidget(self.config, daily_setting=self.daily_setting)
+            self.daily_pnl_widget.setMinimumHeight(84)
+            self.daily_pnl_widget.setMaximumHeight(130)
+            self.daily_pnl_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             root_layout.addWidget(self.daily_pnl_widget)
 
             self.app_status_bar = AppStatusBar()
@@ -1005,22 +844,7 @@ class TradingGUI(QMainWindow):
             self.radio_algo.toggled.connect(self._on_mode_change)
 
             for rb in [self.radio_algo, self.radio_manual]:
-                rb.setStyleSheet(f"""
-                    QRadioButton {{
-                        color: {c.TEXT_MAIN};
-                        font-size: {ty.SIZE_SM}pt;
-                        spacing: {sp.GAP_XS}px;
-                        background-color: transparent;
-                    }}
-                    QRadioButton::indicator {{
-                        width: 12px;
-                        height: 12px;
-                    }}
-                    QRadioButton::indicator:checked {{
-                        background-color: {c.BLUE};
-                        border: {sp.SEPARATOR}px solid {c.BLUE};
-                    }}
-                """)
+                # Styling handled by global stylesheet QRadioButton selector
                 rb.setToolTip("Switch between automated and manual trading")
                 mode_layout.addWidget(rb)
 
@@ -1046,9 +870,12 @@ class TradingGUI(QMainWindow):
             self.btn_connection.clicked.connect(self._show_connection_monitor)
             self.btn_connection.setToolTip("View connection status and details")
 
-            self.btn_strategy.setStyleSheet(theme_manager.button_stylesheet("BLUE_DARK", "BLUE"))
-            self.btn_start.setStyleSheet(theme_manager.button_stylesheet("GREEN", "GREEN_BRIGHT"))
-            self.btn_stop.setStyleSheet(theme_manager.button_stylesheet("RED", "RED_BRIGHT"))
+            # Use setObjectName for semantic coloring — theme switches automatically
+            # via global app stylesheet, no need to call setStyleSheet on each
+            self.btn_strategy.setObjectName("strategyBtn")
+            self.btn_start.setObjectName("startBtn")
+            self.btn_stop.setObjectName("stopBtn")
+            self.btn_connection.setObjectName("connectionBtn")
 
             layout.addWidget(self.btn_strategy)
             layout.addWidget(self.btn_start)
@@ -1064,9 +891,10 @@ class TradingGUI(QMainWindow):
             self.btn_put = QPushButton("📉  Buy Put")
             self.btn_exit = QPushButton("🚪  Exit")
 
-            self.btn_call.setStyleSheet(theme_manager.button_stylesheet("BLUE_DARK", "BLUE"))
-            self.btn_put.setStyleSheet(theme_manager.button_stylesheet("PURPLE", "PURPLE"))
-            self.btn_exit.setStyleSheet(theme_manager.button_stylesheet("YELLOW", "YELLOW_BRIGHT"))
+            # Use object names for theme-aware styling (no inline setStyleSheet needed)
+            self.btn_call.setObjectName("callBtn")
+            self.btn_put.setObjectName("putBtn")
+            self.btn_exit.setObjectName("exitBtn")
 
             self.btn_call.setToolTip("Buy a CALL option (manual mode only)")
             self.btn_put.setToolTip("Buy a PUT option (manual mode only)")
@@ -2431,7 +2259,7 @@ class TradingGUI(QMainWindow):
             ty = self._ty
             color = c.RED_BRIGHT if (self.trading_mode_setting and self.trading_mode_setting.is_live()) else c.GREEN_BRIGHT
             if safe_hasattr(self, 'mode_label') and self.mode_label is not None:
-                self.mode_label.setText(f"Mode: {mode}")
+                self.mode_label.setText(f"{mode}")
                 self.mode_label.setStyleSheet(f"""
                     color: {color}; 
                     font-weight: {ty.WEIGHT_BOLD};
@@ -2445,6 +2273,8 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             dlg = DailyTradeSettingGUI(self, daily_setting=self.daily_setting, app=self.trading_app)
+            # Refresh dashboard widgets as soon as settings are saved (before dialog closes)
+            dlg.settings_saved.connect(self._on_settings_saved)
             dlg.exec_()
         except Exception as e:
             logger.error(f"[TradingGUI._open_daily] Failed: {e}", exc_info=True)
@@ -2454,9 +2284,39 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             dlg = ProfitStoplossSettingGUI(self, profit_stoploss_setting=self.profit_loss_setting, app=self.trading_app)
+            # Refresh dashboard widgets as soon as settings are saved (before dialog closes)
+            dlg.settings_saved.connect(self._on_settings_saved)
             dlg.exec_()
         except Exception as e:
             logger.error(f"[TradingGUI._open_pnl] Failed: {e}", exc_info=True)
+
+    def _on_settings_saved(self) -> None:
+        """
+        Called whenever any settings dialog emits settings_saved.
+
+        Refreshes all dashboard widgets that depend on persisted settings so
+        values like daily_target and max_daily_loss appear immediately without
+        requiring an app restart or manual P&L tick.
+        """
+        try:
+            logger.info("[TradingGUI._on_settings_saved] Settings saved — refreshing dashboard")
+
+            # Reload daily_setting from DB so we have the latest values
+            if self.daily_setting is not None:
+                try:
+                    self.daily_setting.load()
+                except Exception as e:
+                    logger.warning(f"[_on_settings_saved] Reload daily_setting failed: {e}")
+
+            # Push updated limits to the P&L widget's progress bar
+            if self.daily_pnl_widget is not None:
+                try:
+                    self.daily_pnl_widget.refresh_settings(daily_setting=self.daily_setting)
+                except Exception as e:
+                    logger.warning(f"[_on_settings_saved] DailyPnLWidget refresh failed: {e}")
+
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_settings_saved] Failed: {e}", exc_info=True)
 
     def _open_brokerage(self):
         try:

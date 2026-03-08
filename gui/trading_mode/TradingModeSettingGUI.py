@@ -287,11 +287,10 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             }}
         """)
 
-        # Add tabs
+        # Only Mode and Info tabs here.
+        # Risk, MTF and Signal settings are managed exclusively in
+        # Daily Trade Settings (DailyTradeSettingGUI) to avoid duplication.
         tabs.addTab(self._build_mode_tab(), "🎮 Mode")
-        tabs.addTab(self._build_risk_tab(), "⚠️ Risk")
-        tabs.addTab(self._build_mtf_tab(), "📈 MTF")
-        tabs.addTab(self._build_signal_tab(), "🎯 Signal")
         tabs.addTab(self._build_info_tab(), "ℹ️ Info")
 
         return tabs
@@ -362,21 +361,8 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         self.delay_check = None
         self.delay_spin = None
 
-        # FEATURE 6 widgets
-        self.mtf_check = None
-        self.mtf_timeframes_edit = None
-        self.mtf_ema_fast_spin = None
-        self.mtf_ema_slow_spin = None
-        self.mtf_agreement_spin = None
-
-        # FEATURE 1 widgets
-        self.max_loss_spin = None
-        self.max_trades_spin = None
-        self.daily_target_spin = None
-
-        # FEATURE 3 widgets
-        self.min_confidence_spin = None
-
+        # Note: MTF / Risk / Signal widgets removed — those tabs were merged
+        # into DailyTradeSettingGUI to have a single authoritative settings place.
         self.save_btn = None
         self.cancel_btn = None
         self.apply_btn = None
@@ -1333,30 +1319,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             if self.delay_spin is not None:
                 self.delay_spin.setValue(int(self.trading_mode_setting.delay_ms or 500))
 
-            # FEATURE 6: MTF settings
-            if self.mtf_check is not None:
-                self.mtf_check.setChecked(bool(self.trading_mode_setting.use_mtf_filter))
-            if self.mtf_timeframes_edit is not None:
-                self.mtf_timeframes_edit.setText(str(self.trading_mode_setting.mtf_timeframes or "1,5,15"))
-            if self.mtf_ema_fast_spin is not None:
-                self.mtf_ema_fast_spin.setValue(int(self.trading_mode_setting.mtf_ema_fast or 9))
-            if self.mtf_ema_slow_spin is not None:
-                self.mtf_ema_slow_spin.setValue(int(self.trading_mode_setting.mtf_ema_slow or 21))
-            if self.mtf_agreement_spin is not None:
-                self.mtf_agreement_spin.setValue(int(self.trading_mode_setting.mtf_agreement_required or 2))
-
-            # FEATURE 1: Risk settings
-            if self.max_loss_spin is not None:
-                self.max_loss_spin.setValue(float(self.trading_mode_setting.max_daily_loss or -5000))
-            if self.max_trades_spin is not None:
-                self.max_trades_spin.setValue(int(self.trading_mode_setting.max_trades_per_day or 10))
-            if self.daily_target_spin is not None:
-                self.daily_target_spin.setValue(float(self.trading_mode_setting.daily_target or 5000))
-
-            # FEATURE 3: Signal confidence
-            if self.min_confidence_spin is not None:
-                self.min_confidence_spin.setValue(float(self.trading_mode_setting.min_confidence or 0.6))
-
             self._update_ui_state()
             logger.debug("Settings loaded into UI")
 
@@ -1594,30 +1556,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             if self.delay_spin is not None:
                 self.trading_mode_setting.delay_ms = self.delay_spin.value()
 
-            # FEATURE 6: MTF settings
-            if self.mtf_check is not None:
-                self.trading_mode_setting.use_mtf_filter = self.mtf_check.isChecked()
-            if self.mtf_timeframes_edit is not None:
-                self.trading_mode_setting.mtf_timeframes = self.mtf_timeframes_edit.text()
-            if self.mtf_ema_fast_spin is not None:
-                self.trading_mode_setting.mtf_ema_fast = self.mtf_ema_fast_spin.value()
-            if self.mtf_ema_slow_spin is not None:
-                self.trading_mode_setting.mtf_ema_slow = self.mtf_ema_slow_spin.value()
-            if self.mtf_agreement_spin is not None:
-                self.trading_mode_setting.mtf_agreement_required = self.mtf_agreement_spin.value()
-
-            # FEATURE 1: Risk settings
-            if self.max_loss_spin is not None:
-                self.trading_mode_setting.max_daily_loss = self.max_loss_spin.value()
-            if self.max_trades_spin is not None:
-                self.trading_mode_setting.max_trades_per_day = self.max_trades_spin.value()
-            if self.daily_target_spin is not None:
-                self.trading_mode_setting.daily_target = self.daily_target_spin.value()
-
-            # FEATURE 3: Signal confidence
-            if self.min_confidence_spin is not None:
-                self.trading_mode_setting.min_confidence = self.min_confidence_spin.value()
-
             # Save to file
             success = self.trading_mode_setting.save()
             if not success:
@@ -1670,15 +1608,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.slippage_spin = None
             self.delay_check = None
             self.delay_spin = None
-            self.mtf_check = None
-            self.mtf_timeframes_edit = None
-            self.mtf_ema_fast_spin = None
-            self.mtf_ema_slow_spin = None
-            self.mtf_agreement_spin = None
-            self.max_loss_spin = None
-            self.max_trades_spin = None
-            self.daily_target_spin = None
-            self.min_confidence_spin = None
             self.save_btn = None
             self.cancel_btn = None
             self.apply_btn = None
