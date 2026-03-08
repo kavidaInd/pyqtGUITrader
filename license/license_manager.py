@@ -74,8 +74,9 @@ DEVELOPMENT_MODE: bool = True  # ← Set to False for production
 
 # Plan name constants
 PLAN_TRIAL = "trial"
-PLAN_STANDARD = "standard"
-PLAN_PRO = "pro"
+PLAN_STANDARD = "standard"   # legacy — kept for existing activations
+PLAN_PRO = "pro"             # legacy — kept for existing activations
+PLAN_PAID = "paid"           # current single paid plan
 
 # KV store keys
 _KV_LICENSE_KEY = "license:license_key"
@@ -150,7 +151,7 @@ class LicenseResult:
 
     @property
     def is_paid(self) -> bool:
-        return self.plan in (PLAN_STANDARD, PLAN_PRO)
+        return self.plan in (PLAN_STANDARD, PLAN_PRO, PLAN_PAID)
 
     def __repr__(self):
         return (
@@ -182,12 +183,54 @@ class LicenseManager:
             return False
 
     def get_local_plan(self) -> str:
-        """Return the cached plan string ('trial', 'standard', 'pro', or '')."""
+        """Return the cached plan string ('trial', 'paid', 'standard', 'pro', or '')."""
         try:
             from db.crud import kv
             return kv.get(_KV_PLAN, "") or ""
         except Exception:
             return ""
+
+    def is_trial_active(self) -> bool:
+        """
+        Return True when the user is currently on an active 7-day trial.
+        Trial users CAN use live trading — they are not free users.
+        A trial is active when plan == "trial" AND a license key exists.
+        """
+        try:
+            from db.crud import kv
+            plan = kv.get(_KV_PLAN, "") or ""
+            key  = kv.get(_KV_LICENSE_KEY, "") or ""
+            return bool(key) and plan == PLAN_TRIAL
+        except Exception as e:
+            logger.warning(f"[LicenseManager.is_trial_active] {e}")
+            return False
+
+    def is_live_trading_allowed(self) -> bool:
+        """
+        Return True when the user may use live trading.
+
+        Allowed for:
+          • Active 7-day trial  (plan == "trial",  license key present)
+          • Any paid plan       (plan == "paid" / "standard" / "pro", key present)
+
+        Denied for:
+          • No activation at all  (plan == "" or no key)
+          • Expired trial         (plan cleared by _soft_clear after trial_expired)
+          • Expired paid license  (plan cleared by _soft_clear after expired)
+
+        This is a local-only check — no network call — safe to call from GUI thread.
+        Fail-safe: returns False on any error.
+        """
+        try:
+            from db.crud import kv
+            plan = kv.get(_KV_PLAN, "") or ""
+            key  = kv.get(_KV_LICENSE_KEY, "") or ""
+            if not key:
+                return False
+            return plan in (PLAN_TRIAL, PLAN_PAID, PLAN_STANDARD, PLAN_PRO)
+        except Exception as e:
+            logger.warning(f"[LicenseManager.is_live_trading_allowed] {e}")
+            return False  # fail-safe: deny live trading on any error
 
     def get_cached_email(self) -> str:
         """Return stored email — used to pre-fill the upgrade form after trial expiry."""
@@ -316,7 +359,7 @@ class LicenseManager:
                 ok=True,
                 license_key=f"DEV_PAID_{hashlib.md5(f'{email}{order_id}'.encode()).hexdigest()[:8]}",
                 expires_at=expires_at,
-                plan=PLAN_PRO,
+                plan=PLAN_PAID,
                 customer_name=email.split('@')[0],
                 days_remaining=365,
             )
@@ -341,7 +384,7 @@ class LicenseManager:
                     ok=True,
                     license_key=data["license_key"],
                     expires_at=data["expires_at"],
-                    plan=data.get("plan", PLAN_STANDARD),
+                    plan=data.get("plan", PLAN_PAID),
                     customer_name=data.get("customer_name", ""),
                     days_remaining=int(data.get("days_remaining", 365)),
                 )

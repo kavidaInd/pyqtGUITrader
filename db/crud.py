@@ -184,6 +184,9 @@ class DailyTradeCRUD:
         "cancel_after": 5,
         "capital_reserve": 0,
         "sideway_zone_trade": False,
+        "max_daily_loss": -5000.0,
+        "daily_target": 5000.0,
+        "max_trades_per_day": 10,
     }
 
     def get(self, db: DatabaseConnector = None) -> Dict[str, Any]:
@@ -209,6 +212,9 @@ class DailyTradeCRUD:
             "cancel_after": int(merged["cancel_after"]),
             "capital_reserve": int(merged["capital_reserve"]),
             "sideway_zone_trade": bool(merged["sideway_zone_trade"]),
+            "max_daily_loss": float(merged.get("max_daily_loss", -5000.0)),
+            "daily_target": float(merged.get("daily_target", 5000.0)),
+            "max_trades_per_day": int(merged.get("max_trades_per_day", 10)),
         }
         return _kv_set_ns(self.NS, normalised, db)
 

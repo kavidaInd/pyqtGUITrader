@@ -279,34 +279,54 @@ class TradingApp:
 
     def _apply_trading_mode_to_executor(self) -> None:
         """
-        Forward the paper/live mode flag from TradingModeSetting to OrderExecutor and Broker.
+        Propagate the paper/live mode from TradingModeSetting into:
+          1. state.trading_mode / state.is_paper_mode  — read by OrderExecutor
+          2. broker.paper_mode                         — prevents live API calls in paper mode
+
+        BUG-FIX A: The original code set executor.paper_mode which does not exist on
+        OrderExecutor.  OrderExecutor reads state.is_paper_mode (via state_manager),
+        so we must write the mode into the state object.
+
+        BUG-FIX B: The original code defaulted is_paper=False (LIVE) when
+        trading_mode_setting is None. Unknown state must default to PAPER (safe).
+
+        BUG-FIX C: Called AFTER apply_settings_to_state() in initialize_market_state()
+        so the state is already initialised — but also called here (in initialize())
+        so the executor has the correct mode from the moment it is created.
         """
         try:
-            if not self.executor:
-                return
+            import BaseEnums as _BE
 
+            # Fail-safe default: PAPER (never accidentally go live)
             if self.trading_mode_setting is None:
-                is_paper = False
+                is_paper = True
+                mode_str = _BE.PAPER
                 logger.warning(
-                    "[TradingApp] trading_mode_setting is None — defaulting to LIVE. "
-                    "Pass trading_mode_var to TradingApp() to enable paper mode."
+                    "[TradingApp] trading_mode_setting is None — defaulting to PAPER (safe). "
+                    "Pass trading_mode_var to TradingApp() to enable live trading."
                 )
             else:
-                is_paper = not self.trading_mode_setting.is_live()
+                is_live = self.trading_mode_setting.is_live()
+                is_paper = not is_live
+                mode_str = _BE.LIVE if is_live else _BE.PAPER
 
-            # Set executor paper mode
-            self.executor.paper_mode = is_paper
-
-            if safe_hasattr(self.broker, 'paper_mode'):
-                self.broker.paper_mode = is_paper
+            # ── 1. Write into TradeState so OrderExecutor reads the correct value ──
+            state = state_manager.get_state()
+            if state is not None:
+                state.trading_mode = mode_str          # sets _trading_mode + _is_paper_mode atomically
                 logger.info(
-                    f"[TradingApp] Broker paper_mode set to: {is_paper}"
+                    f"[TradingApp] state.trading_mode = {mode_str!r}, "
+                    f"state.is_paper_mode = {state.is_paper_mode}"
                 )
 
+            # ── 2. Set broker paper_mode so it skips real API calls in paper mode ──
+            if self.broker and safe_hasattr(self.broker, 'paper_mode'):
+                self.broker.paper_mode = is_paper
+                logger.info(f"[TradingApp] broker.paper_mode set to {is_paper}")
+
             logger.info(
-                f"[TradingApp] Trading mode applied to executor: "
-                f"{'PAPER' if is_paper else 'LIVE'} "
-                f"(mode={safe_getattr(self.trading_mode_setting, 'mode', 'N/A')})"
+                f"[TradingApp] Trading mode applied: {'PAPER' if is_paper else 'LIVE'} "
+                f"(setting={safe_getattr(self.trading_mode_setting, 'mode', 'N/A')})"
             )
         except Exception as e:
             logger.error(f"[TradingApp._apply_trading_mode_to_executor] Failed: {e}", exc_info=True)
@@ -438,6 +458,9 @@ class TradingApp:
     def initialize_market_state(self) -> None:
         try:
             self.apply_settings_to_state()
+            # Re-apply trading mode AFTER apply_settings_to_state() so state is
+            # fully initialised before we write trading_mode into it.
+            self._apply_trading_mode_to_executor()
             state = state_manager.get_state()
 
             # Get initial price for derivative

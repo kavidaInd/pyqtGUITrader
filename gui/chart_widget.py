@@ -76,15 +76,18 @@ class ThemedMixin:
 
 
 class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
+    """Modern card widget with consistent styling — re-styles on every theme change."""
 
     def __init__(self, parent=None, elevated=False):
         super().__init__(parent)
         self.setObjectName("modernCard")
         self.elevated = elevated
         self._apply_style()
+        # Re-apply whenever the palette or density changes
+        theme_manager.theme_changed.connect(self._apply_style)
+        theme_manager.density_changed.connect(self._apply_style)
 
-    def _apply_style(self):
+    def _apply_style(self, _: str = None):
         c = theme_manager.palette
         sp = theme_manager.spacing
 
@@ -94,6 +97,9 @@ class ModernCard(QFrame):
                 border: 1px solid {c.BORDER};
                 border-radius: {sp.RADIUS_LG}px;
                 padding: {sp.PAD_LG}px;
+            }}
+            QFrame#modernCard QLabel {{
+                background: transparent;
             }}
         """
 
@@ -565,6 +571,7 @@ class SpotChartWidget(QWebEngineView, ThemedMixin):
         self._drawing_style = "solid"
         self._web_profile = None
         self._web_page = None
+        self._timeframe_label = ""   # e.g. "5m" — set by SimpleChartWidget
 
     def apply_theme(self, _: str = None) -> None:
         """
@@ -681,6 +688,16 @@ class SpotChartWidget(QWebEngineView, ThemedMixin):
             self._pending_data = self._data
             if self._update_timer:
                 self._update_timer.start(50)
+
+    def set_timeframe_label(self, label: str) -> None:
+        """
+        Set the human-readable timeframe string (e.g. "5m", "1h").
+        Used in the Plotly chart title. Called by SimpleChartWidget
+        whenever the active timeframe changes.
+        """
+        self._timeframe_label = label
+        # Invalidate cache so next render picks up the new label
+        self._last_data_fingerprint = ""
 
     def set_chart_type(self, chart_type: str) -> None:
         """Set chart type ('candlestick' or 'line')"""
@@ -1386,8 +1403,13 @@ class SpotChartWidget(QWebEngineView, ThemedMixin):
 
     def _apply_layout(self, fig: go.Figure, c, ty, rows: int):
         """Apply layout styling with theme tokens"""
-        # Title
-        title_text = f"{self._symbol} — {self._market_phase.upper()}"
+        # Build title: "NIFTY50  ·  5m  —  STRONG UPTREND"
+        symbol_part = self._symbol if self._symbol else "Market Chart"
+        tf_part = f"  ·  {self._timeframe_label}" if self._timeframe_label else ""
+        phase_part = ""
+        if self._market_phase and self._market_phase not in ("neutral", ""):
+            phase_part = f"  —  {self._market_phase.replace('_', ' ').upper()}"
+        title_text = f"{symbol_part}{tf_part}{phase_part}"
 
         fig.update_layout(
             title=dict(
@@ -1854,35 +1876,51 @@ class SimpleChartWidget(QWidget, ThemedMixin):
                                     self._sp.PAD_MD, self._sp.PAD_MD)
             root.setSpacing(self._sp.GAP_MD)
 
-            # ── Header Card ───────────────────────────────────────────────────
-            header_card = ModernCard()
-            header_layout = QHBoxLayout(header_card)
-            header_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM,
-                                             self._sp.PAD_MD, self._sp.PAD_SM)
+            # ── Combined titlebar: index name (left) + TF buttons (right) ──
+            self._titlebar = ModernCard()
+            tb_layout = QHBoxLayout(self._titlebar)
+            tb_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM,
+                                         self._sp.PAD_MD, self._sp.PAD_SM)
+            tb_layout.setSpacing(self._sp.GAP_SM)
 
-            header_icon = QLabel("📊")
-            header_icon.setStyleSheet(f"font-size: {self._ty.SIZE_LG}pt;")
+            # Left: icon + index name
+            self._header_icon = QLabel("📊")
+            self._header_icon.setStyleSheet(
+                f"font-size: {self._ty.SIZE_LG}pt; background: transparent;"
+            )
 
-            header_title = QLabel("Market Chart")
-            header_title.setStyleSheet(f"""
+            self._header_title = QLabel("Market Chart")
+            self._header_title.setStyleSheet(f"""
                 color: {self._c.TEXT_MAIN};
                 font-size: {self._ty.SIZE_MD}pt;
                 font-weight: {self._ty.WEIGHT_BOLD};
+                background: transparent;
             """)
 
-            header_layout.addWidget(header_icon)
-            header_layout.addWidget(header_title)
-            header_layout.addStretch()
+            tb_layout.addWidget(self._header_icon)
+            tb_layout.addWidget(self._header_title)
 
-            root.addWidget(header_card)
+            # Stretch pushes TF buttons to the right
+            tb_layout.addStretch()
 
-            # ── Timeframe toolbar ──────────────────────────────────────────────
-            toolbar = self._build_tf_toolbar()
-            root.addWidget(toolbar)
+            # Right: TF buttons (built inline, no separate card)
+            self._tf_buttons: Dict[int, QPushButton] = {}
+            for label, minutes in self.TIMEFRAMES:
+                btn = QPushButton(label)
+                btn.clicked.connect(lambda checked, m=minutes: self._on_tf_clicked(m))
+                tb_layout.addWidget(btn)
+                self._tf_buttons[minutes] = btn
+
+            root.addWidget(self._titlebar)
 
             # ── Spot chart directly (no tabs) ──────────────────────────────────
             self.spot_chart = SpotChartWidget()
             self.spot_chart.set_symbol("Spot Index")
+            # Push default timeframe label so Plotly title is correct from the start
+            _default_tf_labels = {1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m", 60: "1h"}
+            self.spot_chart.set_timeframe_label(
+                _default_tf_labels.get(self._current_tf, f"{self._current_tf}m")
+            )
 
             # Connect spot chart token expired signal to this widget's signal
             self.spot_chart.token_expired.connect(self._on_spot_chart_token_expired)
@@ -1907,9 +1945,18 @@ class SimpleChartWidget(QWidget, ThemedMixin):
         self._btn_ss_normal = ""
         self._btn_ss_active = ""
         self.spot_chart = None
+        self._header_title = None
+        self._header_icon  = None
+        self._tf_label     = None   # kept for compat; no longer rendered
+
+    def _build_header_title(self) -> str:
+        """Build the header title — index name only (TF shown by active button on the right)."""
+        if not self._symbol:
+            return "Market Chart"
+        return f"{self._symbol}"
 
     def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the widget"""
+        """Apply theme colors to the widget — called on every theme/density change."""
         try:
             c = self._c
             ty = self._ty
@@ -1921,6 +1968,20 @@ class SimpleChartWidget(QWidget, ThemedMixin):
                 layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
                 layout.setSpacing(sp.GAP_MD)
 
+            # Restyle header title label (colour + font only — text updated separately)
+            if self._header_title:
+                self._header_title.setStyleSheet(f"""
+                    color: {c.TEXT_MAIN};
+                    font-size: {ty.SIZE_MD}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    background: transparent;
+                """)
+            if self._header_icon:
+                self._header_icon.setStyleSheet(
+                    f"font-size: {ty.SIZE_LG}pt; background: transparent;"
+                )
+
+            # Restyle "Timeframe:" label
             # Update button styles for timeframe toolbar
             self._btn_ss_normal = f"""
                 QPushButton {{
@@ -1968,36 +2029,12 @@ class SimpleChartWidget(QWidget, ThemedMixin):
         except Exception as e:
             logger.error(f"[SimpleChartWidget.apply_theme] Failed: {e}", exc_info=True)
 
-    # ── Toolbar builder ────────────────────────────────────────────────────
-
-    def _build_tf_toolbar(self) -> QWidget:
-        """Build the timeframe selector row above the chart."""
-        bar = ModernCard()
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM,
-                                  self._sp.PAD_MD, self._sp.PAD_SM)
-        layout.setSpacing(self._sp.GAP_SM)
-
-        lbl = QLabel("Timeframe:")
-        lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_SM}pt;")
-        layout.addWidget(lbl)
-
-        self._tf_buttons: Dict[int, QPushButton] = {}
-
-        for label, minutes in self.TIMEFRAMES:
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda checked, m=minutes: self._on_tf_clicked(m))
-            layout.addWidget(btn)
-            self._tf_buttons[minutes] = btn
-
-        layout.addStretch()
-
-        return bar
+    # _build_tf_toolbar removed — buttons are now inline in the titlebar card
 
     # ── Timeframe change ───────────────────────────────────────────────────
 
     def _on_tf_clicked(self, minutes: int):
-        """User clicked a TF button — update highlight and reload data."""
+        """User clicked a TF button — update highlight, title and reload data."""
         if minutes == self._current_tf:
             return
 
@@ -2006,6 +2043,13 @@ class SimpleChartWidget(QWidget, ThemedMixin):
         # Update button highlights
         for m, btn in self._tf_buttons.items():
             btn.setStyleSheet(self._btn_ss_active if m == minutes else self._btn_ss_normal)
+
+        # Update header title AND push label into the Plotly chart
+        self._refresh_header_title()
+        tf_labels = {1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m", 60: "1h"}
+        tf_str = tf_labels.get(minutes, f"{minutes}m")
+        if self.spot_chart and safe_hasattr(self.spot_chart, "set_timeframe_label"):
+            self.spot_chart.set_timeframe_label(tf_str)
 
         logger.info(f"[SimpleChartWidget] Timeframe changed to {minutes}m")
         self.timeframe_changed.emit(minutes)
@@ -2107,11 +2151,24 @@ class SimpleChartWidget(QWidget, ThemedMixin):
         """
         Set the symbol to display.
         This should match the symbol used in CandleStoreManager.
+        Updates the header title to show the index name.
         """
         self._symbol = symbol
         self.spot_chart.set_symbol(symbol)
+        # Push timeframe label into SpotChartWidget so Plotly title is correct
+        tf_labels = {1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m", 60: "1h"}
+        tf_str = tf_labels.get(self._current_tf, f"{self._current_tf}m")
+        if self.spot_chart and safe_hasattr(self.spot_chart, "set_timeframe_label"):
+            self.spot_chart.set_timeframe_label(tf_str)
+        # Update header title to reflect new symbol
+        self._refresh_header_title()
         # Immediately render for the new symbol
         self._reload_from_store()
+
+    def _refresh_header_title(self) -> None:
+        """Push the current symbol + timeframe into the header QLabel."""
+        if self._header_title:
+            self._header_title.setText(self._build_header_title())
 
     def set_config(self, config, signal_engine=None):
         """Set configuration for spot chart."""

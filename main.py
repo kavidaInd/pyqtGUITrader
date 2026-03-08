@@ -346,12 +346,45 @@ def _run_license_gate(qt_app, splash=None) -> bool:
                 logger.warning(f"[main._run_license_gate] Running in offline grace mode: {result.reason}")
             return True
 
-        SOFT_REASONS = {"not_activated", "trial_expired", "expired"}
-        if result.reason in SOFT_REASONS:
-            logger.info(
-                f"[main._run_license_gate] No active paid license ({result.reason!r}) — "
-                "starting in free mode (paper/backtest only)"
+        # not_activated  → first run with no license at all: pass through to app
+        #                  ActivationDialog will be shown by the app itself on first-run
+        # expired         → paid license expired: pass through, live trading gate
+        #                  will block them and prompt upgrade
+        # trial_expired   → 7-day trial over: show upgrade dialog before entering app
+        if result.reason == "not_activated":
+            logger.info("[main._run_license_gate] No license — opening activation dialog")
+            from license.activation_dialog import ActivationDialog
+            from PyQt5.QtWidgets import QDialog
+            dlg = ActivationDialog(
+                parent=None,
+                reason="",
+                prefill_email=license_manager.get_cached_email(),
+                start_on_tab="trial",
             )
+            dlg_result = dlg.exec_()
+            # Whether they activated or not, let them in — live gate will block if needed
+            return True
+
+        if result.reason == "trial_expired":
+            logger.info("[main._run_license_gate] Trial expired — showing upgrade dialog")
+            from license.activation_dialog import ActivationDialog
+            from PyQt5.QtWidgets import QDialog
+            dlg = ActivationDialog(
+                parent=None,
+                reason=(
+                    f"Your 7-day free trial has ended."
+                    "Subscribe for ₹4,999/month to continue live trading. "
+                    "Paper trading and backtesting remain free."
+                ),
+                prefill_email=license_manager.get_cached_email(),
+                start_on_tab="activate",
+            )
+            dlg.exec_()
+            # Let them into the app — live trading gate blocks if not activated
+            return True
+
+        if result.reason == "expired":
+            logger.info("[main._run_license_gate] Paid license expired — continuing in paper mode")
             return True
 
         # Hard failures
@@ -493,7 +526,7 @@ def _run_token_gate(qt_app, splash=None) -> bool:
 
         if token_data:
             access_token = token_data.get('access_token', '')
-            expires_at   = token_data.get('expires_at')
+            expires_at = token_data.get('expires_at')
 
             if access_token:
                 if not expires_at:
@@ -680,11 +713,13 @@ def _inject_update_banner(window, update_info):
 
 
 def _inject_trial_banner(window):
-    """Inject trial expiry banner if user is on trial."""
+    """Inject trial countdown banner for active trial users."""
     try:
         from license.license_manager import license_manager, PLAN_TRIAL
         info = license_manager.get_local_info()
-        if info.get("plan") != PLAN_TRIAL:
+        # Only show banner while trial is still active (plan == "trial" + key present)
+        # Expired trials are handled at startup in _run_license_gate
+        if info.get("plan") != PLAN_TRIAL or not info.get("license_key" if "license_key" in info else "order_id"):
             return
 
         days = int(info.get("days_remaining", 0))

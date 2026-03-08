@@ -1438,6 +1438,9 @@ class TradingGUI(QMainWindow):
             # Chart starts with engine=None (detector created in initialize()).
             try:
                 self.chart_widget.set_config(self.config, None)
+                # Push the index symbol so the chart title shows it from startup
+                if self.daily_setting and safe_hasattr(self.chart_widget, 'set_symbol'):
+                    self.chart_widget.set_symbol(self.daily_setting.derivative)
             except Exception as e:
                 logger.warning(f"[TradingGUI._init_trading_app] Could not set chart config: {e}")
 
@@ -1610,6 +1613,9 @@ class TradingGUI(QMainWindow):
                 detector = getattr(self.trading_app, 'detector', None)
                 engine   = getattr(detector, 'signal_engine', None) if detector else None
                 self.chart_widget.set_config(self.config, engine)
+                # Keep symbol in sync with current settings
+                if self.daily_setting and safe_hasattr(self.chart_widget, 'set_symbol'):
+                    self.chart_widget.set_symbol(self.daily_setting.derivative)
                 logger.info("[TradingGUI._on_trading_app_initialized] Chart widget config updated with live engine")
             except Exception as e:
                 logger.warning(f"[TradingGUI._on_trading_app_initialized] Could not update chart config: {e}")
@@ -1672,6 +1678,9 @@ class TradingGUI(QMainWindow):
                 detector = getattr(self.trading_app, 'detector', None)
                 engine   = getattr(detector, 'signal_engine', None) if detector else None
                 self.chart_widget.set_config(self.config, engine)
+                # Ensure symbol is set (may have changed since _init_trading_app)
+                if self.daily_setting and safe_hasattr(self.chart_widget, 'set_symbol'):
+                    self.chart_widget.set_symbol(self.daily_setting.derivative)
             except Exception:
                 pass
 

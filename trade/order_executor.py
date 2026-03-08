@@ -159,13 +159,41 @@ class OrderExecutor:
         self._idempotency_keys = {}
 
     # ------------------------------------------------------------------
+    # Mode helper
+    # ------------------------------------------------------------------
+
+    def _is_paper_mode(self) -> bool:
+        """
+        Single source of truth for paper/live mode inside OrderExecutor.
+
+        Reads state.is_paper_mode which is set by TradingApp._apply_trading_mode_to_executor()
+        via state.trading_mode = mode_str.  Defaults to True (PAPER) on any error
+        so we never accidentally send live orders in an unknown state.
+        """
+        try:
+            state = state_manager.get_state()
+            if state is None:
+                logger.warning("[OrderExecutor._is_paper_mode] state is None — defaulting to PAPER")
+                return True
+            if safe_hasattr(state, 'is_paper_mode'):
+                return bool(state.is_paper_mode)
+            # Legacy fallback: compare trading_mode string
+            if safe_hasattr(state, 'trading_mode'):
+                return state.trading_mode != BaseEnums.LIVE
+            logger.warning("[OrderExecutor._is_paper_mode] state has no mode attrs — defaulting to PAPER")
+            return True
+        except Exception as e:
+            logger.error(f"[OrderExecutor._is_paper_mode] {e} — defaulting to PAPER")
+            return True  # fail-safe: never go live on error
+
+    # ------------------------------------------------------------------
     # Entry
     # ------------------------------------------------------------------
 
     def buy_option(self, option_type):
         """
         Thread-safe buy option with proper locking.
-        
+
         Args:
             option_type: BaseEnums.CALL or BaseEnums.PUT
         """
@@ -340,13 +368,7 @@ class OrderExecutor:
             logger.warning("[ORDER] Attempt 2 failed. Trying MARKET order.")
             self._cancel_unconfirmed_orders(orders, state)
 
-            is_paper = False
-            if safe_hasattr(state, 'is_paper_mode'):
-                is_paper = state.is_paper_mode
-            elif safe_hasattr(state, 'trading_mode'):
-                is_paper = state.trading_mode != BaseEnums.LIVE
-
-            is_live = not is_paper
+            is_live = not self._is_paper_mode()
 
             if is_live and self.api:
                 logger.info(f"[ORDER] Attempt 3/3: MARKET order for {shares} shares")
@@ -501,14 +523,8 @@ class OrderExecutor:
             session_id = safe_getattr(state, 'session_id', None)
             position_type = str(option_type) if option_type else (state.current_position or "UNKNOWN")
 
-            # Check if we're in paper mode
-            is_paper = False
-            if safe_hasattr(state, 'is_paper_mode'):
-                is_paper = state.is_paper_mode
-            elif safe_hasattr(state, 'trading_mode'):
-                is_paper = state.trading_mode != BaseEnums.LIVE
-
-            is_live = not is_paper
+            # Check if we're in paper mode (reads state.is_paper_mode set by TradingApp)
+            is_live = not self._is_paper_mode()
 
             if is_live and self.api:
                 chunks = OptionUtils.split_order_quantities(state.derivative, shares)
@@ -761,14 +777,8 @@ class OrderExecutor:
             total_qty = 0
             failed_orders = []  # track orders whose broker sell failed
 
-            # FIX: Use state's trading mode
-            is_paper = False
-            if safe_hasattr(state, 'is_paper_mode'):
-                is_paper = state.is_paper_mode
-            elif safe_hasattr(state, 'trading_mode'):
-                is_paper = state.trading_mode != BaseEnums.LIVE
-
-            is_live = not is_paper
+            # Use single source of truth for mode (reads state.is_paper_mode)
+            is_live = not self._is_paper_mode()
 
             for order in orders:
                 try:

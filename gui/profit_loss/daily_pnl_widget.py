@@ -310,9 +310,14 @@ class DailyPnLWidget(QWidget):
             self._reset_timer.timeout.connect(self._check_daily_reset)
             self._reset_timer.start(60000)
 
+            # Fallback-only timer: TradingGUI.timer_fast (1 s) already drives
+            # unrealized updates via the on_unrealized_update() slot.  This timer
+            # runs at 5 s purely as a safety-net (e.g. when the widget is used
+            # without a connected TradingGUI) and must NOT run at 1 s or it will
+            # race with on_trade_closed() which resets _unrealized to 0.
             self._update_timer = QTimer(self)
             self._update_timer.timeout.connect(self._update_unrealized)
-            self._update_timer.start(1000)
+            self._update_timer.start(5000)
 
             logger.info("[DailyPnLWidget] Initialized")
 
@@ -643,28 +648,64 @@ class DailyPnLWidget(QWidget):
 
     def _get_max_loss(self) -> float:
         """Return max daily loss as a positive float (e.g. 5000 for -₹5000 limit).
-        Priority: daily_setting > config > hardcoded default."""
+        Priority: daily_setting > trade_state > config > hardcoded default."""
         try:
+            # 1. Use the live daily_setting object (most up-to-date)
             if self.daily_setting is not None and hasattr(self.daily_setting, 'max_daily_loss'):
                 value = self.daily_setting.max_daily_loss
-                return abs(float(value)) if value is not None else 5000.0
+                if value is not None:
+                    result = abs(float(value))
+                    if result > 0:
+                        return result
+            # 2. Fallback: read from live trade state (set when DailyTradeSetting.save() is called)
+            try:
+                snapshot = state_manager.get_snapshot()
+                value = snapshot.get('max_daily_loss')
+                if value is not None:
+                    result = abs(float(value))
+                    if result > 0:
+                        return result
+            except Exception:
+                pass
+            # 3. Fallback: config dict
             if self.config is not None:
                 value = self.config.get('max_daily_loss', 5000.0)
-                return abs(float(value)) if value is not None else 5000.0
+                if value is not None:
+                    result = abs(float(value))
+                    if result > 0:
+                        return result
             return 5000.0
         except Exception:
             return 5000.0
 
     def _get_daily_target(self) -> float:
         """Return daily profit target as a positive float.
-        Priority: daily_setting > config > hardcoded default."""
+        Priority: daily_setting > trade_state > config > hardcoded default."""
         try:
+            # 1. Use the live daily_setting object (most up-to-date)
             if self.daily_setting is not None and hasattr(self.daily_setting, 'daily_target'):
                 value = self.daily_setting.daily_target
-                return abs(float(value)) if value is not None else 5000.0
+                if value is not None:
+                    result = abs(float(value))
+                    if result > 0:
+                        return result
+            # 2. Fallback: read from live trade state (set when DailyTradeSetting.save() is called)
+            try:
+                snapshot = state_manager.get_snapshot()
+                value = snapshot.get('daily_target')
+                if value is not None:
+                    result = abs(float(value))
+                    if result > 0:
+                        return result
+            except Exception:
+                pass
+            # 3. Fallback: config dict
             if self.config is not None:
                 value = self.config.get('daily_target', 5000.0)
-                return abs(float(value)) if value is not None else 5000.0
+                if value is not None:
+                    result = abs(float(value))
+                    if result > 0:
+                        return result
             return 5000.0
         except Exception:
             return 5000.0

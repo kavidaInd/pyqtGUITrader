@@ -19,6 +19,8 @@ from Utils.safe_getattr import safe_getattr
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 from gui.trading_mode.TradingModeSetting import TradingMode, TradingModeSetting
+from license.license_manager import license_manager
+from gui.popups.upgrade_popup import UpgradePopup
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -1326,11 +1328,47 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             logger.error(f"[TradingModeSettingGUI._load_settings] Failed: {e}", exc_info=True)
 
     def _on_mode_changed(self):
-        """Handle mode change"""
+        """Handle mode change — gate LIVE trading behind an active license."""
         try:
+            selected = self.mode_combo.currentData() if self.mode_combo else None
+            if selected == TradingMode.LIVE and self._is_free_user():
+                # Revert combo silently back to PAPER before showing popup
+                self.mode_combo.blockSignals(True)
+                for i in range(self.mode_combo.count()):
+                    if self.mode_combo.itemData(i) == TradingMode.PAPER:
+                        self.mode_combo.setCurrentIndex(i)
+                        break
+                self.mode_combo.blockSignals(False)
+
+                # Determine context: trial expired vs never had any license
+                from license.license_manager import PLAN_TRIAL
+                from db.crud import kv
+                try:
+                    plan_was = kv.get("license:plan", "") or ""
+                    trial_expired = (plan_was == "" and
+                                     bool(kv.get("license:email", "")))
+                except Exception:
+                    trial_expired = False
+
+                popup = UpgradePopup(self, trial_expired=trial_expired)
+                popup.exec_()
+                return  # UI state already updated for PAPER by the revert above
+
             self._update_ui_state()
         except Exception as e:
             logger.error(f"[TradingModeSettingGUI._on_mode_changed] Failed: {e}", exc_info=True)
+
+    def _is_free_user(self) -> bool:
+        """
+        Return True when the user does NOT have a paid license.
+        Delegates to license_manager.is_live_trading_allowed() — the single
+        source of truth — so both this gate and the start-app gate stay in sync.
+        """
+        try:
+            return not license_manager.is_live_trading_allowed()
+        except Exception as e:
+            logger.warning(f"[TradingModeSettingGUI._is_free_user] {e}")
+            return True  # Fail-safe: treat as free user
 
     def _update_ui_state(self):
         """Update UI based on selected mode"""

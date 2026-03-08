@@ -26,7 +26,8 @@ from PyQt5.QtWidgets import (
 )
 
 from license.license_manager import (
-    LicenseManager, LicenseResult, license_manager, PLAN_TRIAL, TRIAL_DURATION_DAYS,
+    LicenseManager, LicenseResult, license_manager,
+    PLAN_TRIAL, PLAN_PAID, TRIAL_DURATION_DAYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -257,8 +258,9 @@ class ActivationDialog(QDialog):
         bl.setSpacing(6)
         for feat in (
                 "✅  Full access to all features for 7 days",
-                "✅  Live trading, paper trading & backtesting",
-                "✅  All 10 broker integrations included",
+                "✅  Live trading with real broker connectivity",
+                "✅  Paper trading & backtesting included",
+                "✅  All supported broker integrations",
                 "✅  No credit card required",
         ):
             fl = QLabel(feat)
@@ -307,7 +309,7 @@ class ActivationDialog(QDialog):
         lay.addWidget(self._trial_btn)
 
         lay.addSpacing(10)
-        note = QLabel("One trial per machine. No payment details needed.")
+        note = QLabel("One 7-day trial per machine. After trial, upgrade for ₹4,999/month.")
         note.setAlignment(Qt.AlignCenter)
         note.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
         lay.addWidget(note)
@@ -629,8 +631,8 @@ class LiveTradingUpgradeDialog(QDialog):
 
         root.addSpacing(6)
         sub = QLabel(
-            "Paper trading and historical backtesting are always free."
-            "Activate a license to trade with real money."
+            "Paper trading and backtesting are always free. "
+            "Your 7-day trial has ended — subscribe to resume live trading."
         )
         sub.setAlignment(Qt.AlignCenter)
         sub.setWordWrap(True)
@@ -648,10 +650,11 @@ class LiveTradingUpgradeDialog(QDialog):
         bl.setContentsMargins(16, 12, 16, 12)
         bl.setSpacing(6)
         for item in (
-                "✅  Live trading across all 10 supported brokers",
+                "✅  Live trading across all supported brokers",
                 "✅  Automated algo + manual order placement",
-                "✅  Real-time WebSocket tick data",
-                "✅  1-year license  ·  1 machine",
+                "✅  Real-time WebSocket tick data & live P&L",
+                "✅  Full risk controls — SL, TP, max-loss limits",
+                "✅  ₹4,999 / month · Cancel anytime",
         ):
             lbl = QLabel(item)
             lbl.setStyleSheet(f"color: {_TEXT}; font-size: 12px;")
