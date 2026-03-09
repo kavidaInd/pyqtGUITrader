@@ -222,6 +222,14 @@ _KV_SEEDS: Dict[str, str] = {
     "daily_trade:cancel_after":       "5",
     "daily_trade:capital_reserve":    "0",
     "daily_trade:sideway_zone_trade": "false",
+    # BUG FIX: these three fields are in DailyTradeCRUD.DEFAULTS and read via
+    # _kv_get_ns("daily_trade", ...) which looks up "daily_trade:<field>".
+    # Previously they were only seeded as bare keys ("max_daily_loss" etc.), so
+    # DailyTradeCRUD.get() always fell back to its hardcoded defaults and any
+    # value the user saved via the UI was ignored on the next read.
+    "daily_trade:max_daily_loss":     "-5000.0",
+    "daily_trade:daily_target":       "5000.0",
+    "daily_trade:max_trades_per_day": "10",
 
     # ── Profit / Stoploss settings ─────────────────────────────────────────
     "profit_stoploss:profit_type":           '"STOP"',

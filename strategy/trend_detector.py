@@ -327,7 +327,6 @@ class TrendDetector:
             if self.signal_engine is not None:
                 try:
                     option_signal_result = self.signal_engine.evaluate(df, current_position)
-                    print(option_signal_result)
                     if option_signal_result:
                         self._update_state_with_signal_result(option_signal_result)
 

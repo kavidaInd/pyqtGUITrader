@@ -1,15 +1,33 @@
 """
-strategy_editor_window_db.py
-==============================
-Full-page Strategy Editor Window with tab-based signal rules and complete indicator registry.
-Enhanced with expanded cards, clear labels, import/export functionality, and rule weights.
-Uses database-backed strategy manager.
+strategy_editor_window.py
+=========================
+Redesigned Strategy Editor Window — Modern Professional UI with integrated Theme Manager.
 
-MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
-FEATURE 3: Added rule weight support for confidence scoring
-FEATURE: Shift controls for all indicators and columns
-FEATURE: Help & Documentation tab with interactive examples
-FULLY INTEGRATED with ThemeManager for dynamic theming.
+Design Direction: "Refined Command Center"
+  • Dark-first terminal aesthetic with amber accent
+  • Monospace typography for data density
+  • Left-border color coding for visual anchoring
+  • Clinical grid layout — every pixel earns its place
+
+Features:
+  • Full Theme Manager panel (Dark / Light / High Contrast + 3 Density modes)
+  • Strategy list sidebar with live search
+  • Tabbed editor: Info | Signal Rules | Indicators | Help
+  • Rule builder with LHS / Operator / RHS tri-panel cards
+  • Confidence threshold, rule weighting, shift controls
+  • Import / Export JSON dialog
+  • Unsaved-changes tracking with visual indicator
+
+Integration:
+  - Fully compatible with existing theme_manager.py singleton
+  - Connects to strategy_manager for CRUD operations
+  - Emits strategy_activated(str) signal on activation
+  - All colours sourced from theme_manager.palette tokens
+
+Usage:
+    from strategy.strategy_editor_window import StrategyEditorWindow
+    win = StrategyEditorWindow(parent=main_window)
+    win.show()
 """
 
 from __future__ import annotations
@@ -17,3786 +35,3090 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from Utils.Utils import Utils
 from typing import Dict, List, Optional, Any
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QUrl
-from PyQt5.QtGui import QColor, QFont, QIntValidator, QDoubleValidator, QDesktopServices
+from PyQt5.QtCore import (
+    Qt, QTimer, pyqtSignal, pyqtSlot, QPoint
+)
+from PyQt5.QtGui import (
+    QFont, QDoubleValidator
+)
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QFormLayout, QFrame, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
-    QCompleter,
-    QStackedWidget, QFileDialog, QDoubleSpinBox, QSpinBox, QGroupBox, QSplitter, QTreeWidget, QTreeWidgetItem)
-
-from Utils.safe_getattr import safe_hasattr
-from strategy.indicator_registry import (
-    ALL_INDICATORS, get_indicator_params,
-    get_param_type, get_param_description, get_indicator_category,
-    get_indicators_by_category, get_suggested_weight, get_rule_weight_range,
-    get_indicator_sub_columns, is_multi_column_indicator
+    QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox,
+    QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget
 )
-from strategy.strategy_help_tab import StrategyHelpTab
-from strategy.strategy_manager import strategy_manager
 
-# Rule 13.1: Import theme manager
-from gui.theme_manager import theme_manager
-
-# Import SIGNAL_GROUPS as strings - these are the string values used in the engine config
-SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
-from strategy.strategy_presets import get_preset_names, get_preset_rules
-
-# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
+
+# ── Try to import project modules; fall back to stubs for standalone use ──────
+
+try:
+    from gui.theme_manager import theme_manager
+except ImportError:
+    class _FakePalette:
+        BG_MAIN = "#0a0e17";
+        BG_PANEL = "#0f1520";
+        BG_CARD = "#141c2b"
+        BG_HOVER = "#1a2438";
+        BG_INPUT = "#0d1320";
+        BG_SELECTED = "#1e3a5f"
+        BORDER = "#1e2d45";
+        BORDER_FOCUS = "#3b82f6";
+        BORDER_STRONG = "#2d4068"
+        TEXT_MAIN = "#e2e8f0";
+        TEXT_DIM = "#64748b";
+        TEXT_DISABLED = "#334155"
+        TEXT_INVERSE = "#0a0e17";
+        TEXT_LINK = "#3b82f6"
+        ACCENT = "#f59e0b";
+        ACCENT_DIM = "#92400e"
+        GREEN = "#10b981";
+        GREEN_BRIGHT = "#34d399"
+        RED = "#ef4444";
+        RED_BRIGHT = "#f87171"
+        YELLOW = "#f59e0b";
+        YELLOW_BRIGHT = "#fbbf24"
+        BLUE = "#3b82f6";
+        BLUE_DARK = "#1d4ed8"
+        ORANGE = "#f97316";
+        PURPLE = "#a78bfa";
+        CYAN = "#06b6d4"
+        BAR_BG = "#0f1520";
+        BAR_BORDER = "#1e2d45"
+        CHART_BG = "#0a0e17";
+        CHART_GRID = "#1a2438"
+        PNL_CARD_BG = "#141c2b";
+        PNL_ACCENT = "#1d4ed8";
+        PNL_DIVIDER = "#1e2d45"
+
+        def get(self, name, default="#000000"): return getattr(self, name, default)
+
+
+    class _FakeTypography:
+        FONT_UI = "Segoe UI";
+        FONT_MONO = "Consolas"
+        SIZE_XS = 8;
+        SIZE_SM = 9;
+        SIZE_BODY = 10;
+        SIZE_MD = 11
+        SIZE_LG = 12;
+        SIZE_XL = 14;
+        SIZE_2XL = 16;
+        SIZE_3XL = 20;
+        SIZE_DISPLAY = 24
+        SIZE_MONO = 10;
+        SIZE_NUMERIC = 11
+        WEIGHT_NORMAL = "normal";
+        WEIGHT_MEDIUM = "500"
+        WEIGHT_BOLD = "bold";
+        WEIGHT_HEAVY = "800"
+        LETTER_TIGHT = "-0.3px";
+        LETTER_NORMAL = "0px";
+        LETTER_WIDE = "0.5px"
+        LINE_HEIGHT_TIGHT = 1.2;
+        LINE_HEIGHT_NORMAL = 1.4
+        LINE_HEIGHT_RELAXED = 1.6;
+        LINE_HEIGHT_LOG = 1.3
+
+        def get(self, name, default=None): return getattr(self, name, default)
+
+
+    class _FakeSpacing:
+        PAD_XS = 2;
+        PAD_SM = 4;
+        PAD_MD = 8;
+        PAD_LG = 12;
+        PAD_XL = 16;
+        PAD_2XL = 24
+        GAP_XS = 2;
+        GAP_SM = 4;
+        GAP_MD = 8;
+        GAP_LG = 12;
+        GAP_XL = 16
+        RADIUS_SM = 3;
+        RADIUS_MD = 5;
+        RADIUS_LG = 8;
+        RADIUS_XL = 12;
+        RADIUS_PILL = 999
+        ROW_HEIGHT = 24;
+        BTN_HEIGHT_SM = 28;
+        BTN_HEIGHT_MD = 36;
+        BTN_HEIGHT_LG = 44
+        INPUT_HEIGHT = 32;
+        STATUS_BAR_H = 44;
+        BUTTON_PANEL_H = 68;
+        HEADER_H = 40
+        TAB_H = 36;
+        PNL_WIDGET_H = 100
+        ICON_SM = 12;
+        ICON_MD = 16;
+        ICON_LG = 20;
+        ICON_XL = 24
+        SEPARATOR = 1;
+        SPLITTER = 2;
+        PROGRESS_SM = 4;
+        PROGRESS_MD = 8;
+        PROGRESS_LG = 12
+
+        def get(self, name, default=0): return getattr(self, name, default)
+
+
+    class _FakeThemeManager:
+        palette = _FakePalette()
+        typography = _FakeTypography()
+        spacing = _FakeSpacing()
+        _current_theme = "dark"
+        _current_density = "normal"
+
+        def is_dark(self): return True
+
+        def is_compact(self): return False
+
+        class _Signal:
+            def connect(self, *a): pass
+
+            def emit(self, *a): pass
+
+            def disconnect(self, *a): pass
+
+        theme_changed = _Signal()
+        density_changed = _Signal()
+
+        def set_theme(self, t): self._current_theme = t
+
+        def set_density(self, d): self._current_density = d
+
+        def toggle(self): pass
+
+        def save_preference(self): pass
+
+
+    theme_manager = _FakeThemeManager()
+
+try:
+    from strategy.strategy_manager import strategy_manager
+except ImportError:
+    class _FakeStrategyManager:
+        def list_strategies(self):
+            return [
+                {"name": "EMA Crossover", "slug": "ema-cross", "is_active": True},
+                {"name": "RSI Mean Revert", "slug": "rsi-strat", "is_active": False},
+                {"name": "MACD Trend Follow", "slug": "macd-trend", "is_active": False},
+                {"name": "Bollinger Squeeze", "slug": "bb-squeeze", "is_active": False},
+            ]
+
+        def get(self, slug):
+            return {
+                "name": "EMA Crossover", "slug": slug,
+                "description": "Sample strategy using EMA crossover signals.",
+                "created_at": "2025-01-15 10:00:00",
+                "updated_at": "2025-06-20 14:30:00",
+                "engine": {
+                    "conflict_resolution": "WAIT",
+                    "min_confidence": 0.6,
+                    "BUY_CALL": {
+                        "logic": "AND", "enabled": True,
+                        "rules": [
+                            {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                             "op": "<", "rhs": {"type": "scalar", "value": 30}, "weight": 2.0},
+                            {"lhs": {"type": "indicator", "indicator": "ema", "params": {"length": 20}},
+                             "op": ">", "rhs": {"type": "column", "column": "close"}, "weight": 1.5},
+                        ]
+                    },
+                    "BUY_PUT": {"logic": "AND", "enabled": True, "rules": []},
+                    "EXIT_CALL": {"logic": "OR", "enabled": True, "rules": [
+                        {"lhs": {"type": "indicator", "indicator": "rsi", "params": {"length": 14}},
+                         "op": ">", "rhs": {"type": "scalar", "value": 70}, "weight": 1.0},
+                    ]},
+                    "EXIT_PUT": {"logic": "AND", "enabled": False, "rules": []},
+                    "HOLD": {"logic": "AND", "enabled": True, "rules": []},
+                }
+            }
+
+        def get_active_slug(self): return "ema-cross"
+
+        def create(self, name):
+            import re
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+            return True, slug
+
+        def duplicate(self, slug, name):
+            import re
+            new_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+            return True, new_slug
+
+        def save(self, slug, data): return True
+
+        def activate(self, slug): pass
+
+        def delete(self, slug): return True, "deleted"
+
+
+    strategy_manager = _FakeStrategyManager()
+
+try:
+    from strategy.indicator_registry import (
+        ALL_INDICATORS, get_indicator_params, get_indicator_category,
+        get_indicators_by_category, get_suggested_weight,
+        get_indicator_sub_columns, get_rule_weight_range
+    )
+except ImportError:
+    ALL_INDICATORS = [
+        "rsi", "ema", "sma", "macd", "bb", "atr", "stoch", "adx",
+        "obv", "vwap", "cci", "mfi", "psar", "kama", "dema", "tema",
+        "wma", "hma", "zlema", "trix", "dpo", "williams_r", "ultimate_osc",
+    ]
+
+
+    def get_indicator_params(ind):
+        defaults = {"rsi": {"length": 14}, "ema": {"length": 20}, "sma": {"length": 20},
+                    "macd": {"fast": 12, "slow": 26, "signal": 9},
+                    "bb": {"length": 20, "std": 2.0}, "atr": {"length": 14},
+                    "stoch": {"k": 14, "d": 3}, "adx": {"length": 14}}
+        return defaults.get(ind, {"length": 14})
+
+
+    def get_indicator_category(ind):
+        cats = {"rsi": "Momentum", "ema": "Trend", "sma": "Trend",
+                "macd": "Momentum", "bb": "Volatility", "atr": "Volatility",
+                "stoch": "Momentum", "adx": "Trend", "obv": "Volume",
+                "vwap": "Volume", "cci": "Momentum", "mfi": "Volume"}
+        return cats.get(ind, "Other")
+
+
+    def get_indicators_by_category():
+        cats: Dict[str, List[str]] = {}
+        for ind in ALL_INDICATORS:
+            c = get_indicator_category(ind)
+            cats.setdefault(c, []).append(ind)
+        return cats
+
+
+    def get_suggested_weight(ind):
+        weights = {"rsi": 2.0, "macd": 2.5, "ema": 1.5, "sma": 1.0,
+                   "bb": 1.8, "atr": 1.2, "adx": 2.0, "stoch": 1.7}
+        return weights.get(ind, 1.0)
+
+
+    def get_indicator_sub_columns(ind):
+        subs = {"macd": [("MACD", "MACD Line", "Main line"), ("SIGNAL", "Signal Line", "Signal"),
+                         ("HIST", "Histogram", "Hist")],
+                "bb": [("LOWER", "Lower Band", "Lower"), ("MID", "Middle Band", "Mid"),
+                       ("UPPER", "Upper Band", "Upper")],
+                "stoch": [("K", "Stoch %K", "%K"), ("D", "Stoch %D", "%D")]}
+        return subs.get(ind, [])
+
+
+    def get_rule_weight_range():
+        return {"min": 0.1, "max": 5.0, "step": 0.1, "default": 1.0,
+                "description": "Rule weight for confidence scoring (0.1–5.0)"}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
 
 OPERATORS = [">", "<", ">=", "<=", "==", "!=", "between"]
 SIDE_TYPES = ["indicator", "scalar", "column"]
 COLUMNS = ["close", "open", "high", "low", "volume", "hl2", "hlc3", "ohlc4"]
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
 
-# Human-readable labels and descriptions for each column
-COLUMN_META = {
-    "close": ("CLOSE", "Closing price"),
-    "open": ("OPEN", "Opening price"),
-    "high": ("HIGH", "Period high"),
-    "low": ("LOW", "Period low"),
-    "volume": ("VOLUME", "Trading volume"),
-    "hl2": ("HL2", "(High + Low) / 2  — mid-price"),
-    "hlc3": ("HLC3", "(High + Low + Close) / 3  — typical price"),
-    "ohlc4": ("OHLC4", "(Open + High + Low + Close) / 4  — average price"),
+SIGNAL_GROUPS = [
+    ("BUY_CALL", "📈 BUY CALL", "ACCENT"),
+    ("BUY_PUT", "📉 BUY PUT", "BLUE"),
+    ("EXIT_CALL", "🔴 EXIT CALL", "RED"),
+    ("EXIT_PUT", "🟠 EXIT PUT", "ORANGE"),
+    ("HOLD", "⏸  HOLD", "YELLOW"),
+]
+
+SIGNAL_COLOR_MAP = {
+    "BUY_CALL": "GREEN",
+    "BUY_PUT": "BLUE",
+    "EXIT_CALL": "RED",
+    "EXIT_PUT": "ORANGE",
+    "HOLD": "YELLOW",
 }
 
 
-class ThemedMixin:
-    """Mixin class to provide theme token shortcuts."""
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
-    @property
-    def _c(self):
-        return theme_manager.palette
-
-    @property
-    def _ty(self):
-        return theme_manager.typography
-
-    @property
-    def _sp(self):
-        return theme_manager.spacing
+def c() -> Any:
+    """Shortcut to current palette."""
+    return theme_manager.palette
 
 
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
+def ty() -> Any:
+    """Shortcut to current typography."""
+    return theme_manager.typography
 
-    def __init__(self, parent=None, elevated=False):
+
+def sp() -> Any:
+    """Shortcut to current spacing."""
+    return theme_manager.spacing
+
+
+def make_separator(horizontal: bool = True) -> QFrame:
+    sep = QFrame()
+    sep.setFrameShape(QFrame.HLine if horizontal else QFrame.VLine)
+    sep.setStyleSheet(f"background: {c().BORDER}; max-height: 1px;" if horizontal
+                      else f"background: {c().BORDER}; max-width: 1px;")
+    return sep
+
+
+def styled_button(text: str, bg: str, hover: str, fg: str = None,
+                  min_w: int = 0, min_h: int = 0, bold: bool = True) -> QPushButton:
+    """Create a fully styled button."""
+    btn = QPushButton(text)
+    btn.setCursor(Qt.PointingHandCursor)
+    fg = fg or c().TEXT_INVERSE
+    h = min_h or sp().BTN_HEIGHT_MD
+    style = f"""
+        QPushButton {{
+            background: {bg};
+            color: {fg};
+            border: none;
+            border-radius: {sp().RADIUS_MD}px;
+            padding: {sp().PAD_SM}px {sp().PAD_LG}px;
+            font-size: {ty().SIZE_BODY}pt;
+            font-weight: {"bold" if bold else "normal"};
+            font-family: 'Segoe UI';
+            {"min-width:" + str(min_w) + "px;" if min_w else ""}
+            min-height: {h}px;
+            letter-spacing: 0.3px;
+        }}
+        QPushButton:hover {{ background: {hover}; }}
+        QPushButton:pressed {{ background: {hover}; border: 1px solid {c().BORDER_STRONG}; }}
+        QPushButton:disabled {{
+            background: {c().BG_HOVER};
+            color: {c().TEXT_DISABLED};
+        }}
+    """
+    btn.setStyleSheet(style)
+    return btn
+
+
+def ghost_button(text: str, color: str = None, min_w: int = 0) -> QPushButton:
+    """Transparent border-only button."""
+    btn = QPushButton(text)
+    btn.setCursor(Qt.PointingHandCursor)
+    fg = color or c().TEXT_DIM
+    style = f"""
+        QPushButton {{
+            background: transparent;
+            color: {fg};
+            border: 1px solid {fg}55;
+            border-radius: {sp().RADIUS_MD}px;
+            padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+            font-size: {ty().SIZE_BODY}pt;
+            {"min-width:" + str(min_w) + "px;" if min_w else ""}
+        }}
+        QPushButton:hover {{
+            background: {fg}22;
+            border-color: {fg};
+        }}
+        QPushButton:pressed {{ background: {fg}33; }}
+        QPushButton:disabled {{
+            color: {c().TEXT_DISABLED};
+            border-color: {c().BORDER};
+        }}
+    """
+    btn.setStyleSheet(style)
+    return btn
+
+
+def section_label(text: str) -> QLabel:
+    """Small uppercase section label."""
+    lbl = QLabel(text)
+    lbl.setStyleSheet(f"""
+        color: {c().TEXT_DIM};
+        font-size: {ty().SIZE_XS}pt;
+        font-weight: bold;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+    """)
+    return lbl
+
+
+def accent_label(text: str, color: str = None) -> QLabel:
+    """Coloured bold label."""
+    lbl = QLabel(text)
+    col = color or c().BLUE
+    lbl.setStyleSheet(f"""
+        color: {col};
+        font-size: {ty().SIZE_XS}pt;
+        font-weight: bold;
+        letter-spacing: 0.6px;
+    """)
+    return lbl
+
+
+def pill_badge(text: str, color: str) -> QLabel:
+    """Pill-shaped colored badge."""
+    lbl = QLabel(text)
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setStyleSheet(f"""
+        QLabel {{
+            color: {color};
+            background: {color}22;
+            border: 1px solid {color}55;
+            border-radius: 999px;
+            padding: 1px 8px;
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }}
+    """)
+    return lbl
+
+
+def styled_input(placeholder: str = "") -> QLineEdit:
+    ed = QLineEdit()
+    ed.setPlaceholderText(placeholder)
+    ed.setStyleSheet(f"""
+        QLineEdit {{
+            background: {c().BG_INPUT};
+            color: {c().TEXT_MAIN};
+            border: 1px solid {c().BORDER};
+            border-radius: {sp().RADIUS_MD}px;
+            padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+            font-size: {ty().SIZE_BODY}pt;
+            min-height: {sp().INPUT_HEIGHT}px;
+            selection-background-color: {c().BG_SELECTED};
+        }}
+        QLineEdit:focus {{ border-color: {c().BORDER_FOCUS}; }}
+        QLineEdit:disabled {{ color: {c().TEXT_DISABLED}; background: {c().BG_PANEL}; }}
+    """)
+    return ed
+
+
+def styled_combo(items: List[str] = None, min_w: int = 0) -> QComboBox:
+    cb = QComboBox()
+    if items:
+        cb.addItems(items)
+    cb.setCursor(Qt.PointingHandCursor)
+    cb.setStyleSheet(f"""
+        QComboBox {{
+            background: {c().BG_INPUT};
+            color: {c().TEXT_MAIN};
+            border: 1px solid {c().BORDER};
+            border-radius: {sp().RADIUS_MD}px;
+            padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+            font-size: {ty().SIZE_BODY}pt;
+            min-height: {sp().INPUT_HEIGHT}px;
+            {"min-width:" + str(min_w) + "px;" if min_w else ""}
+        }}
+        QComboBox:hover {{ border-color: {c().BORDER_FOCUS}; }}
+        QComboBox::drop-down {{ border: none; width: 20px; }}
+        QComboBox QAbstractItemView {{
+            background: {c().BG_PANEL};
+            color: {c().TEXT_MAIN};
+            border: 1px solid {c().BORDER};
+            selection-background-color: {c().BG_SELECTED};
+            outline: none;
+        }}
+        QComboBox QAbstractItemView::item {{
+            padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+            min-height: 24px;
+        }}
+    """)
+    return cb
+
+
+def styled_spinbox(min_v: float, max_v: float, step: float = 1.0,
+                   decimals: int = 0, val: float = 0) -> QDoubleSpinBox:
+    sb = QDoubleSpinBox()
+    sb.setRange(min_v, max_v)
+    sb.setSingleStep(step)
+    sb.setDecimals(decimals)
+    sb.setValue(val)
+    sb.setAlignment(Qt.AlignCenter)
+    sb.setStyleSheet(f"""
+        QDoubleSpinBox {{
+            background: {c().BG_INPUT};
+            color: {c().TEXT_MAIN};
+            border: 1px solid {c().BORDER};
+            border-radius: {sp().RADIUS_MD}px;
+            padding: {sp().PAD_SM}px;
+            font-size: {ty().SIZE_BODY}pt;
+            min-height: {sp().INPUT_HEIGHT}px;
+        }}
+        QDoubleSpinBox:focus {{ border-color: {c().BORDER_FOCUS}; }}
+    """)
+    return sb
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THEME MANAGER PANEL
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ThemeManagerPanel(QFrame):
+    """Floating panel for live theme / density switching."""
+
+    theme_changed = pyqtSignal(str)
+    density_changed = pyqtSignal(str)
+
+    THEMES = [
+        ("dark", "◐  Dark", "#0f1520"),
+        ("light", "○  Light", "#f6f8fa"),
+        ("contrast", "●  Contrast", "#000000"),
+    ]
+    DENSITIES = [
+        ("compact", "Compact"),
+        ("normal", "Normal"),
+        ("relaxed", "Relaxed"),
+    ]
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
+        self.setObjectName("themePanel")
+        self.setFixedWidth(300)
+        self._build_ui()
         self._apply_style()
+        # auto-hide on focus loss
+        self.setWindowFlags(Qt.Popup)
 
     def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
-
-class StatusBadge(QLabel):
-    """Status badge with color-coded background."""
-
-    def __init__(self, text="", status="neutral"):
-        super().__init__(text)
-        self.setObjectName("statusBadge")
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumWidth(60)
-        self.set_status(status)
-
-    def set_status(self, status):
-        """Update badge color based on status."""
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-        ty = theme_manager.typography
-
-        if status == "success":
-            color = c.GREEN
-            bg = c.GREEN + "20"
-        elif status == "warning":
-            color = c.ORANGE
-            bg = c.ORANGE + "20"
-        elif status == "error":
-            color = c.RED
-            bg = c.RED + "20"
-        elif status == "info":
-            color = c.BLUE
-            bg = c.BLUE + "20"
-        else:
-            color = c.TEXT_DIM
-            bg = c.BG_HOVER
-
         self.setStyleSheet(f"""
-            QLabel#statusBadge {{
-                color: {color};
-                background: {bg};
-                border: 1px solid {color};
-                border-radius: {sp.RADIUS_PILL}px;
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                font-size: {ty.SIZE_XS}pt;
-                font-weight: {ty.WEIGHT_BOLD};
+            QFrame#themePanel {{
+                background: {c().BG_PANEL};
+                border: 1px solid {c().BORDER_FOCUS};
+                border-radius: {sp().RADIUS_LG}px;
             }}
         """)
-
-
-class ValueLabel(QLabel):
-    """Value label with consistent styling."""
-
-    def __init__(self, text="--", parent=None):
-        super().__init__(text, parent)
-        self.setObjectName("valueLabel")
-        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.setMinimumWidth(40)
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-        ty = theme_manager.typography
-
-        self.setStyleSheet(f"""
-            QLabel#valueLabel {{
-                color: {c.TEXT_MAIN};
-                background: {c.BG_HOVER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                font-size: {ty.SIZE_XS}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-        """)
-
-
-def get_signal_meta():
-    """Get signal metadata with theme colors."""
-    c = theme_manager.palette
-    return {
-        "BUY_CALL": ("📈", c.GREEN, "BUY CALL"),
-        "BUY_PUT": ("📉", c.BLUE, "BUY PUT"),
-        "EXIT_CALL": ("🔴", c.RED, "EXIT CALL"),
-        "EXIT_PUT": ("🟠", c.ORANGE, "EXIT PUT"),
-        "HOLD": ("⏸", c.YELLOW, "HOLD"),
-    }
-
-
-def _btn(text: str, color_token: str = "BG_HOVER", hover_token: str = "BORDER",
-         text_color_token: str = "TEXT_MAIN", min_w: int = 0) -> QPushButton:
-    """Create a styled button with theme tokens"""
-    try:
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-        ty = theme_manager.typography
-
-        color = c.get(color_token, c.BG_HOVER)
-        hover = c.get(hover_token, c.BORDER)
-        text_color = c.get(text_color_token, c.TEXT_MAIN)
-
-        b = QPushButton(text)
-        b.setCursor(Qt.PointingHandCursor)
-        style = (
-            f"QPushButton {{ background:{color}; color:{text_color}; border:{sp.SEPARATOR}px solid {c.BORDER};"
-            f" border-radius:{sp.RADIUS_MD}px; padding:{sp.PAD_XS}px {sp.PAD_MD}px; font-weight:{ty.WEIGHT_BOLD}; font-size:{ty.SIZE_BODY}pt;"
-            f"{'min-width:' + str(min_w) + 'px;' if min_w else ''} }}"
-            f"QPushButton:hover {{ background:{hover}; border-color:{c.BORDER_FOCUS}; }}"
-            f"QPushButton:disabled {{ background:{c.BG_PANEL}; color:{c.TEXT_DISABLED}; border-color:{c.BORDER}; }}"
-        )
-        b.setStyleSheet(style)
-        return b
-    except Exception as e:
-        logger.error(f"[_btn] Failed: {e}", exc_info=True)
-        return QPushButton(text)
-
-
-# ── Import/Export Dialog (Themed) ─────────────────────────────────────────────────────
-
-class ImportExportDialog(QDialog, ThemedMixin):
-    """Dialog for importing/exporting strategies as JSON"""
-
-    def __init__(self, mode: str, strategy_data: Dict = None, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.mode = mode  # 'import' or 'export'
-            self.strategy_data = strategy_data
-
-            # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
-            self.setFixedSize(700, 500)
-
-            self._build_ui()
-            self.apply_theme()
-
-            logger.debug(f"ImportExportDialog initialized in {mode} mode")
-
-        except Exception as e:
-            logger.critical(f"[ImportExportDialog.__init__] Failed: {e}", exc_info=True)
-            self._create_error_dialog(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.mode = 'import'
-        self.strategy_data = None
-        self.json_edit = None
-        self.ok_btn = None
-        self.main_card = None
-
-    def _create_error_dialog(self, parent):
-        """Create error dialog if initialization fails"""
-        try:
-            super().__init__(parent)
-            self.setWindowTitle("Import/Export - ERROR")
-            self.setMinimumSize(400, 300)
-
-            # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
-            root = QVBoxLayout(self)
-            root.setContentsMargins(20, 20, 20, 20)
-
-            main_card = ModernCard(self, elevated=True)
-            layout = QVBoxLayout(main_card)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
-                                     self._sp.PAD_XL, self._sp.PAD_XL)
-
-            error_label = QLabel(f"❌ Failed to initialize dialog:")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
-            layout.addWidget(error_label)
-
-            close_btn = _btn("Close", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 100)
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn, 0, Qt.AlignCenter)
-
-            root.addWidget(main_card)
-
-        except Exception as e:
-            logger.error(f"[ImportExportDialog._create_error_dialog] Failed: {e}", exc_info=True)
 
     def _build_ui(self):
-        """Build the dialog UI."""
-        # Root layout with margins for shadow effect
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 20, 20, 20)
-        root.setSpacing(0)
-
-        # Main container card
-        self.main_card = ModernCard(self, elevated=True)
-        main_layout = QVBoxLayout(self.main_card)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # Custom title bar
-        title_bar = self._create_title_bar()
-        main_layout.addWidget(title_bar)
-
-        # Separator
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
-        main_layout.addWidget(separator)
-
-        # Content area
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
-                                         self._sp.PAD_XL, self._sp.PAD_XL)
-        content_layout.setSpacing(self._sp.GAP_LG)
+        root.setContentsMargins(sp().PAD_XL, sp().PAD_XL, sp().PAD_XL, sp().PAD_XL)
+        root.setSpacing(sp().GAP_LG)
 
         # Header
-        header = QLabel("📦 " + ("Export Strategy" if self.mode == 'export' else "Import Strategy"))
-        header.setStyleSheet(f"""
-            color: {self._c.TEXT_MAIN};
-            font-size: {self._ty.SIZE_XL}pt;
-            font-weight: {self._ty.WEIGHT_BOLD};
+        hdr = QLabel("⚙  Theme Manager")
+        hdr.setStyleSheet(f"""
+            color: {c().TEXT_MAIN};
+            font-size: {ty().SIZE_LG}pt;
+            font-weight: bold;
+            padding-bottom: {sp().PAD_SM}px;
+            border-bottom: 1px solid {c().BORDER};
         """)
-        content_layout.addWidget(header)
+        root.addWidget(hdr)
 
-        # JSON Text Edit
-        self.json_edit = QTextEdit()
-        self.json_edit.setFont(QFont(self._ty.FONT_MONO, self._ty.SIZE_SM))
-        self.json_edit.setStyleSheet(f"""
-            QTextEdit {{
-                background: {self._c.BG_INPUT};
-                color: {self._c.TEXT_MAIN};
-                border: 1px solid {self._c.BORDER};
-                border-radius: {self._sp.RADIUS_MD}px;
-                font-family: '{self._ty.FONT_MONO}';
-                font-size: {self._ty.SIZE_SM}pt;
-                padding: {self._sp.PAD_MD}px;
+        # ── Color scheme ──────────────────────────────────────────────────────
+        root.addWidget(section_label("COLOR SCHEME"))
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(sp().GAP_MD)
+        self._theme_btns: Dict[str, QPushButton] = {}
+        for key, label, preview_bg in self.THEMES:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setChecked(key == theme_manager._current_theme)
+            btn.clicked.connect(lambda checked, k=key: self._on_theme(k))
+            self._theme_btns[key] = btn
+            theme_row.addWidget(btn)
+        self._style_theme_buttons()
+        root.addLayout(theme_row)
+
+        # ── Density ───────────────────────────────────────────────────────────
+        root.addWidget(section_label("UI DENSITY"))
+        density_row = QHBoxLayout()
+        density_row.setSpacing(sp().GAP_MD)
+        self._density_btns: Dict[str, QPushButton] = {}
+        for key, label in self.DENSITIES:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setChecked(key == theme_manager._current_density)
+            btn.clicked.connect(lambda checked, k=key: self._on_density(k))
+            self._density_btns[key] = btn
+            density_row.addWidget(btn)
+        self._style_density_buttons()
+        root.addLayout(density_row)
+
+        # ── Confidence threshold ──────────────────────────────────────────────
+        root.addWidget(section_label("DEFAULT CONFIDENCE THRESHOLD"))
+        conf_row = QHBoxLayout()
+        conf_row.setSpacing(sp().GAP_MD)
+        self.conf_slider = QSlider(Qt.Horizontal)
+        self.conf_slider.setRange(0, 100)
+        self.conf_slider.setValue(60)
+        self.conf_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                background: {c().BORDER};
+                height: 4px;
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {c().ACCENT if hasattr(c(), 'ACCENT') else c().BLUE};
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                margin: -5px 0;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {c().ACCENT if hasattr(c(), 'ACCENT') else c().BLUE};
+                height: 4px;
+                border-radius: 2px;
             }}
         """)
-
-        if self.mode == 'export' and self.strategy_data:
-            # Format JSON nicely
-            try:
-                formatted_json = json.dumps(self.strategy_data, indent=2, default=str)
-                self.json_edit.setPlainText(formatted_json)
-            except Exception as e:
-                logger.error(f"Failed to format JSON for export: {e}", exc_info=True)
-                self.json_edit.setPlainText("Error formatting JSON")
-            self.json_edit.setReadOnly(True)
-        else:
-            self.json_edit.setPlaceholderText("Paste your strategy JSON here...")
-
-        content_layout.addWidget(self.json_edit)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(self._sp.GAP_MD)
-
-        if self.mode == 'export':
-            # Copy button
-            copy_btn = _btn("📋 Copy to Clipboard", "BG_HOVER", "BORDER", "TEXT_MAIN", 150)
-            copy_btn.clicked.connect(self._copy_to_clipboard)
-            btn_layout.addWidget(copy_btn)
-
-            # Save to file button
-            save_btn = _btn("💾 Save to File", "GREEN", "GREEN_BRIGHT", "TEXT_INVERSE", 150)
-            save_btn.clicked.connect(self._save_to_file)
-            btn_layout.addWidget(save_btn)
-        else:
-            # Load from file button
-            load_btn = _btn("📂 Load from File", "BG_HOVER", "BORDER", "TEXT_MAIN", 150)
-            load_btn.clicked.connect(self._load_from_file)
-            btn_layout.addWidget(load_btn)
-
-            # Validate button
-            validate_btn = _btn("✓ Validate", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 120)
-            validate_btn.clicked.connect(self._validate_json)
-            btn_layout.addWidget(validate_btn)
-
-        btn_layout.addStretch()
-
-        # OK/Cancel
-        self.ok_btn = _btn("OK" if self.mode == 'export' else "Import",
-                          "GREEN", "GREEN_BRIGHT", "TEXT_INVERSE", 100)
-        self.ok_btn.clicked.connect(self.accept if self.mode == 'export' else self._on_import)
-
-        cancel_btn = _btn("Cancel", "BG_HOVER", "BORDER", "TEXT_MAIN", 100)
-        cancel_btn.clicked.connect(self.reject)
-
-        btn_layout.addWidget(self.ok_btn)
-        btn_layout.addWidget(cancel_btn)
-
-        content_layout.addLayout(btn_layout)
-
-        if self.mode == 'import':
-            self.ok_btn.setEnabled(False)
-
-        main_layout.addWidget(content)
-        root.addWidget(self.main_card)
-
-    def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        title_bar = QWidget()
-        title_bar.setFixedHeight(40)
-        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
-
-        title = QLabel("📦 " + ("Export Strategy" if self.mode == 'export' else "Import Strategy"))
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
-            }}
+        self.conf_value_lbl = QLabel("0.60")
+        self.conf_value_lbl.setStyleSheet(f"""
+            color: {c().ACCENT if hasattr(c(), 'ACCENT') else c().YELLOW};
+            font-weight: bold;
+            font-size: {ty().SIZE_LG}pt;
+            min-width: 40px;
         """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {self._c.BG_HOVER};
-                color: {self._c.TEXT_DIM};
-                border: none;
-                border-radius: {self._sp.RADIUS_SM}px;
-                font-size: {self._ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {self._c.RED};
-                color: white;
-            }}
-        """)
-        close_btn.clicked.connect(self.reject)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        return title_bar
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the dialog."""
-        try:
-            # Update main card style
-            if hasattr(self, 'main_card') and self.main_card:
-                self.main_card._apply_style()
-
-            logger.debug("[ImportExportDialog.apply_theme] Applied theme")
-        except Exception as e:
-            logger.error(f"[ImportExportDialog.apply_theme] Failed: {e}", exc_info=True)
-
-    def _copy_to_clipboard(self):
-        """Copy JSON to clipboard"""
-        try:
-            clipboard = QApplication.clipboard()
-            if clipboard and self.json_edit:
-                clipboard.setText(self.json_edit.toPlainText())
-                QMessageBox.information(self, "Copied", "Strategy JSON copied to clipboard!")
-        except Exception as e:
-            logger.error(f"[ImportExportDialog._copy_to_clipboard] Failed: {e}", exc_info=True)
-            QMessageBox.warning(self, "Error", f"Failed to copy: {e}")
-
-    def _save_to_file(self):
-        """Save JSON to file"""
-        try:
-            filename, _ = QFileDialog.getSaveFileName(
-                self, "Save Strategy", "", "JSON Files (*.json)"
-            )
-            if filename and self.json_edit:
-                try:
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        f.write(self.json_edit.toPlainText())
-                    QMessageBox.information(self, "Saved", f"Strategy saved to {filename}")
-                except IOError as e:
-                    logger.error(f"Failed to write file {filename}: {e}", exc_info=True)
-                    QMessageBox.critical(self, "Error", f"Failed to save file: {e}")
-        except Exception as e:
-            logger.error(f"[ImportExportDialog._save_to_file] Failed: {e}", exc_info=True)
-
-    def _load_from_file(self):
-        """Load JSON from file"""
-        try:
-            filename, _ = QFileDialog.getOpenFileName(
-                self, "Load Strategy", "", "JSON Files (*.json)"
-            )
-            if filename:
-                try:
-                    with open(filename, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    if self.json_edit:
-                        self.json_edit.setPlainText(content)
-                    self._validate_json()
-                except IOError as e:
-                    logger.error(f"Failed to read file {filename}: {e}", exc_info=True)
-                    QMessageBox.critical(self, "Error", f"Failed to read file: {e}")
-        except Exception as e:
-            logger.error(f"[ImportExportDialog._load_from_file] Failed: {e}", exc_info=True)
-
-    def _validate_json(self):
-        """Validate JSON content"""
-        try:
-            if not self.json_edit:
-                return
-
-            data = json.loads(self.json_edit.toPlainText())
-            # Basic validation - check for required fields
-            if 'name' in data and 'engine' in data:
-                if self.ok_btn:
-                    self.ok_btn.setEnabled(True)
-                    self.ok_btn.setText("✓ Valid - Import")
-                QMessageBox.information(self, "Valid", "JSON is valid and ready to import!")
-            else:
-                if self.ok_btn:
-                    self.ok_btn.setEnabled(False)
-                    self.ok_btn.setText("✗ Invalid - Missing required fields")
-                QMessageBox.warning(self, "Invalid", "JSON must contain 'name' and 'engine' fields.")
-        except json.JSONDecodeError as e:
-            if self.ok_btn:
-                self.ok_btn.setEnabled(False)
-                self.ok_btn.setText("✗ Invalid JSON")
-            QMessageBox.warning(self, "Invalid JSON", f"Error: {str(e)}")
-        except Exception as e:
-            logger.error(f"JSON validation error: {e}", exc_info=True)
-            if self.ok_btn:
-                self.ok_btn.setEnabled(False)
-                self.ok_btn.setText("✗ Validation Error")
-
-    def _on_import(self):
-        """Handle import button click"""
-        try:
-            if not self.json_edit:
-                return
-
-            data = json.loads(self.json_edit.toPlainText())
-            self.strategy_data = data
-            self.accept()
-        except json.JSONDecodeError as e:
-            QMessageBox.warning(self, "Invalid JSON", f"Error: {str(e)}")
-        except Exception as e:
-            logger.error(f"[ImportExportDialog._on_import] Failed: {e}", exc_info=True)
-            QMessageBox.critical(self, "Error", f"Import failed: {e}")
-
-    def get_imported_data(self) -> Dict:
-        """Get imported strategy data"""
-        return self.strategy_data if self.strategy_data else {}
-
-
-# ── Enhanced Indicator ComboBox (Themed) ──────────────────────────────────────────────
-
-class IndicatorComboBox(QComboBox, ThemedMixin):
-    """Comprehensive indicator dropdown with categories and autocomplete"""
-
-    def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-            self.setEditable(True)
-            self.setInsertPolicy(QComboBox.NoInsert)
-            self.setMinimumWidth(180)
-            self.setMaxVisibleItems(30)
-
-            self._populate_indicators()
-            self._setup_completer()
-
-            # Apply theme
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self._category_indices = {}
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the combobox."""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    padding-right: {sp.PAD_XL}px;
-                    font-size: {ty.SIZE_BODY}pt;
-                    min-height: {sp.INPUT_HEIGHT}px;
-                }}
-                QComboBox:hover {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: {sp.ICON_LG}px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: {c.BG_PANEL};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    selection-background-color: {c.BG_SELECTED};
-                    min-width: 280px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    min-height: 24px;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {c.BG_SELECTED};
-                    color: {c.TEXT_MAIN};
-                }}
-            """)
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox.apply_theme] Failed: {e}", exc_info=True)
-
-    def _populate_indicators(self):
-        """Add indicators grouped by category"""
-        try:
-            c = self._c
-            self._category_indices = {}
-
-            # Add a "Select indicator..." placeholder at the top
-            self.addItem("🔍 Select indicator...")
-            idx = self.count() - 1
-            self.model().item(idx).setEnabled(False)
-            font = QFont()
-            font.setItalic(True)
-            self.model().item(idx).setFont(font)
-            self.model().item(idx).setForeground(QColor(c.TEXT_DIM))
-
-            for category, indicators in get_indicators_by_category().items():
-                if indicators:
-                    # Add category header (non-selectable)
-                    self.addItem(f"───── {category} ─────")
-                    idx = self.count() - 1
-                    self.model().item(idx).setEnabled(False)
-                    font = QFont()
-                    font.setBold(True)
-                    self.model().item(idx).setFont(font)
-                    self.model().item(idx).setForeground(QColor(c.BLUE))
-
-                    self._category_indices[category] = idx
-
-                    # Add indicators in this category
-                    for indicator in sorted(indicators):
-                        display_name = indicator.upper()
-                        self.addItem(display_name)
-                        self.setItemData(self.count() - 1, indicator, Qt.UserRole)
-
-                        # Add tooltip with description
-                        params = get_indicator_params(indicator)
-                        if params:
-                            param_desc = ", ".join(f"{k}={v}" for k, v in params.items())
-                            self.setItemData(self.count() - 1, f"Default: {param_desc}", Qt.ToolTipRole)
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox._populate_indicators] Failed: {e}", exc_info=True)
-
-    def _setup_completer(self):
-        """Setup autocomplete with all indicators"""
-        try:
-            c = self._c
-            completer = QCompleter([ind.upper() for ind in ALL_INDICATORS], self)
-            completer.setCaseSensitivity(Qt.CaseInsensitive)
-            completer.setFilterMode(Qt.MatchContains)
-            completer.setCompletionMode(QCompleter.PopupCompletion)
-            completer.popup().setStyleSheet(f"""
-                QListView {{
-                    background: {c.BG_PANEL};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                }}
-                QListView::item {{
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                }}
-                QListView::item:selected {{
-                    background: {c.BG_SELECTED};
-                    color: {c.TEXT_MAIN};
-                }}
-            """)
-            self.setCompleter(completer)
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox._setup_completer] Failed: {e}", exc_info=True)
-
-    def get_indicator_name(self) -> str:
-        """Get the raw indicator name (lowercase)"""
-        try:
-            text = self.currentText().strip().lower()
-            if text == "select indicator..." or text == "🔍 select indicator...":
-                return ""
-            if text in ALL_INDICATORS:
-                return text
-            for ind in ALL_INDICATORS:
-                if ind.upper() == text.upper():
-                    return ind
-            return text
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox.get_indicator_name] Failed: {e}", exc_info=True)
-            return ""
-
-    def focusInEvent(self, event):
-        try:
-            super().focusInEvent(event)
-            if self.lineEdit():
-                self.lineEdit().deselect()
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox.focusInEvent] Failed: {e}", exc_info=True)
-
-    def mousePressEvent(self, event):
-        try:
-            super().mousePressEvent(event)
-            self.showPopup()
-        except Exception as e:
-            logger.error(f"[IndicatorComboBox.mousePressEvent] Failed: {e}", exc_info=True)
-
-
-# ── Column ComboBox (Themed) ──────────────────────────────────────────────────────────
-
-class ColumnComboBox(QComboBox, ThemedMixin):
-    """Dropdown for selecting a DataFrame column with descriptions"""
-
-    def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-            self.setFixedWidth(200)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self._populate()
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[ColumnComboBox.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        pass
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the combobox."""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    padding-right: {sp.PAD_XL}px;
-                    font-size: {ty.SIZE_BODY}pt;
-                    min-height: {sp.INPUT_HEIGHT}px;
-                }}
-                QComboBox:hover {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: {sp.ICON_LG}px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: {c.BG_PANEL};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    selection-background-color: {c.BG_SELECTED};
-                    min-width: 250px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    min-height: 20px;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {c.BG_SELECTED};
-                    color: {c.TEXT_MAIN};
-                }}
-            """)
-        except Exception as e:
-            logger.error(f"[ColumnComboBox.apply_theme] Failed: {e}", exc_info=True)
-
-    def _populate(self):
-        """Populate the combobox with columns."""
-        try:
-            c = self._c
-
-            # Add separator and items with descriptions
-            ohlcv = ["close", "open", "high", "low", "volume"]
-            derived = ["hl2", "hlc3", "ohlc4"]
-
-            self.addItem("─── OHLCV ───")
-            self.model().item(0).setEnabled(False)
-            self.model().item(0).setForeground(QColor(c.TEXT_DIM))
-            self.model().item(0).setFont(QFont("", -1, QFont.Bold))
-
-            for col in ohlcv:
-                try:
-                    label, desc = COLUMN_META[col]
-                    self.addItem(f"📊 {label}")
-                    idx = self.count() - 1
-                    self.setItemData(idx, col, Qt.UserRole)
-                    self.setItemData(idx, desc, Qt.ToolTipRole)
-                except Exception as e:
-                    logger.warning(f"Failed to add column {col}: {e}")
-
-            self.addItem("─── Derived ───")
-            sep_idx = self.count() - 1
-            self.model().item(sep_idx).setEnabled(False)
-            self.model().item(sep_idx).setForeground(QColor(c.TEXT_DIM))
-            self.model().item(sep_idx).setFont(QFont("", -1, QFont.Bold))
-
-            for col in derived:
-                try:
-                    label, desc = COLUMN_META[col]
-                    self.addItem(f"📐 {label}")
-                    idx = self.count() - 1
-                    self.setItemData(idx, col, Qt.UserRole)
-                    self.setItemData(idx, desc, Qt.ToolTipRole)
-                except Exception as e:
-                    logger.warning(f"Failed to add derived column {col}: {e}")
-
-            self.setCurrentIndex(1)
-
-        except Exception as e:
-            logger.error(f"[ColumnComboBox._populate] Failed: {e}", exc_info=True)
-
-    def get_column(self) -> str:
-        """Return lowercase column name."""
-        try:
-            data = self.currentData(Qt.UserRole)
-            if data:
-                return data
-            return self.currentText().lower()
-        except Exception as e:
-            logger.error(f"[ColumnComboBox.get_column] Failed: {e}", exc_info=True)
-            return "close"
-
-    def set_column(self, col: str):
-        """Select a column by its internal name."""
-        try:
-            if not col:
-                return
-
-            col_lower = col.lower()
-            for i in range(self.count()):
-                if self.itemData(i, Qt.UserRole) == col_lower:
-                    self.setCurrentIndex(i)
-                    return
-            idx = self.findText(col.upper())
-            if idx >= 0:
-                self.setCurrentIndex(idx)
-        except Exception as e:
-            logger.error(f"[ColumnComboBox.set_column] Failed for {col}: {e}", exc_info=True)
-
-
-# ── Sub-Column ComboBox (Themed) ───────────────────────────────────────────────────────
-
-class SubColumnComboBox(QComboBox, ThemedMixin):
-    """
-    Dropdown that shows the available output columns for a multi-output
-    indicator (e.g. MACD Line / Signal Line / Histogram for 'macd').
-
-    Call `set_indicator(name)` whenever the indicator selection changes.
-    The widget hides itself automatically for single-output indicators.
-    """
-
-    def __init__(self, parent=None):
-        self._safe_defaults_init()
-        try:
-            super().__init__(parent)
-            self.setMinimumWidth(155)
-            self.setMaximumWidth(220)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.apply_theme()
-            self.setVisible(False)  # Hidden until an indicator is chosen
-        except Exception as e:
-            logger.error(f"[SubColumnComboBox.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        self._current_indicator = ""
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the combobox."""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            self.setStyleSheet(f"""
-                QComboBox {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.PURPLE};
-                    border-radius: {sp.RADIUS_MD}px;
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    padding-right: {sp.PAD_XL}px;
-                    font-size: {ty.SIZE_BODY}pt;
-                    min-height: {sp.INPUT_HEIGHT}px;
-                }}
-                QComboBox:hover {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: {sp.ICON_LG}px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: {c.BG_PANEL};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.PURPLE};
-                    selection-background-color: {c.BG_SELECTED};
-                    min-width: 260px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    min-height: 22px;
-                }}
-                QComboBox QAbstractItemView::item:selected {{
-                    background: {c.BG_SELECTED};
-                    color: {c.TEXT_MAIN};
-                }}
-            """)
-        except Exception as e:
-            logger.error(f"[SubColumnComboBox.apply_theme] Failed: {e}", exc_info=True)
-
-    def set_indicator(self, indicator: str):
-        """
-        Repopulate options for the given indicator.
-        Hides the widget if the indicator has only one output column.
-        """
-        try:
-            self._current_indicator = indicator.lower() if indicator else ""
-            self.blockSignals(True)
-            self.clear()
-
-            sub_cols = get_indicator_sub_columns(self._current_indicator)
-            if not sub_cols:
-                self.setVisible(False)
-                self.blockSignals(False)
-                return
-
-            for key, label, desc in sub_cols:
-                display = f"↳ {label}"
-                self.addItem(display)
-                idx = self.count() - 1
-                self.setItemData(idx, key, Qt.UserRole)        # raw key stored here
-                self.setItemData(idx, desc, Qt.ToolTipRole)
-
-            self.setVisible(True)
-            self.blockSignals(False)
-        except Exception as e:
-            logger.error(f"[SubColumnComboBox.set_indicator] Failed: {e}", exc_info=True)
-            self.setVisible(False)
-
-    def get_sub_col(self) -> str:
-        """Return the currently selected sub_col key (e.g. 'SIGNAL'), or ''."""
-        try:
-            data = self.currentData(Qt.UserRole)
-            return data if data else ""
-        except Exception as e:
-            logger.error(f"[SubColumnComboBox.get_sub_col] Failed: {e}", exc_info=True)
-            return ""
-
-    def set_sub_col(self, key: str):
-        """Select a sub-column by its key (e.g. 'MACD', 'SIGNAL', 'HIST')."""
-        try:
-            if not key:
-                return
-            for i in range(self.count()):
-                if self.itemData(i, Qt.UserRole) == key.upper():
-                    self.setCurrentIndex(i)
-                    return
-        except Exception as e:
-            logger.error(f"[SubColumnComboBox.set_sub_col] Failed for {key}: {e}", exc_info=True)
-
-
-# ── Parameter Editor (Themed) ─────────────────────────────────────────────────────────
-
-class ParameterEditor(QWidget, ThemedMixin):
-    """Inline editor for indicator parameters - Enhanced with better layout"""
-
-    params_changed = pyqtSignal(dict)
-
-    def __init__(self, indicator: str = None, params: Dict = None, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self._indicator = indicator
-            self._params = params or {}
-            self._param_widgets = {}
-
-            self.setVisible(False)
-            self.setFixedHeight(60)  # Slightly taller for better visibility
-
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[ParameterEditor.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self._indicator = None
-        self._params = {}
-        self._param_widgets = {}
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the parameter editor."""
-        try:
-            c = self._c
-            sp = self._sp
-
-            self.setStyleSheet(f"""
-                QWidget {{
-                    background: {c.BG_HOVER};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                }}
-                QLabel {{
-                    color: {c.TEXT_DIM};
-                    font-size: {self._ty.SIZE_XS}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
-                QLineEdit, QCheckBox {{
-                    font-size: {self._ty.SIZE_XS}pt;
-                    padding: {sp.PAD_XS}px;
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                }}
-                QLineEdit:focus {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-            """)
-        except Exception as e:
-            logger.error(f"[ParameterEditor.apply_theme] Failed: {e}", exc_info=True)
-
-    def set_indicator(self, indicator: str):
-        """Update editor for new indicator"""
-        try:
-            self._indicator = indicator
-            self._rebuild()
-        except Exception as e:
-            logger.error(f"[ParameterEditor.set_indicator] Failed: {e}", exc_info=True)
-
-    def _rebuild(self):
-        """Rebuild parameter editor based on current indicator"""
-        try:
-            if self.layout():
-                QWidget().setLayout(self.layout())
-
-            if not self._indicator or self._indicator not in ALL_INDICATORS:
-                self.setVisible(False)
-                return
-
-            default_params = get_indicator_params(self._indicator)
-            if not default_params:
-                self.setVisible(False)
-                return
-
-            layout = QHBoxLayout(self)
-            layout.setContentsMargins(self._sp.PAD_SM, self._sp.PAD_XS, self._sp.PAD_SM, self._sp.PAD_XS)
-            layout.setSpacing(self._sp.PAD_MD)
-            layout.setAlignment(Qt.AlignLeft)
-
-            self._param_widgets.clear()
-
-            # Add a small indicator icon/label
-            icon_label = QLabel("⚙️")
-            icon_label.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_BODY}pt; background:transparent; border:none;")
-            layout.addWidget(icon_label)
-
-            for param_name, default_value in default_params.items():
-                try:
-                    param_type = get_param_type(param_name)
-                    current_value = self._params.get(param_name, default_value)
-
-                    # Create container for each parameter
-                    param_container = QWidget()
-                    param_container.setStyleSheet("background:transparent; border:none;")
-                    param_container_layout = QHBoxLayout(param_container)
-                    param_container_layout.setContentsMargins(0, 0, 0, 0)
-                    param_container_layout.setSpacing(self._sp.GAP_XS)
-
-                    # Label
-                    label = QLabel(f"{param_name}:")
-                    label.setFixedWidth(60)
-                    label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                    label.setStyleSheet("background:transparent; border:none;")
-                    param_container_layout.addWidget(label)
-
-                    # Input widget
-                    if param_type == "bool":
-                        widget = QCheckBox()
-                        widget.setChecked(bool(current_value))
-                        widget.setFixedSize(20, 20)
-                        widget.stateChanged.connect(self._on_params_changed)
-                    elif param_type in ("int", "float"):
-                        widget = QLineEdit()
-                        widget.setText(str(current_value))
-                        widget.setFixedWidth(60)
-                        if param_type == "int":
-                            widget.setValidator(QIntValidator())
-                        else:
-                            widget.setValidator(QDoubleValidator())
-                        widget.textChanged.connect(self._on_params_changed)
-                    else:  # string
-                        widget = QLineEdit()
-                        widget.setText(str(current_value))
-                        widget.setFixedWidth(80)
-                        widget.textChanged.connect(self._on_params_changed)
-
-                    param_container_layout.addWidget(widget)
-                    layout.addWidget(param_container)
-
-                    self._param_widgets[param_name] = (widget, param_type)
-
-                except Exception as e:
-                    logger.warning(f"Failed to create parameter widget for {param_name}: {e}")
-                    continue
-
-            # Add indicator info button
-            info_btn = QPushButton("?")
-            info_btn.setFixedSize(24, 24)
-            info_btn.setCursor(Qt.PointingHandCursor)
-            info_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {self._c.BG_HOVER};
-                    color: {self._c.TEXT_DIM};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: 12px;
-                    font-size: {self._ty.SIZE_XS}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
-                QPushButton:hover {{
-                    background: {self._c.BLUE}40;
-                    color: {self._c.BLUE};
-                    border-color: {self._c.BLUE};
-                }}
-            """)
-            info_btn.setToolTip(f"Default parameters for {self._indicator.upper()}")
-            info_btn.clicked.connect(self._show_info)
-            layout.addWidget(info_btn)
-
-            layout.addStretch()
-            self.setVisible(True)
-
-        except Exception as e:
-            logger.error(f"[ParameterEditor._rebuild] Failed: {e}", exc_info=True)
-
-    def _show_info(self):
-        """Show parameter info dialog"""
-        try:
-            info_text = f"<b>{self._indicator.upper()}</b><br><br>"
-            params = get_indicator_params(self._indicator)
-            if params:
-                info_text += "<b>Default Parameters:</b><br>"
-                for name, value in params.items():
-                    desc = get_param_description(name)
-                    info_text += f"• <b>{name}</b>: {value} - {desc}<br>"
-
-            QMessageBox.information(self, "Indicator Info", info_text)
-        except Exception as e:
-            logger.error(f"[ParameterEditor._show_info] Failed: {e}", exc_info=True)
-
-    def _on_params_changed(self):
-        """Emit updated parameters"""
-        try:
-            params = {}
-            for name, (widget, ptype) in self._param_widgets.items():
-                try:
-                    if ptype == "bool":
-                        params[name] = widget.isChecked()
-                    elif ptype == "int":
-                        text = widget.text() or "0"
-                        params[name] = int(text)
-                    elif ptype == "float":
-                        text = widget.text() or "0.0"
-                        params[name] = float(text)
-                    else:
-                        params[name] = widget.text()
-                except ValueError as e:
-                    logger.warning(f"Failed to parse {name}: {e}")
-                    if name in self._params:
-                        params[name] = self._params[name]
-
-            self._params = params
-            self.params_changed.emit(params)
-        except Exception as e:
-            logger.error(f"[ParameterEditor._on_params_changed] Failed: {e}", exc_info=True)
-
-    def get_params(self) -> Dict:
-        """Get current parameter values"""
-        return self._params.copy() if self._params else {}
-
-
-# ── Rule Editor Row (Themed) ────────────────────────────────────────────────────────────
-
-class _RuleRow(QWidget, ThemedMixin):
-    """One editable rule row with clear labels, expanded layout, weight control, and shift controls"""
-
-    deleted = pyqtSignal(object)
-
-    def __init__(self, rule: Dict = None, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self._param_editors = {}
-
-            self.setMinimumHeight(220)
-            self.setMaximumHeight(320)
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-
-            # Main vertical layout
-            main_layout = QVBoxLayout(self)
-            main_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_SM)
-            main_layout.setSpacing(self._sp.GAP_SM)
-
-            # Main content row - flexible stretch layout
-            content_layout = QHBoxLayout()
-            content_layout.setSpacing(self._sp.GAP_LG)
-
-            # ── LEFT SIDE ─────────────────────────────────────────────────────
-            lhs_container = ModernCard()
-            lhs_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            lhs_layout = QVBoxLayout(lhs_container)
-            lhs_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-            lhs_layout.setSpacing(self._sp.GAP_SM)
-
-            lhs_header = QLabel("LEFT SIDE (Condition)")
-            lhs_header.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
-            lhs_layout.addWidget(lhs_header)
-
-            # LHS type and shift row
-            lhs_type_row = QHBoxLayout()
-            lhs_type_row.setSpacing(self._sp.GAP_SM)
-
-            self.lhs_type = QComboBox()
-            self.lhs_type.addItems(SIDE_TYPES)
-            self.lhs_type.setFixedWidth(100)
-            self.lhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("lhs", t))
-            lhs_type_row.addWidget(self.lhs_type)
-
-            # LHS shift control
-            self.lhs_shift = QSpinBox()
-            self.lhs_shift.setRange(0, 100)
-            self.lhs_shift.setValue(0)
-            self.lhs_shift.setPrefix("shift: ")
-            self.lhs_shift.setFixedWidth(80)
-            self.lhs_shift.setToolTip("Number of bars to shift back (0 = current bar)")
-            self.lhs_shift.valueChanged.connect(self._update_description)
-            lhs_type_row.addWidget(self.lhs_shift)
-
-            # LHS input stack
-            self.lhs_input_container = QStackedWidget()
-            self.lhs_input_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-            # Indicator widget
-            lhs_indicator_widget = QWidget()
-            lhs_indicator_layout = QHBoxLayout(lhs_indicator_widget)
-            lhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_indicator_layout.setSpacing(self._sp.GAP_SM)
-            self.lhs_indicator = IndicatorComboBox()
-            self.lhs_indicator.currentTextChanged.connect(lambda t: self._on_indicator_changed("lhs", t))
-            lhs_indicator_layout.addWidget(self.lhs_indicator)
-
-            # Column widget
-            lhs_column_widget = QWidget()
-            lhs_column_layout = QHBoxLayout(lhs_column_widget)
-            lhs_column_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_column_layout.setSpacing(self._sp.GAP_SM)
-            self.lhs_column = ColumnComboBox()
-            lhs_column_layout.addWidget(self.lhs_column)
-
-            # Scalar widget
-            lhs_scalar_widget = QWidget()
-            lhs_scalar_layout = QHBoxLayout(lhs_scalar_widget)
-            lhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
-            lhs_scalar_layout.setSpacing(self._sp.GAP_SM)
-            self.lhs_scalar = QLineEdit()
-            self.lhs_scalar.setPlaceholderText("value")
-            self.lhs_scalar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.lhs_scalar.setValidator(QDoubleValidator())
-            lhs_scalar_layout.addWidget(self.lhs_scalar)
-
-            self.lhs_input_container.addWidget(lhs_indicator_widget)
-            self.lhs_input_container.addWidget(lhs_column_widget)
-            self.lhs_input_container.addWidget(lhs_scalar_widget)
-
-            lhs_type_row.addWidget(self.lhs_input_container)
-            lhs_layout.addLayout(lhs_type_row)
-
-            # LHS Parameter editor
-            self.lhs_params = ParameterEditor()
-            self.lhs_params.setVisible(False)
-            lhs_layout.addWidget(self.lhs_params)
-
-            # Sub-column selector row
-            lhs_sub_row = QHBoxLayout()
-            lhs_sub_row.setSpacing(self._sp.GAP_SM)
-            lhs_sub_arrow = QLabel("↳ Output column:")
-            lhs_sub_arrow.setStyleSheet(f"color:{self._c.PURPLE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-            lhs_sub_row.addWidget(lhs_sub_arrow)
-            self.lhs_sub_col = SubColumnComboBox()
-            lhs_sub_row.addWidget(self.lhs_sub_col)
-            lhs_sub_row.addStretch()
-            # Wrap in a container so we can show/hide the whole row together
-            self._lhs_sub_row_widget = QWidget()
-            self._lhs_sub_row_widget.setLayout(lhs_sub_row)
-            self._lhs_sub_row_widget.setVisible(False)
-            lhs_layout.addWidget(self._lhs_sub_row_widget)
-
-            content_layout.addWidget(lhs_container, 4)
-
-            # ── OPERATOR ──────────────────────────────────────────────────────
-            op_container = ModernCard()
-            op_container.setFixedWidth(120)
-            op_layout = QVBoxLayout(op_container)
-            op_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-            op_layout.setAlignment(Qt.AlignTop)
-            op_layout.setSpacing(self._sp.GAP_SM)
-
-            op_header = QLabel("COMPARATOR")
-            op_header.setStyleSheet(f"color:{self._c.YELLOW}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
-            op_header.setAlignment(Qt.AlignCenter)
-            op_layout.addWidget(op_header)
-
-            self.op = QComboBox()
-            self.op.addItems(OPERATORS)
-            self.op.setFixedWidth(100)
-            self.op.currentTextChanged.connect(self._update_description)
-            op_layout.addWidget(self.op)
-
-            content_layout.addWidget(op_container)
-
-            # ── RIGHT SIDE ────────────────────────────────────────────────────
-            rhs_container = ModernCard()
-            rhs_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            rhs_layout = QVBoxLayout(rhs_container)
-            rhs_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-            rhs_layout.setSpacing(self._sp.GAP_SM)
-
-            rhs_header = QLabel("RIGHT SIDE (Target)")
-            rhs_header.setStyleSheet(f"color:{self._c.ORANGE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
-            rhs_layout.addWidget(rhs_header)
-
-            # RHS type and shift row
-            rhs_type_row = QHBoxLayout()
-            rhs_type_row.setSpacing(self._sp.GAP_SM)
-
-            self.rhs_type = QComboBox()
-            self.rhs_type.addItems(SIDE_TYPES)
-            self.rhs_type.setFixedWidth(100)
-            self.rhs_type.currentTextChanged.connect(lambda t: self._update_side_visibility("rhs", t))
-            rhs_type_row.addWidget(self.rhs_type)
-
-            # RHS shift control
-            self.rhs_shift = QSpinBox()
-            self.rhs_shift.setRange(0, 100)
-            self.rhs_shift.setValue(0)
-            self.rhs_shift.setPrefix("shift: ")
-            self.rhs_shift.setFixedWidth(80)
-            self.rhs_shift.setToolTip("Number of bars to shift back (0 = current bar)")
-            self.rhs_shift.valueChanged.connect(self._update_description)
-            rhs_type_row.addWidget(self.rhs_shift)
-
-            # RHS input stack
-            self.rhs_input_container = QStackedWidget()
-            self.rhs_input_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-            # Indicator widget
-            rhs_indicator_widget = QWidget()
-            rhs_indicator_layout = QHBoxLayout(rhs_indicator_widget)
-            rhs_indicator_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_indicator_layout.setSpacing(self._sp.GAP_SM)
-            self.rhs_indicator = IndicatorComboBox()
-            self.rhs_indicator.currentTextChanged.connect(lambda t: self._on_indicator_changed("rhs", t))
-            rhs_indicator_layout.addWidget(self.rhs_indicator)
-
-            # Column widget
-            rhs_column_widget = QWidget()
-            rhs_column_layout = QHBoxLayout(rhs_column_widget)
-            rhs_column_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_column_layout.setSpacing(self._sp.GAP_SM)
-            self.rhs_column = ColumnComboBox()
-            rhs_column_layout.addWidget(self.rhs_column)
-
-            # Scalar widget
-            rhs_scalar_widget = QWidget()
-            rhs_scalar_layout = QHBoxLayout(rhs_scalar_widget)
-            rhs_scalar_layout.setContentsMargins(0, 0, 0, 0)
-            rhs_scalar_layout.setSpacing(self._sp.GAP_SM)
-            self.rhs_scalar = QLineEdit()
-            self.rhs_scalar.setPlaceholderText("value")
-            self.rhs_scalar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.rhs_scalar.setValidator(QDoubleValidator())
-            rhs_scalar_layout.addWidget(self.rhs_scalar)
-
-            self.rhs_input_container.addWidget(rhs_indicator_widget)
-            self.rhs_input_container.addWidget(rhs_column_widget)
-            self.rhs_input_container.addWidget(rhs_scalar_widget)
-
-            rhs_type_row.addWidget(self.rhs_input_container)
-            rhs_layout.addLayout(rhs_type_row)
-
-            # RHS Parameter editor
-            self.rhs_params = ParameterEditor()
-            self.rhs_params.setVisible(False)
-            rhs_layout.addWidget(self.rhs_params)
-
-            # Sub-column selector row
-            rhs_sub_row = QHBoxLayout()
-            rhs_sub_row.setSpacing(self._sp.GAP_SM)
-            rhs_sub_arrow = QLabel("↳ Output column:")
-            rhs_sub_arrow.setStyleSheet(f"color:{self._c.PURPLE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-            rhs_sub_row.addWidget(rhs_sub_arrow)
-            self.rhs_sub_col = SubColumnComboBox()
-            rhs_sub_row.addWidget(self.rhs_sub_col)
-            rhs_sub_row.addStretch()
-            self._rhs_sub_row_widget = QWidget()
-            self._rhs_sub_row_widget.setLayout(rhs_sub_row)
-            self._rhs_sub_row_widget.setVisible(False)
-            rhs_layout.addWidget(self._rhs_sub_row_widget)
-
-            content_layout.addWidget(rhs_container, 4)
-
-            # ── WEIGHT CONTROL (FEATURE 3) ────────────────────────────────────
-            weight_container = ModernCard()
-            weight_container.setFixedWidth(100)
-            weight_layout = QVBoxLayout(weight_container)
-            weight_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD, self._sp.PAD_MD)
-            weight_layout.setAlignment(Qt.AlignTop)
-            weight_layout.setSpacing(self._sp.GAP_SM)
-
-            weight_header = QLabel("WEIGHT")
-            weight_header.setStyleSheet(f"color:{self._c.PURPLE}; font-size:{self._ty.SIZE_XS}pt; font-weight:{self._ty.WEIGHT_BOLD}; text-transform:uppercase; letter-spacing:0.5px;")
-            weight_header.setAlignment(Qt.AlignCenter)
-            weight_layout.addWidget(weight_header)
-
-            weight_range = get_rule_weight_range()
-            self.weight_spin = QDoubleSpinBox()
-            self.weight_spin.setRange(weight_range["min"], weight_range["max"])
-            self.weight_spin.setSingleStep(weight_range["step"])
-            self.weight_spin.setValue(weight_range["default"])
-            self.weight_spin.setDecimals(1)
-            self.weight_spin.setAlignment(Qt.AlignCenter)
-            self.weight_spin.setToolTip(weight_range["description"])
-            self.weight_spin.valueChanged.connect(self._update_description)
-            weight_layout.addWidget(self.weight_spin)
-
-            # Suggested weight indicator
-            self.suggested_weight_lbl = QLabel("")
-            self.suggested_weight_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt;")
-            weight_layout.addWidget(self.suggested_weight_lbl)
-
-            content_layout.addWidget(weight_container)
-
-            # ── DELETE BUTTON ─────────────────────────────────────────────────
-            del_container = QWidget()
-            del_container.setFixedWidth(40)
-            del_vlay = QVBoxLayout(del_container)
-            del_vlay.setContentsMargins(0, 0, 0, 0)
-            del_vlay.setSpacing(0)
-            # Spacer to push button down to align with widgets (past the label row)
-            del_vlay.addSpacing(30)
-            del_btn = QPushButton("✕")
-            del_btn.setFixedSize(28, 28)
-            del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {self._c.RED}33;
-                    color: {self._c.RED};
-                    border: 1px solid {self._c.RED};
-                    border-radius: 14px;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                    font-size: {self._ty.SIZE_BODY}pt;
-                }}
-                QPushButton:hover {{
-                    background: {self._c.RED}66;
-                }}
-            """)
-            del_btn.clicked.connect(lambda: self.deleted.emit(self))
-            del_vlay.addWidget(del_btn)
-            del_vlay.addStretch()
-            content_layout.addWidget(del_container)
-
-            main_layout.addLayout(content_layout)
-
-            # Bottom description row
-            desc_layout = QHBoxLayout()
-            self.desc_label = QLabel("ⓘ This rule will be evaluated on each bar")
-            self.desc_label.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; font-style:italic;")
-            desc_layout.addWidget(self.desc_label)
-            desc_layout.addStretch()
-            main_layout.addLayout(desc_layout)
-
-            # Connect signals
-            self.lhs_params.params_changed.connect(lambda p: self._on_params_updated("lhs", p))
-            self.rhs_params.params_changed.connect(lambda p: self._on_params_updated("rhs", p))
-
-            self.apply_theme()
-
-            # Load rule if provided
-            if rule:
-                self._load(rule)
-            else:
-                self.lhs_type.setCurrentText("indicator")
-                self.rhs_type.setCurrentText("scalar")
-                self.rhs_scalar.setText("0")
-                self._update_description()
-
-        except Exception as e:
-            logger.error(f"[_RuleRow.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self._param_editors = {}
-        self.lhs_type = None
-        self.lhs_shift = None
-        self.lhs_input_container = None
-        self.lhs_indicator = None
-        self.lhs_sub_col = None
-        self._lhs_sub_row_widget = None
-        self.lhs_column = None
-        self.lhs_scalar = None
-        self.lhs_params = None
-        self.op = None
-        self.rhs_type = None
-        self.rhs_shift = None
-        self.rhs_input_container = None
-        self.rhs_indicator = None
-        self.rhs_sub_col = None
-        self._rhs_sub_row_widget = None
-        self.rhs_column = None
-        self.rhs_scalar = None
-        self.rhs_params = None
-        self.weight_spin = None
-        self.suggested_weight_lbl = None
-        self.desc_label = None
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the rule row."""
-        try:
-            # Update description
-            self._update_description()
-        except Exception as e:
-            logger.error(f"[_RuleRow.apply_theme] Failed: {e}", exc_info=True)
-
-    def _update_description(self):
-        """Update the description based on current rule"""
-        try:
-            c = self._c
-            lhs_desc = self.lhs_type.currentText() if self.lhs_type else "?"
-            rhs_desc = self.rhs_type.currentText() if self.rhs_type else "?"
-            op_desc = self.op.currentText() if self.op else "?"
-            weight = self.weight_spin.value() if self.weight_spin else 1.0
-            lhs_shift = self.lhs_shift.value() if self.lhs_shift else 0
-            rhs_shift = self.rhs_shift.value() if self.rhs_shift else 0
-
-            if lhs_desc == "indicator":
-                lhs_val = self.lhs_indicator.currentText() if self.lhs_indicator else "indicator"
-                # Show sub_col if the row is visible
-                if self.lhs_sub_col and self._lhs_sub_row_widget and self._lhs_sub_row_widget.isVisible():
-                    sub = self.lhs_sub_col.get_sub_col()
-                    if sub:
-                        lhs_val = f"{lhs_val} [{sub}]"
-                lhs_shift_text = f" (shift {lhs_shift})" if lhs_shift > 0 else ""
-            elif lhs_desc == "column":
-                lhs_val = self.lhs_column.currentText() if self.lhs_column else "column"
-                lhs_shift_text = f" (shift {lhs_shift})" if lhs_shift > 0 else ""
-            else:
-                lhs_val = self.lhs_scalar.text() if self.lhs_scalar else "value"
-                lhs_shift_text = ""
-
-            if rhs_desc == "indicator":
-                rhs_val = self.rhs_indicator.currentText() if self.rhs_indicator else "indicator"
-                # Show sub_col if the row is visible
-                if self.rhs_sub_col and self._rhs_sub_row_widget and self._rhs_sub_row_widget.isVisible():
-                    sub = self.rhs_sub_col.get_sub_col()
-                    if sub:
-                        rhs_val = f"{rhs_val} [{sub}]"
-                rhs_shift_text = f" (shift {rhs_shift})" if rhs_shift > 0 else ""
-            elif rhs_desc == "column":
-                rhs_val = self.rhs_column.currentText() if self.rhs_column else "column"
-                rhs_shift_text = f" (shift {rhs_shift})" if rhs_shift > 0 else ""
-            else:
-                rhs_val = self.rhs_scalar.text() if self.rhs_scalar else "value"
-                rhs_shift_text = ""
-
-            if self.desc_label:
-                self.desc_label.setText(
-                    f"ⓘ Rule: {lhs_desc} [{lhs_val}]{lhs_shift_text} {op_desc} {rhs_desc} [{rhs_val}]{rhs_shift_text}  |  Weight: {weight:.1f}"
-                )
-        except Exception as e:
-            logger.error(f"[_RuleRow._update_description] Failed: {e}", exc_info=True)
-
-    def _update_side_visibility(self, side: str, type_text: str):
-        """Update visibility of input widgets based on type"""
-        try:
-            if side == "lhs":
-                stack = self.lhs_input_container
-                params = self.lhs_params
-                shift_widget = self.lhs_shift
-                sub_row = self._lhs_sub_row_widget
-            else:
-                stack = self.rhs_input_container
-                params = self.rhs_params
-                shift_widget = self.rhs_shift
-                sub_row = self._rhs_sub_row_widget
-
-            if not stack or not params:
-                return
-
-            if type_text == "indicator":
-                stack.setCurrentIndex(0)
-                params.setVisible(True)
-                if shift_widget:
-                    shift_widget.setVisible(True)
-            elif type_text == "column":
-                stack.setCurrentIndex(1)
-                params.setVisible(False)
-                if shift_widget:
-                    shift_widget.setVisible(True)
-                if sub_row:
-                    sub_row.setVisible(False)   # columns don't have sub_col
-            else:  # scalar
-                stack.setCurrentIndex(2)
-                params.setVisible(False)
-                if shift_widget:
-                    shift_widget.setVisible(False)
-                if sub_row:
-                    sub_row.setVisible(False)   # scalars don't have sub_col
-
-            self._update_description()
-        except Exception as e:
-            logger.error(f"[_RuleRow._update_side_visibility] Failed: {e}", exc_info=True)
-
-    def _on_indicator_changed(self, side: str, indicator_text: str):
-        """Handle indicator selection change"""
-        try:
-            if side == "lhs":
-                params_w = self.lhs_params
-                type_w = self.lhs_type
-                sub_col_w = self.lhs_sub_col
-                sub_row_w = self._lhs_sub_row_widget
-            else:
-                params_w = self.rhs_params
-                type_w = self.rhs_type
-                sub_col_w = self.rhs_sub_col
-                sub_row_w = self._rhs_sub_row_widget
-
-            if not params_w or not type_w:
-                return
-
-            indicator = indicator_text.lower()
-            if type_w.currentText() == "indicator" and indicator in ALL_INDICATORS:
-                params_w.set_indicator(indicator)
-                params_w.setVisible(True)
-
-                # Update sub-column selector — show row only for multi-output indicators
-                if sub_col_w and sub_row_w:
-                    sub_col_w.set_indicator(indicator)
-                    sub_row_w.setVisible(sub_col_w.isVisible())
-
-                # FEATURE 3: Update suggested weight
-                suggested = get_suggested_weight(indicator)
-                if self.suggested_weight_lbl:
-                    self.suggested_weight_lbl.setText(f"suggested: {suggested:.1f}")
-
-                # Auto-set weight if still at default
-                if self.weight_spin and self.weight_spin.value() == 1.0:
-                    self.weight_spin.setValue(suggested)
-
-            else:
-                # Not an indicator type or indicator not found — hide sub_col row
-                if sub_row_w:
-                    sub_row_w.setVisible(False)
-
-            self._update_description()
-        except Exception as e:
-            logger.error(f"[_RuleRow._on_indicator_changed] Failed: {e}", exc_info=True)
-
-    def _on_params_updated(self, side: str, params: Dict):
-        """Handle parameter updates"""
-        try:
-            self._update_description()
-        except Exception as e:
-            logger.error(f"[_RuleRow._on_params_updated] Failed: {e}", exc_info=True)
-
-    def _load(self, rule: Dict):
-        """Load rule data into widgets"""
-        try:
-            c = self._c
-            if not rule:
-                return
-
-            # Load LHS
-            lhs_data = rule.get("lhs", {})
-            lhs_type = lhs_data.get("type", "indicator")
-            if self.lhs_type:
-                self.lhs_type.setCurrentText(lhs_type)
-
-            # Load LHS shift
-            lhs_shift = lhs_data.get("shift", 0)
-            if self.lhs_shift:
-                self.lhs_shift.setValue(lhs_shift)
-
-            if lhs_type == "indicator":
-                ind = lhs_data.get("indicator", "rsi")
-                if self.lhs_indicator:
-                    self.lhs_indicator.setEditText(ind.upper())
-                params = lhs_data.get("params", {})
-                if ind in ALL_INDICATORS and self.lhs_params:
-                    # Seed _params from saved data BEFORE set_indicator
-                    if params:
-                        self.lhs_params._params = dict(params)
-                    self.lhs_params.set_indicator(ind)
-                    self.lhs_params._on_params_changed()
-
-                # Restore sub_col selection for multi-output indicators
-                if self.lhs_sub_col:
-                    self.lhs_sub_col.set_indicator(ind)
-                    saved_sub_col = lhs_data.get("sub_col", "")
-                    if saved_sub_col:
-                        self.lhs_sub_col.set_sub_col(saved_sub_col)
-                    if self._lhs_sub_row_widget:
-                        self._lhs_sub_row_widget.setVisible(self.lhs_sub_col.isVisible())
-            elif lhs_type == "column":
-                col = lhs_data.get("column", "close")
-                if self.lhs_column:
-                    self.lhs_column.set_column(col)
-            else:
-                if self.lhs_scalar:
-                    self.lhs_scalar.setText(str(lhs_data.get("value", "0")))
-
-            # Load RHS
-            rhs_data = rule.get("rhs", {})
-            rhs_type = rhs_data.get("type", "scalar")
-            if self.rhs_type:
-                self.rhs_type.setCurrentText(rhs_type)
-
-            # Load RHS shift
-            rhs_shift = rhs_data.get("shift", 0)
-            if self.rhs_shift:
-                self.rhs_shift.setValue(rhs_shift)
-
-            if rhs_type == "indicator":
-                ind = rhs_data.get("indicator", "rsi")
-                if self.rhs_indicator:
-                    self.rhs_indicator.setEditText(ind.upper())
-                params = rhs_data.get("params", {})
-                if ind in ALL_INDICATORS and self.rhs_params:
-                    # Seed _params from saved data BEFORE set_indicator
-                    if params:
-                        self.rhs_params._params = dict(params)
-                    self.rhs_params.set_indicator(ind)
-                    self.rhs_params._on_params_changed()
-
-                # Restore sub_col selection for multi-output indicators
-                if self.rhs_sub_col:
-                    self.rhs_sub_col.set_indicator(ind)
-                    saved_sub_col = rhs_data.get("sub_col", "")
-                    if saved_sub_col:
-                        self.rhs_sub_col.set_sub_col(saved_sub_col)
-                    if self._rhs_sub_row_widget:
-                        self._rhs_sub_row_widget.setVisible(self.rhs_sub_col.isVisible())
-            elif rhs_type == "column":
-                col = rhs_data.get("column", "close")
-                if self.rhs_column:
-                    self.rhs_column.set_column(col)
-            else:
-                if self.rhs_scalar:
-                    self.rhs_scalar.setText(str(rhs_data.get("value", "0")))
-
-            # Load operator
-            op = rule.get("op", ">")
-            if self.op:
-                idx = self.op.findText(op)
-                if idx >= 0:
-                    self.op.setCurrentIndex(idx)
-
-            # FEATURE 3: Load weight
-            weight = rule.get("weight", 1.0)
-            if self.weight_spin:
-                self.weight_spin.setValue(float(weight))
-
-            self._update_description()
-        except Exception as e:
-            logger.error(f"[_RuleRow._load] Failed: {e}", exc_info=True)
-
-    def collect(self) -> Dict:
-        """Collect rule data as dictionary"""
-        try:
-            # Collect LHS
-            lhs_type = self.lhs_type.currentText() if self.lhs_type else "indicator"
-            lhs_shift = self.lhs_shift.value() if self.lhs_shift else 0
-
-            if lhs_type == "scalar":
-                try:
-                    lhs_value = float(self.lhs_scalar.text() or "0") if self.lhs_scalar else 0
-                except ValueError:
-                    lhs_value = 0
-                lhs = {"type": "scalar", "value": lhs_value}
-            elif lhs_type == "column":
-                col = self.lhs_column.get_column() if self.lhs_column else "close"
-                lhs = {"type": "column", "column": col}
-                if lhs_shift > 0:
-                    lhs["shift"] = lhs_shift
-            else:  # indicator
-                indicator = self.lhs_indicator.get_indicator_name() if self.lhs_indicator else ""
-                params = self.lhs_params.get_params() if self.lhs_params else {}
-                lhs = {
-                    "type": "indicator",
-                    "indicator": indicator,
-                    "params": params,
-                }
-                # Include sub_col only when the row is visible and has a selection
-                if self.lhs_sub_col and self._lhs_sub_row_widget and self._lhs_sub_row_widget.isVisible():
-                    sub_col = self.lhs_sub_col.get_sub_col()
-                    if sub_col:
-                        lhs["sub_col"] = sub_col
-                if lhs_shift > 0:
-                    lhs["shift"] = lhs_shift
-
-            # Collect RHS
-            rhs_type = self.rhs_type.currentText() if self.rhs_type else "scalar"
-            rhs_shift = self.rhs_shift.value() if self.rhs_shift else 0
-
-            if rhs_type == "scalar":
-                try:
-                    rhs_value = float(self.rhs_scalar.text() or "0") if self.rhs_scalar else 0
-                except ValueError:
-                    rhs_value = 0
-                rhs = {"type": "scalar", "value": rhs_value}
-            elif rhs_type == "column":
-                col = self.rhs_column.get_column() if self.rhs_column else "close"
-                rhs = {"type": "column", "column": col}
-                if rhs_shift > 0:
-                    rhs["shift"] = rhs_shift
-            else:  # indicator
-                indicator = self.rhs_indicator.get_indicator_name() if self.rhs_indicator else ""
-                params = self.rhs_params.get_params() if self.rhs_params else {}
-                rhs = {
-                    "type": "indicator",
-                    "indicator": indicator,
-                    "params": params,
-                }
-                # Include sub_col only when the row is visible and has a selection
-                if self.rhs_sub_col and self._rhs_sub_row_widget and self._rhs_sub_row_widget.isVisible():
-                    sub_col = self.rhs_sub_col.get_sub_col()
-                    if sub_col:
-                        rhs["sub_col"] = sub_col
-                if rhs_shift > 0:
-                    rhs["shift"] = rhs_shift
-
-            op = self.op.currentText() if self.op else ">"
-
-            # FEATURE 3: Get weight
-            weight = self.weight_spin.value() if self.weight_spin else 1.0
-
-            return {
-                "lhs": lhs,
-                "op": op,
-                "rhs": rhs,
-                "weight": weight,
-            }
-        except Exception as e:
-            logger.error(f"[_RuleRow.collect] Failed: {e}", exc_info=True)
-            return {"lhs": {"type": "scalar", "value": 0}, "op": ">", "rhs": {"type": "scalar", "value": 0}, "weight": 1.0}
-
-
-# ── Signal Group Panel (Themed) ───────────────────────────────────────────────────────
-
-# ── Signal Group Panel (Themed with proper scrollbar) ─────────────────────────────────
-
-class _SignalGroupPanel(QWidget, ThemedMixin):
-    """Panel for editing rules of a single signal group with scrollable rules area"""
-
-    rules_changed = pyqtSignal()
-
-    def __init__(self, signal: str, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-            self.signal = signal
-            signal_meta = get_signal_meta()
-            emoji, color, label = signal_meta.get(signal, ("⬤", self._c.TEXT_DIM, signal))
-            self._color = color
-            self._rule_rows: List[_RuleRow] = []
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            # Main layout
-            main_layout = QVBoxLayout(self)
-            main_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD,
-                                          self._sp.PAD_MD, self._sp.PAD_MD)
-            main_layout.setSpacing(self._sp.PAD_MD)
-
-            # Header with controls
-            header = self._build_header(color)
-            main_layout.addLayout(header)
-
-            # Rules container (scrollable area)
-            self._build_rules_scroll_area()
-            main_layout.addWidget(self._rules_scroll, 1)  # Give it stretch factor
-
-            # Quick actions bar
-            actions = self._build_actions_bar(color)
-            main_layout.addWidget(actions)
-
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel.__init__] Failed for {signal}: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.signal = ""
-        self._color = None
-        self._rule_rows = []
-        self.logic_combo = None
-        self.enabled_chk = None
-        self._rule_count_badge = None
-        self._rules_scroll = None
-        self._rules_container = None
-        self._rules_layout = None
-        self._empty_lbl = None
-        self._presets_combo = None
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the panel."""
-        try:
-            c = self._c
-            sp = self._sp
-
-            # Update scrollbar styles
-            if self._rules_scroll:
-                self._rules_scroll.setStyleSheet(f"""
-                    QScrollArea {{
-                        background: transparent;
-                        border: none;
-                    }}
-                    QScrollBar:vertical {{
-                        background: {c.BG_PANEL};
-                        width: {sp.ICON_MD}px;
-                        border-radius: {sp.RADIUS_MD}px;
-                        margin: 0px;
-                    }}
-                    QScrollBar::handle:vertical {{
-                        background: {c.BORDER};
-                        min-height: {sp.BTN_HEIGHT_SM}px;
-                        border-radius: {sp.RADIUS_MD}px;
-                    }}
-                    QScrollBar::handle:vertical:hover {{
-                        background: {c.BORDER_STRONG};
-                    }}
-                    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                        height: 0px;
-                    }}
-                    QScrollBar:horizontal {{
-                        background: {c.BG_PANEL};
-                        height: {sp.ICON_MD}px;
-                        border-radius: {sp.RADIUS_MD}px;
-                        margin: 0px;
-                    }}
-                    QScrollBar::handle:horizontal {{
-                        background: {c.BORDER};
-                        min-width: {sp.BTN_HEIGHT_SM}px;
-                        border-radius: {sp.RADIUS_MD}px;
-                    }}
-                    QScrollBar::handle:horizontal:hover {{
-                        background: {c.BORDER_STRONG};
-                    }}
-                    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-                        width: 0px;
+        self.conf_slider.valueChanged.connect(
+            lambda v: self.conf_value_lbl.setText(f"{v / 100:.2f}")
+        )
+        conf_row.addWidget(self.conf_slider)
+        conf_row.addWidget(self.conf_value_lbl)
+        root.addLayout(conf_row)
+
+        # ── Save ──────────────────────────────────────────────────────────────
+        save_btn = styled_button(
+            "💾  Save Preferences",
+            c().GREEN, c().GREEN_BRIGHT, min_w=140
+        )
+        save_btn.clicked.connect(self._save_prefs)
+        root.addWidget(save_btn)
+
+    def _style_theme_buttons(self):
+        active = theme_manager._current_theme
+        accent = getattr(c(), "ACCENT", c().BLUE)
+        for key, btn in self._theme_btns.items():
+            if key == active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {accent}33;
+                        color: {accent};
+                        border: 1px solid {accent};
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: {sp().PAD_MD}px;
+                        font-weight: bold;
+                        font-size: {ty().SIZE_SM}pt;
                     }}
                 """)
-
-            # Update badge if exists
-            if self._rule_count_badge and self._color:
-                self._rule_count_badge.setStyleSheet(f"""
-                    QLabel {{
-                        color: {self._color};
-                        background: {self._color}22;
-                        border: 1px solid {self._color}55;
-                        border-radius: {sp.RADIUS_PILL}px;
-                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
-                        font-size: {self._ty.SIZE_XS}pt;
-                        font-weight: {self._ty.WEIGHT_BOLD};
-                    }}
-                """)
-
-            # Update empty label
-            if self._empty_lbl:
-                self._empty_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; padding:{sp.PAD_XL}px;")
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel.apply_theme] Failed: {e}", exc_info=True)
-
-    def _build_header(self, color: str) -> QHBoxLayout:
-        """Build header with logic selector and enabled toggle"""
-        try:
-            c = self._c
-            header = QHBoxLayout()
-            header.setSpacing(self._sp.PAD_MD)
-
-            # Logic selector
-            logic_group = QHBoxLayout()
-            logic_group.setSpacing(self._sp.GAP_SM)
-
-            lbl_logic = QLabel("🔀 Logic:")
-            lbl_logic.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-            logic_group.addWidget(lbl_logic)
-
-            self.logic_combo = QComboBox()
-            self.logic_combo.addItems(["AND", "OR"])
-            self.logic_combo.setFixedWidth(90)
-            self.logic_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    min-height: {self._sp.INPUT_HEIGHT}px;
-                }}
-                QComboBox:hover {{
-                    border-color: {color};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: {self._sp.ICON_LG}px;
-                }}
-            """)
-            logic_group.addWidget(self.logic_combo)
-
-            header.addLayout(logic_group)
-
-            # Enabled toggle
-            self.enabled_chk = QCheckBox("✓ Enabled")
-            self.enabled_chk.setChecked(True)
-            self.enabled_chk.setStyleSheet(f"""
-                QCheckBox {{
-                    color: {c.TEXT_MAIN};
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                    spacing: {self._sp.GAP_SM}px;
-                }}
-                QCheckBox::indicator {{
-                    width: {self._sp.ICON_MD}px;
-                    height: {self._sp.ICON_MD}px;
-                    border-radius: {self._sp.RADIUS_SM}px;
-                }}
-                QCheckBox::indicator:unchecked {{
-                    background: {c.BG_INPUT};
-                    border: 2px solid {c.BORDER};
-                }}
-                QCheckBox::indicator:checked {{
-                    background: {color};
-                    border: 2px solid {color};
-                }}
-            """)
-            header.addWidget(self.enabled_chk)
-
-            header.addStretch()
-
-            # Rule count badge
-            self._rule_count_badge = QLabel("0 rules")
-            header.addWidget(self._rule_count_badge)
-
-            return header
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._build_header] Failed: {e}", exc_info=True)
-            return QHBoxLayout()
-
-    def _build_rules_scroll_area(self):
-        """Build scrollable area for rules with proper theming"""
-        try:
-            # Create scroll area
-            self._rules_scroll = QScrollArea()
-            self._rules_scroll.setWidgetResizable(True)
-            self._rules_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self._rules_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self._rules_scroll.setFrameShape(QFrame.NoFrame)
-
-            # Container for rules
-            self._rules_container = QWidget()
-            self._rules_container.setStyleSheet("background: transparent;")
-
-            # Layout for rules (vertical)
-            self._rules_layout = QVBoxLayout(self._rules_container)
-            self._rules_layout.setContentsMargins(0, 0, self._sp.PAD_SM, 0)  # Add right margin for scrollbar
-            self._rules_layout.setSpacing(self._sp.PAD_MD)
-            self._rules_layout.setAlignment(Qt.AlignTop)
-
-            # Empty state label
-            self._empty_lbl = QLabel("  ✨ No rules yet — click '+ Add Rule' to begin")
-            self._empty_lbl.setAlignment(Qt.AlignCenter)
-            self._empty_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; padding:{self._sp.PAD_XL}px;")
-            self._rules_layout.addWidget(self._empty_lbl)
-
-            # Add stretch at the end to keep rules at the top
-            self._rules_layout.addStretch()
-
-            self._rules_scroll.setWidget(self._rules_container)
-
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._build_rules_scroll_area] Failed: {e}", exc_info=True)
-
-    def _build_actions_bar(self, color: str) -> QWidget:
-        """Build actions bar with add rule button and presets"""
-        try:
-            bar = QFrame()
-            bar.setFixedHeight(50)
-            bar.setStyleSheet("background: transparent;")
-
-            layout = QHBoxLayout(bar)
-            layout.setContentsMargins(0, 0, 0, 0)
-
-            # Add rule button
-            add_btn = _btn("＋ Add Rule", "BG_HOVER", "BORDER", "TEXT_MAIN", 120)
-            add_btn.clicked.connect(self._add_rule)
-            layout.addWidget(add_btn)
-
-            # Presets dropdown
-            self._presets_combo = QComboBox()
-            presets = ["📋 Load Preset"] + get_preset_names(self.signal)
-
-            self._presets_combo.addItems(presets)
-            self._presets_combo.setFixedWidth(200)
-            self._presets_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background: {self._c.BG_INPUT};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    min-height: {self._sp.INPUT_HEIGHT}px;
-                }}
-                QComboBox:hover {{
-                    border-color: {color};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: {self._sp.ICON_LG}px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background: {self._c.BG_PANEL};
-                    color: {self._c.TEXT_MAIN};
-                    selection-background-color: {color}40;
-                    selection-color: {self._c.TEXT_MAIN};
-                    border: 1px solid {color};
-                }}
-            """)
-            self._presets_combo.currentIndexChanged.connect(self._load_preset)
-            layout.addWidget(self._presets_combo)
-
-            layout.addStretch()
-
-            # Clear all button
-            clear_btn = _btn("🗑 Clear All", "BG_HOVER", "BORDER", "RED", 100)
-            clear_btn.clicked.connect(self._clear_all_rules)
-            layout.addWidget(clear_btn)
-
-            return bar
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._build_actions_bar] Failed: {e}", exc_info=True)
-            return QFrame()
-
-    def _update_rule_count(self):
-        """Update rule count badge and empty state visibility"""
-        try:
-            count = len(self._rule_rows)
-            if self._rule_count_badge:
-                self._rule_count_badge.setText(f"{count} rule{'s' if count != 1 else ''}")
-
-            # Update empty label visibility
-            if self._empty_lbl:
-                self._empty_lbl.setVisible(count == 0)
-
-            # Remove stretch if there are rules, add stretch if empty
-            if self._rules_layout:
-                # Remove all stretches first
-                for i in reversed(range(self._rules_layout.count())):
-                    item = self._rules_layout.itemAt(i)
-                    if item.spacerItem():
-                        self._rules_layout.removeItem(item)
-
-                # Add stretch at the end if we have rules
-                if count > 0:
-                    self._rules_layout.addStretch()
-
-            self.rules_changed.emit()
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._update_rule_count] Failed: {e}", exc_info=True)
-
-    def _add_rule(self, rule: Dict = None):
-        """Add a new rule row"""
-        try:
-            if self._rules_container is None or self._rules_layout is None:
-                return
-
-            # Create new rule row
-            row = _RuleRow(rule, parent=self._rules_container)
-            row.deleted.connect(self._remove_rule)
-
-            # Insert before the stretch (if any)
-            if self._rules_layout.count() > 1:
-                # Insert before the last item (which is stretch)
-                self._rules_layout.insertWidget(self._rules_layout.count() - 1, row)
             else:
-                self._rules_layout.addWidget(row)
-
-            self._rule_rows.append(row)
-
-            # Hide empty label if visible
-            if self._empty_lbl and self._empty_lbl.isVisible():
-                self._empty_lbl.hide()
-
-            self._update_rule_count()
-
-            # Scroll to the new rule
-            QTimer.singleShot(100, lambda: self._rules_scroll.ensureWidgetVisible(row))
-
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._add_rule] Failed: {e}", exc_info=True)
-
-    def _remove_rule(self, row: _RuleRow):
-        """Remove a rule row"""
-        try:
-            if row in self._rule_rows and self._rules_layout:
-                self._rule_rows.remove(row)
-                self._rules_layout.removeWidget(row)
-                row.deleteLater()
-                self._update_rule_count()
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._remove_rule] Failed: {e}", exc_info=True)
-
-    def _clear_all_rules(self):
-        """Remove all rule rows"""
-        try:
-            for row in list(self._rule_rows):
-                self._remove_rule(row)
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._clear_all_rules] Failed: {e}", exc_info=True)
-
-    def _load_preset(self, index: int):
-        """Load a preset rule configuration from strategy_presets.py"""
-        try:
-            if index <= 0:
-                return
-
-            preset = self._presets_combo.currentText()
-            self._presets_combo.setCurrentIndex(0)
-
-            rules = get_preset_rules(self.signal, preset)
-            if not rules:
-                logger.warning(f"[_load_preset] No rules found for signal={self.signal!r}, preset={preset!r}")
-                return
-
-            for rule in rules:
-                self._add_rule(rule)
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel._load_preset] Failed: {e}", exc_info=True)
-
-    def load(self, group_data: Dict):
-        """Load group data into panel"""
-        try:
-            self._clear_all_rules()
-
-            if self.logic_combo:
-                self.logic_combo.setCurrentText(group_data.get("logic", "AND"))
-            if self.enabled_chk:
-                self.enabled_chk.setChecked(bool(group_data.get("enabled", True)))
-
-            for rule in group_data.get("rules", []):
-                self._add_rule(rule)
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel.load] Failed: {e}", exc_info=True)
-
-    def collect(self) -> Dict:
-        """Collect panel data"""
-        try:
-            return {
-                "logic": self.logic_combo.currentText() if self.logic_combo else "AND",
-                "enabled": self.enabled_chk.isChecked() if self.enabled_chk else True,
-                "rules": [row.collect() for row in self._rule_rows],
-            }
-        except Exception as e:
-            logger.error(f"[_SignalGroupPanel.collect] Failed: {e}", exc_info=True)
-            return {"logic": "AND", "enabled": True, "rules": []}
-
-
-# ── Signal Rules Tab (Themed) ─────────────────────────────────────────────────────────
-
-class _SignalRulesTab(QWidget, ThemedMixin):
-    """Signal rules editor with tabs for each signal type"""
-
-    def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            main_layout = QVBoxLayout(self)
-            main_layout.setContentsMargins(0, 0, 0, 0)
-            main_layout.setSpacing(0)
-
-            # Conflict resolution header
-            header = self._build_header()
-            main_layout.addWidget(header)
-
-            # Tab widget
-            self._tab_widget = QTabWidget()
-            self._tab_widget.setDocumentMode(True)
-            self._tab_widget.tabBar().setExpanding(True)
-
-            self._panels: Dict[str, _SignalGroupPanel] = {}
-
-            signal_tabs = [
-                ("BUY_CALL", "📈 BUY CALL"),
-                ("BUY_PUT", "📉 BUY PUT"),
-                ("EXIT_CALL", "🔴 EXIT CALL"),
-                ("EXIT_PUT", "🟠 EXIT PUT"),
-                ("HOLD", "⏸ HOLD"),
-            ]
-
-            for signal, label in signal_tabs:
-                panel = _SignalGroupPanel(signal)
-                panel.rules_changed.connect(self._update_stats)
-                self._panels[signal] = panel
-                self._tab_widget.addTab(panel, label)
-
-            main_layout.addWidget(self._tab_widget, 1)
-
-            # Stats bar
-            stats_bar = self._build_stats_bar()
-            main_layout.addWidget(stats_bar)
-
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.conflict_combo = None
-        self._panels = {}
-        self._total_rules_lbl = None
-        self._enable_all_btn = None
-        self._disable_all_btn = None
-        self._tab_widget = None
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the tab."""
-        try:
-            c = self._c
-            sp = self._sp
-
-            if self._tab_widget:
-                self._tab_widget.setStyleSheet(f"""
-                    QTabWidget::pane {{
-                        border: none;
-                        background: {c.BG_PANEL};
-                        border-top: {sp.SEPARATOR}px solid {c.BORDER};
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c().BG_HOVER};
+                        color: {c().TEXT_DIM};
+                        border: 1px solid {c().BORDER};
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: {sp().PAD_MD}px;
+                        font-size: {ty().SIZE_SM}pt;
                     }}
-                    QTabBar::tab {{
-                        background: {c.BG_HOVER};
-                        color: {c.TEXT_DIM};
-                        border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-bottom: none;
-                        border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
-                        padding: {sp.PAD_MD}px {sp.PAD_XL}px;
-                        margin-right: {sp.GAP_XS}px;
-                        font-size: {self._ty.SIZE_BODY}pt;
-                        font-weight: {self._ty.WEIGHT_NORMAL};
-                        min-width: 120px;
-                    }}
-                    QTabBar::tab:selected {{
-                        background: {c.BG_PANEL};
-                        color: {c.TEXT_MAIN};
-                        border-bottom: {sp.PAD_XS}px solid {c.BLUE};
-                        font-weight: {self._ty.WEIGHT_BOLD};
-                    }}
-                    QTabBar::tab:hover:!selected {{
-                        background: {c.BORDER};
-                        color: {c.TEXT_MAIN};
+                    QPushButton:hover {{ background: {c().BORDER}; color: {c().TEXT_MAIN}; }}
+                """)
+
+    def _style_density_buttons(self):
+        active = theme_manager._current_density
+        for key, btn in self._density_btns.items():
+            if key == active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c().BLUE}33;
+                        color: {c().BLUE};
+                        border: 1px solid {c().BLUE};
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: {sp().PAD_MD}px;
+                        font-weight: bold;
+                        font-size: {ty().SIZE_SM}pt;
                     }}
                 """)
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab.apply_theme] Failed: {e}", exc_info=True)
-
-    def _build_header(self) -> QWidget:
-        """Build header with conflict resolution selector"""
-        try:
-            c = self._c
-            header = QWidget()
-            header.setStyleSheet(f"background:{c.BG_PANEL}; border-bottom:{self._sp.SEPARATOR}px solid {c.BORDER};")
-            header.setFixedHeight(60)
-
-            layout = QHBoxLayout(header)
-            layout.setContentsMargins(self._sp.PAD_XL, 0, self._sp.PAD_XL, 0)
-
-            cr_lbl = QLabel("⚖️ Conflict Resolution:")
-            cr_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-            layout.addWidget(cr_lbl)
-
-            self.conflict_combo = QComboBox()
-            self.conflict_combo.addItems(["WAIT", "PRIORITY"])
-            self.conflict_combo.setFixedWidth(130)
-            self.conflict_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    min-height: {self._sp.INPUT_HEIGHT}px;
-                }}
-                QComboBox:hover {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: {self._sp.ICON_LG}px;
-                }}
-            """)
-            layout.addWidget(self.conflict_combo)
-
-            help_lbl = QLabel("(when both BUY_CALL and BUY_PUT fire)")
-            help_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_XS}pt; font-style:italic;")
-            layout.addWidget(help_lbl)
-            layout.addStretch()
-
-            return header
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab._build_header] Failed: {e}", exc_info=True)
-            return QWidget()
-
-    def _build_stats_bar(self) -> QWidget:
-        """Build a stats bar showing total rules"""
-        try:
-            c = self._c
-            bar = QFrame()
-            bar.setFixedHeight(45)
-            bar.setStyleSheet(f"""
-                QFrame {{
-                    background: {c.BG_PANEL};
-                    border-top: {self._sp.SEPARATOR}px solid {c.BORDER};
-                }}
-            """)
-
-            layout = QHBoxLayout(bar)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XS, self._sp.PAD_XL, self._sp.PAD_XS)
-
-            self._total_rules_lbl = QLabel("📊 Total Rules: 0")
-            self._total_rules_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-            layout.addWidget(self._total_rules_lbl)
-
-            layout.addStretch()
-
-            # Quick enable/disable all
-            self._enable_all_btn = _btn("✓ Enable All", "BG_HOVER", "BORDER", "GREEN", 120)
-            self._enable_all_btn.clicked.connect(self._toggle_all_enabled)
-            layout.addWidget(self._enable_all_btn)
-
-            self._disable_all_btn = _btn("✗ Disable All", "BG_HOVER", "BORDER", "RED", 120)
-            self._disable_all_btn.clicked.connect(self._toggle_all_disabled)
-            layout.addWidget(self._disable_all_btn)
-
-            return bar
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab._build_stats_bar] Failed: {e}", exc_info=True)
-            return QFrame()
-
-    def _update_stats(self):
-        """Update the total rules count"""
-        try:
-            total = 0
-            for panel in self._panels.values():
-                total += len(panel._rule_rows) if safe_hasattr(panel, '_rule_rows') else 0
-            if self._total_rules_lbl:
-                self._total_rules_lbl.setText(f"📊 Total Rules: {total}")
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab._update_stats] Failed: {e}", exc_info=True)
-
-    def _toggle_all_enabled(self):
-        try:
-            for panel in self._panels.values():
-                if safe_hasattr(panel, 'enabled_chk') and panel.enabled_chk:
-                    panel.enabled_chk.setChecked(True)
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab._toggle_all_enabled] Failed: {e}", exc_info=True)
-
-    def _toggle_all_disabled(self):
-        try:
-            for panel in self._panels.values():
-                if safe_hasattr(panel, 'enabled_chk') and panel.enabled_chk:
-                    panel.enabled_chk.setChecked(False)
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab._toggle_all_disabled] Failed: {e}", exc_info=True)
-
-    def load(self, strategy: Dict):
-        """Load strategy data into tabs"""
-        try:
-            engine = strategy.get("engine", {}) if strategy else {}
-            if self.conflict_combo:
-                self.conflict_combo.setCurrentText(engine.get("conflict_resolution", "WAIT"))
-
-            for signal, panel in self._panels.items():
-                panel.load(engine.get(signal, {"logic": "AND", "rules": [], "enabled": True}))
-
-            self._update_stats()
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab.load] Failed: {e}", exc_info=True)
-
-    def collect(self) -> Dict:
-        """Collect all signal group data"""
-        try:
-            result = {}
-            for signal, panel in self._panels.items():
-                result[signal] = panel.collect()
-            if self.conflict_combo:
-                result["conflict_resolution"] = self.conflict_combo.currentText()
-            return result
-        except Exception as e:
-            logger.error(f"[_SignalRulesTab.collect] Failed: {e}", exc_info=True)
-            return {"conflict_resolution": "WAIT"}
-
-
-# ── Info Tab (Themed) ─────────────────────────────────────────────────────────────────
-
-class _InfoTab(QWidget, ThemedMixin):
-    def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            layout = QFormLayout(self)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
-            layout.setSpacing(self._sp.PAD_MD)
-            layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-            info_lbl = QLabel("Strategy name and description.")
-            info_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt; font-style:italic; padding-bottom:{self._sp.PAD_MD}px;")
-            layout.addRow("", info_lbl)
-
-            self.name_edit = QLineEdit()
-            self.name_edit.setPlaceholderText("e.g. EMA Crossover Strategy")
-            self.name_edit.setMinimumWidth(300)
-            self.name_edit.setStyleSheet(f"""
-                QLineEdit {{
-                    background: {self._c.BG_INPUT};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    min-height: {self._sp.INPUT_HEIGHT}px;
-                }}
-                QLineEdit:focus {{
-                    border-color: {self._c.BORDER_FOCUS};
-                }}
-            """)
-            layout.addRow("📝 Name:", self.name_edit)
-
-            self.desc_edit = QTextEdit()
-            self.desc_edit.setPlaceholderText(
-                "Describe when this strategy fires, what market conditions it suits, etc."
-            )
-            self.desc_edit.setMaximumHeight(120)
-            self.desc_edit.setStyleSheet(f"""
-                QTextEdit {{
-                    background: {self._c.BG_INPUT};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                }}
-                QTextEdit:focus {{
-                    border-color: {self._c.BORDER_FOCUS};
-                }}
-            """)
-            layout.addRow("📋 Description:", self.desc_edit)
-
-            # Separator
-            sep = QFrame()
-            sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(f"background:{self._c.BORDER}; max-height:{self._sp.SEPARATOR}px; margin:{self._sp.PAD_LG}px 0;")
-            layout.addRow("", sep)
-
-            stats_header = QLabel("📊 Strategy Statistics")
-            stats_header.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_LG}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-            layout.addRow("", stats_header)
-
-            self.total_rules_lbl = ValueLabel("0")
-            layout.addRow("Total Rules:", self.total_rules_lbl)
-
-            self.unique_indicators_lbl = ValueLabel("0")
-            layout.addRow("Unique Indicators:", self.unique_indicators_lbl)
-
-            self.enabled_groups_lbl = ValueLabel("0/5")
-            layout.addRow("Enabled Groups:", self.enabled_groups_lbl)
-
-            self.created_lbl = QLabel("—")
-            self.created_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt;")
-            layout.addRow("Created:", self.created_lbl)
-
-            self.updated_lbl = QLabel("—")
-            self.updated_lbl.setStyleSheet(f"color:{self._c.TEXT_DIM}; font-size:{self._ty.SIZE_BODY}pt;")
-            layout.addRow("Last saved:", self.updated_lbl)
-
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[_InfoTab.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.name_edit = None
-        self.desc_edit = None
-        self.total_rules_lbl = None
-        self.unique_indicators_lbl = None
-        self.enabled_groups_lbl = None
-        self.created_lbl = None
-        self.updated_lbl = None
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the info tab."""
-        try:
-            # Update value labels (they handle their own styling)
-            pass
-        except Exception as e:
-            logger.error(f"[_InfoTab.apply_theme] Failed: {e}", exc_info=True)
-
-    def load(self, strategy: Dict):
-        """Load strategy metadata into tab"""
-        try:
-            # FIXED: Safe access with defaults
-            if self.name_edit:
-                self.name_edit.setText(strategy.get("name", "") if strategy else "")
-            if self.desc_edit:
-                self.desc_edit.setPlainText(strategy.get("description", "") if strategy else "")
-            if self.created_lbl:
-                created = strategy.get("created_at", "—") if strategy else "—"
-                self.created_lbl.setText(str(created))
-            if self.updated_lbl:
-                updated = strategy.get("updated_at", "—") if strategy else "—"
-                self.updated_lbl.setText(str(updated))
-
-            # Calculate statistics safely
-            total_rules = 0
-            indicators = set()
-            enabled_count = 0
-
-            if strategy and "engine" in strategy:
-                engine = strategy.get("engine", {})
-                for signal in SIGNAL_GROUPS:
-                    group = engine.get(signal, {}) if isinstance(engine, dict) else {}
-                    rules = group.get("rules", []) if isinstance(group, dict) else []
-                    total_rules += len(rules)
-
-                    if isinstance(group, dict) and group.get("enabled", True):
-                        enabled_count += 1
-
-                    for rule in rules:
-                        if isinstance(rule, dict):
-                            for side in ["lhs", "rhs"]:
-                                side_data = rule.get(side, {})
-                                if isinstance(side_data, dict) and side_data.get("type") == "indicator":
-                                    ind = side_data.get("indicator", "").lower()
-                                    if ind:
-                                        indicators.add(ind)
-
-            if self.total_rules_lbl:
-                self.total_rules_lbl.setText(str(total_rules))
-            if self.unique_indicators_lbl:
-                self.unique_indicators_lbl.setText(str(len(indicators)))
-            if self.enabled_groups_lbl:
-                self.enabled_groups_lbl.setText(f"{enabled_count}/5")
-
-        except Exception as e:
-            logger.error(f"[_InfoTab.load] Failed: {e}", exc_info=True)
-            # Set safe defaults on error
-            if self.total_rules_lbl:
-                self.total_rules_lbl.setText("0")
-            if self.unique_indicators_lbl:
-                self.unique_indicators_lbl.setText("0")
-            if self.enabled_groups_lbl:
-                self.enabled_groups_lbl.setText("0/5")
-
-    def collect(self) -> Dict:
-        """Collect info tab data"""
-        try:
-            return {
-                "name": self.name_edit.text().strip() if self.name_edit else "",
-                "description": self.desc_edit.toPlainText().strip() if self.desc_edit else "",
-            }
-        except Exception as e:
-            logger.error(f"[_InfoTab.collect] Failed: {e}", exc_info=True)
-            return {"name": "", "description": ""}
-
-
-# ── Indicators Tab (Themed) ───────────────────────────────────────────────────────────
-
-class _IndicatorsTab(QScrollArea, ThemedMixin):
-    """Dynamic Indicators Tab - Shows all indicators organized by category"""
-
-    def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
-        try:
-            super().__init__(parent)
-
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.setWidgetResizable(True)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-            container = QWidget()
-            self._layout = QVBoxLayout(container)
-            self._layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL, self._sp.PAD_XL)
-            self._layout.setSpacing(self._sp.PAD_XL)
-
-            self._build()
-            self._layout.addStretch()
-            self.setWidget(container)
-
-            self.apply_theme()
-
-        except Exception as e:
-            logger.error(f"[_IndicatorsTab.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.search_edit = None
-        self._category_widgets = {}
-        self._layout = None
-
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the indicators tab."""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            # Set scrollbar styles
-            self.setStyleSheet(f"""
-                QScrollArea {{
-                    background: {c.BG_MAIN};
-                    border: none;
-                }}
-                QScrollBar:vertical {{
-                    background: {c.BG_PANEL};
-                    width: {sp.ICON_MD}px;
-                    border-radius: {sp.RADIUS_MD}px;
-                    margin: 0px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: {c.BORDER};
-                    min-height: {sp.BTN_HEIGHT_SM}px;
-                    border-radius: {sp.RADIUS_MD}px;
-                }}
-                QScrollBar::handle:vertical:hover {{
-                    background: {c.BORDER_STRONG};
-                }}
-                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                    height: 0px;
-                }}
-            """)
-        except Exception as e:
-            logger.error(f"[_IndicatorsTab.apply_theme] Failed: {e}", exc_info=True)
-
-    def _build(self):
-        """Build indicator cards organized by category"""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            # Search/filter box
-            search_layout = QHBoxLayout()
-            search_lbl = QLabel("🔍 Filter:")
-            search_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt;")
-            self.search_edit = QLineEdit()
-            self.search_edit.setPlaceholderText("Type to filter indicators...")
-            self.search_edit.setFixedHeight(36)
-            self.search_edit.setStyleSheet(f"""
-                QLineEdit {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                    font-size: {ty.SIZE_BODY}pt;
-                }}
-                QLineEdit:focus {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-            """)
-            self.search_edit.textChanged.connect(self._filter_indicators)
-            search_layout.addWidget(search_lbl)
-            search_layout.addWidget(self.search_edit)
-            self._layout.addLayout(search_layout)
-
-            # Info label
-            info_lbl = QLabel(
-                "📊 AVAILABLE INDICATORS (pandas_ta)\n"
-                "The following indicators are available for your strategy rules."
-            )
-            info_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; padding:{sp.PAD_MD}px; background:{c.BG_HOVER}; border-radius:{sp.RADIUS_MD}px;")
-            info_lbl.setWordWrap(True)
-            self._layout.addWidget(info_lbl)
-
-            # Category sections
-            self._category_widgets = {}
-
-            for category, indicators in get_indicators_by_category().items():
-                if not indicators:
-                    continue
-
-                cat_header = QLabel(f"📁 {category.upper()}")
-                cat_header.setStyleSheet(f"""
-                    color:{c.BLUE}; 
-                    font-size:{ty.SIZE_BODY}pt; 
-                    font-weight:{ty.WEIGHT_BOLD}; 
-                    padding:{sp.PAD_MD}px 0 {sp.PAD_SM}px 0;
-                    border-bottom:{sp.SEPARATOR}px solid {c.BORDER};
-                """)
-                self._layout.addWidget(cat_header)
-
-                grid = QGridLayout()
-                grid.setSpacing(sp.PAD_MD)
-
-                row, col = 0, 0
-                for indicator in sorted(indicators):
-                    card = self._create_indicator_card(indicator)
-                    grid.addWidget(card, row, col)
-
-                    col += 1
-                    if col >= 4:
-                        col = 0
-                        row += 1
-
-                container = QWidget()
-                container.setLayout(grid)
-                self._layout.addWidget(container)
-                self._category_widgets[category] = container
-        except Exception as e:
-            logger.error(f"[_IndicatorsTab._build] Failed: {e}", exc_info=True)
-
-    def _create_indicator_card(self, indicator_name: str) -> QWidget:
-        """Create an expanded card showing indicator info"""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
-
-            card = ModernCard()
-            sub_cols = get_indicator_sub_columns(indicator_name)
-            card_height = 260 if sub_cols else 220
-            card.setFixedSize(260, card_height)
-
-            layout = QVBoxLayout(card)
-            layout.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-            layout.setSpacing(sp.GAP_SM)
-
-            # Indicator name
-            name_lbl = QLabel(indicator_name.upper())
-            name_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
-            layout.addWidget(name_lbl)
-
-            # Default params
-            params = get_indicator_params(indicator_name)
-            if params:
-                param_text = ""
-                for k, v in list(params.items())[:4]:
-                    param_text += f"• {k}: {v}\n"
-                if len(params) > 4:
-                    param_text += f"• ... (+{len(params) - 4} more)"
-                param_lbl = QLabel(param_text)
             else:
-                param_lbl = QLabel("• No parameters")
-            param_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt;")
-            param_lbl.setWordWrap(True)
-            layout.addWidget(param_lbl)
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c().BG_HOVER};
+                        color: {c().TEXT_DIM};
+                        border: 1px solid {c().BORDER};
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: {sp().PAD_MD}px;
+                        font-size: {ty().SIZE_SM}pt;
+                    }}
+                    QPushButton:hover {{ background: {c().BORDER}; color: {c().TEXT_MAIN}; }}
+                """)
 
-            # Sub-columns (for multi-output indicators like MACD, BBands etc.)
-            if sub_cols:
-                sub_header = QLabel("📤 Output columns:")
-                sub_header.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
-                layout.addWidget(sub_header)
-                sub_text = "  ".join(f"[{key}]" for key, _, _ in sub_cols)
-                sub_lbl = QLabel(sub_text)
-                sub_lbl.setStyleSheet(f"color:{c.PURPLE}CC; font-size:{ty.SIZE_XS}pt;")
-                sub_lbl.setWordWrap(True)
-                layout.addWidget(sub_lbl)
+    def _on_theme(self, key: str):
+        theme_manager.set_theme(key)
+        self._style_theme_buttons()
+        self.theme_changed.emit(key)
 
-            # FEATURE 3: Suggested weight
-            weight = get_suggested_weight(indicator_name)
-            weight_lbl = QLabel(f"⚖️ Suggested weight: {weight:.1f}")
-            weight_lbl.setStyleSheet(f"color:{c.PURPLE}; font-size:{ty.SIZE_XS}pt; font-weight:{ty.WEIGHT_BOLD};")
-            layout.addWidget(weight_lbl)
+    def _on_density(self, key: str):
+        theme_manager.set_density(key)
+        self._style_density_buttons()
+        self.density_changed.emit(key)
 
-            # Category tag
-            cat = get_indicator_category(indicator_name)
-            cat_lbl = QLabel(f"📌 {cat}")
-            cat_lbl.setStyleSheet(
-                f"color:{c.BLUE}CC; font-size:{ty.SIZE_XS}pt; border:none; background:{c.BLUE}11; padding:{sp.PAD_XS}px {sp.PAD_XS}px; border-radius:{sp.RADIUS_SM}px;")
-            layout.addWidget(cat_lbl)
+    def _save_prefs(self):
+        theme_manager.save_preference()
 
-            layout.addStretch()
-
-            return card
-        except Exception as e:
-            logger.error(f"[_IndicatorsTab._create_indicator_card] Failed for {indicator_name}: {e}", exc_info=True)
-            return QFrame()
-
-    def _filter_indicators(self, text: str):
-        """Filter indicators based on search text"""
-        try:
-            text = text.lower()
-            for category, container in self._category_widgets.items():
-                visible = False
-                grid = container.layout()
-                if grid:
-                    for i in range(grid.count()):
-                        card = grid.itemAt(i).widget()
-                        if card:
-                            name_lbl = card.findChild(QLabel)
-                            if name_lbl:
-                                name = name_lbl.text().lower()
-                                if text in name or not text:
-                                    card.show()
-                                    visible = True
-                                else:
-                                    card.hide()
-                container.setVisible(visible)
-        except Exception as e:
-            logger.error(f"[_IndicatorsTab._filter_indicators] Failed: {e}", exc_info=True)
-
-    def load(self, strategy: Dict):
-        """Load strategy data (no-op for indicators tab)"""
-        pass
-
-    def collect(self) -> Dict:
-        """Collect indicators tab data (no-op)"""
-        return {}
+    def get_confidence(self) -> float:
+        return self.conf_slider.value() / 100.0
 
 
-# ── Strategy List Panel (Themed) ──────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# STRATEGY LIST SIDEBAR
+# ─────────────────────────────────────────────────────────────────────────────
 
-class _StrategyListPanel(QWidget, ThemedMixin):
+class StrategyListPanel(QWidget):
+    """Left sidebar: searchable strategy list with CRUD actions."""
+
     strategy_selected = pyqtSignal(str)
     strategy_activated = pyqtSignal(str)
 
     def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
+        super().__init__(parent)
+        self._current_slug: Optional[str] = None
+        self.setFixedWidth(270)
+        self._build_ui()
+        self._apply_style()
+        self.refresh()
         try:
-            super().__init__(parent)
+            theme_manager.theme_changed.connect(self._on_theme)
+            theme_manager.density_changed.connect(self._on_theme)
+        except Exception:
+            pass
 
-            # Connect to theme signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
+    def _apply_style(self):
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: {c().BG_PANEL};
+                border-right: 1px solid {c().BORDER};
+            }}
+        """)
 
-            self._current_slug: Optional[str] = None
-            self.setFixedWidth(280)
+    def _on_theme(self, _=None):
+        self._apply_style()
+        self._restyle_list()
 
-            root = QVBoxLayout(self)
-            root.setContentsMargins(0, 0, 0, 0)
-            root.setSpacing(0)
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-            # Header
-            hdr = QLabel("  📋 STRATEGIES")
-            hdr.setStyleSheet(f"color:{self._c.BLUE}; font-size:{self._ty.SIZE_BODY}pt; font-weight:{self._ty.WEIGHT_BOLD}; padding:{self._sp.PAD_MD}px; background:{self._c.BG_PANEL};")
-            root.addWidget(hdr)
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr_widget = QWidget()
+        hdr_widget.setFixedHeight(40)
+        hdr_widget.setStyleSheet(f"background: {c().BG_PANEL};")
+        hdr_lay = QHBoxLayout(hdr_widget)
+        hdr_lay.setContentsMargins(sp().PAD_LG, 0, sp().PAD_MD, 0)
+        hdr_lay.setSpacing(sp().GAP_SM)
 
-            # Action buttons
-            btn_row = QHBoxLayout()
-            btn_row.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_SM)
-            btn_row.setSpacing(self._sp.GAP_SM)
-            self.new_btn = _btn("＋ New", "GREEN", "GREEN_BRIGHT", "TEXT_INVERSE", 80)
-            self.new_btn.setFixedHeight(36)
-            self.dup_btn = _btn("⧉ Duplicate", "BG_HOVER", "BORDER", "TEXT_MAIN", 90)
-            self.dup_btn.setFixedHeight(36)
-            self.new_btn.clicked.connect(self._on_new)
-            self.dup_btn.clicked.connect(self._on_dup)
-            btn_row.addWidget(self.new_btn)
-            btn_row.addWidget(self.dup_btn)
-            root.addLayout(btn_row)
+        # Amber accent stripe on left
+        stripe = QFrame()
+        stripe.setFixedWidth(3)
+        stripe.setFixedHeight(18)
+        accent = getattr(c(), "ACCENT", c().YELLOW)
+        stripe.setStyleSheet(f"background: {accent}; border-radius: 2px;")
+        hdr_lay.addWidget(stripe)
 
-            sep = QFrame()
-            sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(f"QFrame{{border:none;background:{self._c.BORDER};max-height:{self._sp.SEPARATOR}px;}}")
-            root.addWidget(sep)
+        title_lbl = QLabel("STRATEGIES")
+        title_lbl.setStyleSheet(f"""
+                    color: {c().TEXT_MAIN};
+                    font-size: {ty().SIZE_SM}pt;
+                    font-weight: bold;
+                    letter-spacing: 1.2px;
+                """)
+        hdr_lay.addWidget(title_lbl)
+        hdr_lay.addStretch()
+        root.addWidget(hdr_widget)
 
-            # List
-            self.list_widget = QListWidget()
-            self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
-            self.list_widget.currentItemChanged.connect(self._on_item_changed)
-            self.list_widget.itemDoubleClicked.connect(self._on_double_click)
-            self.list_widget.setStyleSheet(f"""
-                QListWidget {{
-                    background: {self._c.BG_PANEL};
-                    color: {self._c.TEXT_MAIN};
-                    border: none;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    outline: none;
-                }}
-                QListWidget::item {{
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    border-bottom: 1px solid {self._c.BORDER};
-                }}
-                QListWidget::item:selected {{
-                    background: {self._c.BG_SELECTED};
-                    color: {self._c.BLUE};
-                }}
-                QListWidget::item:hover {{
-                    background: {self._c.BG_HOVER};
-                }}
-            """)
-            root.addWidget(self.list_widget, 1)
+        # ── Action buttons row ────────────────────────────────────────────────
+        btn_widget = QWidget()
+        btn_widget.setStyleSheet(f"""
+                    background: {c().BG_PANEL};
+                    border-bottom: 1px solid {c().BORDER};
+                """)
+        btn_lay = QHBoxLayout(btn_widget)
+        btn_lay.setContentsMargins(sp().PAD_MD, sp().PAD_SM, sp().PAD_MD, sp().PAD_SM)
+        btn_lay.setSpacing(sp().GAP_SM)
 
-            sep2 = QFrame()
-            sep2.setFrameShape(QFrame.HLine)
-            sep2.setStyleSheet(f"QFrame{{border:none;background:{self._c.BORDER};max-height:{self._sp.SEPARATOR}px;}}")
-            root.addWidget(sep2)
+        self.new_btn = QPushButton("＋ New")
+        self.new_btn.setFixedHeight(30)
+        self.new_btn.setCursor(Qt.PointingHandCursor)
+        self.new_btn.setToolTip("Create a new strategy")
+        self.new_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c().GREEN};
+                        color: #000000;
+                        border: none;
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: 0px {sp().PAD_MD}px;
+                        font-size: {ty().SIZE_SM}pt;
+                        font-weight: bold;
+                        letter-spacing: 0.3px;
+                    }}
+                    QPushButton:hover {{ background: {c().GREEN_BRIGHT}; }}
+                    QPushButton:pressed {{ background: {c().GREEN}CC; }}
+                """)
+        self.new_btn.clicked.connect(self._on_new)
+        btn_lay.addWidget(self.new_btn)
 
-            # Bottom buttons
-            foot = QVBoxLayout()
-            foot.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_SM, self._sp.PAD_MD, self._sp.PAD_MD)
-            foot.setSpacing(self._sp.GAP_SM)
-            self.activate_btn = _btn("⚡ Activate Strategy", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 160)
-            self.activate_btn.setFixedHeight(40)
-            self.activate_btn.clicked.connect(self._on_activate)
-            self.delete_btn = _btn("🗑 Delete", "RED", "RED_BRIGHT", "TEXT_INVERSE", 100)
-            self.delete_btn.setFixedHeight(36)
-            self.delete_btn.clicked.connect(self._on_delete)
-            foot.addWidget(self.activate_btn)
-            foot.addWidget(self.delete_btn)
-            root.addLayout(foot)
+        self.dup_btn = QPushButton("⧉ Copy")
+        self.dup_btn.setFixedHeight(30)
+        self.dup_btn.setCursor(Qt.PointingHandCursor)
+        self.dup_btn.setToolTip("Duplicate selected strategy")
+        self.dup_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c().BG_INPUT};
+                        color: {c().TEXT_MAIN};
+                        border: 1px solid {c().BORDER_STRONG};
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: 0px {sp().PAD_MD}px;
+                        font-size: {ty().SIZE_SM}pt;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background: {c().BG_HOVER};
+                        border-color: {c().ACCENT if hasattr(c(), "ACCENT") else c().YELLOW};
+                        color: {c().ACCENT if hasattr(c(), "ACCENT") else c().YELLOW};
+                    }}
+                    QPushButton:pressed {{ background: {c().BORDER}; }}
+                """)
+        self.dup_btn.clicked.connect(self._on_dup)
+        btn_lay.addWidget(self.dup_btn)
+        btn_lay.addStretch()
+        root.addWidget(btn_widget)
 
-            self.apply_theme()
-            self.refresh()
+        # ── Search ────────────────────────────────────────────────────────────
+        search_widget = QWidget()
+        search_widget.setStyleSheet(f"background: {c().BG_PANEL};")
+        search_lay = QHBoxLayout(search_widget)
+        search_lay.setContentsMargins(sp().PAD_MD, sp().PAD_SM, sp().PAD_MD, sp().PAD_SM)
 
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
+        search_icon = QLabel("⌕")
+        search_icon.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_LG}pt; background: transparent;")
+        search_lay.addWidget(search_icon)
 
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self._current_slug = None
-        self.list_widget = None
-        self.new_btn = None
-        self.dup_btn = None
-        self.activate_btn = None
-        self.delete_btn = None
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search strategies...")
+        self.search_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background: {c().BG_INPUT};
+                color: {c().TEXT_MAIN};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_MD}px;
+                padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+                font-size: {ty().SIZE_SM}pt;
+                min-height: 28px;
+            }}
+            QLineEdit:focus {{ border-color: {c().BORDER_FOCUS}; }}
+        """)
+        self.search_edit.textChanged.connect(self._filter_list)
+        search_lay.addWidget(self.search_edit)
+        root.addWidget(search_widget)
+        root.addWidget(make_separator())
 
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the list panel."""
-        try:
-            c = self._c
-            sp = self._sp
+        # ── Strategy List ─────────────────────────────────────────────────────
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list_widget.currentItemChanged.connect(self._on_item_changed)
+        self.list_widget.itemDoubleClicked.connect(self._on_double_click)
+        self._restyle_list()
+        root.addWidget(self.list_widget, 1)
 
-            self.setStyleSheet(f"background:{c.BG_PANEL}; border-right:{sp.SEPARATOR}px solid {c.BORDER};")
+        root.addWidget(make_separator())
 
-            # Refresh list colors
-            self._refresh_list_colors()
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel.apply_theme] Failed: {e}", exc_info=True)
+        # ── Bottom Actions ────────────────────────────────────────────────────
+        footer = QWidget()
+        footer.setStyleSheet(f"background: {c().BG_PANEL};")
+        footer_lay = QVBoxLayout(footer)
+        footer_lay.setContentsMargins(sp().PAD_MD, sp().PAD_MD, sp().PAD_MD, sp().PAD_MD)
+        footer_lay.setSpacing(sp().GAP_SM)
 
-    def _refresh_list_colors(self):
-        """Refresh colors in the strategy list"""
-        try:
-            c = self._c
-            active = strategy_manager.get_active_slug()
+        self.activate_btn = styled_button(
+            "⚡  Activate Strategy",
+            c().BLUE, c().BLUE_DARK, min_w=200, min_h=40
+        )
+        self.activate_btn.clicked.connect(self._on_activate)
+        footer_lay.addWidget(self.activate_btn)
 
-            for i in range(self.list_widget.count()):
-                item = self.list_widget.item(i)
-                slug = item.data(Qt.UserRole)
-                if slug == active:
-                    item.setForeground(QColor(c.BLUE))
-                    font = QFont()
-                    font.setBold(True)
-                    item.setFont(font)
-                else:
-                    item.setForeground(QColor(c.TEXT_MAIN))
-                    font = QFont()
-                    font.setBold(False)
-                    item.setFont(font)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._refresh_list_colors] Failed: {e}", exc_info=True)
+        self.delete_btn = ghost_button("🗑  Delete", c().RED, min_w=100)
+        self.delete_btn.clicked.connect(self._on_delete)
+        footer_lay.addWidget(self.delete_btn)
+        root.addWidget(footer)
+
+    def _restyle_list(self):
+        accent = getattr(c(), "ACCENT", c().YELLOW)
+        self.list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background: {c().BG_PANEL};
+                color: {c().TEXT_MAIN};
+                border: none;
+                font-size: {ty().SIZE_BODY}pt;
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: {sp().PAD_MD}px {sp().PAD_LG}px;
+                border-bottom: 1px solid {c().BORDER};
+                border-left: 3px solid transparent;
+            }}
+            QListWidget::item:selected {{
+                background: {c().BG_SELECTED};
+                color: {c().TEXT_MAIN};
+                border-left: 3px solid {accent};
+            }}
+            QListWidget::item:hover:!selected {{
+                background: {c().BG_HOVER};
+                border-left: 3px solid {c().BORDER_STRONG};
+            }}
+            QScrollBar:vertical {{
+                background: {c().BG_PANEL};
+                width: 6px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {c().BORDER_STRONG};
+                border-radius: 3px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """)
 
     def refresh(self):
-        """Refresh the list of strategies"""
+        """Reload all strategies from manager."""
         try:
-            if self.list_widget is None:
-                return
-
-            c = self._c
             self.list_widget.blockSignals(True)
             self.list_widget.clear()
-            active = strategy_manager.get_active_slug()
+            active_slug = strategy_manager.get_active_slug()
+            accent = getattr(c(), "ACCENT", c().YELLOW)
 
             for s in strategy_manager.list_strategies():
-                try:
-                    item = QListWidgetItem()
-                    name = s["name"]
-                    slug = s["slug"]
-                    is_active = s.get("is_active", False) or (slug == active)
-                    item.setText(("⚡ " if is_active else "   ") + name)
-                    item.setData(Qt.UserRole, slug)
-                    if is_active:
-                        item.setForeground(QColor(c.BLUE))
-                        font = QFont()
-                        font.setBold(True)
-                        item.setFont(font)
-                    self.list_widget.addItem(item)
-                    if slug == self._current_slug:
-                        self.list_widget.setCurrentItem(item)
-                except Exception as e:
-                    logger.warning(f"Failed to add strategy item: {e}")
-                    continue
+                slug = s.get("slug", "")
+                name = s.get("name", slug)
+                is_active = s.get("is_active", False) or (slug == active_slug)
+
+                item = QListWidgetItem()
+
+                # Custom widget for richer display
+                item_widget = self._make_list_item_widget(name, slug, is_active, accent)
+                item.setSizeHint(item_widget.sizeHint())
+                item.setData(Qt.UserRole, slug)
+
+                self.list_widget.addItem(item)
+                self.list_widget.setItemWidget(item, item_widget)
+
+                if slug == self._current_slug:
+                    self.list_widget.setCurrentItem(item)
 
             self.list_widget.blockSignals(False)
+
             if self.list_widget.currentItem() is None and self.list_widget.count() > 0:
                 self.list_widget.setCurrentRow(0)
+
         except Exception as e:
-            logger.error(f"[_StrategyListPanel.refresh] Failed: {e}", exc_info=True)
+            logger.error(f"[StrategyListPanel.refresh] Failed: {e}", exc_info=True)
+
+    def _make_list_item_widget(self, name: str, slug: str, is_active: bool, accent: str) -> QWidget:
+        """Rich list item with name + metadata row."""
+        w = QWidget()
+        w.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(2)
+
+        name_row = QHBoxLayout()
+        name_row.setSpacing(6)
+        if is_active:
+            bolt = QLabel("⚡")
+            bolt.setStyleSheet(f"color: {accent}; font-size: {ty().SIZE_BODY}pt; background: transparent;")
+            name_row.addWidget(bolt)
+
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet(f"""
+            color: {accent if is_active else c().TEXT_MAIN};
+            font-weight: {"bold" if is_active else "normal"};
+            font-size: {ty().SIZE_BODY}pt;
+            background: transparent;
+        """)
+        name_row.addWidget(name_lbl)
+        name_row.addStretch()
+        lay.addLayout(name_row)
+
+        sub_row = QHBoxLayout()
+        sub_row.setSpacing(8)
+        slug_lbl = QLabel(slug[:24])
+        slug_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt; background: transparent;")
+        sub_row.addWidget(slug_lbl)
+        if is_active:
+            active_badge = QLabel("ACTIVE")
+            active_badge.setStyleSheet(f"""
+                color: {accent};
+                background: {accent}22;
+                border: 1px solid {accent}55;
+                border-radius: 4px;
+                padding: 0px 5px;
+                font-size: {ty().SIZE_XS}pt;
+                font-weight: bold;
+            """)
+            sub_row.addWidget(active_badge)
+        sub_row.addStretch()
+        lay.addLayout(sub_row)
+
+        w.setMinimumHeight(48)
+        return w
+
+    def _filter_list(self, text: str):
+        text = text.lower()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            slug = item.data(Qt.UserRole) or ""
+            hide = text and text not in slug.lower()
+            item.setHidden(hide)
 
     def _on_item_changed(self, current, previous):
-        """Handle strategy selection change"""
         try:
             if current:
                 slug = current.data(Qt.UserRole)
                 self._current_slug = slug
                 self.strategy_selected.emit(slug)
         except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_item_changed] Failed: {e}", exc_info=True)
+            logger.error(f"[StrategyListPanel._on_item_changed] {e}")
 
     def _on_double_click(self, item):
-        """Handle double-click on strategy"""
-        try:
-            slug = item.data(Qt.UserRole)
-            self._on_activate_slug(slug)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_double_click] Failed: {e}", exc_info=True)
+        slug = item.data(Qt.UserRole)
+        if slug:
+            self._activate_slug(slug)
 
     def _on_new(self):
-        """Create new strategy"""
-        try:
-            name, ok = QInputDialog.getText(
-                self, "New Strategy", "Strategy name:", text="My Strategy"
-            )
-            if ok and name and name.strip():
-                ok2, slug = strategy_manager.create(name.strip())
-                if ok2:
-                    self._current_slug = slug
-                    self.refresh()
-                    self.strategy_selected.emit(slug)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_new] Failed: {e}", exc_info=True)
+        name, ok = QInputDialog.getText(self, "New Strategy", "Strategy name:", text="My Strategy")
+        if ok and name.strip():
+            ok2, slug = strategy_manager.create(name.strip())
+            if ok2:
+                self._current_slug = slug
+                self.refresh()
+                self.strategy_selected.emit(slug)
 
     def _on_dup(self):
-        """Duplicate current strategy"""
-        try:
-            if not self._current_slug:
-                return
-
-            src = strategy_manager.get(self._current_slug)
-            src_name = src.get("name", self._current_slug) if src else self._current_slug
-            name, ok = QInputDialog.getText(
-                self, "Duplicate Strategy", "New name:", text=f"{src_name} (copy)"
-            )
-            if ok and name and name.strip():
-                ok2, slug = strategy_manager.duplicate(self._current_slug, name.strip())
-                if ok2:
-                    self._current_slug = slug
-                    self.refresh()
-                    self.strategy_selected.emit(slug)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_dup] Failed: {e}", exc_info=True)
+        if not self._current_slug:
+            return
+        src = strategy_manager.get(self._current_slug)
+        src_name = src.get("name", self._current_slug) if src else self._current_slug
+        name, ok = QInputDialog.getText(self, "Duplicate Strategy", "New name:", text=f"{src_name} (copy)")
+        if ok and name.strip():
+            ok2, slug = strategy_manager.duplicate(self._current_slug, name.strip())
+            if ok2:
+                self._current_slug = slug
+                self.refresh()
+                self.strategy_selected.emit(slug)
 
     def _on_activate(self):
-        """Activate current strategy"""
-        try:
-            if self._current_slug:
-                self._on_activate_slug(self._current_slug)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_activate] Failed: {e}", exc_info=True)
+        if self._current_slug:
+            self._activate_slug(self._current_slug)
 
-    def _on_activate_slug(self, slug: str):
-        """Activate strategy by slug"""
-        try:
-            strategy_manager.activate(slug)
-            self.refresh()
-            self.strategy_activated.emit(slug)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_activate_slug] Failed: {e}", exc_info=True)
+    def _activate_slug(self, slug: str):
+        strategy_manager.activate(slug)
+        self.refresh()
+        self.strategy_activated.emit(slug)
 
     def _on_delete(self):
-        """Delete current strategy"""
-        try:
-            if not self._current_slug:
-                return
-
-            s = strategy_manager.get(self._current_slug)
-            name = s.get("name", self._current_slug) if s else self._current_slug
-            ok = QMessageBox.question(
-                self, "Delete Strategy",
-                f"Delete '{name}'?\nThis cannot be undone.",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if ok == QMessageBox.Yes:
-                success, msg = strategy_manager.delete(self._current_slug)
-                if not success:
-                    QMessageBox.warning(self, "Cannot Delete", msg)
-                else:
-                    self._current_slug = strategy_manager.get_active_slug()
-                    self.refresh()
-                    if self._current_slug:
-                        self.strategy_selected.emit(self._current_slug)
-        except Exception as e:
-            logger.error(f"[_StrategyListPanel._on_delete] Failed: {e}", exc_info=True)
+        if not self._current_slug:
+            return
+        s = strategy_manager.get(self._current_slug)
+        name = s.get("name", self._current_slug) if s else self._current_slug
+        ans = QMessageBox.question(
+            self, "Delete Strategy",
+            f"Delete '{name}'?\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ans == QMessageBox.Yes:
+            success, msg = strategy_manager.delete(self._current_slug)
+            if not success:
+                QMessageBox.warning(self, "Cannot Delete", msg)
+            else:
+                self._current_slug = strategy_manager.get_active_slug()
+                self.refresh()
+                if self._current_slug:
+                    self.strategy_selected.emit(self._current_slug)
 
 
-# ── Main Editor Window (Themed) ───────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# RULE ROW WIDGET
+# ─────────────────────────────────────────────────────────────────────────────
 
-class StrategyEditorWindow(QDialog, ThemedMixin):
+class RuleRowWidget(QFrame):
     """
-    Full-page strategy editor with import/export functionality.
-    Uses database-backed strategy manager.
-
-    MODERN MINIMALIST DESIGN - Matches other dialogs.
-    FEATURE 3: Supports rule weights and confidence threshold configuration.
-    FEATURE: Shift controls for all indicators and columns
-    FEATURE: Help & Documentation tab with interactive examples
+    Single editable rule row.
+    Visual layout:  [## | LHS panel | OPERATOR | RHS panel | WEIGHT | ✕]
+    Each side has: type-selector + shift + indicator/scalar/column input.
     """
-    strategy_activated = pyqtSignal(str)
 
-    def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
+    deleted = pyqtSignal(object)
+    rule_changed = pyqtSignal()
 
+    def __init__(self, rule: Dict = None, index: int = 0, parent=None):
+        super().__init__(parent)
+        self._index = index
+        self._rule = rule or {}
+        self._build_ui()
+        self._load(self._rule)
+        self._update_description()
         try:
-            super().__init__(parent, Qt.Window)
+            theme_manager.theme_changed.connect(self._apply_theme)
+            theme_manager.density_changed.connect(self._apply_theme)
+        except Exception:
+            pass
 
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
+    def _apply_theme(self, _=None):
+        self._style_frame()
 
-            self._current_slug: Optional[str] = None
-            self._dirty = False
-
-            self.setWindowTitle("📋 Strategy Editor")
-
-            # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
-            self.resize(1500, 900)
-            self.setMinimumSize(1300, 700)
-
-            self._build_ui()
-            self.apply_theme()
-
-            active = strategy_manager.get_active_slug()
-            if active:
-                self._load_strategy(active)
-
-            logger.info("StrategyEditorWindow initialized with all features")
-
-        except Exception as e:
-            logger.critical(f"[StrategyEditorWindow.__init__] Failed: {e}", exc_info=True)
-            self._create_error_dialog(parent)
-
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self._current_slug = None
-        self._dirty = False
-        self._list_panel = None
-        self._title_bar = None
-        self._tabs = None
-        self._info_tab = None
-        self._ind_tab = None
-        self._rules_tab = None
-        self._help_tab = None
-        self._title_lbl = None
-        self._active_badge = None
-        self._import_btn = None
-        self._export_btn = None
-        self._dirty_lbl = None
-        self.activate_btn = None
-        self.revert_btn = None
-        self.save_btn = None
-        self.status_lbl = None
-        self.confidence_threshold_spin = None
-        self.main_card = None
-
-    def _create_error_dialog(self, parent):
-        """Create error dialog if initialization fails"""
-        try:
-            super().__init__(parent, Qt.Window)
-            self.setWindowTitle("Strategy Editor - ERROR")
-            self.setMinimumSize(800, 600)
-
-            # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
-            root = QVBoxLayout(self)
-            root.setContentsMargins(20, 20, 20, 20)
-
-            main_card = ModernCard(self, elevated=True)
-            layout = QVBoxLayout(main_card)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
-                                     self._sp.PAD_XL, self._sp.PAD_XL)
-
-            error_label = QLabel(f"❌ Failed to initialize strategy editor:")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
-            layout.addWidget(error_label)
-
-            close_btn = _btn("Close", "BLUE", "BLUE_DARK", "TEXT_INVERSE", 100)
-            close_btn.clicked.connect(self.reject)
-            layout.addWidget(close_btn, 0, Qt.AlignCenter)
-
-            root.addWidget(main_card)
-
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._create_error_dialog] Failed: {e}", exc_info=True)
-
-    def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        title_bar = QWidget()
-        title_bar.setFixedHeight(50)
-        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
-
-        title = QLabel("📋 Strategy Editor")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
+    def _style_frame(self):
+        accent = getattr(c(), "ACCENT", c().YELLOW)
+        self.setStyleSheet(f"""
+            QFrame#ruleRow {{
+                background: {c().BG_CARD if hasattr(c(), 'BG_CARD') else c().BG_HOVER};
+                border: 1px solid {c().BORDER};
+                border-left: 3px solid {c().BORDER};
+                border-radius: {sp().RADIUS_MD}px;
+            }}
+            QFrame#ruleRow:hover {{
+                border-left: 3px solid {accent};
             }}
         """)
 
+    def _build_ui(self):
+        self.setObjectName("ruleRow")
+        self._style_frame()
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(sp().PAD_SM, sp().PAD_SM, sp().PAD_SM, sp().PAD_SM)
+        root.setSpacing(sp().GAP_SM)
+
+        # ── Main row ──────────────────────────────────────────────────────────
+        main_row = QHBoxLayout()
+        main_row.setSpacing(sp().GAP_MD)
+
+        # Index badge
+        self.idx_lbl = QLabel(f"{self._index + 1:02d}")
+        self.idx_lbl.setFixedWidth(28)
+        self.idx_lbl.setAlignment(Qt.AlignCenter)
+        self.idx_lbl.setStyleSheet(f"""
+            color: {c().TEXT_DIM};
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+            background: {c().BG_INPUT};
+            border-radius: {sp().RADIUS_SM}px;
+            padding: 2px;
+        """)
+        main_row.addWidget(self.idx_lbl)
+
+        # ── LHS ──────────────────────────────────────────────────────────────
+        lhs_card = self._make_side_card("lhs", "LEFT SIDE", c().BLUE)
+        main_row.addWidget(lhs_card, 4)
+
+        # ── Operator ──────────────────────────────────────────────────────────
+        op_card = self._make_op_card()
+        main_row.addWidget(op_card)
+
+        # ── RHS ──────────────────────────────────────────────────────────────
+        rhs_card = self._make_side_card("rhs", "RIGHT SIDE", c().ORANGE)
+        main_row.addWidget(rhs_card, 4)
+
+        # ── Weight ───────────────────────────────────────────────────────────
+        weight_card = self._make_weight_card()
+        main_row.addWidget(weight_card)
+
+        # ── Delete ────────────────────────────────────────────────────────────
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(30, 30)
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c().RED}22;
+                color: {c().RED};
+                border: 1px solid {c().RED}55;
+                border-radius: 15px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background: {c().RED}55; }}
+        """)
+        del_btn.clicked.connect(lambda: self.deleted.emit(self))
+        main_row.addWidget(del_btn)
+
+        root.addLayout(main_row)
+
+        # ── Description bar ───────────────────────────────────────────────────
+        self.desc_lbl = QLabel("ⓘ Rule will be evaluated on each bar")
+        self.desc_lbl.setStyleSheet(f"""
+            color: {c().TEXT_DIM};
+            font-size: {ty().SIZE_XS}pt;
+            font-style: italic;
+            padding-left: 36px;
+        """)
+        root.addWidget(self.desc_lbl)
+
+    def _make_side_card(self, side: str, header: str, header_color: str) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background: {c().BG_INPUT};
+                border: 1px solid {c().BORDER};
+                border-top: 2px solid {header_color};
+                border-radius: {sp().RADIUS_MD}px;
+                padding: {sp().PAD_SM}px;
+            }}
+        """)
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(sp().PAD_SM, sp().PAD_SM, sp().PAD_SM, sp().PAD_SM)
+        lay.setSpacing(sp().GAP_SM)
+
+        # Header label
+        hdr = QLabel(header)
+        hdr.setStyleSheet(f"""
+            color: {header_color};
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        """)
+        lay.addWidget(hdr)
+
+        # Type + shift row
+        type_row = QHBoxLayout()
+        type_row.setSpacing(sp().GAP_SM)
+
+        type_cb = styled_combo(SIDE_TYPES)
+        type_cb.setFixedWidth(100)
+        type_row.addWidget(type_cb)
+
+        shift_sb = QSpinBox()
+        shift_sb.setRange(0, 100)
+        shift_sb.setValue(0)
+        shift_sb.setPrefix("  ⏱")
+        shift_sb.setSuffix(" bars")
+        shift_sb.setFixedWidth(90)
+        shift_sb.setToolTip("Bars to look back (0 = current bar)")
+        shift_sb.setStyleSheet(f"""
+            QSpinBox {{
+                background: {c().BG_INPUT};
+                color: {c().TEXT_MAIN};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_SM}px;
+                padding: {sp().PAD_XS}px;
+                font-size: {ty().SIZE_XS}pt;
+            }}
+            QSpinBox:focus {{ border-color: {c().BORDER_FOCUS}; }}
+        """)
+        type_row.addWidget(shift_sb)
+        type_row.addStretch()
+        lay.addLayout(type_row)
+
+        # Stacked input area
+        stack = QStackedWidget()
+
+        # Page 0: Indicator
+        ind_page = QWidget()
+        ind_lay = QVBoxLayout(ind_page)
+        ind_lay.setContentsMargins(0, 0, 0, 0)
+        ind_lay.setSpacing(sp().GAP_XS)
+        ind_cb = QComboBox()
+        ind_cb.setEditable(True)
+        ind_cb.addItems([i.upper() for i in ALL_INDICATORS])
+        ind_cb.setStyleSheet(f"""
+                    QComboBox {{
+                        background: {c().BG_INPUT};
+                        color: {c().GREEN};
+                        border: 1px solid {c().BORDER};
+                        border-radius: {sp().RADIUS_SM}px;
+                        padding: {sp().PAD_XS}px 28px {sp().PAD_XS}px {sp().PAD_SM}px;
+                        font-size: {ty().SIZE_BODY}pt;
+                        font-weight: bold;
+                        min-height: 28px;
+                    }}
+                    QComboBox:hover {{
+                        border-color: {c().GREEN};
+                        background: {c().BG_HOVER};
+                    }}
+                    QComboBox::drop-down {{
+                        subcontrol-origin: padding;
+                        subcontrol-position: top right;
+                        width: 26px;
+                        border-left: 1px solid {c().BORDER};
+                        border-top-right-radius: {sp().RADIUS_SM}px;
+                        border-bottom-right-radius: {sp().RADIUS_SM}px;
+                        background: {c().GREEN}22;
+                    }}
+                    QComboBox::drop-down:hover {{
+                        background: {c().GREEN}44;
+                    }}
+                    QComboBox::down-arrow {{
+                        image: none;
+                        width: 0;
+                        height: 0;
+                        border-left: 4px solid transparent;
+                        border-right: 4px solid transparent;
+                        border-top: 6px solid {c().GREEN};
+                    }}
+                    QComboBox QAbstractItemView {{
+                        background: {c().BG_PANEL};
+                        color: {c().TEXT_MAIN};
+                        border: 1px solid {c().BORDER};
+                        selection-background-color: {c().BG_SELECTED};
+                    }}
+                """)
+        ind_lay.addWidget(ind_cb)
+
+        sub_col_cb = styled_combo()
+        sub_col_cb.hide()
+        ind_lay.addWidget(sub_col_cb)
+
+        ind_cb.currentTextChanged.connect(
+            lambda txt, cb=sub_col_cb: self._update_sub_cols(txt.lower(), cb)
+        )
+        stack.addWidget(ind_page)
+
+        # Page 1: Scalar
+        scalar_page = QWidget()
+        scalar_lay = QVBoxLayout(scalar_page)
+        scalar_lay.setContentsMargins(0, 0, 0, 0)
+        scalar_edit = styled_input("numeric value")
+        scalar_edit.setValidator(QDoubleValidator())
+        scalar_lay.addWidget(scalar_edit)
+        stack.addWidget(scalar_page)
+
+        # Page 2: Column
+        col_page = QWidget()
+        col_lay = QVBoxLayout(col_page)
+        col_lay.setContentsMargins(0, 0, 0, 0)
+        col_cb = QComboBox()
+        col_cb.addItems(COLUMNS)
+        col_cb.setStyleSheet(f"""
+                    QComboBox {{
+                        background: {c().BG_INPUT};
+                        color: {c().CYAN if hasattr(c(), 'CYAN') else c().BLUE};
+                        border: 1px solid {c().BORDER};
+                        border-radius: {sp().RADIUS_SM}px;
+                        padding: {sp().PAD_XS}px 28px {sp().PAD_XS}px {sp().PAD_SM}px;
+                        font-size: {ty().SIZE_BODY}pt;
+                        font-weight: bold;
+                        min-height: 28px;
+                    }}
+                    QComboBox:hover {{
+                        border-color: {c().CYAN if hasattr(c(), 'CYAN') else c().BLUE};
+                        background: {c().BG_HOVER};
+                    }}
+                    QComboBox::drop-down {{
+                        subcontrol-origin: padding;
+                        subcontrol-position: top right;
+                        width: 26px;
+                        border-left: 1px solid {c().BORDER};
+                        border-top-right-radius: {sp().RADIUS_SM}px;
+                        border-bottom-right-radius: {sp().RADIUS_SM}px;
+                        background: {(c().CYAN if hasattr(c(), 'CYAN') else c().BLUE)}22;
+                    }}
+                    QComboBox::drop-down:hover {{
+                        background: {(c().CYAN if hasattr(c(), 'CYAN') else c().BLUE)}44;
+                    }}
+                    QComboBox::down-arrow {{
+                        width: 0; height: 0;
+                        border-left: 4px solid transparent;
+                        border-right: 4px solid transparent;
+                        border-top: 6px solid {c().CYAN if hasattr(c(), 'CYAN') else c().BLUE};
+                    }}
+                    QComboBox QAbstractItemView {{
+                        background: {c().BG_PANEL};
+                        color: {c().TEXT_MAIN};
+                        border: 1px solid {c().BORDER};
+                        selection-background-color: {c().BG_SELECTED};
+                    }}
+                """)
+        col_lay.addWidget(col_cb)
+        stack.addWidget(col_page)
+        lay.addWidget(stack)
+
+        # Wire type → stack
+        def on_type(text, st=stack):
+            idx = SIDE_TYPES.index(text) if text in SIDE_TYPES else 0
+            st.setCurrentIndex(idx)
+            shift_sb.setVisible(text != "scalar")
+            self._update_description()
+
+        type_cb.currentTextChanged.connect(on_type)
+        type_cb.currentTextChanged.connect(lambda _: self.rule_changed.emit())
+
+        # Store references
+        setattr(self, f"{side}_type_cb", type_cb)
+        setattr(self, f"{side}_shift_sb", shift_sb)
+        setattr(self, f"{side}_stack", stack)
+        setattr(self, f"{side}_ind_cb", ind_cb)
+        setattr(self, f"{side}_sub_col_cb", sub_col_cb)
+        setattr(self, f"{side}_col_cb", col_cb)
+        setattr(self, f"{side}_scalar_edit", scalar_edit)
+
+        return frame
+
+    def _update_sub_cols(self, indicator: str, sub_cb: QComboBox):
+        sub_cb.blockSignals(True)
+        sub_cb.clear()
+        subs = get_indicator_sub_columns(indicator)
+        if subs:
+            for key, label, _ in subs:
+                sub_cb.addItem(f"↳ {label}")
+                sub_cb.setItemData(sub_cb.count() - 1, key, Qt.UserRole)
+            sub_cb.show()
+        else:
+            sub_cb.hide()
+        sub_cb.blockSignals(False)
+
+    def _make_op_card(self) -> QFrame:
+        frame = QFrame()
+        frame.setFixedWidth(110)
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background: {c().BG_INPUT};
+                border: 1px solid {c().BORDER};
+                border-top: 2px solid {c().YELLOW};
+                border-radius: {sp().RADIUS_MD}px;
+            }}
+        """)
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(sp().PAD_SM, sp().PAD_SM, sp().PAD_SM, sp().PAD_SM)
+        lay.setAlignment(Qt.AlignTop)
+
+        hdr = QLabel("OPERATOR")
+        hdr.setAlignment(Qt.AlignCenter)
+        hdr.setStyleSheet(f"""
+            color: {c().YELLOW};
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        """)
+        lay.addWidget(hdr)
+
+        self.op_cb = styled_combo(OPERATORS)
+        self.op_cb.setFixedWidth(90)
+        self.op_cb.currentTextChanged.connect(lambda _: self._update_description())
+        lay.addWidget(self.op_cb)
+        lay.addStretch()
+        return frame
+
+    def _make_weight_card(self) -> QFrame:
+        frame = QFrame()
+        frame.setFixedWidth(100)
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background: {c().BG_INPUT};
+                border: 1px solid {c().BORDER};
+                border-top: 2px solid {c().PURPLE};
+                border-radius: {sp().RADIUS_MD}px;
+            }}
+        """)
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(sp().PAD_SM, sp().PAD_SM, sp().PAD_SM, sp().PAD_SM)
+        lay.setAlignment(Qt.AlignTop)
+
+        hdr = QLabel("WEIGHT")
+        hdr.setAlignment(Qt.AlignCenter)
+        hdr.setStyleSheet(f"""
+            color: {c().PURPLE};
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        """)
+        lay.addWidget(hdr)
+
+        wr = get_rule_weight_range()
+        self.weight_spin = styled_spinbox(wr["min"], wr["max"], wr["step"], 1, wr["default"])
+        self.weight_spin.setFixedWidth(80)
+        self.weight_spin.valueChanged.connect(lambda _: self._update_description())
+
+        # Override color for weight
+        self.weight_spin.setStyleSheet(f"""
+            QDoubleSpinBox {{
+                background: {c().BG_INPUT};
+                color: {c().PURPLE};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_SM}px;
+                padding: {sp().PAD_XS}px;
+                font-size: {ty().SIZE_BODY}pt;
+                font-weight: bold;
+                text-align: center;
+                min-height: 28px;
+            }}
+            QDoubleSpinBox:focus {{ border-color: {c().PURPLE}; }}
+        """)
+        lay.addWidget(self.weight_spin)
+
+        self.suggest_lbl = QLabel("")
+        self.suggest_lbl.setAlignment(Qt.AlignCenter)
+        self.suggest_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt;")
+        lay.addWidget(self.suggest_lbl)
+        lay.addStretch()
+        return frame
+
+    def _load(self, rule: Dict):
+        """Populate widgets from rule dict."""
+        if not rule:
+            return
+        try:
+            for side in ("lhs", "rhs"):
+                data = rule.get(side, {})
+                t_cb = getattr(self, f"{side}_type_cb")
+                sh_sb = getattr(self, f"{side}_shift_sb")
+                ind_cb = getattr(self, f"{side}_ind_cb")
+                col_cb = getattr(self, f"{side}_col_cb")
+                sc_ed = getattr(self, f"{side}_scalar_edit")
+                sub_cb = getattr(self, f"{side}_sub_col_cb")
+
+                dtype = data.get("type", "indicator")
+                t_cb.setCurrentText(dtype)
+
+                sh_sb.setValue(int(data.get("shift", 0)))
+
+                if dtype == "indicator":
+                    ind = data.get("indicator", "rsi").upper()
+                    idx = ind_cb.findText(ind, Qt.MatchFixedString | Qt.MatchCaseSensitive)
+                    if idx < 0:
+                        ind_cb.setEditText(ind)
+                    else:
+                        ind_cb.setCurrentIndex(idx)
+                    self._update_sub_cols(ind.lower(), sub_cb)
+                    saved_sub = data.get("sub_col", "")
+                    if saved_sub:
+                        for i in range(sub_cb.count()):
+                            if sub_cb.itemData(i, Qt.UserRole) == saved_sub.upper():
+                                sub_cb.setCurrentIndex(i)
+                                break
+                elif dtype == "column":
+                    col = data.get("column", "close")
+                    idx = col_cb.findText(col, Qt.MatchFixedString | Qt.MatchCaseSensitive)
+                    if idx >= 0:
+                        col_cb.setCurrentIndex(idx)
+                else:
+                    sc_ed.setText(str(data.get("value", "")))
+
+            # operator
+            op = rule.get("op", ">")
+            idx = self.op_cb.findText(op)
+            if idx >= 0:
+                self.op_cb.setCurrentIndex(idx)
+
+            # weight
+            self.weight_spin.setValue(float(rule.get("weight", 1.0)))
+
+        except Exception as e:
+            logger.error(f"[RuleRowWidget._load] {e}", exc_info=True)
+
+    def collect(self) -> Dict:
+        """Read current widget state into a rule dict."""
+        result = {}
+        try:
+            for side in ("lhs", "rhs"):
+                dtype = getattr(self, f"{side}_type_cb").currentText()
+                shift = getattr(self, f"{side}_shift_sb").value()
+                ind_cb = getattr(self, f"{side}_ind_cb")
+                col_cb = getattr(self, f"{side}_col_cb")
+                sc_ed = getattr(self, f"{side}_scalar_edit")
+                sub_cb = getattr(self, f"{side}_sub_col_cb")
+
+                if dtype == "indicator":
+                    ind = ind_cb.currentText().lower()
+                    side_data = {"type": "indicator", "indicator": ind}
+                    if shift:
+                        side_data["shift"] = shift
+                    if sub_cb.isVisible() and sub_cb.currentData(Qt.UserRole):
+                        side_data["sub_col"] = sub_cb.currentData(Qt.UserRole)
+                elif dtype == "column":
+                    col = col_cb.currentText()
+                    side_data = {"type": "column", "column": col}
+                    if shift:
+                        side_data["shift"] = shift
+                else:
+                    try:
+                        val = float(sc_ed.text() or "0")
+                    except ValueError:
+                        val = 0.0
+                    side_data = {"type": "scalar", "value": val}
+
+                result[side] = side_data
+
+            result["op"] = self.op_cb.currentText()
+            result["weight"] = self.weight_spin.value()
+
+        except Exception as e:
+            logger.error(f"[RuleRowWidget.collect] {e}", exc_info=True)
+            result = {"lhs": {"type": "scalar", "value": 0},
+                      "op": ">",
+                      "rhs": {"type": "scalar", "value": 0},
+                      "weight": 1.0}
+        return result
+
+    def _update_description(self):
+        try:
+            lhs_type = self.lhs_type_cb.currentText()
+            rhs_type = self.rhs_type_cb.currentText()
+            op = self.op_cb.currentText()
+            weight = self.weight_spin.value()
+            lhs_shift = self.lhs_shift_sb.value()
+            rhs_shift = self.rhs_shift_sb.value()
+
+            lhs_val = (self.lhs_ind_cb.currentText() if lhs_type == "indicator"
+                       else self.lhs_col_cb.currentText() if lhs_type == "column"
+            else self.lhs_scalar_edit.text() or "?")
+            rhs_val = (self.rhs_ind_cb.currentText() if rhs_type == "indicator"
+                       else self.rhs_col_cb.currentText() if rhs_type == "column"
+            else self.rhs_scalar_edit.text() or "?")
+
+            lhs_shift_txt = f"[−{lhs_shift}]" if lhs_shift else ""
+            rhs_shift_txt = f"[−{rhs_shift}]" if rhs_shift else ""
+
+            self.desc_lbl.setText(
+                f"ⓘ  {lhs_val}{lhs_shift_txt}  {op}  {rhs_val}{rhs_shift_txt}   │   weight: {weight:.1f}×"
+            )
+        except Exception:
+            pass
+
+    def set_index(self, i: int):
+        self._index = i
+        self.idx_lbl.setText(f"{i + 1:02d}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIGNAL GROUP PANEL
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SignalGroupPanel(QWidget):
+    """Scrollable panel of rules for one signal type."""
+
+    rules_changed = pyqtSignal()
+
+    def __init__(self, signal_key: str, signal_color: str, parent=None):
+        super().__init__(parent)
+        self._signal_key = signal_key
+        self._signal_color = signal_color
+        self._rule_rows: List[RuleRowWidget] = []
+        self._build_ui()
+        try:
+            theme_manager.theme_changed.connect(self._apply_theme)
+            theme_manager.density_changed.connect(self._apply_theme)
+        except Exception:
+            pass
+
+    def _apply_theme(self, _=None):
+        self._restyle_scroll()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Group header bar ──────────────────────────────────────────────────
+        header_bar = QWidget()
+        header_bar.setFixedHeight(52)
+        header_bar.setStyleSheet(f"""
+            background: {c().BG_PANEL};
+            border-bottom: 1px solid {c().BORDER};
+        """)
+        hdr_lay = QHBoxLayout(header_bar)
+        hdr_lay.setContentsMargins(sp().PAD_XL, 0, sp().PAD_XL, 0)
+        hdr_lay.setSpacing(sp().GAP_LG)
+
+        # Logic
+        logic_lbl = QLabel("🔀 Logic:")
+        logic_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt; font-weight: bold;")
+        hdr_lay.addWidget(logic_lbl)
+
+        self.logic_cb = styled_combo(["AND", "OR"])
+        self.logic_cb.setFixedWidth(80)
+        hdr_lay.addWidget(self.logic_cb)
+
+        # Enabled
+        self.enabled_chk = QCheckBox("✓ Enabled")
+        self.enabled_chk.setChecked(True)
+        self.enabled_chk.setStyleSheet(f"""
+            QCheckBox {{
+                color: {c().TEXT_MAIN};
+                font-size: {ty().SIZE_SM}pt;
+                font-weight: bold;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+            }}
+            QCheckBox::indicator:unchecked {{
+                background: {c().BG_INPUT};
+                border: 2px solid {c().BORDER};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {self._signal_color};
+                border: 2px solid {self._signal_color};
+            }}
+        """)
+        hdr_lay.addWidget(self.enabled_chk)
+
+        hdr_lay.addStretch()
+
+        self.rule_count_badge = QLabel("0 rules")
+        self.rule_count_badge.setStyleSheet(f"""
+            color: {self._signal_color};
+            background: {self._signal_color}22;
+            border: 1px solid {self._signal_color}55;
+            border-radius: 999px;
+            padding: 1px 10px;
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+        """)
+        hdr_lay.addWidget(self.rule_count_badge)
+
+        root.addWidget(header_bar)
+
+        # ── Scrollable rules area ─────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._restyle_scroll()
+
+        self._rules_container = QWidget()
+        self._rules_container.setStyleSheet("background: transparent;")
+        self._rules_layout = QVBoxLayout(self._rules_container)
+        self._rules_layout.setContentsMargins(sp().PAD_LG, sp().PAD_LG, sp().PAD_LG, sp().PAD_LG)
+        self._rules_layout.setSpacing(sp().GAP_MD)
+        self._rules_layout.setAlignment(Qt.AlignTop)
+
+        self._empty_lbl = QLabel("✨  No rules yet — click  + Add Rule  to begin")
+        self._empty_lbl.setAlignment(Qt.AlignCenter)
+        self._empty_lbl.setStyleSheet(f"""
+            color: {c().TEXT_DIM};
+            font-size: {ty().SIZE_BODY}pt;
+            padding: 40px;
+            border: 2px dashed {c().BORDER};
+            border-radius: {sp().RADIUS_LG}px;
+            margin: 20px;
+        """)
+        self._rules_layout.addWidget(self._empty_lbl)
+        self._rules_layout.addStretch()
+
+        self._scroll.setWidget(self._rules_container)
+        root.addWidget(self._scroll, 1)
+
+        # ── Actions bar ───────────────────────────────────────────────────────
+        actions_bar = QWidget()
+        actions_bar.setFixedHeight(52)
+        actions_bar.setStyleSheet(f"background: {c().BG_PANEL}; border-top: 1px solid {c().BORDER};")
+        actions_lay = QHBoxLayout(actions_bar)
+        actions_lay.setContentsMargins(sp().PAD_XL, 0, sp().PAD_XL, 0)
+        actions_lay.setSpacing(sp().GAP_MD)
+
+        add_btn = styled_button("＋  Add Rule", c().GREEN, c().GREEN_BRIGHT, min_w=120)
+        add_btn.clicked.connect(lambda: self.add_rule())
+        actions_lay.addWidget(add_btn)
+
+        # Preset loader
+        self.preset_cb = styled_combo(["📋 Load Preset…", "RSI Overbought", "EMA Cross", "MACD Signal"])
+        self.preset_cb.setFixedWidth(200)
+        actions_lay.addWidget(self.preset_cb)
+
+        actions_lay.addStretch()
+
+        clear_btn = ghost_button("🗑  Clear All", c().RED, min_w=100)
+        clear_btn.clicked.connect(self._clear_all)
+        actions_lay.addWidget(clear_btn)
+
+        root.addWidget(actions_bar)
+
+    def _restyle_scroll(self):
+        self._scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: {c().BG_PANEL if hasattr(c(), 'BG_MAIN') else c().BG_PANEL};
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {c().BG_PANEL};
+                width: 6px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {c().BORDER_STRONG};
+                border-radius: 3px;
+                min-height: 20px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar:horizontal {{ height: 0; }}
+        """)
+
+    def add_rule(self, rule: Dict = None):
+        """Append a new rule row."""
+        try:
+            row = RuleRowWidget(rule, index=len(self._rule_rows), parent=self._rules_container)
+            row.deleted.connect(self._remove_rule)
+            row.rule_changed.connect(self.rules_changed)
+
+            # Insert before stretch
+            pos = max(0, self._rules_layout.count() - 1)
+            self._rules_layout.insertWidget(pos, row)
+            self._rule_rows.append(row)
+            self._update_count()
+
+            QTimer.singleShot(80, lambda: self._scroll.ensureWidgetVisible(row))
+        except Exception as e:
+            logger.error(f"[SignalGroupPanel.add_rule] {e}", exc_info=True)
+
+    def _remove_rule(self, row: RuleRowWidget):
+        try:
+            if row in self._rule_rows:
+                self._rule_rows.remove(row)
+                self._rules_layout.removeWidget(row)
+                row.deleteLater()
+                for i, r in enumerate(self._rule_rows):
+                    r.set_index(i)
+                self._update_count()
+        except Exception as e:
+            logger.error(f"[SignalGroupPanel._remove_rule] {e}", exc_info=True)
+
+    def _clear_all(self):
+        for row in list(self._rule_rows):
+            self._remove_rule(row)
+
+    def _update_count(self):
+        n = len(self._rule_rows)
+        self.rule_count_badge.setText(f"{n} rule{'s' if n != 1 else ''}")
+        self._empty_lbl.setVisible(n == 0)
+        self.rules_changed.emit()
+
+    def load(self, group_data: Dict):
+        """Load from engine data."""
+        self._clear_all()
+        if not group_data:
+            return
+        self.logic_cb.setCurrentText(group_data.get("logic", "AND"))
+        self.enabled_chk.setChecked(bool(group_data.get("enabled", True)))
+        for rule in group_data.get("rules", []):
+            self.add_rule(rule)
+
+    def collect(self) -> Dict:
+        return {
+            "logic": self.logic_cb.currentText(),
+            "enabled": self.enabled_chk.isChecked(),
+            "rules": [r.collect() for r in self._rule_rows],
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIGNAL RULES TAB
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SignalRulesTab(QWidget):
+    """Main signal rules editor — sub-tabs per signal group."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._panels: Dict[str, SignalGroupPanel] = {}
+        self._build_ui()
+        try:
+            theme_manager.theme_changed.connect(self._apply_theme)
+            theme_manager.density_changed.connect(self._apply_theme)
+        except Exception:
+            pass
+
+    def _apply_theme(self, _=None):
+        self._restyle_tab_bar()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Conflict resolution bar ───────────────────────────────────────────
+        cr_bar = QWidget()
+        cr_bar.setFixedHeight(48)
+        cr_bar.setStyleSheet(f"""
+            background: {c().BG_PANEL};
+            border-bottom: 1px solid {c().BORDER};
+        """)
+        cr_lay = QHBoxLayout(cr_bar)
+        cr_lay.setContentsMargins(sp().PAD_XL, 0, sp().PAD_XL, 0)
+        cr_lay.setSpacing(sp().GAP_LG)
+
+        cr_lbl = QLabel("⚖  Conflict Resolution:")
+        cr_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt; font-weight: bold;")
+        cr_lay.addWidget(cr_lbl)
+
+        self.conflict_cb = styled_combo(["WAIT", "PRIORITY"])
+        self.conflict_cb.setFixedWidth(130)
+        cr_lay.addWidget(self.conflict_cb)
+
+        hint = QLabel("  (applied when BUY_CALL & BUY_PUT both fire)")
+        hint.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt; font-style: italic;")
+        cr_lay.addWidget(hint)
+        cr_lay.addStretch()
+
+        self.total_rules_lbl = QLabel("📊 Total: 0 rules")
+        self.total_rules_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt; font-weight: bold;")
+        cr_lay.addWidget(self.total_rules_lbl)
+
+        enable_all = ghost_button("✓ Enable All", c().GREEN, min_w=110)
+        disable_all = ghost_button("✗ Disable All", c().RED, min_w=110)
+        enable_all.clicked.connect(lambda: [p.enabled_chk.setChecked(True) for p in self._panels.values()])
+        disable_all.clicked.connect(lambda: [p.enabled_chk.setChecked(False) for p in self._panels.values()])
+        cr_lay.addWidget(enable_all)
+        cr_lay.addWidget(disable_all)
+
+        root.addWidget(cr_bar)
+
+        # ── Signal sub-tabs ───────────────────────────────────────────────────
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setDocumentMode(True)
+        self._tab_widget.tabBar().setExpanding(True)
+        self._restyle_tab_bar()
+
+        for key, label, color_token in SIGNAL_GROUPS:
+            color = getattr(c(), color_token, c().BLUE)
+            panel = SignalGroupPanel(key, color)
+            panel.rules_changed.connect(self._update_total)
+            self._panels[key] = panel
+            self._tab_widget.addTab(panel, label)
+
+        root.addWidget(self._tab_widget, 1)
+
+    def _restyle_tab_bar(self):
+        self._tab_widget.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: none;
+                background: {c().BG_PANEL};
+            }}
+            QTabBar::tab {{
+                background: {c().BG_HOVER};
+                color: {c().TEXT_DIM};
+                border: 1px solid {c().BORDER};
+                border-bottom: none;
+                border-top-left-radius: {sp().RADIUS_MD}px;
+                border-top-right-radius: {sp().RADIUS_MD}px;
+                padding: {sp().PAD_SM}px {sp().PAD_LG}px;
+                margin-right: 2px;
+                font-size: {ty().SIZE_SM}pt;
+                min-width: 110px;
+                min-height: {sp().TAB_H}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {c().BG_PANEL};
+                color: {c().TEXT_MAIN};
+                border-bottom: 2px solid {getattr(c(), "ACCENT", c().BLUE)};
+                font-weight: bold;
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {c().BORDER};
+                color: {c().TEXT_MAIN};
+            }}
+        """)
+
+    def _update_total(self):
+        total = sum(len(p._rule_rows) for p in self._panels.values())
+        self.total_rules_lbl.setText(f"📊 Total: {total} rule{'s' if total != 1 else ''}")
+
+    def load(self, strategy: Dict):
+        engine = strategy.get("engine", {}) if strategy else {}
+        self.conflict_cb.setCurrentText(engine.get("conflict_resolution", "WAIT"))
+        for key, panel in self._panels.items():
+            panel.load(engine.get(key, {"logic": "AND", "enabled": True, "rules": []}))
+        self._update_total()
+
+    def collect(self) -> Dict:
+        result = {"conflict_resolution": self.conflict_cb.currentText()}
+        for key, panel in self._panels.items():
+            result[key] = panel.collect()
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INFO TAB
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InfoTab(QScrollArea):
+    """Strategy name, description, and statistics."""
+
+    changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+        self._build_ui()
+        try:
+            theme_manager.theme_changed.connect(self._apply_theme)
+            theme_manager.density_changed.connect(self._apply_theme)
+        except Exception:
+            pass
+
+    def _apply_theme(self, _=None):
+        pass  # Handled by global stylesheet
+
+    def _build_ui(self):
+        container = QWidget()
+        self.setWidget(container)
+        root = QHBoxLayout(container)
+        root.setContentsMargins(sp().PAD_2XL, sp().PAD_2XL, sp().PAD_2XL, sp().PAD_2XL)
+        root.setSpacing(sp().GAP_XL)
+
+        # ── Left: form ────────────────────────────────────────────────────────
+        left = QVBoxLayout()
+        left.setSpacing(sp().GAP_LG)
+
+        details_card = self._make_card()
+        details_lay = QVBoxLayout(details_card)
+        details_lay.setSpacing(sp().GAP_LG)
+        details_lay.addWidget(section_label("STRATEGY DETAILS"))
+
+        details_lay.addWidget(accent_label("NAME", c().BLUE))
+        self.name_edit = styled_input("e.g. EMA Crossover Strategy")
+        self.name_edit.setMinimumWidth(380)
+        self.name_edit.textChanged.connect(self.changed)
+        details_lay.addWidget(self.name_edit)
+
+        details_lay.addWidget(accent_label("DESCRIPTION", c().BLUE))
+        self.desc_edit = QTextEdit()
+        self.desc_edit.setPlaceholderText("Describe when this strategy fires, market conditions, risk profile…")
+        self.desc_edit.setMaximumHeight(110)
+        self.desc_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background: {c().BG_INPUT};
+                color: {c().TEXT_MAIN};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_MD}px;
+                padding: {sp().PAD_SM}px;
+                font-size: {ty().SIZE_BODY}pt;
+            }}
+            QTextEdit:focus {{ border-color: {c().BORDER_FOCUS}; }}
+        """)
+        self.desc_edit.textChanged.connect(self.changed)
+        details_lay.addWidget(self.desc_edit)
+        left.addWidget(details_card)
+
+        # Engine settings card
+        engine_card = self._make_card()
+        engine_lay = QGridLayout(engine_card)
+        engine_lay.setSpacing(sp().GAP_MD)
+        engine_lay.addWidget(section_label("ENGINE SETTINGS"), 0, 0, 1, 4)
+
+        engine_lay.addWidget(accent_label("Conflict Resolution"), 1, 0)
+        self.conflict_cb = styled_combo(["WAIT", "PRIORITY"])
+        self.conflict_cb.setFixedWidth(140)
+        engine_lay.addWidget(self.conflict_cb, 1, 1)
+
+        engine_lay.addWidget(accent_label("Min Confidence"), 1, 2)
+        self.conf_spin = styled_spinbox(0.0, 1.0, 0.05, 2, 0.6)
+        self.conf_spin.setFixedWidth(80)
+        engine_lay.addWidget(self.conf_spin, 1, 3)
+        left.addWidget(engine_card)
+        left.addStretch()
+
+        # ── Right: stats ──────────────────────────────────────────────────────
+        right = QVBoxLayout()
+        right.setSpacing(sp().GAP_LG)
+
+        stats_card = self._make_card()
+        stats_lay = QVBoxLayout(stats_card)
+        stats_lay.addWidget(section_label("STATISTICS"))
+        stats_lay.addSpacing(sp().GAP_MD)
+
+        self._stat_labels: Dict[str, QLabel] = {}
+        stats = [
+            ("Total Rules", "BLUE"),
+            ("Unique Indicators", "PURPLE"),
+            ("Enabled Groups", "GREEN"),
+            ("Avg Rule Weight", "ACCENT" if hasattr(c(), "ACCENT") else "YELLOW"),
+        ]
+        for stat_name, color_token in stats:
+            row = QHBoxLayout()
+            row.setSpacing(sp().GAP_MD)
+            name_lbl = QLabel(stat_name)
+            name_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt;")
+            row.addWidget(name_lbl)
+            row.addStretch()
+            val_lbl = QLabel("—")
+            col = getattr(c(), color_token, c().BLUE)
+            val_lbl.setStyleSheet(f"""
+                color: {col};
+                font-size: {ty().SIZE_LG}pt;
+                font-weight: bold;
+                background: {col}11;
+                border-radius: {sp().RADIUS_SM}px;
+                padding: 1px 8px;
+            """)
+            row.addWidget(val_lbl)
+            self._stat_labels[stat_name] = val_lbl
+            stats_lay.addLayout(row)
+            stats_lay.addWidget(make_separator())
+
+        right.addWidget(stats_card)
+
+        meta_card = self._make_card()
+        meta_lay = QVBoxLayout(meta_card)
+        meta_lay.addWidget(section_label("METADATA"))
+        meta_lay.addSpacing(sp().GAP_SM)
+
+        self.created_lbl = self._meta_row(meta_lay, "Created")
+        self.updated_lbl = self._meta_row(meta_lay, "Last Saved")
+        self.slug_lbl = self._meta_row(meta_lay, "Slug / ID")
+        right.addWidget(meta_card)
+        right.addStretch()
+
+        root.addLayout(left, 3)
+        root.addLayout(right, 2)
+
+    def _make_card(self) -> QFrame:
+        f = QFrame()
+        f.setStyleSheet(f"""
+            QFrame {{
+                background: {c().BG_PANEL if hasattr(c(), 'BG_CARD') else c().BG_HOVER};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_LG}px;
+                padding: {sp().PAD_LG}px;
+            }}
+        """)
+        return f
+
+    def _meta_row(self, layout: QVBoxLayout, label: str) -> QLabel:
+        row = QHBoxLayout()
+        lbl = QLabel(label + ":")
+        lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt;")
+        val = QLabel("—")
+        val.setStyleSheet(f"color: {c().TEXT_MAIN}; font-size: {ty().SIZE_XS}pt; font-family: monospace;")
+        row.addWidget(lbl)
+        row.addStretch()
+        row.addWidget(val)
+        layout.addLayout(row)
+        return val
+
+    def load(self, strategy: Dict):
+        if not strategy:
+            return
+        self.name_edit.setText(strategy.get("name", ""))
+        self.desc_edit.setPlainText(strategy.get("description", ""))
+        engine = strategy.get("engine", {})
+        self.conflict_cb.setCurrentText(engine.get("conflict_resolution", "WAIT"))
+        self.conf_spin.setValue(float(engine.get("min_confidence", 0.6)))
+        self.created_lbl.setText(str(strategy.get("created_at", "—")))
+        self.updated_lbl.setText(str(strategy.get("updated_at", "—")))
+        self.slug_lbl.setText(str(strategy.get("slug", "—")))
+        self._recalculate_stats(strategy)
+
+    def _recalculate_stats(self, strategy: Dict):
+        try:
+            engine = strategy.get("engine", {})
+            total_rules = 0
+            indicators = set()
+            enabled_count = 0
+            weights = []
+
+            for sig_key, _, _ in SIGNAL_GROUPS:
+                group = engine.get(sig_key, {})
+                rules = group.get("rules", [])
+                total_rules += len(rules)
+                if group.get("enabled", True):
+                    enabled_count += 1
+                for rule in rules:
+                    weights.append(float(rule.get("weight", 1.0)))
+                    for side in ("lhs", "rhs"):
+                        sd = rule.get(side, {})
+                        if sd.get("type") == "indicator":
+                            indicators.add(sd.get("indicator", "").lower())
+
+            avg_w = sum(weights) / len(weights) if weights else 0.0
+            self._stat_labels["Total Rules"].setText(str(total_rules))
+            self._stat_labels["Unique Indicators"].setText(str(len(indicators)))
+            self._stat_labels["Enabled Groups"].setText(f"{enabled_count} / 5")
+            self._stat_labels["Avg Rule Weight"].setText(f"{avg_w:.1f}")
+        except Exception as e:
+            logger.error(f"[InfoTab._recalculate_stats] {e}", exc_info=True)
+
+    def collect(self) -> Dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "description": self.desc_edit.toPlainText().strip(),
+            "conflict_resolution": self.conflict_cb.currentText(),
+            "min_confidence": self.conf_spin.value(),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INDICATORS TAB
+# ─────────────────────────────────────────────────────────────────────────────
+
+class IndicatorsTab(QScrollArea):
+    """Visual catalogue of all available indicators."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+        self._build_ui()
+
+    def _build_ui(self):
+        container = QWidget()
+        self.setWidget(container)
+        root = QVBoxLayout(container)
+        root.setContentsMargins(sp().PAD_XL, sp().PAD_XL, sp().PAD_XL, sp().PAD_XL)
+        root.setSpacing(sp().GAP_LG)
+
+        # Filter bar
+        filter_bar = QHBoxLayout()
+        filter_lbl = QLabel("⌕ Filter:")
+        filter_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_BODY}pt;")
+        filter_bar.addWidget(filter_lbl)
+
+        self.filter_edit = styled_input("Type to filter indicators…")
+        self.filter_edit.setMaximumWidth(400)
+        self.filter_edit.textChanged.connect(self._filter)
+        filter_bar.addWidget(self.filter_edit)
+        filter_bar.addStretch()
+        root.addLayout(filter_bar)
+
+        # Category sections
+        self._cards: List[QFrame] = []
+        self._cat_sections: List[QWidget] = []
+
+        for category, indicators in get_indicators_by_category().items():
+            if not indicators:
+                continue
+
+            cat_header = QLabel(f"📁  {category.upper()}")
+            cat_header.setStyleSheet(f"""
+                color: {c().BLUE};
+                font-size: {ty().SIZE_BODY}pt;
+                font-weight: bold;
+                letter-spacing: 0.8px;
+                padding: {sp().PAD_SM}px 0;
+                border-bottom: 1px solid {c().BORDER};
+            """)
+            root.addWidget(cat_header)
+
+            grid_widget = QWidget()
+            grid = QGridLayout(grid_widget)
+            grid.setSpacing(sp().GAP_MD)
+
+            row_idx, col_idx = 0, 0
+            for indicator in sorted(indicators):
+                card = self._make_indicator_card(indicator)
+                grid.addWidget(card, row_idx, col_idx)
+                self._cards.append((card, indicator))
+                col_idx += 1
+                if col_idx >= 4:
+                    col_idx = 0
+                    row_idx += 1
+
+            section = QWidget()
+            sec_lay = QVBoxLayout(section)
+            sec_lay.setContentsMargins(0, 0, 0, 0)
+            sec_lay.addWidget(cat_header)
+            sec_lay.addWidget(grid_widget)
+            self._cat_sections.append((section, category))
+            root.addWidget(section)
+
+        root.addStretch()
+
+    def _make_indicator_card(self, name: str) -> QFrame:
+        card = QFrame()
+        card.setFixedSize(220, 190)
+        card.setCursor(Qt.PointingHandCursor)
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {c().BG_PANEL};
+                border: 1px solid {c().BORDER};
+                border-top: 2px solid {c().GREEN}44;
+                border-radius: {sp().RADIUS_MD}px;
+            }}
+            QFrame:hover {{
+                border-top: 2px solid {c().GREEN};
+                background: {c().BG_HOVER};
+            }}
+        """)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(sp().PAD_MD, sp().PAD_MD, sp().PAD_MD, sp().PAD_MD)
+        lay.setSpacing(sp().GAP_SM)
+
+        name_lbl = QLabel(name.upper())
+        name_lbl.setStyleSheet(f"color: {c().GREEN}; font-weight: bold; font-size: {ty().SIZE_BODY}pt;")
+        lay.addWidget(name_lbl)
+
+        # Category
+        cat = get_indicator_category(name)
+        cat_lbl = QLabel(f"📌 {cat}")
+        cat_lbl.setStyleSheet(f"""
+            color: {c().BLUE}CC;
+            font-size: {ty().SIZE_XS}pt;
+            background: {c().BLUE}11;
+            border-radius: {sp().RADIUS_SM}px;
+            padding: 1px 5px;
+        """)
+        lay.addWidget(cat_lbl)
+
+        # Params
+        params = get_indicator_params(name)
+        if params:
+            param_text = "\n".join(f"• {k}: {v}" for k, v in list(params.items())[:4])
+            if len(params) > 4:
+                param_text += f"\n• … (+{len(params) - 4} more)"
+        else:
+            param_text = "• No parameters"
+        param_lbl = QLabel(param_text)
+        param_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt;")
+        param_lbl.setWordWrap(True)
+        lay.addWidget(param_lbl)
+
+        # Sub-columns
+        subs = get_indicator_sub_columns(name)
+        if subs:
+            sub_text = "  ".join(f"[{k}]" for k, _, _ in subs)
+            sub_lbl = QLabel(f"↳ {sub_text}")
+            sub_lbl.setStyleSheet(f"color: {c().PURPLE}; font-size: {ty().SIZE_XS}pt;")
+            lay.addWidget(sub_lbl)
+
+        # Weight
+        w = get_suggested_weight(name)
+        w_lbl = QLabel(f"⚖ suggested weight: {w:.1f}")
+        w_lbl.setStyleSheet(f"color: {c().PURPLE}; font-size: {ty().SIZE_XS}pt; font-weight: bold;")
+        lay.addWidget(w_lbl)
+
+        lay.addStretch()
+        return card
+
+    def _filter(self, text: str):
+        text = text.lower()
+        for card, name in self._cards:
+            card.setVisible(not text or text in name.lower())
+
+    def load(self, strategy: Dict):
+        pass
+
+    def collect(self) -> Dict:
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELP TAB
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HelpTab(QScrollArea):
+    """Reference documentation panel."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+        self._build_ui()
+
+    def _build_ui(self):
+        container = QWidget()
+        self.setWidget(container)
+        root = QVBoxLayout(container)
+        root.setContentsMargins(sp().PAD_2XL, sp().PAD_2XL, sp().PAD_2XL, sp().PAD_2XL)
+        root.setSpacing(sp().GAP_LG)
+
+        sections = [
+            ("📘 How Rules Work",
+             "Each rule compares a LEFT SIDE value against a RIGHT SIDE value using a comparison OPERATOR.\n\n"
+             "Rules within a group are combined using the group's logic (AND requires ALL rules to pass; "
+             "OR requires at least ONE to pass). If the group's combined condition evaluates true, the signal fires."),
+            ("⚖  Rule Weights & Confidence",
+             "Every rule carries a weight (0.1 – 5.0) that scales its contribution to the group's confidence score.\n\n"
+             "Confidence = Σ(matching rule weights) / Σ(all rule weights)\n\n"
+             "A signal only fires when confidence ≥ the configured Min Confidence threshold."),
+            ("⏱  Bar Shifts",
+             "Shift = 0 reads the current bar.\n"
+             "Shift = 1 reads the previous bar.\n"
+             "Shift = N reads N bars back.\n\n"
+             "Use shifts to compare current vs. historical values:\n"
+             "  RSI[0] > RSI[1]  →  RSI is rising right now"),
+            ("⚡  Conflict Resolution",
+             "WAIT   — if both BUY_CALL and BUY_PUT fire simultaneously, take no action until one clears.\n"
+             "PRIORITY — if both fire simultaneously, always prefer BUY_CALL."),
+            ("📋  Multi-Output Indicators",
+             "Some indicators (MACD, Bollinger Bands, Stochastic) produce multiple output columns.\n"
+             "Use the ↳ Output Column selector that appears after choosing such an indicator to specify "
+             "which column to compare:\n\n"
+             "  MACD → [MACD Line | Signal Line | Histogram]\n"
+             "  BB   → [Lower Band | Middle Band | Upper Band]\n"
+             "  STOCH → [%K | %D]"),
+        ]
+
+        for title, body in sections:
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {c().BG_PANEL};
+                    border: 1px solid {c().BORDER};
+                    border-left: 3px solid {getattr(c(), "ACCENT", c().BLUE)};
+                    border-radius: {sp().RADIUS_MD}px;
+                    padding: {sp().PAD_LG}px;
+                }}
+            """)
+            lay = QVBoxLayout(card)
+            lay.setSpacing(sp().GAP_MD)
+
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet(f"""
+                color: {c().TEXT_MAIN};
+                font-size: {ty().SIZE_LG}pt;
+                font-weight: bold;
+            """)
+            lay.addWidget(title_lbl)
+
+            body_lbl = QLabel(body)
+            body_lbl.setWordWrap(True)
+            body_lbl.setStyleSheet(f"""
+                color: {c().TEXT_DIM};
+                font-size: {ty().SIZE_BODY}pt;
+                line-height: 1.6;
+            """)
+            lay.addWidget(body_lbl)
+            root.addWidget(card)
+
+        # Code example
+        example_card = QFrame()
+        example_card.setStyleSheet(f"""
+            QFrame {{
+                background: {c().BG_PANEL};
+                border: 1px solid {c().BORDER};
+                border-top: 2px solid {c().BLUE};
+                border-radius: {sp().RADIUS_MD}px;
+                padding: {sp().PAD_LG}px;
+            }}
+        """)
+        ex_lay = QVBoxLayout(example_card)
+        ex_hdr = QLabel("🔗 Example Rule")
+        ex_hdr.setStyleSheet(f"color: {c().BLUE}; font-size: {ty().SIZE_LG}pt; font-weight: bold;")
+        ex_lay.addWidget(ex_hdr)
+
+        code_lbl = QLabel('  RSI(length=14)[shift=0]   <   30   →   weight: 2.5')
+        code_lbl.setStyleSheet(f"""
+            background: {c().BG_INPUT};
+            color: {c().GREEN};
+            font-family: 'Consolas', monospace;
+            font-size: {ty().SIZE_BODY}pt;
+            border-radius: {sp().RADIUS_MD}px;
+            padding: {sp().PAD_MD}px;
+        """)
+        ex_lay.addWidget(code_lbl)
+
+        desc_lbl = QLabel(
+            '"If RSI with period 14 on the current bar is below 30, '
+            'contribute 2.5× to the BUY_CALL confidence score."'
+        )
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt; font-style: italic;")
+        ex_lay.addWidget(desc_lbl)
+        root.addWidget(example_card)
+        root.addStretch()
+
+    def load(self, strategy: Dict): pass
+
+    def collect(self) -> Dict: return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMPORT / EXPORT DIALOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ImportExportDialog(QDialog):
+    """Frameless JSON import/export dialog."""
+
+    def __init__(self, mode: str, strategy_data: Dict = None, parent=None):
+        super().__init__(parent)
+        self.mode = mode
+        self.strategy_data = strategy_data
+        self._imported_data: Dict = {}
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(720, 540)
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        card = QFrame()
+        card.setObjectName("ioCard")
+        card.setStyleSheet(f"""
+            QFrame#ioCard {{
+                background: {c().BG_PANEL};
+                border: 1px solid {c().BORDER_FOCUS};
+                border-top: 3px solid {c().GREEN if self.mode == "export" else c().CYAN if hasattr(c(), "CYAN") else c().BLUE};
+                border-radius: {sp().RADIUS_LG}px;
+            }}
+        """)
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(sp().PAD_XL, 0, sp().PAD_XL, sp().PAD_XL)
+        card_lay.setSpacing(sp().GAP_LG)
+
+        # Title bar
+        tbar = QHBoxLayout()
+        tbar.setContentsMargins(0, sp().PAD_MD, 0, sp().PAD_MD)
+        icon = "↑" if self.mode == "export" else "↓"
+        label_text = f"{icon}  {'Export' if self.mode == 'export' else 'Import'} Strategy"
+        title = QLabel(label_text)
+        title.setStyleSheet(f"""
+            color: {c().GREEN if self.mode == "export" else c().CYAN if hasattr(c(), "CYAN") else c().BLUE};
+            font-size: {ty().SIZE_XL}pt;
+            font-weight: bold;
+        """)
+        tbar.addWidget(title)
+        tbar.addStretch()
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(30, 30)
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {self._c.BG_HOVER};
-                color: {self._c.TEXT_DIM};
+                background: {c().BG_HOVER};
+                color: {c().TEXT_DIM};
                 border: none;
-                border-radius: {self._sp.RADIUS_SM}px;
-                font-size: {self._ty.SIZE_MD}pt;
+                border-radius: 15px;
                 font-weight: bold;
             }}
-            QPushButton:hover {{
-                background: {self._c.RED};
-                color: white;
-            }}
+            QPushButton:hover {{ background: {c().RED}; color: white; }}
         """)
         close_btn.clicked.connect(self.reject)
+        tbar.addWidget(close_btn)
+        card_lay.addLayout(tbar)
+        card_lay.addWidget(make_separator())
 
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
+        # JSON editor
+        self.json_edit = QTextEdit()
+        self.json_edit.setFont(QFont("Consolas", ty().SIZE_SM))
+        self.json_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background: {c().BG_INPUT};
+                color: {c().TEXT_MAIN};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_MD}px;
+                font-family: 'Consolas', monospace;
+                font-size: {ty().SIZE_SM}pt;
+                padding: {sp().PAD_MD}px;
+            }}
+            QTextEdit:focus {{ border-color: {c().BORDER_FOCUS}; }}
+        """)
+        if self.mode == "export" and self.strategy_data:
+            try:
+                self.json_edit.setPlainText(json.dumps(self.strategy_data, indent=2, default=str))
+                self.json_edit.setReadOnly(True)
+            except Exception:
+                self.json_edit.setPlainText("Error formatting JSON")
+        else:
+            self.json_edit.setPlaceholderText("Paste strategy JSON here…")
+        card_lay.addWidget(self.json_edit)
 
-        return title_bar
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(sp().GAP_MD)
 
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the editor window."""
+        if self.mode == "export":
+            copy_btn = ghost_button("📋 Copy", c().TEXT_MAIN, 120)
+            copy_btn.clicked.connect(self._copy)
+            btn_row.addWidget(copy_btn)
+
+            save_btn = styled_button("💾 Save to File", c().GREEN, c().GREEN_BRIGHT, min_w=140)
+            save_btn.clicked.connect(self._save_file)
+            btn_row.addWidget(save_btn)
+            btn_row.addStretch()
+
+            ok_btn = styled_button("OK", c().BLUE, c().BLUE_DARK, min_w=80)
+            ok_btn.clicked.connect(self.accept)
+            btn_row.addWidget(ok_btn)
+        else:
+            load_btn = ghost_button("📂 Load from File", c().TEXT_MAIN, 140)
+            load_btn.clicked.connect(self._load_file)
+            btn_row.addWidget(load_btn)
+
+            validate_btn = ghost_button("✓ Validate", c().GREEN, 100)
+            validate_btn.clicked.connect(self._validate)
+            btn_row.addWidget(validate_btn)
+            btn_row.addStretch()
+
+            self.import_btn = styled_button("↓ Import", c().BLUE, c().BLUE_DARK, min_w=100)
+            self.import_btn.setEnabled(False)
+            self.import_btn.clicked.connect(self._do_import)
+            btn_row.addWidget(self.import_btn)
+
+            cancel_btn = ghost_button("Cancel", c().TEXT_DIM, 80)
+            cancel_btn.clicked.connect(self.reject)
+            btn_row.addWidget(cancel_btn)
+
+        card_lay.addLayout(btn_row)
+        root.addWidget(card)
+
+    def _copy(self):
+        QApplication.clipboard().setText(self.json_edit.toPlainText())
+        QMessageBox.information(self, "Copied", "JSON copied to clipboard!")
+
+    def _save_file(self):
+        fn, _ = QFileDialog.getSaveFileName(self, "Save Strategy", "", "JSON Files (*.json)")
+        if fn:
+            try:
+                with open(fn, "w", encoding="utf-8") as f:
+                    f.write(self.json_edit.toPlainText())
+                QMessageBox.information(self, "Saved", f"Strategy saved to {fn}")
+            except IOError as e:
+                QMessageBox.critical(self, "Error", str(e))
+
+    def _load_file(self):
+        fn, _ = QFileDialog.getOpenFileName(self, "Load Strategy", "", "JSON Files (*.json)")
+        if fn:
+            try:
+                with open(fn, "r", encoding="utf-8") as f:
+                    self.json_edit.setPlainText(f.read())
+                self._validate()
+            except IOError as e:
+                QMessageBox.critical(self, "Error", str(e))
+
+    def _validate(self):
         try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
+            data = json.loads(self.json_edit.toPlainText())
+            if "name" in data and "engine" in data:
+                self.import_btn.setEnabled(True)
+                self.import_btn.setText("✓ Valid — Import")
+                QMessageBox.information(self, "Valid", "JSON is valid and ready to import!")
+            else:
+                self.import_btn.setEnabled(False)
+                QMessageBox.warning(self, "Invalid", "JSON must contain 'name' and 'engine' fields.")
+        except json.JSONDecodeError as e:
+            self.import_btn.setEnabled(False)
+            QMessageBox.warning(self, "Invalid JSON", str(e))
 
-            # Update main card style
-            if hasattr(self, 'main_card') and self.main_card:
-                self.main_card._apply_style()
+    def _do_import(self):
+        try:
+            self._imported_data = json.loads(self.json_edit.toPlainText())
+            self.accept()
+        except json.JSONDecodeError as e:
+            QMessageBox.warning(self, "Invalid JSON", str(e))
 
-            # Update title bar elements
-            if self._title_lbl:
-                self._title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{ty.SIZE_LG}pt; font-weight:{ty.WEIGHT_BOLD};")
+    def get_imported_data(self) -> Dict:
+        return self._imported_data
 
-            # Update import/export buttons
-            if self._import_btn:
-                self._import_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.BG_HOVER};
-                        color: {c.BLUE};
-                        border: 1px solid {c.BLUE};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        min-width: 100px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c.BLUE}22;
-                    }}
-                """)
 
-            if self._export_btn:
-                self._export_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.BG_HOVER};
-                        color: {c.GREEN};
-                        border: 1px solid {c.GREEN};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        min-width: 100px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c.GREEN}22;
-                    }}
-                """)
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN STRATEGY EDITOR WINDOW
+# ─────────────────────────────────────────────────────────────────────────────
 
-            if self._dirty_lbl:
-                self._dirty_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+class StrategyEditorWindow(QDialog):
+    """
+    Full-page Strategy Editor with Theme Manager integration.
 
-            # Update footer buttons
-            if self.activate_btn:
-                self.activate_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.BLUE};
-                        color: {c.TEXT_INVERSE};
-                        border: none;
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        min-width: 200px;
-                        min-height: 40px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c.BLUE_DARK};
-                    }}
-                """)
+    Signals:
+        strategy_activated(str) — emitted when user activates a strategy
+    """
 
-            if self.revert_btn:
-                self.revert_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.BG_HOVER};
-                        color: {c.TEXT_MAIN};
-                        border: 1px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        min-width: 100px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c.BORDER};
-                    }}
-                """)
+    strategy_activated = pyqtSignal(str)
 
-            if self.save_btn:
-                self.save_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.GREEN};
-                        color: {c.TEXT_INVERSE};
-                        border: none;
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        min-width: 120px;
-                        min-height: 40px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c.GREEN_BRIGHT};
-                    }}
-                """)
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Window)
+        self._current_slug: Optional[str] = None
+        self._dirty = False
+        self._theme_panel: Optional[ThemeManagerPanel] = None
 
-            if self.status_lbl:
-                self.status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
+        # Frameless window for full custom chrome
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.resize(1560, 940)
+        self.setMinimumSize(1280, 720)
 
-            logger.debug("[StrategyEditorWindow.apply_theme] Applied theme")
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow.apply_theme] Failed: {e}", exc_info=True)
+        self._build_ui()
+        self._apply_global_style()
+
+        # Connect theme signals
+        try:
+            theme_manager.theme_changed.connect(self._on_theme)
+            theme_manager.density_changed.connect(self._on_theme)
+        except Exception:
+            pass
+
+        # Load active strategy
+        active = strategy_manager.get_active_slug()
+        if active:
+            self._load_strategy(active)
+
+    # ── Global style (applied to root) ────────────────────────────────────────
+
+    def _apply_global_style(self):
+        """Push full-window stylesheet."""
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {c().BG_PANEL};
+                color: {c().TEXT_MAIN};
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: {ty().SIZE_BODY}pt;
+            }}
+        """)
+
+    def _on_theme(self, _=None):
+        self._apply_global_style()
+
+    # ── UI Build ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        """Build the main UI"""
-        try:
-            # Root layout with margins for shadow effect
-            root = QVBoxLayout(self)
-            root.setContentsMargins(20, 20, 20, 20)
-            root.setSpacing(0)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
 
-            # Main container card
-            self.main_card = ModernCard(self, elevated=True)
-            main_layout = QVBoxLayout(self.main_card)
-            main_layout.setContentsMargins(0, 0, 0, 0)
-            main_layout.setSpacing(0)
+        # Outer card (gives drop-shadow area)
+        outer = QFrame()
+        outer.setObjectName("outerCard")
+        outer.setStyleSheet(f"""
+            QFrame#outerCard {{
+                background: {c().BG_PANEL};
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_LG}px;
+            }}
+        """)
+        outer_lay = QVBoxLayout(outer)
+        outer_lay.setContentsMargins(0, 0, 0, 0)
+        outer_lay.setSpacing(0)
 
-            # Custom title bar
-            title_bar = self._create_title_bar()
-            main_layout.addWidget(title_bar)
+        # ── Custom title bar ──────────────────────────────────────────────────
+        outer_lay.addWidget(self._build_title_bar())
+        outer_lay.addWidget(make_separator())
 
-            # Separator
-            separator = QFrame()
-            separator.setFrameShape(QFrame.HLine)
-            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
-            main_layout.addWidget(separator)
+        # ── Body: sidebar + editor ────────────────────────────────────────────
+        body = QWidget()
+        body_lay = QHBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(0)
 
-            # Content area
-            content = QWidget()
-            content_layout = QHBoxLayout(content)
-            content_layout.setContentsMargins(0, 0, 0, 0)
-            content_layout.setSpacing(0)
+        self._list_panel = StrategyListPanel()
+        self._list_panel.strategy_selected.connect(self._on_strategy_selected)
+        self._list_panel.strategy_activated.connect(self._on_strategy_activated)
+        body_lay.addWidget(self._list_panel)
 
-            # Left: strategy list
-            self._list_panel = _StrategyListPanel()
-            self._list_panel.strategy_selected.connect(self._on_strategy_selected)
-            self._list_panel.strategy_activated.connect(self._on_strategy_activated)
-            content_layout.addWidget(self._list_panel)
+        # Right editor area
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(0)
 
-            # Right: editor
-            right = QWidget()
-            right_layout = QVBoxLayout(right)
-            right_layout.setContentsMargins(0, 0, 0, 0)
-            right_layout.setSpacing(0)
+        right_lay.addWidget(self._build_editor_header())
+        right_lay.addWidget(make_separator())
+        right_lay.addWidget(self._build_tabs(), 1)
+        right_lay.addWidget(make_separator())
+        right_lay.addWidget(self._build_footer())
 
-            # Title bar with import/export and confidence threshold
-            self._title_bar = self._build_title_bar()
-            right_layout.addWidget(self._title_bar)
+        body_lay.addWidget(right, 1)
+        outer_lay.addWidget(body, 1)
 
-            # Tabs - Now with Help tab!
-            self._tabs = QTabWidget()
-            self._tabs.setDocumentMode(True)
-            self._tabs.tabBar().setExpanding(True)
-            self._tabs.setStyleSheet(f"""
-                QTabWidget::pane {{
-                    border: none;
-                    background: {self._c.BG_PANEL};
-                }}
-                QTabBar::tab {{
-                    background: {self._c.BG_HOVER};
-                    color: {self._c.TEXT_DIM};
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
-                    border: none;
-                    border-right: 1px solid {self._c.BORDER};
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    font-weight: {self._ty.WEIGHT_NORMAL};
-                    min-width: 100px;
-                }}
-                QTabBar::tab:selected {{
-                    background: {self._c.BG_PANEL};
-                    color: {self._c.TEXT_MAIN};
-                    border-bottom: 2px solid {self._c.BLUE};
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
-                QTabBar::tab:hover:!selected {{
-                    background: {self._c.BORDER};
-                    color: {self._c.TEXT_MAIN};
-                }}
-            """)
-
-            self._info_tab = _InfoTab()
-            self._ind_tab = _IndicatorsTab()
-            self._rules_tab = _SignalRulesTab()
-            self._help_tab = StrategyHelpTab(self)  # Imported from separate file
-
-            self._tabs.addTab(self._info_tab, "⚙  Info")
-            self._tabs.addTab(self._ind_tab, "📊  Indicators")
-            self._tabs.addTab(self._rules_tab, "🔬  Signal Rules")
-            self._tabs.addTab(self._help_tab, "❓  Help")
-
-            right_layout.addWidget(self._tabs, 1)
-
-            # Footer
-            right_layout.addWidget(self._build_footer())
-
-            content_layout.addWidget(right, 1)
-
-            main_layout.addWidget(content)
-            root.addWidget(self.main_card)
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._build_ui] Failed: {e}", exc_info=True)
+        root.addWidget(outer)
 
     def _build_title_bar(self) -> QWidget:
-        """Build the title bar with import/export buttons and confidence threshold"""
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
+        bar = QWidget()
+        bar.setFixedHeight(54)
+        bar.setStyleSheet(f"""
+            background: {c().BG_PANEL};
+            border-top-left-radius: {sp().RADIUS_LG}px;
+            border-top-right-radius: {sp().RADIUS_LG}px;
+        """)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(sp().PAD_LG, 0, sp().PAD_MD, 0)
+        lay.setSpacing(sp().GAP_MD)
 
-            bar = QFrame()
-            bar.setStyleSheet(f"QFrame{{background:{c.BG_PANEL}; border-bottom:1px solid {c.BORDER};}}")
-            bar.setFixedHeight(70)
-            h = QHBoxLayout(bar)
-            h.setContentsMargins(sp.PAD_XL, 0, sp.PAD_XL, 0)
-            h.setSpacing(sp.PAD_MD)
+        # Amber logo badge
+        accent = getattr(c(), "ACCENT", c().YELLOW)
+        logo_badge = QLabel("S")
+        logo_badge.setFixedSize(32, 32)
+        logo_badge.setAlignment(Qt.AlignCenter)
+        logo_badge.setStyleSheet(f"""
+            color: #000;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 {accent}, stop:1 {c().ORANGE});
+            border-radius: 8px;
+            font-size: {ty().SIZE_LG}pt;
+            font-weight: 900;
+        """)
+        lay.addWidget(logo_badge)
 
-            self._title_lbl = QLabel("Select a strategy →")
-            self._title_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_LG}pt; font-weight:{ty.WEIGHT_BOLD};")
-            h.addWidget(self._title_lbl)
+        title_lbl = QLabel("STRATEGY EDITOR")
+        title_lbl.setStyleSheet(f"""
+            color: {c().TEXT_MAIN};
+            font-size: {ty().SIZE_LG}pt;
+            font-weight: bold;
+            letter-spacing: 1.5px;
+        """)
+        lay.addWidget(title_lbl)
 
-            self._active_badge = StatusBadge()
-            self._active_badge.setFixedHeight(30)
-            self._active_badge.hide()
-            h.addWidget(self._active_badge)
+        ver_lbl = QLabel("v2.0")
+        ver_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt;")
+        lay.addWidget(ver_lbl)
 
-            h.addStretch()
+        lay.addStretch()
 
-            # FEATURE 3: Confidence threshold control
-            conf_group = QHBoxLayout()
-            conf_group.setSpacing(sp.GAP_SM)
-            conf_lbl = QLabel("🎯 Min Confidence:")
-            conf_lbl.setStyleSheet(f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_BODY}pt; font-weight:{ty.WEIGHT_BOLD};")
-            conf_group.addWidget(conf_lbl)
+        # Import / Export
+        self._import_btn = ghost_button("↓ Import", c().CYAN if hasattr(c(), "CYAN") else c().BLUE, 90)
+        self._import_btn.clicked.connect(self._on_import)
+        lay.addWidget(self._import_btn)
 
-            self.confidence_threshold_spin = QDoubleSpinBox()
-            self.confidence_threshold_spin.setRange(0.0, 1.0)
-            self.confidence_threshold_spin.setSingleStep(0.05)
-            self.confidence_threshold_spin.setDecimals(2)
-            self.confidence_threshold_spin.setValue(0.6)
-            self.confidence_threshold_spin.setToolTip("Minimum confidence threshold for signals (0.0-1.0)")
-            self.confidence_threshold_spin.valueChanged.connect(lambda: self._set_dirty(True))
-            self.confidence_threshold_spin.setStyleSheet(f"""
-                QDoubleSpinBox {{
-                    background: {c.BG_INPUT};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
-                    padding: {sp.PAD_SM}px;
-                    font-size: {ty.SIZE_BODY}pt;
-                    min-width: 80px;
-                }}
-                QDoubleSpinBox:focus {{
-                    border-color: {c.BORDER_FOCUS};
-                }}
-            """)
-            conf_group.addWidget(self.confidence_threshold_spin)
+        self._export_btn = ghost_button("↑ Export", c().GREEN, 90)
+        self._export_btn.clicked.connect(self._on_export)
+        lay.addWidget(self._export_btn)
 
-            h.addLayout(conf_group)
+        # Theme Manager button
+        theme_btn = QPushButton("⚙  Theme")
+        theme_btn.setCursor(Qt.PointingHandCursor)
+        theme_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {accent}22;
+                color: {accent};
+                border: 1px solid {accent}55;
+                border-radius: {sp().RADIUS_MD}px;
+                padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+                font-size: {ty().SIZE_SM}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background: {accent}44; border-color: {accent}; }}
+        """)
+        theme_btn.clicked.connect(self._toggle_theme_panel)
+        lay.addWidget(theme_btn)
 
-            # Import/Export buttons
-            self._import_btn = QPushButton("📥 Import")
-            self._import_btn.clicked.connect(self._on_import)
-            h.addWidget(self._import_btn)
+        # Close
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(32, 32)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c().BG_HOVER};
+                color: {c().TEXT_DIM};
+                border: none;
+                border-radius: 16px;
+                font-size: {ty().SIZE_BODY}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background: {c().RED}; color: white; }}
+        """)
+        close_btn.clicked.connect(self.close)
+        lay.addWidget(close_btn)
 
-            self._export_btn = QPushButton("📤 Export")
-            self._export_btn.clicked.connect(self._on_export)
-            h.addWidget(self._export_btn)
+        # Make title bar draggable
+        bar.mousePressEvent = self._drag_start
+        bar.mouseMoveEvent = self._drag_move
+        bar.mouseReleaseEvent = self._drag_end
+        self._drag_pos: Optional[QPoint] = None
 
-            self._dirty_lbl = QLabel("● Unsaved changes")
-            self._dirty_lbl.hide()
-            h.addWidget(self._dirty_lbl)
+        return bar
 
-            return bar
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._build_title_bar] Failed: {e}", exc_info=True)
-            return QFrame()
+    def _drag_start(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
+
+    def _drag_move(self, e):
+        if e.buttons() == Qt.LeftButton and self._drag_pos:
+            self.move(e.globalPos() - self._drag_pos)
+
+    def _drag_end(self, e):
+        self._drag_pos = None
+
+    def _toggle_theme_panel(self):
+        if self._theme_panel and self._theme_panel.isVisible():
+            self._theme_panel.hide()
+            return
+        if not self._theme_panel:
+            self._theme_panel = ThemeManagerPanel(self)
+        # Position near the top-right
+        geo = self.geometry()
+        self._theme_panel.move(geo.right() - self._theme_panel.width() - 30, geo.top() + 70)
+        self._theme_panel.show()
+
+    def _build_editor_header(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(60)
+        bar.setStyleSheet(f"background: {c().BG_PANEL};")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(sp().PAD_XL, 0, sp().PAD_XL, 0)
+        lay.setSpacing(sp().GAP_MD)
+
+        self._strategy_name_lbl = QLabel("Select a strategy →")
+        self._strategy_name_lbl.setStyleSheet(f"""
+            color: {c().TEXT_DIM};
+            font-size: {ty().SIZE_XL}pt;
+            font-weight: bold;
+        """)
+        lay.addWidget(self._strategy_name_lbl)
+
+        self._active_badge = QLabel()
+        self._active_badge.hide()
+        accent = getattr(c(), "ACCENT", c().YELLOW)
+        self._active_badge.setStyleSheet(f"""
+            color: {accent};
+            background: {accent}22;
+            border: 1px solid {accent}55;
+            border-radius: 999px;
+            padding: 2px 12px;
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+        """)
+        lay.addWidget(self._active_badge)
+
+        self._dirty_lbl = QLabel("● unsaved changes")
+        self._dirty_lbl.hide()
+        self._dirty_lbl.setStyleSheet(f"color: {c().YELLOW}; font-size: {ty().SIZE_SM}pt; font-weight: bold;")
+        lay.addWidget(self._dirty_lbl)
+
+        lay.addStretch()
+
+        # Confidence threshold
+        conf_lbl = QLabel("🎯 Min Confidence:")
+        conf_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt; font-weight: bold;")
+        lay.addWidget(conf_lbl)
+
+        self.confidence_spin = styled_spinbox(0.0, 1.0, 0.05, 2, 0.6)
+        self.confidence_spin.setFixedWidth(90)
+        self.confidence_spin.valueChanged.connect(lambda: self._mark_dirty())
+        lay.addWidget(self.confidence_spin)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet(f"background: {c().BORDER}; max-width: 1px; margin: 10px 4px;")
+        lay.addWidget(sep)
+
+        # Timeframe
+        tf_lbl = QLabel("⏱ Timeframe:")
+        tf_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_SM}pt; font-weight: bold;")
+        lay.addWidget(tf_lbl)
+
+        self.timeframe_cb = QComboBox()
+        self.timeframe_cb.addItems(TIMEFRAMES)
+        self.timeframe_cb.setCurrentText("1h")
+        self.timeframe_cb.setFixedWidth(100)
+        self.timeframe_cb.setCursor(Qt.PointingHandCursor)
+        self.timeframe_cb.currentTextChanged.connect(lambda: self._mark_dirty())
+        self.timeframe_cb.setStyleSheet(f"""
+                    QComboBox {{
+                        background: {c().BG_INPUT};
+                        color: {c().PURPLE};
+                        border: 1px solid {c().BORDER};
+                        border-radius: {sp().RADIUS_MD}px;
+                        padding: {sp().PAD_SM}px 28px {sp().PAD_SM}px {sp().PAD_MD}px;
+                        font-size: {ty().SIZE_BODY}pt;
+                        font-weight: bold;
+                        min-height: {sp().INPUT_HEIGHT}px;
+                    }}
+                    QComboBox:hover {{
+                        border-color: {c().PURPLE};
+                        background: {c().BG_HOVER};
+                    }}
+                    QComboBox::drop-down {{
+                        subcontrol-origin: padding;
+                        subcontrol-position: top right;
+                        width: 26px;
+                        border-left: 1px solid {c().BORDER};
+                        border-top-right-radius: {sp().RADIUS_MD}px;
+                        border-bottom-right-radius: {sp().RADIUS_MD}px;
+                        background: {c().PURPLE}22;
+                    }}
+                    QComboBox::drop-down:hover {{
+                        background: {c().PURPLE}44;
+                    }}
+                    QComboBox::down-arrow {{
+                        width: 0; height: 0;
+                        border-left: 4px solid transparent;
+                        border-right: 4px solid transparent;
+                        border-top: 6px solid {c().PURPLE};
+                    }}
+                    QComboBox QAbstractItemView {{
+                        background: {c().BG_PANEL};
+                        color: {c().TEXT_MAIN};
+                        border: 1px solid {c().BORDER};
+                        selection-background-color: {c().BG_SELECTED};
+                        outline: none;
+                    }}
+                    QComboBox QAbstractItemView::item {{
+                        padding: {sp().PAD_SM}px {sp().PAD_MD}px;
+                        min-height: 24px;
+                    }}
+                """)
+        lay.addWidget(self.timeframe_cb)
+
+        return bar
+
+        return bar
+
+    def _build_tabs(self) -> QTabWidget:
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._tabs.tabBar().setExpanding(True)
+        accent = getattr(c(), "ACCENT", c().BLUE)
+        self._tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: none;
+                background: {c().BG_PANEL};
+            }}
+            QTabBar::tab {{
+                background: {c().BG_HOVER};
+                color: {c().TEXT_DIM};
+                border: none;
+                border-right: 1px solid {c().BORDER};
+                padding: {sp().PAD_SM}px {sp().PAD_XL}px;
+                font-size: {ty().SIZE_SM}pt;
+                min-width: 100px;
+                min-height: {sp().TAB_H}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {c().BG_PANEL};
+                color: {c().TEXT_MAIN};
+                border-bottom: 2px solid {accent};
+                font-weight: bold;
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {c().BORDER};
+                color: {c().TEXT_MAIN};
+            }}
+        """)
+
+        self._info_tab = InfoTab()
+        self._rules_tab = SignalRulesTab()
+        self._ind_tab = IndicatorsTab()
+        self._help_tab = HelpTab()
+
+        self._tabs.addTab(self._info_tab, "⚙  Info")
+        self._tabs.addTab(self._rules_tab, "⊕  Signal Rules")
+        self._tabs.addTab(self._ind_tab, "◈  Indicators")
+        self._tabs.addTab(self._help_tab, "?  Help")
+
+        self._info_tab.changed.connect(self._mark_dirty)
+
+        return self._tabs
 
     def _build_footer(self) -> QWidget:
-        """Build the footer with action buttons"""
-        try:
-            bar = QFrame()
-            bar.setFixedHeight(80)
-            bar.setStyleSheet(f"QFrame{{background:{self._c.BG_PANEL}; border-top:1px solid {self._c.BORDER};}}")
-            h = QHBoxLayout(bar)
-            h.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_SM, self._sp.PAD_XL, self._sp.PAD_SM)
-            h.setSpacing(self._sp.PAD_MD)
+        bar = QWidget()
+        bar.setFixedHeight(68)
+        bar.setStyleSheet(f"background: {c().BG_PANEL};")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(sp().PAD_XL, sp().PAD_SM, sp().PAD_XL, sp().PAD_SM)
+        lay.setSpacing(sp().GAP_MD)
 
-            self.activate_btn = QPushButton("⚡ Activate This Strategy")
-            self.activate_btn.setFixedHeight(44)
-            self.activate_btn.clicked.connect(self._on_activate)
-            h.addWidget(self.activate_btn)
+        self.activate_btn = styled_button(
+            "⚡  Activate This Strategy",
+            c().BLUE, c().BLUE_DARK, min_w=220, min_h=44
+        )
+        self.activate_btn.clicked.connect(self._on_activate)
+        lay.addWidget(self.activate_btn)
 
-            h.addStretch()
+        lay.addStretch()
 
-            self.revert_btn = QPushButton("↺ Revert")
-            self.revert_btn.setFixedHeight(40)
-            self.revert_btn.clicked.connect(self._on_revert)
-            h.addWidget(self.revert_btn)
+        self.status_lbl = QLabel()
+        self.status_lbl.setStyleSheet(f"color: {c().GREEN}; font-size: {ty().SIZE_BODY}pt; font-weight: bold;")
+        lay.addWidget(self.status_lbl)
 
-            self.save_btn = QPushButton("💾 Save")
-            self.save_btn.setFixedHeight(44)
-            self.save_btn.clicked.connect(self._on_save)
-            h.addWidget(self.save_btn)
+        self.revert_btn = ghost_button("↺ Revert", c().TEXT_DIM, 100)
+        self.revert_btn.setMinimumHeight(40)
+        self.revert_btn.clicked.connect(self._on_revert)
+        lay.addWidget(self.revert_btn)
 
-            self.status_lbl = QLabel()
-            h.addWidget(self.status_lbl)
+        accent = getattr(c(), "ACCENT", c().YELLOW)
+        self.save_btn = styled_button("💾  Save", accent, accent, "#000", min_w=120, min_h=44)
+        self.save_btn.clicked.connect(self._on_save)
+        lay.addWidget(self.save_btn)
 
-            return bar
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._build_footer] Failed: {e}", exc_info=True)
-            return QFrame()
+        return bar
 
-    def _set_dirty(self, dirty: bool):
-        """Set dirty state and update UI"""
-        try:
-            self._dirty = dirty
-            if self._dirty_lbl:
-                self._dirty_lbl.setVisible(dirty)
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._set_dirty] Failed: {e}", exc_info=True)
+    # ── Strategy Loading ──────────────────────────────────────────────────────
 
     def _load_strategy(self, slug: str):
-        """Load a strategy by slug"""
         try:
-            c = self._c
             if self._dirty:
                 ans = QMessageBox.question(
                     self, "Unsaved Changes",
@@ -3811,260 +3133,211 @@ class StrategyEditorWindow(QDialog, ThemedMixin):
                 return
 
             self._current_slug = slug
+            self._info_tab.load(strategy)
+            self._rules_tab.load(strategy)
+            self._ind_tab.load(strategy)
+            self._help_tab.load(strategy)
 
-            if self._info_tab is not None:
-                self._info_tab.load(strategy)
-            if self._ind_tab is not None:
-                self._ind_tab.load(strategy)
-            if self._rules_tab is not None:
-                self._rules_tab.load(strategy)
-            if self._help_tab is not None:
-                self._help_tab.load(strategy)
+            engine = strategy.get("engine", {})
+            self.confidence_spin.setValue(float(engine.get("min_confidence", 0.6)))
+            saved_tf = strategy.get("timeframe", "1h")
+            idx = self.timeframe_cb.findText(saved_tf)
+            self.timeframe_cb.setCurrentIndex(idx if idx >= 0 else self.timeframe_cb.findText("1h"))
+            print(engine)
+            self._mark_dirty(False)
 
-            # FEATURE 3: Load confidence threshold
-            engine = strategy.get("engine", {}) if strategy else {}
-            if self.confidence_threshold_spin:
-                threshold = engine.get("min_confidence", 0.6) if isinstance(engine, dict) else 0.6
-                self.confidence_threshold_spin.setValue(float(threshold))
-
-            self._set_dirty(False)
-
-            name = strategy.get("name", slug) if strategy else slug
-            if self._title_lbl:
-                self._title_lbl.setText(name)
-                self._title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{self._ty.SIZE_LG}pt; font-weight:{self._ty.WEIGHT_BOLD};")
+            name = strategy.get("name", slug)
+            self._strategy_name_lbl.setText(name)
+            self._strategy_name_lbl.setStyleSheet(f"""
+                color: {c().TEXT_MAIN};
+                font-size: {ty().SIZE_XL}pt;
+                font-weight: bold;
+            """)
 
             is_active = strategy_manager.get_active_slug() == slug
-            if is_active and self._active_badge:
+            if is_active:
                 self._active_badge.setText("⚡ ACTIVE")
-                self._active_badge.set_status("success")
                 self._active_badge.show()
-            elif self._active_badge:
+            else:
                 self._active_badge.hide()
 
-            if self.status_lbl:
-                self.status_lbl.clear()
+            self.status_lbl.clear()
 
-            self._connect_dirty_watchers()
         except Exception as e:
-            logger.error(f"[StrategyEditorWindow._load_strategy] Failed: {e}", exc_info=True)
+            logger.error(f"[StrategyEditorWindow._load_strategy] {e}", exc_info=True)
 
-    def _connect_dirty_watchers(self):
-        """Connect dirty state watchers to info tab widgets"""
-        try:
-            if self._info_tab and safe_hasattr(self._info_tab, 'name_edit') and self._info_tab.name_edit:
-                self._info_tab.name_edit.textChanged.connect(lambda: self._set_dirty(True))
-            if self._info_tab and safe_hasattr(self._info_tab, 'desc_edit') and self._info_tab.desc_edit:
-                self._info_tab.desc_edit.textChanged.connect(lambda: self._set_dirty(True))
-        except RuntimeError as e:
-            logger.warning(f"Failed to connect dirty watchers: {e}")
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._connect_dirty_watchers] Failed: {e}", exc_info=True)
+    # ── Dirty State ───────────────────────────────────────────────────────────
+
+    def _mark_dirty(self, dirty: bool = True):
+        self._dirty = dirty
+        self._dirty_lbl.setVisible(dirty)
+
+    # ── Slots ─────────────────────────────────────────────────────────────────
 
     @pyqtSlot(str)
     def _on_strategy_selected(self, slug: str):
-        """Handle strategy selection from list"""
-        try:
-            self._load_strategy(slug)
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_strategy_selected] Failed: {e}", exc_info=True)
+        self._load_strategy(slug)
 
     @pyqtSlot(str)
     def _on_strategy_activated(self, slug: str):
-        """Handle strategy activation from list"""
-        try:
-            self.strategy_activated.emit(slug)
-            self._load_strategy(slug)
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_strategy_activated] Failed: {e}", exc_info=True)
+        self.strategy_activated.emit(slug)
+        self._load_strategy(slug)
 
     def _on_activate(self):
-        """Activate current strategy"""
-        try:
-            c = self._c
-            if not self._current_slug:
+        if not self._current_slug:
+            return
+        if self._dirty:
+            ans = QMessageBox.question(
+                self, "Save First?",
+                "Save changes before activating?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            if ans == QMessageBox.Cancel:
+                return
+            if ans == QMessageBox.Yes and not self._do_save():
                 return
 
-            if self._dirty:
-                ans = QMessageBox.question(
-                    self, "Save First?",
-                    "Save changes before activating?",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
-                )
-                if ans == QMessageBox.Cancel:
-                    return
-                if ans == QMessageBox.Yes:
-                    if not self._do_save():
-                        return
-
-            strategy_manager.activate(self._current_slug)
-
-            if self._list_panel is not None:
-                self._list_panel.refresh()
-
-            if self._active_badge:
-                self._active_badge.setText("⚡ ACTIVE")
-                self._active_badge.set_status("success")
-                self._active_badge.show()
-
-            if self.status_lbl:
-                self.status_lbl.setText("✓ Activated!")
-
-            self.strategy_activated.emit(self._current_slug)
-            QTimer.singleShot(2500, lambda: self.status_lbl.clear() if self.status_lbl else None)
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_activate] Failed: {e}", exc_info=True)
+        strategy_manager.activate(self._current_slug)
+        self._list_panel.refresh()
+        self._active_badge.setText("⚡ ACTIVE")
+        self._active_badge.show()
+        self._flash_status("⚡ Strategy activated!")
+        self.strategy_activated.emit(self._current_slug)
 
     def _on_revert(self):
-        """Revert to saved version"""
-        try:
-            if self._current_slug:
-                self._load_strategy(self._current_slug)
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_revert] Failed: {e}", exc_info=True)
+        if self._current_slug:
+            self._load_strategy(self._current_slug)
 
     def _on_save(self):
-        """Save current strategy"""
-        try:
-            self._do_save()
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_save] Failed: {e}", exc_info=True)
+        self._do_save()
 
     def _do_save(self) -> bool:
-        """Perform save operation"""
         try:
-            c = self._c
             if not self._current_slug:
                 return False
 
-            if self._info_tab is None:
-                return False
-
-            name = self._info_tab.collect()["name"]
+            info = self._info_tab.collect()
+            name = info["name"]
             if not name:
                 QMessageBox.warning(self, "Validation", "Strategy name cannot be empty.")
                 return False
 
-            # Get current strategy data
             strategy = strategy_manager.get(self._current_slug) or {}
-
-            # Update with new data
             strategy["name"] = name
-            strategy["description"] = self._info_tab.collect()["description"]
-            strategy["updated_at"] = datetime.now().strftime(Utils.DATETIME_FORMAT)
+            strategy["description"] = info["description"]
+            strategy["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Get rules and add confidence threshold
-            engine = self._rules_tab.collect() if self._rules_tab else {}
-            if self.confidence_threshold_spin:
-                engine["min_confidence"] = self.confidence_threshold_spin.value()
+            engine = self._rules_tab.collect()
+            engine["conflict_resolution"] = info.get("conflict_resolution", "WAIT")
+            engine["min_confidence"] = self.confidence_spin.value()
             strategy["engine"] = engine
+            strategy["timeframe"] = self.timeframe_cb.currentText()
 
             ok = strategy_manager.save(self._current_slug, strategy)
             if ok:
-                self._set_dirty(False)
-                if self._title_lbl:
-                    self._title_lbl.setText(name)
-                    self._title_lbl.setStyleSheet(f"color:{c.TEXT_MAIN}; font-size:{self._ty.SIZE_LG}pt; font-weight:{self._ty.WEIGHT_BOLD};")
-                if self._list_panel is not None:
-                    self._list_panel.refresh()
-                if self.status_lbl:
-                    self.status_lbl.setText("✓ Saved")
-                    QTimer.singleShot(2500, lambda: self.status_lbl.clear() if self.status_lbl else None)
+                self._mark_dirty(False)
+                self._strategy_name_lbl.setText(name)
+                self._list_panel.refresh()
+                self._flash_status("✓ Saved")
                 return True
             else:
-                if self.status_lbl:
-                    self.status_lbl.setText("✗ Save failed")
+                self._flash_status("✗ Save failed")
                 return False
+
         except Exception as e:
-            logger.error(f"[StrategyEditorWindow._do_save] Failed: {e}", exc_info=True)
-            if self.status_lbl:
-                self.status_lbl.setText("✗ Save error")
+            logger.error(f"[StrategyEditorWindow._do_save] {e}", exc_info=True)
+            self._flash_status("✗ Save error")
             return False
 
     def _on_import(self):
-        """Import strategy from JSON"""
-        try:
-            dlg = ImportExportDialog('import', parent=self)
-            if dlg.exec_() == QDialog.Accepted:
-                data = dlg.get_imported_data()
-
-                # Ask for strategy name
-                name = data.get('name', 'Imported Strategy')
-                new_name, ok = QInputDialog.getText(
-                    self, "Import Strategy", "Strategy name:", text=name
-                )
-                if ok and new_name and new_name.strip():
-                    # Create new strategy with imported data
-                    ok2, slug = strategy_manager.create(new_name.strip())
-                    if ok2:
-                        # Update with imported data
-                        strategy = strategy_manager.get(slug)
-                        if strategy is not None:
-                            strategy['description'] = data.get('description', '')
-                            strategy['engine'] = data.get('engine', {})
-                            strategy_manager.save(slug, strategy)
-
-                        self._current_slug = slug
-                        if self._list_panel is not None:
-                            self._list_panel.refresh()
-                        self._load_strategy(slug)
-
-                        QMessageBox.information(self, "Success", f"Strategy '{new_name}' imported successfully!")
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_import] Failed: {e}", exc_info=True)
-            QMessageBox.critical(self, "Import Failed", f"Failed to import strategy: {e}")
+        dlg = ImportExportDialog("import", parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            data = dlg.get_imported_data()
+            name, ok = QInputDialog.getText(
+                self, "Import Strategy", "Strategy name:",
+                text=data.get("name", "Imported Strategy")
+            )
+            if ok and name.strip():
+                ok2, slug = strategy_manager.create(name.strip())
+                if ok2:
+                    s = strategy_manager.get(slug) or {}
+                    s["description"] = data.get("description", "")
+                    s["engine"] = data.get("engine", {})
+                    strategy_manager.save(slug, s)
+                    self._current_slug = slug
+                    self._list_panel.refresh()
+                    self._load_strategy(slug)
+                    QMessageBox.information(self, "Success", f"'{name}' imported successfully!")
 
     def _on_export(self):
-        """Export current strategy to JSON"""
-        try:
-            if not self._current_slug:
-                QMessageBox.warning(self, "No Strategy", "Please select a strategy to export.")
-                return
+        if not self._current_slug:
+            QMessageBox.warning(self, "No Strategy", "Please select a strategy to export.")
+            return
+        strategy = strategy_manager.get(self._current_slug)
+        if strategy:
+            dlg = ImportExportDialog("export", strategy, self)
+            dlg.exec_()
 
-            strategy = strategy_manager.get(self._current_slug)
-            if strategy is not None:
-                dlg = ImportExportDialog('export', strategy, self)
-                dlg.exec_()
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow._on_export] Failed: {e}", exc_info=True)
-            QMessageBox.critical(self, "Export Failed", f"Failed to export strategy: {e}")
+    def _flash_status(self, msg: str, ms: int = 2500):
+        self.status_lbl.setText(msg)
+        QTimer.singleShot(ms, self.status_lbl.clear)
 
-    # Rule 8: Cleanup method
-    def cleanup(self):
-        """Clean up resources before closing"""
-        try:
-            logger.info("[StrategyEditorWindow] Starting cleanup")
-
-            # Clear references
-            self._list_panel = None
-            self._info_tab = None
-            self._ind_tab = None
-            self._rules_tab = None
-            self._help_tab = None
-            self._tabs = None
-            self.main_card = None
-
-            logger.info("[StrategyEditorWindow] Cleanup completed")
-
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow.cleanup] Error: {e}", exc_info=True)
+    # ── Close ─────────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        """Handle close event with cleanup"""
-        try:
-            if self._dirty:
-                ans = QMessageBox.question(
-                    self, "Unsaved Changes",
-                    "You have unsaved changes. Close anyway?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                if ans == QMessageBox.No:
-                    event.ignore()
-                    return
+        if self._dirty:
+            ans = QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes. Close anyway?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if ans == QMessageBox.No:
+                event.ignore()
+                return
+        super().closeEvent(event)
 
-            self.cleanup()
-            super().closeEvent(event)
 
-        except Exception as e:
-            logger.error(f"[StrategyEditorWindow.closeEvent] Failed: {e}", exc_info=True)
-            event.accept()
+# ─────────────────────────────────────────────────────────────────────────────
+# STANDALONE TEST RUNNER
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Strategy Editor")
+
+    # Apply global base style
+    app.setStyleSheet(f"""
+        QWidget {{
+            background: {c().BG_PANEL};
+            color: {c().TEXT_MAIN};
+            font-family: 'Segoe UI', 'Arial', sans-serif;
+            font-size: {ty().SIZE_BODY}pt;
+        }}
+        QScrollBar:vertical {{
+            background: {c().BG_PANEL};
+            width: 6px;
+            border-radius: 3px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {c().BORDER_STRONG};
+            border-radius: 3px;
+            min-height: 20px;
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QScrollBar:horizontal {{ height: 0; }}
+        QToolTip {{
+            background: {c().BG_PANEL};
+            color: {c().TEXT_MAIN};
+            border: 1px solid {c().BORDER};
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: {ty().SIZE_SM}pt;
+        }}
+    """)
+
+    win = StrategyEditorWindow()
+    win.show()
+
+    sys.exit(app.exec_())

@@ -231,6 +231,7 @@ class StrategyCRUD:
                 description=source.get("description", ""),
                 indicators=source.get("indicators", {}),
                 engine=source.get("engine", {}),
+                timeframe=source.get("timeframe", "1h"),
                 db=db
             )
 
@@ -270,6 +271,7 @@ class StrategyCRUD:
             description = meta.get("description", "")
             indicators = data.get("indicators", {})
             engine = data.get("engine", {})
+            timeframe = data.get("timeframe", "1h") or "1h"
 
             # FEATURE 3: Ensure engine has confidence threshold
             if engine and "min_confidence" not in engine:
@@ -284,6 +286,7 @@ class StrategyCRUD:
                 description=description,
                 indicators=indicators,
                 engine=engine,
+                timeframe=timeframe,
                 db=db
             )
 

@@ -87,12 +87,28 @@ def _kv_get_ns(ns: str, defaults: Dict[str, Any], db: DatabaseConnector) -> Dict
 
 
 def _kv_set_ns(ns: str, data: Dict[str, Any], db: DatabaseConnector) -> bool:
-    """Write all keys for a namespace."""
-    ok = True
-    for field, value in data.items():
-        if not _kv_set(f"{ns}:{field}", value, db):
-            ok = False
-    return ok
+    """Write all keys for a namespace atomically in a single transaction.
+
+    BUG FIX: previous version called _kv_set() (one db.execute+commit per field)
+    inside a plain loop.  A crash halfway through left a partially-written namespace
+    (e.g. DailyTradeSetting with some fields from the old values and some from the
+    new ones).  Wrapping all upserts in a single connection() context manager makes
+    the entire namespace save atomic — either all fields commit or none do.
+    """
+    try:
+        now = _NOW()
+        with db.connection() as conn:
+            for field, value in data.items():
+                serialised = json.dumps(value) if not isinstance(value, str) else value
+                conn.execute(
+                    "INSERT INTO app_kv (key, value, updated_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    (f"{ns}:{field}", serialised, now),
+                )
+        return True
+    except Exception as e:
+        logger.error(f"[_kv_set_ns] ns={ns!r}: {e}", exc_info=True)
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -465,9 +481,19 @@ class StrategiesCRUD:
     def delete(self, slug: str, db: DatabaseConnector = None) -> bool:
         db = db or get_db()
         try:
-            if self.get_active_slug(db) == slug:
-                self.set_active(None, db)
-            db.execute("DELETE FROM strategies WHERE slug=?", (slug,))
+            # BUG FIX: previously called set_active(None) and DELETE as two separate
+            # db.execute() commits.  A crash between them left active_slug pointing at
+            # a deleted strategy.  Wrap both writes in a single connection() transaction
+            # so they either both commit or both roll back.
+            is_active = self.get_active_slug(db) == slug
+            with db.connection() as conn:
+                if is_active:
+                    conn.execute(
+                        "INSERT INTO app_kv (key, value, updated_at) VALUES (?, ?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                        (self._ACTIVE_KEY, json.dumps(""), _NOW()),
+                    )
+                conn.execute("DELETE FROM strategies WHERE slug=?", (slug,))
             return True
         except Exception as e:
             logger.error(f"[StrategiesCRUD.delete] {e}", exc_info=True)
@@ -636,8 +662,9 @@ class OrderCRUD:
         try:
             db.execute(
                 f"UPDATE {self.TABLE} SET is_confirmed=1, "
-                "broker_order_id=COALESCE(?, broker_order_id), status='OPEN' WHERE id=?",
-                (broker_order_id, order_id),
+                "broker_order_id=COALESCE(?, broker_order_id), status='OPEN', "
+                "confirmed_at=?, updated_at=? WHERE id=?",
+                (broker_order_id, _NOW(), _NOW(), order_id),
             )
             return True
         except Exception as e:
@@ -650,8 +677,8 @@ class OrderCRUD:
         try:
             db.execute(
                 f"UPDATE {self.TABLE} SET exit_price=?, pnl=?, reason_to_exit=?, "
-                "status='CLOSED', exited_at=? WHERE id=?",
-                (exit_price, pnl, reason, _NOW(), order_id),
+                "status='CLOSED', exited_at=?, updated_at=? WHERE id=?",
+                (exit_price, pnl, reason, _NOW(), _NOW(), order_id),
             )
             return True
         except Exception as e:
@@ -662,8 +689,9 @@ class OrderCRUD:
         db = db or get_db()
         try:
             db.execute(
-                f"UPDATE {self.TABLE} SET status='CANCELLED', reason_to_exit=?, exited_at=? WHERE id=?",
-                (reason, _NOW(), order_id),
+                f"UPDATE {self.TABLE} SET status='CANCELLED', reason_to_exit=?, "
+                "exited_at=?, cancelled_at=?, updated_at=? WHERE id=?",
+                (reason, _NOW(), _NOW(), _NOW(), order_id),
             )
             return True
         except Exception as e:

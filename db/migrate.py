@@ -340,133 +340,53 @@ def migrate_token(db=None) -> bool:
 
 def migrate_risk_settings(db=None) -> bool:
     """
-    Migrate risk settings from app_kv to dedicated risk_settings table.
+    Risk settings live in app_kv as bare keys (max_daily_loss, daily_target,
+    max_trades_per_day) AND under the daily_trade: namespace used by DailyTradeCRUD.
+    The data is already in app_kv from migrate_daily_trade() / the KV seeds.
 
-    Reads the following keys from app_kv:
-        - max_daily_loss (default: -5000.0)
-        - max_trades_per_day (default: 10)
-        - daily_target (default: 5000.0)
+    BUG FIX: the original implementation tried to UPDATE a 'risk_settings' table
+    that is listed in _LEGACY_TABLES and therefore dropped before this function
+    runs.  The UPDATE always raised an OperationalError, was silently caught, and
+    logged an error on every migration run while doing nothing useful.
 
-    Args:
-        db: Optional database connector
-
-    Returns:
-        bool: True if migration successful, False on error
+    The fix is a no-op: all risk data is already correctly placed in app_kv by
+    other migration steps and by _seed_kv().
     """
-    db = db or get_db()
-
-    # Check if we have existing settings in app_kv
-    max_daily_loss = crud.kv.get("max_daily_loss", -5000.0, db)
-    max_trades_per_day = crud.kv.get("max_trades_per_day", 10, db)
-    daily_target = crud.kv.get("daily_target", 5000.0, db)
-
-    # Update risk_settings table
-    try:
-        db.execute("""
-            UPDATE risk_settings 
-            SET max_daily_loss = ?, max_trades_per_day = ?, daily_target = ?, updated_at = ?
-            WHERE id = 1
-        """, (max_daily_loss, max_trades_per_day, daily_target, crud._NOW()))
-        logger.info("  risk_settings: migrated from app_kv")
-        return True
-    except Exception as e:
-        logger.error(f"  risk_settings migration failed: {e}")
-        return False
+    logger.info("  risk_settings: data lives in app_kv — nothing to do")
+    return True
 
 
 def migrate_signal_settings(db=None) -> bool:
     """
-    Migrate signal settings from app_kv to dedicated signal_settings table.
+    Signal settings (min_confidence) live in app_kv as a bare key.
+    The data is already placed there by _seed_kv() / migrate_strategy_config().
 
-    Reads the following keys from app_kv:
-        - min_confidence (default: 0.6)
-
-    Args:
-        db: Optional database connector
-
-    Returns:
-        bool: True if migration successful, False on error
+    BUG FIX: same as migrate_risk_settings — the target table was dropped.
     """
-    db = db or get_db()
-
-    min_confidence = crud.kv.get("min_confidence", 0.6, db)
-
-    try:
-        db.execute("""
-            UPDATE signal_settings 
-            SET min_confidence = ?, updated_at = ?
-            WHERE id = 1
-        """, (min_confidence, crud._NOW()))
-        logger.info("  signal_settings: migrated from app_kv")
-        return True
-    except Exception as e:
-        logger.error(f"  signal_settings migration failed: {e}")
-        return False
+    logger.info("  signal_settings: data lives in app_kv — nothing to do")
+    return True
 
 
 def migrate_telegram_settings(db=None) -> bool:
     """
-    Migrate telegram settings from app_kv to dedicated telegram_settings table.
+    Telegram settings live in app_kv as telegram_bot_token / telegram_chat_id.
+    The data is already placed there by _seed_kv() / migrate_strategy_config().
 
-    Reads the following keys from app_kv:
-        - telegram_bot_token (default: "")
-        - telegram_chat_id (default: "")
-
-    Also sets enabled flag if both token and chat_id are present.
-
-    Args:
-        db: Optional database connector
-
-    Returns:
-        bool: True if migration successful, False on error
+    BUG FIX: same as migrate_risk_settings — the target table was dropped.
     """
-    db = db or get_db()
-
-    bot_token = crud.kv.get("telegram_bot_token", "", db)
-    chat_id = crud.kv.get("telegram_chat_id", "", db)
-    enabled = 1 if bot_token and chat_id else 0
-
-    try:
-        db.execute("""
-            UPDATE telegram_settings 
-            SET bot_token = ?, chat_id = ?, enabled = ?, updated_at = ?
-            WHERE id = 1
-        """, (bot_token, chat_id, enabled, crud._NOW()))
-        logger.info("  telegram_settings: migrated from app_kv")
-        return True
-    except Exception as e:
-        logger.error(f"  telegram_settings migration failed: {e}")
-        return False
+    logger.info("  telegram_settings: data lives in app_kv — nothing to do")
+    return True
 
 
 def migrate_mtf_settings(db=None) -> bool:
     """
-    Migrate Multi-Timeframe Filter settings from app_kv to mtf_settings table.
+    MTF settings (use_mtf_filter etc.) live in app_kv.
+    The data is already placed there by _seed_kv() / migrate_strategy_config().
 
-    Reads the following keys from app_kv:
-        - use_mtf_filter (default: False)
-
-    Args:
-        db: Optional database connector
-
-    Returns:
-        bool: True if migration successful, False on error
+    BUG FIX: same as migrate_risk_settings — the target table was dropped.
     """
-    db = db or get_db()
-
-    enabled = 1 if crud.kv.get("use_mtf_filter", False, db) else 0
-
-    try:
-        db.execute("""
-            UPDATE mtf_settings 
-            SET enabled = ?, updated_at = ?
-            WHERE id = 1
-        """, (enabled, crud._NOW()))
-        logger.info("  mtf_settings: migrated from app_kv")
-        return True
-    except Exception as e:
-        logger.error(f"  mtf_settings migration failed: {e}")
-        return False
+    logger.info("  mtf_settings: data lives in app_kv — nothing to do")
+    return True
 
 
 # ---------------------------------------------------------------------------

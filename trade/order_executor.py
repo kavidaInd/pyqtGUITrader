@@ -379,7 +379,27 @@ class OrderExecutor:
                         symbol=option_name, qty=shares, side=side_buy, order_type=mkt_type
                     )
                     if broker_id:
-                        mkt_orders = [{'id': 0, 'broker_id': broker_id,
+                        session_id = safe_getattr(state, 'session_id', None)
+                        position_type = str(option_type) if option_type else "UNKNOWN"
+                        oid = 0
+                        try:
+                            from db.connector import get_db
+                            from db.crud import orders as orders_crud
+                            oid = orders_crud.create(
+                                session_id=session_id,
+                                symbol=option_name,
+                                position_type=position_type,
+                                quantity=shares,
+                                broker_order_id=broker_id,
+                                entry_price=ltp_price,
+                                stop_loss=state.stop_loss,
+                                take_profit=state.tp_point,
+                                db=get_db(),
+                            )
+                        except Exception as db_err:
+                            logger.error(f"[ORDER] MARKET order DB record failed: {db_err}", exc_info=True)
+
+                        mkt_orders = [{'id': oid, 'broker_id': broker_id,
                                        'qty': shares, 'symbol': option_name, 'price': ltp_price}]
                         self.record_trade_state(
                             state, option_type, option_name, ltp_price, shares, mkt_orders

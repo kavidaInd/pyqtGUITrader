@@ -577,22 +577,31 @@ class DatabaseConnector:
 
     def backup(self, backup_path: str) -> bool:
         """
-        Create a backup of the database.
+        Create a consistent online backup of the database.
+
+        BUG FIX: the previous implementation used shutil.copy2() which only copies
+        the .db file.  In WAL mode the .db-wal file may contain committed transactions
+        that have not yet been checkpointed, so a raw file copy produces an
+        incomplete / inconsistent backup.
+
+        sqlite3's built-in backup() API performs an online hot-backup that correctly
+        captures all committed data regardless of WAL state.
 
         Args:
             backup_path: Path for backup file.
 
         Returns:
             bool: True if successful, False otherwise.
-
-        Example:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            db.backup(f"backups/trading_{timestamp}.db")
         """
         try:
-            import shutil
-            shutil.copy2(self.db_path, backup_path)
-            logger.info(f"Database backed up to {backup_path}")
+            import sqlite3 as _sqlite3
+            backup_dir = os.path.dirname(backup_path)
+            if backup_dir:
+                Path(backup_dir).mkdir(parents=True, exist_ok=True)
+            src_conn = self._get_conn()
+            with _sqlite3.connect(backup_path) as dst_conn:
+                src_conn.backup(dst_conn)
+            logger.info(f"Database backed up (online) to {backup_path}")
             return True
         except Exception as e:
             logger.error(f"[backup] Failed: {e}", exc_info=True)

@@ -1566,6 +1566,11 @@ class DynamicSignalEngine:
             if not rules:
                 return False, [], 0.0, 0.0
 
+            # Pre-compute total weight across ALL rules so confidence is always
+            # relative to the full rule set.  Early-exit (AND short-circuit,
+            # OR short-circuit) must not inflate the denominator.
+            all_weights_total = sum(float(r.get("weight", 1.0)) for r in rules)
+
             # For AND logic, start with True; for OR logic, start with False
             group_result = (logic == "AND")
             rule_results = []
@@ -1647,14 +1652,17 @@ class DynamicSignalEngine:
                     if logic == "AND":
                         group_result = False
 
-            # Calculate confidence based on successfully evaluated rules
+            # Confidence = rules-passed weight / ALL rules weight.
+            # Using all_weights_total (not just evaluated) means that an
+            # AND group that short-circuited after 1 of 3 rules won't show
+            # artificially high confidence (e.g. 1/1 instead of 1/3).
             if rules_evaluated > 0:
-                confidence = passed_weight / total_weight if total_weight > 0 else 0.0
+                confidence = passed_weight / all_weights_total if all_weights_total > 0 else 0.0
             else:
                 confidence = 0.0
                 group_result = False  # No rules could be evaluated
 
-            return group_result, rule_results, confidence, total_weight
+            return group_result, rule_results, confidence, all_weights_total
 
         except Exception as e:
             logger.error(f"[_evaluate_group] Failed for {signal}: {e}", exc_info=True)
@@ -1806,7 +1814,6 @@ class DynamicSignalEngine:
 
             if not has_any_rules:
                 return neutral
-            print(sig)
             fired_after_threshold = {}
             for sig in SIGNAL_GROUPS:
                 sig_val = sig.value

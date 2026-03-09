@@ -1,1195 +1,1282 @@
 """
-strategy_picker_sidebar_db.py
-==============================
-A compact, non-modal sidebar popup for quickly switching the active strategy
-at runtime without opening the full editor. Uses database-backed strategy manager.
+strategy_picker_sidebar.py
+==========================
+REDESIGN — "Ops Command Panel" aesthetic.
 
-MODERN MINIMALIST DESIGN - Matches DailyTradeSettingGUI, BrokerageSettingGUI, etc.
-Shows:
-  - List of all strategies with the active one highlighted
-  - One-click activation
-  - Active strategy stats (name, rules count, last updated)
-  - "Open Editor" button to launch StrategyEditorWindow
-  - Live indicator: current signal from active strategy
-  - FEATURE 3: Confidence scores for current signal
+Design philosophy:
+  · Terminal-influenced, military-ops dark panel
+  · Tight information density — every pixel earns its place
+  · Two-column confidence grid (not a plain list)
+  · Hero strip: active strategy name fills the full width in large type
+  · Monochrome base with surgical colour pops ONLY for live state
+  · Hairline borders, no card shadows — flat and precise
+  · Draggable, frameless, 400 px wide
 
-Embed in TradingGUI as a pinned sidebar OR show as a floating popup.
-
-UPDATED: Now uses state_manager instead of direct trading_app.state access.
-FULLY INTEGRATED with ThemeManager for dynamic theming.
+All business logic (threading, state_manager, theming) is preserved intact.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtCore import (
+    Qt, QTimer, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
+)
+from PyQt5.QtGui import (
+    QColor, QFont, QPainter, QBrush, QPen, QLinearGradient
+)
 from PyQt5.QtWidgets import (
     QAbstractItemView, QDialog, QFrame, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
-    QGridLayout, QProgressBar, QGroupBox
+    QGridLayout, QProgressBar, QScrollArea, QSizePolicy
 )
 
 from Utils.safe_getattr import safe_hasattr
 from strategy.strategy_manager import strategy_manager
-
-# Import state manager
 from data.trade_state_manager import state_manager
-
-# Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
-# Import SIGNAL_GROUPS as strings from the right place
-# These are the string values used in the engine config
-SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
-
-# Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
-SIGNAL_LABELS = {
-    "BUY_CALL": "📈 Buy Call",
-    "BUY_PUT": "📉 Buy Put",
-    "EXIT_CALL": "🔴 Exit Call",
-    "EXIT_PUT": "🟠 Exit Put",
-    "HOLD": "⏸ Hold",
-    "WAIT": "⏳ Wait",
+SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
+
+# Per-signal display metadata
+_SIG = {
+    "BUY_CALL":  dict(short="B↑",  label="BUY CALL",  attr="GREEN_BRIGHT"),
+    "BUY_PUT":   dict(short="B↓",  label="BUY PUT",   attr="BLUE"),
+    "EXIT_CALL": dict(short="X↑",  label="EXIT CALL", attr="RED_BRIGHT"),
+    "EXIT_PUT":  dict(short="X↓",  label="EXIT PUT",  attr="ORANGE"),
+    "HOLD":      dict(short="HLD", label="HOLD",      attr="YELLOW_BRIGHT"),
+    "WAIT":      dict(short="---", label="WAIT",      attr="TEXT_DISABLED"),
 }
 
 
-class ThemedMixin:
-    """Mixin class to provide theme token shortcuts."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Palette helpers  (always reads current theme)
+# ─────────────────────────────────────────────────────────────────────────────
 
+def _p():  return theme_manager.palette
+def _ty(): return theme_manager.typography
+def _sp(): return theme_manager.spacing
+def _tok(attr: str, fallback: str = "#888") -> str:
+    return getattr(theme_manager.palette, attr, fallback)
+
+
+class _TM:
+    """Mixin: shortcuts to current theme tokens."""
     @property
-    def _c(self):
-        return theme_manager.palette
-
+    def _c(self):  return theme_manager.palette
     @property
-    def _ty(self):
-        return theme_manager.typography
-
+    def _ty(self): return theme_manager.typography
     @property
-    def _sp(self):
-        return theme_manager.spacing
+    def _sp(self): return theme_manager.spacing
 
 
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE TICKER DOT  (breathing animation via QTimer + custom paint)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, parent=None, elevated=False):
+class _LiveDot(QWidget):
+    """12×12 dot that breathes between full and 20% opacity."""
+
+    def __init__(self, color: str, parent=None):
         super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
+        self.setFixedSize(10, 10)
+        self._color = color
+        self._alpha = 1.0
+        self._dir   = -1
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(35)
 
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
+    def _step(self):
+        self._alpha += self._dir * 0.035
+        if self._alpha <= 0.15: self._dir = 1
+        if self._alpha >= 1.0:  self._dir = -1
+        self.update()
 
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
+    def set_color(self, c: str):
+        self._color = c
 
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        c = QColor(self._color)
+        c.setAlphaF(self._alpha)
+        p.setBrush(c)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(1, 1, 8, 8)
 
 
-class StatusBadge(QLabel):
-    """Status badge with color-coded background."""
-    
-    def __init__(self, text="", status="neutral"):
-        super().__init__(text)
-        self.setObjectName("statusBadge")
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumWidth(60)
-        self.set_status(status)
-    
-    def set_status(self, status):
-        """Update badge color based on status."""
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-        ty = theme_manager.typography
-        
-        if status == "success":
-            color = c.GREEN
-            bg = c.GREEN + "20"
-        elif status == "warning":
-            color = c.ORANGE
-            bg = c.ORANGE + "20"
-        elif status == "error":
-            color = c.RED
-            bg = c.RED + "20"
-        elif status == "info":
-            color = c.BLUE
-            bg = c.BLUE + "20"
-        else:
-            color = c.TEXT_DIM
-            bg = c.BG_HOVER
-        
-        self.setStyleSheet(f"""
-            QLabel#statusBadge {{
-                color: {color};
-                background: {bg};
-                border: 1px solid {color};
-                border-radius: {sp.RADIUS_PILL}px;
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                font-size: {ty.SIZE_XS}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-        """)
+# ─────────────────────────────────────────────────────────────────────────────
+# SIGNAL CONFIDENCE CELL  (used in 2-column grid)
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-class ValueLabel(QLabel):
-    """Value label with consistent styling."""
-    
-    def __init__(self, text="--", parent=None):
-        super().__init__(text, parent)
-        self.setObjectName("valueLabel")
-        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.setMinimumWidth(40)
-        self._apply_style()
-    
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-        ty = theme_manager.typography
-        
-        self.setStyleSheet(f"""
-            QLabel#valueLabel {{
-                color: {c.TEXT_MAIN};
-                background: {c.BG_HOVER};
-                border-radius: {sp.RADIUS_SM}px;
-                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
-                font-size: {ty.SIZE_XS}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-        """)
-
-
-def get_signal_colors():
-    """Get signal colors from theme manager."""
-    c = theme_manager.palette
-    return {
-        "BUY_CALL": c.GREEN,
-        "BUY_PUT": c.BLUE,
-        "EXIT_CALL": c.RED,
-        "EXIT_PUT": c.ORANGE,
-        "HOLD": c.YELLOW,
-        "WAIT": c.TEXT_DISABLED,
-    }
-
-
-class _ConfidenceBar(QWidget, ThemedMixin):
-    """FEATURE 3: Confidence bar for signal groups with modern design"""
+class _ConfCell(QWidget, _TM):
+    """
+    Compact 2-row cell:
+        [short-code]  ████░░  73%
+        BUY CALL
+    Fills width equally in a 2-col grid.
+    """
 
     def __init__(self, signal: str, parent=None):
-        self._safe_defaults_init()
+        super().__init__(parent)
+        self.signal = signal
+        self._meta  = _SIG.get(signal, _SIG["WAIT"])
+        self._conf  = 0.0
+        self._thr   = 0.6
+        self._build()
+        self._restyle()
         try:
-            super().__init__(parent)
+            theme_manager.theme_changed.connect(self._restyle)
+            theme_manager.density_changed.connect(self._restyle)
+        except Exception:
+            pass
 
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(3)
 
-            self.signal = signal
+        # Top row: short code + bar + pct
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        top.setContentsMargins(0, 0, 0, 0)
 
-            layout = QHBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(self._sp.GAP_MD)
+        self._code_lbl = QLabel(self._meta["short"])
+        self._code_lbl.setFixedWidth(28)
+        self._code_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        top.addWidget(self._code_lbl)
 
-            # Signal label
-            self.label = QLabel(SIGNAL_LABELS.get(signal, signal))
-            self.label.setFixedWidth(90)
-            self.label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            layout.addWidget(self.label)
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(4)
+        top.addWidget(self._bar, 1)
 
-            # Progress bar
-            self.progress = QProgressBar()
-            self.progress.setRange(0, 100)
-            self.progress.setValue(0)
-            self.progress.setFixedHeight(self._sp.PROGRESS_SM)
-            self.progress.setTextVisible(False)
-            layout.addWidget(self.progress, 1)
+        self._pct_lbl = QLabel("0%")
+        self._pct_lbl.setFixedWidth(30)
+        self._pct_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        top.addWidget(self._pct_lbl)
 
-            # Percentage value
-            self.value = ValueLabel("0%")
-            self.value.setFixedWidth(40)
-            layout.addWidget(self.value)
+        root.addLayout(top)
 
-            self.apply_theme()
-        except Exception as e:
-            logger.error(f"[_ConfidenceBar.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
+        # Bottom row: full label
+        self._label_lbl = QLabel(self._meta["label"])
+        self._label_lbl.setAlignment(Qt.AlignLeft)
+        root.addWidget(self._label_lbl)
 
-    def _safe_defaults_init(self):
-        self.signal = ""
-        self.label = None
-        self.progress = None
-        self.value = None
+    def _restyle(self, _=None):
+        c   = self._c
+        ty  = self._ty
+        col = _tok(self._meta["attr"])
 
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the confidence bar."""
+        self._code_lbl.setStyleSheet(f"""
+            color: {col};
+            font-size: {ty.SIZE_BODY}pt;
+            font-weight: bold;
+            font-family: 'Consolas', monospace;
+            background: transparent;
+        """)
+        self._label_lbl.setStyleSheet(f"""
+            color: {c.TEXT_DIM};
+            font-size: {ty.SIZE_XS}pt;
+            letter-spacing: 0.4px;
+            background: transparent;
+        """)
+        self._apply_pct_color(col)
+        self._apply_bar_color(col)
+
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: {c.BG_INPUT};
+                border: 1px solid {c.BORDER};
+                border-radius: {self._sp.RADIUS_MD}px;
+            }}
+        """)
+
+    def _apply_pct_color(self, col: str):
+        ty = self._ty
+        self._pct_lbl.setStyleSheet(f"""
+            color: {col};
+            font-size: {ty.SIZE_XS}pt;
+            font-weight: bold;
+            font-family: 'Consolas', monospace;
+            background: transparent;
+        """)
+
+    def _apply_bar_color(self, col: str):
+        c = self._c
+        self._bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: none;
+                border-radius: 2px;
+                background: {c.BG_HOVER};
+            }}
+            QProgressBar::chunk {{
+                border-radius: 2px;
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {col}55, stop:1 {col});
+            }}
+        """)
+
+    def set_confidence(self, conf: float, threshold: float = 0.6):
         try:
-            c = self._c
-            ty = self._ty
+            self._conf = conf
+            self._thr  = threshold
+            pct = int(conf * 100)
+            self._bar.setValue(pct)
+            self._pct_lbl.setText(f"{pct}%")
 
-            if self.label:
-                self.label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
-        except Exception as e:
-            logger.error(f"[_ConfidenceBar.apply_theme] Failed: {e}", exc_info=True)
-
-    def set_confidence(self, confidence: float, threshold: float = 0.6):
-        """Set confidence value"""
-        try:
-            c = self._c
-            sp = self._sp
-
-            percent = int(confidence * 100)
-            self.progress.setValue(percent)
-            self.value.setText(f"{percent}%")
-
-            # Color based on threshold
-            if confidence >= threshold:
-                color = c.GREEN
-            elif confidence >= threshold * 0.7:
-                color = c.YELLOW
+            if conf >= threshold:
+                attr = "GREEN_BRIGHT"
+            elif conf >= threshold * 0.6:
+                attr = "YELLOW_BRIGHT"
             else:
-                color = c.RED
-
-            self.progress.setStyleSheet(f"""
-                QProgressBar {{
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    background: {c.BG_HOVER};
-                    text-align: center;
-                }}
-                QProgressBar::chunk {{
-                    background: {color};
-                    border-radius: {sp.RADIUS_SM}px;
-                }}
-            """)
+                attr = "RED_BRIGHT"
+            col = _tok(attr)
+            self._apply_pct_color(col)
+            self._apply_bar_color(col)
         except Exception as e:
-            logger.error(f"[_ConfidenceBar.set_confidence] Failed: {e}", exc_info=True)
+            logger.error(f"[_ConfCell.set_confidence] {e}", exc_info=True)
+
+    # backward compat alias used by apply_theme loop
+    def apply_theme(self, _=None):
+        self._restyle()
 
 
-class _StrategyCard(ModernCard, ThemedMixin):
-    """Expanded card showing active strategy details with modern design."""
+# ─────────────────────────────────────────────────────────────────────────────
+# HERO STRIP — active strategy display
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _HeroStrip(QFrame, _TM):
+    """
+    Full-width dark strip with:
+      Left:  large strategy name + description
+      Right: current signal badge stacked above live-dot
+    Bottom meta row: RULES · TIMEFRAME · CONF · SAVED
+    """
 
     def __init__(self, parent=None):
-        # Rule 2: Safe defaults first
-        self._safe_defaults_init()
-
+        super().__init__(parent)
+        self.setObjectName("heroStrip")
+        self._dot = None
+        self._name_lbl      = None
+        self._desc_lbl      = None
+        self._sig_lbl       = None
+        self._meta_labels   = {}
+        self._build()
+        self._restyle()
         try:
-            super().__init__(parent)
+            theme_manager.theme_changed.connect(self._restyle)
+            theme_manager.density_changed.connect(self._restyle)
+        except Exception:
+            pass
 
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 10)
+        root.setSpacing(6)
 
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD,
-                                     self._sp.PAD_MD, self._sp.PAD_MD)
-            layout.setSpacing(self._sp.GAP_MD)
+        # ── Top: name left, signal+dot right ────────────────────────────────
+        top = QHBoxLayout()
+        top.setSpacing(8)
 
-            # Header with badge and signal
-            header = QHBoxLayout()
-            self._badge = StatusBadge("ACTIVE", "success")
-            header.addWidget(self._badge)
-            header.addStretch()
+        left = QVBoxLayout()
+        left.setSpacing(2)
 
-            self._signal_badge = StatusBadge("WAIT", "neutral")
-            header.addWidget(self._signal_badge)
-            layout.addLayout(header)
+        # "ACTIVE STRATEGY" eyebrow label
+        eyebrow = QLabel("ACTIVE STRATEGY")
+        eyebrow.setObjectName("heroEyebrow")
+        left.addWidget(eyebrow)
 
-            # Strategy name
-            self._name_lbl = QLabel("—")
-            self._name_lbl.setStyleSheet(f"""
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
-            """)
-            layout.addWidget(self._name_lbl)
+        self._name_lbl = QLabel("—")
+        self._name_lbl.setObjectName("heroName")
+        self._name_lbl.setWordWrap(True)
+        left.addWidget(self._name_lbl)
 
-            # Description
-            self._desc_lbl = QLabel()
-            self._desc_lbl.setWordWrap(True)
-            self._desc_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_SM}pt;")
-            layout.addWidget(self._desc_lbl)
+        self._desc_lbl = QLabel()
+        self._desc_lbl.setObjectName("heroDesc")
+        self._desc_lbl.setWordWrap(True)
+        self._desc_lbl.setVisible(False)
+        left.addWidget(self._desc_lbl)
 
-            # Separator
-            sep = QFrame()
-            sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
-            layout.addWidget(sep)
+        top.addLayout(left, 1)
 
-            # Stats row
-            stats = QHBoxLayout()
-            self._rules_badge = StatusBadge("0 rules", "neutral")
-            stats.addWidget(self._rules_badge)
+        # Signal badge + live dot stacked
+        right = QVBoxLayout()
+        right.setSpacing(4)
+        right.setAlignment(Qt.AlignTop | Qt.AlignRight)
 
-            stats.addStretch()
+        self._sig_lbl = QLabel("WAIT")
+        self._sig_lbl.setObjectName("heroSig")
+        self._sig_lbl.setAlignment(Qt.AlignCenter)
+        self._sig_lbl.setMinimumWidth(72)
+        right.addWidget(self._sig_lbl)
 
-            self._updated_lbl = QLabel("—")
-            self._updated_lbl.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
-            stats.addWidget(self._updated_lbl)
-            layout.addLayout(stats)
+        dot_row = QHBoxLayout()
+        dot_row.setAlignment(Qt.AlignRight)
+        dot_row.setSpacing(4)
+        self._dot = _LiveDot(_tok("TEXT_DISABLED"))
+        dot_row.addWidget(self._dot)
+        live_lbl = QLabel("LIVE")
+        live_lbl.setObjectName("heroDotLbl")
+        dot_row.addWidget(live_lbl)
+        right.addLayout(dot_row)
 
-            # FEATURE 3: Confidence threshold display
-            threshold_layout = QHBoxLayout()
-            threshold_layout.addWidget(QLabel("Min Confidence:"))
-            self._threshold_lbl = ValueLabel("60%")
-            threshold_layout.addWidget(self._threshold_lbl)
-            threshold_layout.addStretch()
-            layout.addLayout(threshold_layout)
+        top.addLayout(right)
+        root.addLayout(top)
 
-            self.apply_theme()
+        # ── Hairline separator ───────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setObjectName("heroSep")
+        root.addWidget(sep)
 
-        except Exception as e:
-            logger.error(f"[_StrategyCard.__init__] Failed: {e}", exc_info=True)
-            super().__init__(parent)
+        # ── Meta row: 4 stats ────────────────────────────────────────────────
+        meta = QHBoxLayout()
+        meta.setSpacing(0)
+        meta.setContentsMargins(0, 0, 0, 0)
 
-    def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self._badge = None
-        self._signal_badge = None
-        self._name_lbl = None
-        self._desc_lbl = None
-        self._rules_badge = None
-        self._updated_lbl = None
-        self._threshold_lbl = None
+        for key in ("RULES", "TIMEFRAME", "CONF", "SAVED"):
+            cell = QWidget()
+            cell.setObjectName("metaCell")
+            cell_lay = QVBoxLayout(cell)
+            cell_lay.setContentsMargins(0, 4, 0, 0)
+            cell_lay.setSpacing(1)
+            cell_lay.setAlignment(Qt.AlignCenter)
 
-    def apply_theme(self, _: str = None) -> None:
-        """Apply theme colors to the card."""
+            key_lbl = QLabel(key)
+            key_lbl.setObjectName("metaKey")
+            key_lbl.setAlignment(Qt.AlignCenter)
+            cell_lay.addWidget(key_lbl)
+
+            val_lbl = QLabel("—")
+            val_lbl.setObjectName("metaVal")
+            val_lbl.setAlignment(Qt.AlignCenter)
+            cell_lay.addWidget(val_lbl)
+
+            self._meta_labels[key] = val_lbl
+            meta.addWidget(cell, 1)
+
+            # Vertical divider between cells (except after last)
+            if key != "SAVED":
+                div = QFrame()
+                div.setFrameShape(QFrame.VLine)
+                div.setObjectName("metaDiv")
+                meta.addWidget(div)
+
+        root.addLayout(meta)
+
+    def _restyle(self, _=None):
+        c  = self._c
+        ty = self._ty
+        sp = self._sp
+        accent = _tok("YELLOW_BRIGHT")
+
+        self.setStyleSheet(f"""
+            QFrame#heroStrip {{
+                background: {c.BG_PANEL};
+                border-bottom: 1px solid {c.BORDER};
+            }}
+            QLabel#heroEyebrow {{
+                color: {accent};
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: bold;
+                letter-spacing: 1.2px;
+                background: transparent;
+            }}
+            QLabel#heroName {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_XL}pt;
+                font-weight: bold;
+                background: transparent;
+            }}
+            QLabel#heroDesc {{
+                color: {c.TEXT_DIM};
+                font-size: {ty.SIZE_SM}pt;
+                background: transparent;
+            }}
+            QLabel#heroSig {{
+                color: {c.TEXT_DISABLED};
+                background: {c.BG_HOVER};
+                border: 1px solid {c.BORDER};
+                border-radius: 3px;
+                padding: 3px 8px;
+                font-size: {ty.SIZE_XS}pt;
+                font-weight: bold;
+                letter-spacing: 0.6px;
+            }}
+            QLabel#heroDotLbl {{
+                color: {c.TEXT_DISABLED};
+                font-size: {ty.SIZE_XS}pt;
+                letter-spacing: 0.5px;
+                background: transparent;
+            }}
+            QFrame#heroSep {{
+                background: {c.BORDER};
+                max-height: 1px;
+            }}
+            QWidget#metaCell {{
+                background: transparent;
+            }}
+            QLabel#metaKey {{
+                color: {c.TEXT_DISABLED};
+                font-size: {ty.SIZE_XS}pt;
+                letter-spacing: 0.5px;
+                background: transparent;
+            }}
+            QLabel#metaVal {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_BODY}pt;
+                font-weight: bold;
+                font-family: 'Consolas', monospace;
+                background: transparent;
+            }}
+            QFrame#metaDiv {{
+                background: {c.BORDER};
+                max-width: 1px;
+            }}
+        """)
+
+    def update_data(self, strategy: dict, signal: str = "WAIT", threshold: float = 0.6):
         try:
-            c = self._c
-            sp = self._sp
-
-            # Call parent apply_theme to update card styling
-            super()._apply_style()
-
-            # Update specific children
-            if self._name_lbl:
-                self._name_lbl.setStyleSheet(f"color: {c.TEXT_MAIN}; font-size: {self._ty.SIZE_LG}pt; font-weight: {self._ty.WEIGHT_BOLD};")
-
-            if self._desc_lbl:
-                self._desc_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {self._ty.SIZE_SM}pt;")
-
-            if self._updated_lbl:
-                self._updated_lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
-
-        except Exception as e:
-            logger.error(f"[_StrategyCard.apply_theme] Failed: {e}", exc_info=True)
-
-    def update(self, strategy: Dict, current_signal: str = "WAIT", threshold: float = 0.6):
-        """Update card with strategy data and current signal"""
-        try:
-            c = self._c
-            signal_colors = get_signal_colors()
-
-            if strategy is None:
-                logger.warning("update called with None strategy")
+            if not strategy:
                 return
+            c = self._c
 
-            # Strategy name
+            # Name
+            name = str(strategy.get("name", "—"))
             if self._name_lbl:
-                self._name_lbl.setText(str(strategy.get("name", "—")))
+                self._name_lbl.setText(name)
 
             # Description
             desc = strategy.get("description", "")
             if self._desc_lbl:
-                self._desc_lbl.setText(desc[:100] + ("…" if len(desc) > 100 else ""))
-                self._desc_lbl.setVisible(bool(desc))
+                if desc:
+                    self._desc_lbl.setText(desc[:100] + ("…" if len(desc) > 100 else ""))
+                    self._desc_lbl.setVisible(True)
+                else:
+                    self._desc_lbl.setVisible(False)
 
-            # Rules count
-            engine = strategy.get("engine", {})
-            total = 0
-            for sig in SIGNAL_GROUPS:
-                group = engine.get(sig, {}) if engine else {}
-                rules = group.get("rules", []) if isinstance(group, dict) else []
-                total += len(rules)
+            # Signal chip
+            sig_meta = _SIG.get(signal, _SIG["WAIT"])
+            sig_color = _tok(sig_meta["attr"])
+            if self._sig_lbl:
+                self._sig_lbl.setText(sig_meta["label"])
+                self._sig_lbl.setStyleSheet(f"""
+                    color: {sig_color};
+                    background: {sig_color}1A;
+                    border: 1px solid {sig_color}66;
+                    border-radius: 3px;
+                    padding: 3px 8px;
+                    font-size: {_ty().SIZE_XS}pt;
+                    font-weight: bold;
+                    letter-spacing: 0.6px;
+                """)
+                if self._dot:
+                    self._dot.set_color(sig_color if signal != "WAIT" else _tok("TEXT_DISABLED"))
 
-            if self._rules_badge:
-                self._rules_badge.setText(f"{total} rule{'s' if total != 1 else ''}")
-                self._rules_badge.set_status("info" if total > 0 else "neutral")
-
-            # Updated timestamp
+            # Meta stats
+            engine = strategy.get("engine", {}) or {}
+            total_rules = sum(
+                len((engine.get(s) or {}).get("rules", []))
+                for s in SIGNAL_GROUPS
+            )
+            tf  = (strategy.get("timeframe", "1h") or "1h").upper()
             upd = strategy.get("updated_at", "—")
             if upd and "T" in upd:
-                upd = upd.replace("T", " ")[:16]
-            if self._updated_lbl:
-                self._updated_lbl.setText(f"Updated: {upd}")
+                upd = upd.replace("T", " ")[:10]
 
-            # FEATURE 3: Update threshold
-            if self._threshold_lbl:
-                threshold_pct = int(threshold * 100)
-                self._threshold_lbl.setText(f"{threshold_pct}%")
-
-            # Signal badge
-            color = signal_colors.get(current_signal, c.TEXT_DISABLED)
-            label = SIGNAL_LABELS.get(current_signal, current_signal)
-            if self._signal_badge:
-                self._signal_badge.setText(label)
-                if current_signal in ["BUY_CALL", "BUY_PUT", "HOLD"]:
-                    self._signal_badge.set_status("success")
-                elif current_signal in ["EXIT_CALL", "EXIT_PUT"]:
-                    self._signal_badge.set_status("warning")
-                else:
-                    self._signal_badge.set_status("neutral")
+            vals = {
+                "RULES":     str(total_rules),
+                "TIMEFRAME": tf,
+                "CONF":      f"{int(threshold * 100)}%",
+                "SAVED":     upd or "—",
+            }
+            for key, val in vals.items():
+                lbl = self._meta_labels.get(key)
+                if lbl:
+                    lbl.setText(val)
 
         except Exception as e:
-            logger.error(f"[_StrategyCard.update] Failed: {e}", exc_info=True)
+            logger.error(f"[_HeroStrip.update_data] {e}", exc_info=True)
+
+    def apply_theme(self, _=None):
+        self._restyle()
 
 
-class StrategyPickerSidebar(QDialog, ThemedMixin):
+# ─────────────────────────────────────────────────────────────────────────────
+# STRATEGY ROW WIDGET  (inline list item)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _StratRow(QWidget, _TM):
     """
-    Compact floating sidebar for switching active strategy.
-    Non-modal — can stay open while trading. Uses database-backed strategy manager.
-
-    MODERN MINIMALIST DESIGN - Matches other dialogs.
-    FEATURE 3: Displays confidence scores for signal groups.
-    UPDATED: Now uses state_manager for signal data.
-    FULLY INTEGRATED with ThemeManager for dynamic theming.
+    Single list row:
+      [▌] Name                    [4h]  [12r]  [⚡]
+    Active row has an amber left stripe.
     """
-    strategy_activated = pyqtSignal(str)  # emitted with slug
-    open_editor_requested = pyqtSignal()  # user wants full editor
+
+    def __init__(self, name: str, timeframe: str, rule_count: int,
+                 is_active: bool, parent=None):
+        super().__init__(parent)
+        self._is_active = is_active
+        self._build(name, timeframe, rule_count, is_active)
+
+    def _build(self, name, timeframe, rule_count, is_active):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 10, 0)
+        lay.setSpacing(0)
+        self.setStyleSheet("background: transparent;")
+
+        c  = self._c
+        ty = self._ty
+        accent = _tok("YELLOW_BRIGHT")
+
+        # Left accent stripe (4 px)
+        stripe = QFrame()
+        stripe.setFixedWidth(4)
+        stripe.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        stripe.setStyleSheet(
+            f"background: {accent}; border-radius: 0px;"
+            if is_active else
+            "background: transparent;"
+        )
+        lay.addWidget(stripe)
+
+        # Name
+        name_lbl = QLabel(name)
+        name_lbl.setContentsMargins(10, 0, 0, 0)
+        name_lbl.setStyleSheet(f"""
+            color: {accent if is_active else c.TEXT_MAIN};
+            font-size: {ty.SIZE_BODY}pt;
+            font-weight: {'bold' if is_active else 'normal'};
+            background: transparent;
+        """)
+        lay.addWidget(name_lbl, 1)
+
+        # Timeframe pill
+        tf_lbl = QLabel(timeframe.upper())
+        tf_lbl.setAlignment(Qt.AlignCenter)
+        tf_lbl.setStyleSheet(f"""
+            color: {_tok('PURPLE')};
+            background: {_tok('PURPLE')}1A;
+            border: 1px solid {_tok('PURPLE')}44;
+            border-radius: 999px;
+            padding: 0 7px;
+            font-size: {ty.SIZE_XS}pt;
+            font-weight: bold;
+            font-family: 'Consolas', monospace;
+        """)
+        lay.addWidget(tf_lbl)
+        lay.addSpacing(6)
+
+        # Rule count pill
+        r_lbl = QLabel(f"{rule_count}r")
+        r_lbl.setAlignment(Qt.AlignCenter)
+        dim = c.TEXT_DISABLED
+        r_lbl.setStyleSheet(f"""
+            color: {dim};
+            background: {dim}1A;
+            border: 1px solid {dim}33;
+            border-radius: {_sp().RADIUS_SM}px;
+            padding: 0 5px;
+            font-size: {ty.SIZE_XS}pt;
+            font-family: 'Consolas', monospace;
+        """)
+        lay.addWidget(r_lbl)
+
+        # Active bolt icon
+        if is_active:
+            lay.addSpacing(6)
+            bolt = QLabel("⚡")
+            bolt.setStyleSheet(f"color: {accent}; font-size: {ty.SIZE_SM}pt; background: transparent;")
+            lay.addWidget(bolt)
+
+        self.setMinimumHeight(38)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN DIALOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StrategyPickerSidebar(QDialog, _TM):
+    """
+    Ops Command Panel — compact frameless picker.
+    440 × 700–920 px. Draggable title bar. 2-s live refresh.
+    """
+
+    strategy_activated    = pyqtSignal(str)
+    open_editor_requested = pyqtSignal()
+
+    # ── Init ──────────────────────────────────────────────────────────────────
 
     def __init__(self, trading_app=None, parent=None):
-        # Rule 2: Safe defaults first
         self._safe_defaults_init()
-
         try:
             super().__init__(parent, Qt.Window | Qt.Tool)
-
-            # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.trading_app = trading_app
-            self._current_signal = "WAIT"
-            self._current_threshold = 0.6
-            self._confidence_bars = {}
-
-            # Cache for snapshots
-            self._last_snapshot = {}
-            self._last_snapshot_time = None
-            self._snapshot_cache_duration = 0.1  # 100ms
-
-            # Set window flags for modern look
             self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.Tool)
             self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setFixedWidth(440)
+            self.setMinimumHeight(660)
+            self.setMaximumHeight(940)
 
-            self.setFixedWidth(420)
-            self.setMinimumHeight(650)
-            self.setMaximumHeight(900)
+            self.trading_app = trading_app
+            self._drag_pos   = None
+
+            try:
+                theme_manager.theme_changed.connect(self.apply_theme)
+                theme_manager.density_changed.connect(self.apply_theme)
+            except Exception:
+                pass
 
             self._build_ui()
             self.refresh()
             self.apply_theme()
 
-            # Auto-refresh signal display every 2s
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._refresh_data)
             self._timer.start(2000)
 
-            logger.info("StrategyPickerSidebar (database) initialized with Feature 3 and state_manager")
+            logger.info("StrategyPickerSidebar (Ops Panel redesign) initialized")
 
         except Exception as e:
-            logger.critical(f"[StrategyPickerSidebar.__init__] Failed: {e}", exc_info=True)
+            logger.critical(f"[StrategyPickerSidebar.__init__] {e}", exc_info=True)
             self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
-        """Rule 2: Initialize all attributes with safe defaults"""
-        self.trading_app = None
-        self._current_signal = "WAIT"
-        self._current_threshold = 0.6
-        self._confidence_bars = {}
-        self._timer = None
-        self._card = None
-        self._list = None
-        self._activate_btn = None
-        self._status_lbl = None
-        self._confidence_group = None
-        self._last_snapshot = {}
-        self._last_snapshot_time = None
-        self._snapshot_cache_duration = 0.1
-        self.main_card = None
+        self.trading_app          = None
+        self._current_signal      = "WAIT"
+        self._current_threshold   = 0.6
+        self._conf_cells: Dict[str, _ConfCell] = {}
+        self._timer               = None
+        self._hero                = None
+        self._list                = None
+        self._activate_btn        = None
+        self._status_lbl          = None
+        self._count_lbl           = None
+        self._last_snapshot       = {}
+        self._last_snapshot_time  = None
+        self._snapshot_cache_secs = 0.1
+        self._drag_pos            = None
+        self._outer               = None
+
+    # ── Error fallback ────────────────────────────────────────────────────────
 
     def _create_error_dialog(self, parent):
-        """Create error dialog if initialization fails"""
         try:
             super().__init__(parent, Qt.Window | Qt.Tool)
-            self.setWindowTitle("Strategy Picker - ERROR")
-            self.setMinimumWidth(400)
-            self.setMinimumHeight(300)
-
-            # Set window flags for modern look
             self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.Tool)
             self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
-            root.setContentsMargins(20, 20, 20, 20)
-
-            main_card = ModernCard(self, elevated=True)
-            layout = QVBoxLayout(main_card)
-            layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
-                                     self._sp.PAD_XL, self._sp.PAD_XL)
-
-            error_label = QLabel(f"❌ Failed to initialize strategy picker:")
-            error_label.setWordWrap(True)
-            error_label.setStyleSheet(f"color: {self._c.RED_BRIGHT}; padding: {self._sp.PAD_XL}px; font-size: {self._ty.SIZE_MD}pt;")
-            layout.addWidget(error_label)
-
-            close_btn = QPushButton("Close")
-            close_btn.setCursor(Qt.PointingHandCursor)
-            close_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {self._c.BLUE};
-                    color: white;
-                    border: none;
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                    min-width: 100px;
-                    min-height: 36px;
-                }}
-                QPushButton:hover {{
-                    background: {self._c.BLUE_DARK};
-                }}
-            """)
-            close_btn.clicked.connect(self.close)
-            layout.addWidget(close_btn, 0, Qt.AlignCenter)
-
-            root.addWidget(main_card)
-
+            root.setContentsMargins(16, 16, 16, 16)
+            card = QFrame()
+            card.setStyleSheet(
+                f"background:{_p().BG_PANEL}; "
+                f"border:1px solid {_p().RED}; border-radius:8px;"
+            )
+            lay = QVBoxLayout(card)
+            lbl = QLabel("❌ Strategy Picker failed to initialise.\nCheck logs.")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(
+                f"color:{_p().RED_BRIGHT}; padding:20px; "
+                f"font-size:{_ty().SIZE_MD}pt;"
+            )
+            lay.addWidget(lbl)
+            btn = QPushButton("Close")
+            btn.clicked.connect(self.close)
+            lay.addWidget(btn, 0, Qt.AlignCenter)
+            root.addWidget(card)
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._create_error_dialog] Failed: {e}", exc_info=True)
+            logger.error(f"[_create_error_dialog] {e}", exc_info=True)
 
-    def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        title_bar = QWidget()
-        title_bar.setFixedHeight(40)
-        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+    # ── UI construction ───────────────────────────────────────────────────────
 
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(0)
 
-        title = QLabel("⚡ Strategy Picker")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
-            }}
+        self._outer = QFrame()
+        self._outer.setObjectName("outerFrame")
+
+        outer_lay = QVBoxLayout(self._outer)
+        outer_lay.setContentsMargins(0, 0, 0, 0)
+        outer_lay.setSpacing(0)
+
+        outer_lay.addWidget(self._build_title_bar())
+        outer_lay.addWidget(self._hero_section())
+        outer_lay.addWidget(self._build_conf_grid())
+        outer_lay.addWidget(self._make_section_header(
+            "ALL STRATEGIES", show_count=True
+        ))
+        outer_lay.addWidget(self._build_list(), 1)
+        outer_lay.addWidget(self._build_footer())
+
+        root.addWidget(self._outer)
+        self._style_outer()
+
+    # ── Title bar ─────────────────────────────────────────────────────────────
+
+    def _build_title_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("titleBar")
+        bar.setFixedHeight(44)
+        bar.mousePressEvent   = self._drag_start
+        bar.mouseMoveEvent    = self._drag_move
+        bar.mouseReleaseEvent = lambda e: setattr(self, "_drag_pos", None)
+
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(14, 0, 10, 0)
+        lay.setSpacing(8)
+
+        # Monogram logo box
+        logo = QLabel("SP")
+        logo.setFixedSize(26, 26)
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setStyleSheet(f"""
+            color: {_p().BG_MAIN};
+            background: {_tok('YELLOW_BRIGHT')};
+            border-radius: 4px;
+            font-size: {_ty().SIZE_XS}pt;
+            font-weight: 900;
+            font-family: 'Consolas', monospace;
+            letter-spacing: 0.5px;
         """)
+        lay.addWidget(logo)
 
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
+        title = QLabel("STRATEGY PICKER")
+        title.setStyleSheet(f"""
+            color: {_p().TEXT_MAIN};
+            font-size: {_ty().SIZE_SM}pt;
+            font-weight: bold;
+            letter-spacing: 1.8px;
+            background: transparent;
+        """)
+        lay.addWidget(title)
+        lay.addStretch()
+
+        # Refresh
+        ref = self._icon_btn("↺", tooltip="Refresh")
+        ref.clicked.connect(self.refresh)
+        lay.addWidget(ref)
+
+        # Close
+        cls = self._icon_btn("✕")
+        cls.clicked.connect(self.hide)
+        cls.setProperty("danger", True)
+        lay.addWidget(cls)
+
+        return bar
+
+    def _icon_btn(self, text: str, tooltip: str = "") -> QPushButton:
+        btn = QPushButton(text)
+        btn.setFixedSize(28, 28)
+        btn.setCursor(Qt.PointingHandCursor)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        c = _p()
+        btn.setStyleSheet(f"""
             QPushButton {{
-                background: {self._c.BG_HOVER};
-                color: {self._c.TEXT_DIM};
+                background: transparent;
+                color: {c.TEXT_DIM};
                 border: none;
-                border-radius: {self._sp.RADIUS_SM}px;
-                font-size: {self._ty.SIZE_MD}pt;
+                border-radius: 14px;
+                font-size: {_ty().SIZE_BODY}pt;
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background: {self._c.RED};
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+            }}
+            QPushButton[danger=true]:hover {{
+                background: {c.RED};
                 color: white;
             }}
         """)
-        close_btn.clicked.connect(self.hide)
+        return btn
 
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
+    # ── Hero strip ────────────────────────────────────────────────────────────
 
-        return title_bar
+    def _hero_section(self) -> _HeroStrip:
+        self._hero = _HeroStrip()
+        return self._hero
 
-    def apply_theme(self, _: str = None) -> None:
-        """
-        Rule 13.2: Apply theme colors to the sidebar.
-        Called on theme change, density change, and initial render.
-        """
-        try:
-            c = self._c
-            sp = self._sp
-            ty = self._ty
+    # ── 2-column confidence grid ──────────────────────────────────────────────
 
-            # Update main card style
-            if hasattr(self, 'main_card') and self.main_card:
-                self.main_card._apply_style()
+    def _build_conf_grid(self) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("confWrapper")
 
-            # Update activate button
-            if self._activate_btn:
-                self._activate_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c.BLUE};
-                        color: white;
-                        border: none;
-                        border-radius: {sp.RADIUS_MD}px;
-                        padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        font-weight: {ty.WEIGHT_BOLD};
-                        min-height: 40px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c.BLUE_DARK};
-                    }}
-                    QPushButton:disabled {{
-                        background: {c.BG_HOVER};
-                        color: {c.TEXT_DISABLED};
-                    }}
-                """)
+        v = QVBoxLayout(wrapper)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-            # Update status label
-            if self._status_lbl:
-                self._status_lbl.setStyleSheet(f"color: {c.GREEN}; font-size: {ty.SIZE_XS}pt;")
+        v.addWidget(self._make_section_header("SIGNAL CONFIDENCE"))
 
-            # Update card
-            if self._card and safe_hasattr(self._card, 'apply_theme'):
-                self._card.apply_theme()
+        grid_w = QWidget()
+        grid_w.setObjectName("confGrid")
+        grid = QGridLayout(grid_w)
+        grid.setContentsMargins(10, 8, 10, 10)
+        grid.setSpacing(6)
 
-            # Update confidence bars
-            for bar in self._confidence_bars.values():
-                if safe_hasattr(bar, 'apply_theme'):
-                    bar.apply_theme()
+        # 5 signals → row0:cols0-1, row1:cols0-1, row2:col0 (HOLD centred)
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)]
+        for (row, col), sig in zip(positions, SIGNAL_GROUPS):
+            cell = _ConfCell(sig)
+            grid.addWidget(cell, row, col)
+            self._conf_cells[sig] = cell
+        # Span HOLD across both columns
+        hold_cell = self._conf_cells.get("HOLD")
+        if hold_cell:
+            grid.removeWidget(hold_cell)
+            grid.addWidget(hold_cell, 2, 0, 1, 2)
 
-            # Refresh list items to update colors
-            self._refresh_list_colors()
+        v.addWidget(grid_w)
+        return wrapper
 
-            # Update list widget style
-            if self._list:
-                self._list.setStyleSheet(f"""
-                    QListWidget {{
-                        background: {c.BG_PANEL};
-                        color: {c.TEXT_MAIN};
-                        border: 1px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_MD}px;
-                        font-size: {ty.SIZE_BODY}pt;
-                        outline: none;
-                    }}
-                    QListWidget::item {{
-                        padding: {sp.PAD_SM}px {sp.PAD_MD}px;
-                        border-bottom: 1px solid {c.BORDER};
-                    }}
-                    QListWidget::item:selected {{
-                        background: {c.BG_SELECTED};
-                        color: {c.BLUE};
-                    }}
-                    QListWidget::item:hover {{
-                        background: {c.BG_HOVER};
-                    }}
-                """)
+    # ── Section header ────────────────────────────────────────────────────────
 
-            logger.debug("[StrategyPickerSidebar.apply_theme] Applied theme")
-        except Exception as e:
-            logger.error(f"[StrategyPickerSidebar.apply_theme] Failed: {e}", exc_info=True)
+    def _make_section_header(self, title: str, show_count: bool = False) -> QWidget:
+        hdr = QWidget()
+        hdr.setObjectName("sectionHdr")
+        hdr.setFixedHeight(30)
+        lay = QHBoxLayout(hdr)
+        lay.setContentsMargins(14, 0, 14, 0)
+        lay.setSpacing(8)
 
-    def _refresh_list_colors(self):
-        """Refresh colors in the strategy list"""
-        try:
-            c = self._c
-            active_slug = strategy_manager.get_active_slug()
+        accent_dot = QFrame()
+        accent_dot.setFixedSize(5, 5)
+        accent_dot.setStyleSheet(
+            f"background:{_tok('YELLOW_BRIGHT')}; border-radius:3px;"
+        )
+        lay.addWidget(accent_dot)
 
-            for i in range(self._list.count()):
-                item = self._list.item(i)
-                slug = item.data(Qt.UserRole)
-                if slug == active_slug:
-                    item.setForeground(QColor(c.BLUE))
-                    font = QFont()
-                    font.setBold(True)
-                    item.setFont(font)
-                else:
-                    item.setForeground(QColor(c.TEXT_MAIN))
-                    font = QFont()
-                    font.setBold(False)
-                    item.setFont(font)
-        except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._refresh_list_colors] Failed: {e}", exc_info=True)
+        lbl = QLabel(title)
+        lbl.setStyleSheet(f"""
+            color: {_p().TEXT_DISABLED};
+            font-size: {_ty().SIZE_XS}pt;
+            font-weight: bold;
+            letter-spacing: 1.0px;
+            background: transparent;
+        """)
+        lay.addWidget(lbl)
+        lay.addStretch()
 
-    def _get_cached_snapshot(self) -> Dict[str, Any]:
-        """Get cached snapshot to avoid excessive state_manager calls"""
-        from datetime import datetime
-        now = datetime.now()
-        if (self._last_snapshot_time is None or
-            (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration):
-            self._last_snapshot = state_manager.get_snapshot()
-            self._last_snapshot_time = now
-        return self._last_snapshot
-
-    def _build_ui(self):
-        """Build the UI components"""
-        try:
-            # Root layout with margins for shadow effect
-            root = QVBoxLayout(self)
-            root.setContentsMargins(20, 20, 20, 20)
-            root.setSpacing(0)
-
-            # Main container card
-            self.main_card = ModernCard(self, elevated=True)
-            main_layout = QVBoxLayout(self.main_card)
-            main_layout.setContentsMargins(0, 0, 0, 0)
-            main_layout.setSpacing(0)
-
-            # Custom title bar
-            title_bar = self._create_title_bar()
-            main_layout.addWidget(title_bar)
-
-            # Separator
-            separator = QFrame()
-            separator.setFrameShape(QFrame.HLine)
-            separator.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
-            main_layout.addWidget(separator)
-
-            # Content area
-            content = QWidget()
-            content_layout = QVBoxLayout(content)
-            content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
-                                             self._sp.PAD_XL, self._sp.PAD_XL)
-            content_layout.setSpacing(self._sp.GAP_LG)
-
-            # Active strategy card
-            self._card = _StrategyCard()
-            content_layout.addWidget(self._card)
-
-            # FEATURE 3: Confidence scores group
-            self._confidence_group = QGroupBox("📊 Signal Confidence")
-            self._confidence_group.setStyleSheet(f"""
-                QGroupBox {{
-                    background: {self._c.BG_PANEL};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    margin-top: {self._sp.PAD_MD}px;
-                    color: {self._c.TEXT_MAIN};
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: {self._sp.PAD_MD}px;
-                    padding: 0 {self._sp.PAD_XS}px;
-                    color: {self._c.BLUE};
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
+        if show_count:
+            self._count_lbl = QLabel()
+            self._count_lbl.setStyleSheet(f"""
+                color: {_p().TEXT_DISABLED};
+                font-size: {_ty().SIZE_XS}pt;
+                font-family: 'Consolas', monospace;
+                background: transparent;
             """)
-            confidence_layout = QVBoxLayout(self._confidence_group)
-            confidence_layout.setContentsMargins(self._sp.PAD_MD, self._sp.PAD_MD,
-                                                self._sp.PAD_MD, self._sp.PAD_MD)
-            confidence_layout.setSpacing(self._sp.GAP_SM)
+            lay.addWidget(self._count_lbl)
 
-            # Create confidence bars for each signal group
-            signal_groups = ['BUY_CALL', 'BUY_PUT', 'EXIT_CALL', 'EXIT_PUT', 'HOLD']
-            for signal in signal_groups:
-                bar = _ConfidenceBar(signal)
-                confidence_layout.addWidget(bar)
-                self._confidence_bars[signal] = bar
+        return hdr
 
-            content_layout.addWidget(self._confidence_group)
+    # ── Strategy list ─────────────────────────────────────────────────────────
 
-            # Strategy list header
-            list_header = QHBoxLayout()
-            list_header.addWidget(QLabel("📋 All Strategies"))
-            list_header.addStretch()
-            content_layout.addLayout(list_header)
+    def _build_list(self) -> QListWidget:
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.setMinimumHeight(140)
+        self._restyle_list()
+        return self._list
 
-            # Strategy list
-            self._list = QListWidget()
-            self._list.setSelectionMode(QAbstractItemView.SingleSelection)
-            self._list.itemDoubleClicked.connect(self._on_double_click)
-            self._list.setStyleSheet(f"""
-                QListWidget {{
-                    background: {self._c.BG_PANEL};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    outline: none;
-                }}
-                QListWidget::item {{
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    border-bottom: 1px solid {self._c.BORDER};
-                }}
-                QListWidget::item:selected {{
-                    background: {self._c.BG_SELECTED};
-                    color: {self._c.BLUE};
-                }}
-                QListWidget::item:hover {{
-                    background: {self._c.BG_HOVER};
-                }}
-            """)
-            content_layout.addWidget(self._list, 1)
+    # ── Footer ────────────────────────────────────────────────────────────────
 
-            # Activate button
-            self._activate_btn = QPushButton("⚡ Activate Selected")
-            self._activate_btn.clicked.connect(self._on_activate)
-            content_layout.addWidget(self._activate_btn)
+    def _build_footer(self) -> QWidget:
+        footer = QWidget()
+        footer.setObjectName("footer")
+        footer.setFixedHeight(56)
 
-            # Footer
-            foot = QHBoxLayout()
-            foot.setSpacing(self._sp.GAP_MD)
+        lay = QHBoxLayout(footer)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(8)
 
-            open_editor_btn = QPushButton("📋 Open Editor")
-            open_editor_btn.setCursor(Qt.PointingHandCursor)
-            open_editor_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {self._c.BG_HOVER};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    min-height: 36px;
-                }}
-                QPushButton:hover {{
-                    background: {self._c.BORDER};
-                }}
-            """)
-            open_editor_btn.clicked.connect(self._on_open_editor)
-            foot.addWidget(open_editor_btn)
+        # Editor button (ghost)
+        ed_btn = QPushButton("Open Editor")
+        ed_btn.setCursor(Qt.PointingHandCursor)
+        ed_btn.setFixedHeight(36)
+        c = _p()
+        ed_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {c.TEXT_DIM};
+                border: 1px solid {c.BORDER};
+                border-radius: {_sp().RADIUS_MD}px;
+                padding: 0 14px;
+                font-size: {_ty().SIZE_SM}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                border-color: {_tok('YELLOW_BRIGHT')};
+                color: {_tok('YELLOW_BRIGHT')};
+            }}
+        """)
+        ed_btn.clicked.connect(self._on_open_editor)
+        lay.addWidget(ed_btn)
 
-            foot.addStretch()
+        lay.addStretch()
 
-            # Status label
-            self._status_lbl = QLabel()
-            self._status_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self._status_lbl.setStyleSheet(f"color: {self._c.GREEN}; font-size: {self._ty.SIZE_XS}pt;")
-            foot.addWidget(self._status_lbl)
+        # Status
+        self._status_lbl = QLabel()
+        self._status_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._status_lbl.setStyleSheet(
+            f"color:{c.TEXT_DIM}; font-size:{_ty().SIZE_XS}pt; background:transparent;"
+        )
+        lay.addWidget(self._status_lbl)
 
-            content_layout.addLayout(foot)
+        # Activate button (solid amber)
+        self._activate_btn = QPushButton("⚡  Activate")
+        self._activate_btn.setCursor(Qt.PointingHandCursor)
+        self._activate_btn.setFixedHeight(36)
+        accent = _tok("YELLOW_BRIGHT")
+        self._activate_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {accent};
+                color: {c.BG_MAIN};
+                border: none;
+                border-radius: {_sp().RADIUS_MD}px;
+                padding: 0 18px;
+                font-size: {_ty().SIZE_SM}pt;
+                font-weight: bold;
+                letter-spacing: 0.3px;
+            }}
+            QPushButton:hover {{
+                background: {_tok('ORANGE')};
+            }}
+            QPushButton:disabled {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DISABLED};
+            }}
+        """)
+        self._activate_btn.clicked.connect(self._on_activate)
+        lay.addWidget(self._activate_btn)
 
-            main_layout.addWidget(content)
-            root.addWidget(self.main_card)
+        return footer
 
+    # ── Styling helpers ───────────────────────────────────────────────────────
+
+    def _style_outer(self):
+        c = _p()
+        self._outer.setStyleSheet(f"""
+            QFrame#outerFrame {{
+                background: {c.BG_MAIN};
+                border: 1px solid {c.BORDER_STRONG};
+                border-top: 2px solid {_tok('YELLOW_BRIGHT')};
+                border-radius: 8px;
+            }}
+            QWidget#titleBar {{
+                background: {c.BG_PANEL};
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                border-bottom: 1px solid {c.BORDER};
+            }}
+            QWidget#confWrapper {{
+                background: {c.BG_MAIN};
+                border-bottom: 1px solid {c.BORDER};
+            }}
+            QWidget#confGrid {{
+                background: transparent;
+            }}
+            QWidget#sectionHdr {{
+                background: {c.BG_PANEL};
+                border-bottom: 1px solid {c.BORDER};
+                border-top: 1px solid {c.BORDER};
+            }}
+            QWidget#footer {{
+                background: {c.BG_PANEL};
+                border-top: 1px solid {c.BORDER};
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }}
+        """)
+
+    def _restyle_list(self):
+        c  = _p()
+        ty = _ty()
+        accent = _tok("YELLOW_BRIGHT")
+        self._list.setStyleSheet(f"""
+            QListWidget {{
+                background: {c.BG_MAIN};
+                color: {c.TEXT_MAIN};
+                border: none;
+                outline: none;
+                font-size: {ty.SIZE_BODY}pt;
+            }}
+            QListWidget::item {{
+                border-bottom: 1px solid {c.BORDER};
+                padding: 0;
+            }}
+            QListWidget::item:selected {{
+                background: {c.BG_SELECTED};
+            }}
+            QListWidget::item:hover:!selected {{
+                background: {c.BG_HOVER};
+            }}
+            QScrollBar:vertical {{
+                background: {c.BG_PANEL};
+                width: 4px;
+                border-radius: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {c.BORDER_STRONG};
+                border-radius: 2px;
+                min-height: 16px;
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{ height: 0; }}
+        """)
+
+    # ── Theme apply ───────────────────────────────────────────────────────────
+
+    def apply_theme(self, _=None):
+        try:
+            self._style_outer()
+            self._restyle_list()
+            if self._hero:
+                self._hero._restyle()
+            for cell in self._conf_cells.values():
+                cell._restyle()
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._build_ui] Failed: {e}", exc_info=True)
-            raise
+            logger.error(f"[apply_theme] {e}", exc_info=True)
+
+    # ── Dragging ──────────────────────────────────────────────────────────────
+
+    def _drag_start(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
+
+    def _drag_move(self, e):
+        if e.buttons() == Qt.LeftButton and self._drag_pos:
+            self.move(e.globalPos() - self._drag_pos)
+
+    # ── Data refresh ──────────────────────────────────────────────────────────
 
     def refresh(self):
-        """Reload the strategy list from database."""
         try:
-            # Use explicit `is None` — never use truthiness on QWidget or
-            # custom objects, as an empty QListWidget is falsy (len == 0).
             if self._list is None:
                 return
 
             self._list.blockSignals(True)
             self._list.clear()
 
-            c = self._c
-            strategies = strategy_manager.list_strategies()
+            strategies  = strategy_manager.list_strategies()
             active_slug = strategy_manager.get_active_slug()
 
             for s in strategies:
                 try:
+                    slug      = s.get("slug", "")
+                    is_active = slug == active_slug
+                    full      = strategy_manager.get(slug) or {}
+                    engine    = full.get("engine", {}) or {}
+                    rule_count = sum(
+                        len((engine.get(sig) or {}).get("rules", []))
+                        for sig in SIGNAL_GROUPS
+                    )
+                    timeframe = (full.get("timeframe", "1h") or "1h")
+
                     item = QListWidgetItem()
-                    slug = s.get("slug", "")
-                    is_active = (slug == active_slug)
-
-                    # Get full strategy data for rules count
-                    strategy_data = strategy_manager.get(slug) or {}
-                    engine = strategy_data.get("engine", {}) if strategy_data else {}
-
-                    total_rules = 0
-                    for sig in SIGNAL_GROUPS:
-                        group = engine.get(sig, {}) if engine else {}
-                        rules = group.get("rules", []) if isinstance(group, dict) else []
-                        total_rules += len(rules)
-
-                    # Build item text
-                    prefix = "⚡" if is_active else "  "
-                    name = s.get("name", "Unknown")
-                    item.setText(f"{prefix}  {name}")
                     item.setData(Qt.UserRole, slug)
-
-                    tooltip = s.get("description", "")
-                    updated = s.get("updated_at", "—")
-                    if updated and "T" in updated:
-                        updated = updated.replace("T", " ")[:16]
-                    tooltip += f"\n{total_rules} rules | updated {updated}"
-
-                    # FEATURE 3: Add confidence info to tooltip
-                    if is_active:
-                        tooltip += f"\nMin confidence: {engine.get('min_confidence', 0.6)*100:.0f}%"
-
-                    item.setToolTip(tooltip)
-
-                    if is_active:
-                        item.setForeground(QColor(c.BLUE))
-                        font = QFont()
-                        font.setBold(True)
-                        item.setFont(font)
-
+                    row_w = _StratRow(
+                        name=s.get("name", "Unknown"),
+                        timeframe=timeframe,
+                        rule_count=rule_count,
+                        is_active=is_active,
+                    )
+                    item.setSizeHint(row_w.sizeHint())
                     self._list.addItem(item)
+                    self._list.setItemWidget(item, row_w)
 
-                except Exception as e:
-                    logger.warning(f"Failed to add strategy item: {e}")
-                    continue
+                except Exception as ex:
+                    logger.warning(f"Failed to build strategy row: {ex}")
 
             self._list.blockSignals(False)
 
-            # Update active card and confidence bars
+            if self._count_lbl:
+                n = len(strategies)
+                self._count_lbl.setText(f"{n} total")
+
             self._update_active_display()
 
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar.refresh] Failed: {e}", exc_info=True)
+            logger.error(f"[refresh] {e}", exc_info=True)
 
     @pyqtSlot()
     def _refresh_data(self):
-        """Pull current data from state_manager and update UI."""
         try:
             if not self.isVisible():
                 return
-
             self._update_active_display()
-
         except Exception as e:
-            logger.debug(f"[_refresh_data] Failed: {e}")
+            logger.debug(f"[_refresh_data] {e}")
+
+    def _get_cached_snapshot(self) -> dict:
+        from datetime import datetime
+        now = datetime.now()
+        if (self._last_snapshot_time is None or
+                (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_secs):
+            self._last_snapshot = state_manager.get_snapshot()
+            self._last_snapshot_time = now
+        return self._last_snapshot
 
     def _update_active_display(self):
-        """Update active strategy card and confidence bars using state_manager"""
         try:
-            c = self._c
+            position_snap = state_manager.get_position_snapshot()
+            signal_value  = position_snap.get("option_signal", "WAIT")
 
-            # Get snapshots from state manager
-            snapshot = self._get_cached_snapshot()
-            position_snapshot = state_manager.get_position_snapshot()
-
-            # Get signal from position snapshot
-            signal_value = position_snapshot.get('option_signal', 'WAIT')
-
-            # Get signal snapshot for confidence
             try:
                 signal_snap = state_manager.get_state().get_option_signal_snapshot()
-                confidence = signal_snap.get('confidence', {})
-                threshold = signal_snap.get('threshold', 0.6)
+                confidence  = signal_snap.get("confidence", {})
+                threshold   = signal_snap.get("threshold", 0.6)
             except Exception:
                 confidence = {}
-                threshold = 0.6
+                threshold  = 0.6
 
-            # Update active strategy
             active = strategy_manager.get_active()
             if active is not None:
-                engine = active.get("engine", {})
-                threshold = engine.get("min_confidence", 0.6)
+                engine    = active.get("engine", {}) or {}
+                threshold = float(engine.get("min_confidence", threshold))
 
-                if self._card is not None:
-                    self._card.update(active, signal_value, threshold)
+                if self._hero is not None:
+                    self._hero.update_data(active, signal_value, threshold)
 
-                # Update confidence bars
-                for signal, bar in self._confidence_bars.items():
-                    conf = confidence.get(signal, 0.0)
-                    bar.set_confidence(conf, threshold)
+                for sig, cell in self._conf_cells.items():
+                    cell.set_confidence(float(confidence.get(sig, 0.0)), threshold)
 
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._update_active_display] Failed: {e}", exc_info=True)
+            logger.error(f"[_update_active_display] {e}", exc_info=True)
+
+    # ── Actions ───────────────────────────────────────────────────────────────
 
     def _on_double_click(self, item):
-        """Handle double-click on strategy item"""
         try:
             if item:
-                slug = item.data(Qt.UserRole)
-                self._activate(slug)
+                self._activate(item.data(Qt.UserRole))
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._on_double_click] Failed: {e}", exc_info=True)
+            logger.error(f"[_on_double_click] {e}", exc_info=True)
 
     def _on_activate(self):
-        """Handle activate button click"""
         try:
             if self._list is None:
                 return
-
             item = self._list.currentItem()
             if item:
-                slug = item.data(Qt.UserRole)
-                self._activate(slug)
+                self._activate(item.data(Qt.UserRole))
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._on_activate] Failed: {e}", exc_info=True)
+            logger.error(f"[_on_activate] {e}", exc_info=True)
 
     def _activate(self, slug: str):
-        """Activate a strategy by slug - with deadlock prevention"""
         try:
-            c = self._c
             if not slug:
-                logger.warning("Cannot activate: empty slug")
+                return
+            current = strategy_manager.get_active_slug()
+            if current == slug:
+                data = strategy_manager.get(slug) or {}
+                self._set_status(f"✓ Already active: {data.get('name', slug)}", "green")
                 return
 
-            # First, check if this is already the active strategy
-            current_active = strategy_manager.get_active_slug()
-            if current_active == slug:
-                logger.debug(f"Strategy {slug} is already active")
-                # Still show success message
-                strategy_data = strategy_manager.get(slug) or {}
-                name = strategy_data.get("name", slug)
+            self._set_status("⏳ Activating…", "yellow")
 
-                if self._status_lbl:
-                    self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt;")
-                    self._status_lbl.setText(f"✓ Already active: {name}")
-                    QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
-                return
-
-            # Use a timer to perform the activation to prevent UI freezing
-            def do_activation():
+            def _do():
                 try:
-                    # Perform the activation
                     ok = strategy_manager.activate(slug)
-
-                    if ok:
-                        # Update UI on the main thread
-                        QMetaObject.invokeMethod(
-                            self,
-                            "_on_activation_success",
-                            Qt.QueuedConnection,
-                            Q_ARG(str, slug)
-                        )
-                    else:
-                        QMetaObject.invokeMethod(
-                            self,
-                            "_on_activation_failure",
-                            Qt.QueuedConnection,
-                            Q_ARG(str, slug)
-                        )
-                except Exception as e:
-                    logger.error(f"[StrategyPickerSidebar.do_activation] Failed: {e}", exc_info=True)
+                    m  = "_on_activation_success" if ok else "_on_activation_failure"
                     QMetaObject.invokeMethod(
-                        self,
-                        "_on_activation_error",
-                        Qt.QueuedConnection,
-                        Q_ARG(str, str(e))
+                        self, m, Qt.QueuedConnection, Q_ARG(str, slug)
+                    )
+                except Exception as ex:
+                    QMetaObject.invokeMethod(
+                        self, "_on_activation_error",
+                        Qt.QueuedConnection, Q_ARG(str, str(ex))
                     )
 
-            # Run activation in a thread pool to avoid blocking
             from concurrent.futures import ThreadPoolExecutor
-            executor = ThreadPoolExecutor(max_workers=1)
-            executor.submit(do_activation)
-            executor.shutdown(wait=False)
-
-            # Show loading state
-            if self._status_lbl:
-                self._status_lbl.setStyleSheet(f"color:{c.YELLOW}; font-size:{self._ty.SIZE_XS}pt;")
-                self._status_lbl.setText(f"⏳ Activating strategy...")
+            ex = ThreadPoolExecutor(max_workers=1)
+            ex.submit(_do)
+            ex.shutdown(wait=False)
 
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._activate] Failed for {slug}: {e}", exc_info=True)
+            logger.error(f"[_activate] {e}", exc_info=True)
 
     @pyqtSlot(str)
     def _on_activation_success(self, slug: str):
-        """Handle successful activation on UI thread"""
         try:
-            c = self._c
             self.refresh()
-
-            # Emit signal with a delay to prevent recursion
             QTimer.singleShot(100, lambda: self.strategy_activated.emit(slug))
-
-            strategy_data = strategy_manager.get(slug) or {}
-            name = strategy_data.get("name", slug)
-
-            if self._status_lbl:
-                self._status_lbl.setStyleSheet(f"color:{c.GREEN}; font-size:{self._ty.SIZE_XS}pt;")
-                self._status_lbl.setText(f"✓ Activated: {name}")
-                QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
-
+            data = strategy_manager.get(slug) or {}
+            self._set_status(f"✓ {data.get('name', slug)}", "green", 3000)
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._on_activation_success] Failed: {e}", exc_info=True)
+            logger.error(f"[_on_activation_success] {e}", exc_info=True)
 
     @pyqtSlot(str)
     def _on_activation_failure(self, slug: str):
-        """Handle activation failure on UI thread"""
-        try:
-            c = self._c
-            if self._status_lbl:
-                self._status_lbl.setStyleSheet(f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt;")
-                self._status_lbl.setText(f"✗ Failed to activate {slug}")
-                QTimer.singleShot(3000, lambda: self._status_lbl.clear() if self._status_lbl else None)
-        except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._on_activation_failure] Failed: {e}", exc_info=True)
+        self._set_status(f"✗ Failed: {slug}", "red", 3000)
 
     @pyqtSlot(str)
     def _on_activation_error(self, error: str):
-        """Handle activation error on UI thread"""
-        try:
-            c = self._c
-            if self._status_lbl:
-                self._status_lbl.setStyleSheet(f"color:{c.RED}; font-size:{self._ty.SIZE_XS}pt;")
-                self._status_lbl.setText(f"✗ Error: {error[:50]}...")
-                QTimer.singleShot(5000, lambda: self._status_lbl.clear() if self._status_lbl else None)
-        except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._on_activation_error] Failed: {e}", exc_info=True)
+        self._set_status(f"✗ {error[:45]}", "red", 5000)
+
+    def _set_status(self, msg: str, color: str = "neutral", clear_ms: int = 0):
+        if not self._status_lbl:
+            return
+        col = {"green": _p().GREEN_BRIGHT, "yellow": _p().YELLOW_BRIGHT,
+               "red": _p().RED_BRIGHT}.get(color, _p().TEXT_DIM)
+        self._status_lbl.setStyleSheet(
+            f"color:{col}; font-size:{_ty().SIZE_XS}pt; "
+            f"font-weight:bold; background:transparent;"
+        )
+        self._status_lbl.setText(msg)
+        if clear_ms:
+            QTimer.singleShot(
+                clear_ms,
+                lambda: self._status_lbl.clear() if self._status_lbl else None
+            )
 
     def _on_open_editor(self):
-        """Emit signal to open editor"""
         try:
             self.open_editor_requested.emit()
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar._on_open_editor] Failed: {e}", exc_info=True)
+            logger.error(f"[_on_open_editor] {e}", exc_info=True)
 
-    # Rule 8: Cleanup method
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
     def cleanup(self):
-        """Clean up resources — call only when permanently destroying the widget."""
         try:
-            logger.info("[StrategyPickerSidebar] Starting cleanup")
-
-            # Stop timer
-            if self._timer:
-                try:
-                    if self._timer.isActive():
-                        self._timer.stop()
-                    self._timer = None
-                except Exception as e:
-                    logger.warning(f"Error stopping timer: {e}")
-
-            # Clear references
-            self.trading_app = None
-            self._card = None
-            self._list = None
-            self._activate_btn = None
-            self._status_lbl = None
-            self._confidence_group = None
-            self._confidence_bars.clear()
-            self._last_snapshot = {}
+            if self._timer and self._timer.isActive():
+                self._timer.stop()
+            self._timer            = None
+            self.trading_app       = None
+            self._hero             = None
+            self._list             = None
+            self._activate_btn     = None
+            self._status_lbl       = None
+            self._last_snapshot    = {}
             self._last_snapshot_time = None
-            self.main_card = None
-
-            logger.info("[StrategyPickerSidebar] Cleanup completed")
-
+            self._conf_cells.clear()
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar.cleanup] Error: {e}", exc_info=True)
+            logger.error(f"[cleanup] {e}", exc_info=True)
 
     def closeEvent(self, event):
-        """
-        Hide the sidebar instead of destroying it so it can be re-shown later.
-        Call cleanup() explicitly only when the parent window is closing.
-        """
         try:
-            # Pause the timer while hidden to avoid wasted work
             if self._timer and self._timer.isActive():
                 self._timer.stop()
             self.hide()
-            event.ignore()   # Do NOT close/destroy — just hide
-        except Exception as e:
-            logger.error(f"[StrategyPickerSidebar.closeEvent] Failed: {e}", exc_info=True)
+            event.ignore()
+        except Exception:
             event.ignore()
 
     def showEvent(self, event):
-        """Resume the refresh timer whenever the sidebar becomes visible."""
         try:
             super().showEvent(event)
             if self._timer and not self._timer.isActive():
                 self._timer.start(2000)
         except Exception as e:
-            logger.error(f"[StrategyPickerSidebar.showEvent] Failed: {e}", exc_info=True)
+            logger.error(f"[showEvent] {e}", exc_info=True)

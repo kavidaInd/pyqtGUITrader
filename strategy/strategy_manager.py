@@ -205,6 +205,13 @@ class StrategyManager:
                     else:
                         data["engine"]["min_confidence"] = 0.6
 
+                # Validate timeframe
+                valid_tfs = {"1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"}
+                tf = data.get("timeframe", "1h")
+                if tf not in valid_tfs:
+                    logger.warning(f"[save] Unknown timeframe '{tf}', defaulting to '1h'")
+                    data["timeframe"] = "1h"
+
                 return strategy_crud.save(slug, data, db)
             except Exception as e:
                 logger.error(f"[save] Failed for {slug}: {e}", exc_info=True)
@@ -283,6 +290,44 @@ class StrategyManager:
             except Exception as e:
                 logger.error(f"[get_active_min_confidence] Failed: {e}", exc_info=True)
                 return 0.6
+
+    def get_active_timeframe(self) -> str:
+        """
+        Get the analysis timeframe of the active strategy.
+
+        Returns:
+            Timeframe string e.g. '1m', '5m', '15m', '1h', '4h', '1d'.
+            Defaults to '1h' if not set.
+        """
+        with self._lock:
+            try:
+                strategy = self.get_active()
+                if strategy:
+                    return strategy.get("timeframe", "1h") or "1h"
+                return "1h"
+            except Exception as e:
+                logger.error(f"[get_active_timeframe] Failed: {e}", exc_info=True)
+                return "1h"
+
+    def get_timeframe(self, slug: str) -> str:
+        """
+        Get the analysis timeframe of a specific strategy by slug.
+
+        Args:
+            slug: Strategy identifier
+
+        Returns:
+            Timeframe string, defaults to '1h'
+        """
+        with self._lock:
+            try:
+                strategy = self.get(slug)
+                if strategy:
+                    return strategy.get("timeframe", "1h") or "1h"
+                return "1h"
+            except Exception as e:
+                logger.error(f"[get_timeframe] Failed for {slug}: {e}", exc_info=True)
+                return "1h"
 
     def set_active_min_confidence(self, threshold: float) -> bool:
         """
@@ -576,6 +621,7 @@ class StrategyManager:
                     "total_weight": round(total_weight, 2),
                     "avg_weight": round(avg_weight, 2),
                     "min_confidence": engine.get("min_confidence", 0.6),
+                    "timeframe": strategy.get("timeframe", "1h"),
                 }
             except Exception as e:
                 logger.error(f"[get_statistics] Failed: {e}", exc_info=True)

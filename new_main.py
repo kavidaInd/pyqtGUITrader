@@ -1094,7 +1094,10 @@ class TradingApp:
 
             # Get the cached resampled DF — no broker call, just from store
             try:
-                target_minutes = int(state.interval or "1")
+                # state.interval is stored as e.g. "2m" or "5m"; strip the
+                # trailing 'm' before converting to int.
+                _raw_interval = str(state.interval or "1").strip().rstrip("mM")
+                target_minutes = int(_raw_interval)
             except (TypeError, ValueError):
                 target_minutes = 1
 
@@ -1160,7 +1163,9 @@ class TradingApp:
                 else state.current_position
 
             try:
-                target_minutes = int(interval)
+                # state.interval is stored as e.g. "2m" or "5m"; strip the
+                # trailing 'm' before converting to int.
+                target_minutes = int(str(interval).strip().rstrip("mM"))
             except (TypeError, ValueError):
                 target_minutes = 1
 
@@ -1455,6 +1460,18 @@ class TradingApp:
                 elif previous_pos == BaseEnums.PUT and signal_value == 'BUY_PUT':
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous PUT trade flag - same-direction BUY_PUT signal (re-entry allowed)")
+
+                # EXIT signal matching the previous position: the market may still be trending
+                # against re-entry — reset the block so the next BUY_* can trigger fresh entry.
+                # Without this, a repeated EXIT_CALL after closing a CALL would permanently
+                # block new entries because no other branch would ever return RESET.
+                elif previous_pos == BaseEnums.CALL and signal_value == 'EXIT_CALL':
+                    trend = BaseEnums.RESET_PREVIOUS_TRADE
+                    logger.info("Reset previous CALL trade flag - EXIT_CALL signal (unblocking entry)")
+
+                elif previous_pos == BaseEnums.PUT and signal_value == 'EXIT_PUT':
+                    trend = BaseEnums.RESET_PREVIOUS_TRADE
+                    logger.info("Reset previous PUT trade flag - EXIT_PUT signal (unblocking entry)")
 
                 # Neutral signal (HOLD/WAIT) → reset to unblock fresh entry
                 elif signal_value in ['HOLD', 'WAIT']:
@@ -1914,13 +1931,27 @@ class TradingApp:
             # Apply profit/loss settings
             if self.profit_loss_config:
                 plc = self.profit_loss_config
-                state.tp_percentage = state.original_profit_per = safe_getattr(plc, "tp_percentage", 0)
-                state.stoploss_percentage = state.original_stoploss_per = safe_getattr(plc, "stoploss_percentage", 0)
-                state.trailing_first_profit = safe_getattr(plc, "trailing_first_profit", 0)
-                state.max_profit = safe_getattr(plc, "max_profit", 0)
-                state.profit_step = safe_getattr(plc, "profit_step", 0)
-                state.loss_step = safe_getattr(plc, "loss_step", 0)
-                state.take_profit_type = safe_getattr(plc, "profit_type", "absolute")
+                # BUG FIX: safe_getattr(..., 0) previously used 0 as the fallback for
+                # tp_percentage and stoploss_percentage.  A 0% SL means
+                # stop_loss == entry_price → the position exits on the very first tick.
+                # A 0% TP means tp_point == entry_price → same instant exit.
+                # Use the TradeState defaults (15% TP, 7% SL) as the fallback so
+                # a missing config field never produces an unintended zero.
+                _tp  = safe_getattr(plc, "tp_percentage",      None)
+                _sl  = safe_getattr(plc, "stoploss_percentage", None)
+                if _tp  is not None: state.tp_percentage        = state.original_profit_per  = float(_tp)
+                if _sl  is not None: state.stoploss_percentage  = state.original_stoploss_per = float(_sl)
+                if _tp is None:
+                    logger.warning("[apply_settings_to_state] tp_percentage missing from config — "
+                                   f"keeping state default {state.tp_percentage}%")
+                if _sl is None:
+                    logger.warning("[apply_settings_to_state] stoploss_percentage missing from config — "
+                                   f"keeping state default {state.stoploss_percentage}%")
+                state.trailing_first_profit = safe_getattr(plc, "trailing_first_profit", state.trailing_first_profit)
+                state.max_profit            = safe_getattr(plc, "max_profit",            state.max_profit)
+                state.profit_step           = safe_getattr(plc, "profit_step",           state.profit_step)
+                state.loss_step             = safe_getattr(plc, "loss_step",             state.loss_step)
+                state.take_profit_type      = safe_getattr(plc, "profit_type",           state.take_profit_type)
 
             logger.info(f"[Settings] Applied trade and P/L configs - Capital: {state.capital_reserve}, "
                         f"Lot size: {state.lot_size}, TP: {state.tp_percentage}%, "
