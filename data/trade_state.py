@@ -274,6 +274,10 @@ class TradeState:
                 self._original_profit_per: float = 15.0
                 self._original_stoploss_per: float = 7.0
                 self._trailing_first_profit: float = 3.0
+                self._trailing_activation_pct: float = 10.0   # % above entry to activate trailing
+                self._trailing_sl_at_activation: float = 5.0  # % above entry SL jumps to on activation
+                self._trailing_activated: bool = False         # True once activation threshold crossed
+                self._trailing_last_step_pct: float = 0.0     # highest % from entry that triggered a step
                 self._max_profit: float = 30.0
                 self._profit_step: float = 2.0
                 self._loss_step: float = 2.0
@@ -341,6 +345,20 @@ class TradeState:
                 self._use_mtf_filter: bool = False
                 self._market_open_time: str = "09:15"
                 self._market_close_time: str = "15:30"
+
+                # ── Re-entry guard settings ──────────────────────────────────────
+                # Populated by ReEntrySetting._apply_to_state() on startup / save.
+                # Consumed by TradingApp._check_reentry_allowed() each entry attempt.
+                self._reentry_allow: bool = True
+                self._reentry_min_candles_sl: int = 3
+                self._reentry_min_candles_tp: int = 1
+                self._reentry_min_candles_signal: int = 2
+                self._reentry_min_candles_default: int = 2
+                self._reentry_same_direction_only: bool = False
+                self._reentry_require_new_signal: bool = True
+                self._reentry_price_filter_enabled: bool = True
+                self._reentry_price_filter_pct: float = 5.0
+                self._reentry_max_per_day: int = 0
 
                 # ── Startup validation ────────────────────────────────────────
                 try:
@@ -1139,9 +1157,41 @@ class TradeState:
         """Set loss step size."""
         self._set("_loss_step", float(value))
 
-    # ------------------------------------------------------------------
-    # Session config
-    # ------------------------------------------------------------------
+    @property
+    def trailing_activation_pct(self) -> float:
+        """% rise above entry price at which trailing first activates."""
+        return self._get("_trailing_activation_pct")
+
+    @trailing_activation_pct.setter
+    def trailing_activation_pct(self, value: float) -> None:
+        self._set("_trailing_activation_pct", max(0.1, float(value)))
+
+    @property
+    def trailing_sl_at_activation(self) -> float:
+        """SL level (% of entry) to jump to when trailing first activates."""
+        return self._get("_trailing_sl_at_activation")
+
+    @trailing_sl_at_activation.setter
+    def trailing_sl_at_activation(self, value: float) -> None:
+        self._set("_trailing_sl_at_activation", float(value))
+
+    @property
+    def trailing_activated(self) -> bool:
+        """True once the trailing activation threshold has been crossed this trade."""
+        return bool(self._get("_trailing_activated"))
+
+    @trailing_activated.setter
+    def trailing_activated(self, value: bool) -> None:
+        self._set("_trailing_activated", bool(value))
+
+    @property
+    def trailing_last_step_pct(self) -> float:
+        """Highest % gain from entry that has already triggered a trailing step."""
+        return self._get("_trailing_last_step_pct")
+
+    @trailing_last_step_pct.setter
+    def trailing_last_step_pct(self, value: float) -> None:
+        self._set("_trailing_last_step_pct", float(value))
 
     @property
     def interval(self) -> Optional[str]:
@@ -1500,8 +1550,98 @@ class TradeState:
         self._set("_market_close_time", value)
 
     # ------------------------------------------------------------------
-    # Misc market state
+    # Re-entry guard settings
     # ------------------------------------------------------------------
+
+    @property
+    def reentry_allow(self) -> bool:
+        """Master re-entry switch."""
+        return self._get("_reentry_allow")
+
+    @reentry_allow.setter
+    def reentry_allow(self, value: bool) -> None:
+        self._set("_reentry_allow", bool(value))
+
+    @property
+    def reentry_min_candles_sl(self) -> int:
+        """Candles to wait after a stop-loss exit."""
+        return self._get("_reentry_min_candles_sl")
+
+    @reentry_min_candles_sl.setter
+    def reentry_min_candles_sl(self, value: int) -> None:
+        self._set("_reentry_min_candles_sl", max(0, int(value)))
+
+    @property
+    def reentry_min_candles_tp(self) -> int:
+        """Candles to wait after a take-profit exit."""
+        return self._get("_reentry_min_candles_tp")
+
+    @reentry_min_candles_tp.setter
+    def reentry_min_candles_tp(self, value: int) -> None:
+        self._set("_reentry_min_candles_tp", max(0, int(value)))
+
+    @property
+    def reentry_min_candles_signal(self) -> int:
+        """Candles to wait after a signal-based exit."""
+        return self._get("_reentry_min_candles_signal")
+
+    @reentry_min_candles_signal.setter
+    def reentry_min_candles_signal(self, value: int) -> None:
+        self._set("_reentry_min_candles_signal", max(0, int(value)))
+
+    @property
+    def reentry_min_candles_default(self) -> int:
+        """Fallback candle wait when exit reason is unknown."""
+        return self._get("_reentry_min_candles_default")
+
+    @reentry_min_candles_default.setter
+    def reentry_min_candles_default(self, value: int) -> None:
+        self._set("_reentry_min_candles_default", max(0, int(value)))
+
+    @property
+    def reentry_same_direction_only(self) -> bool:
+        """Block re-entry in same direction only (opposite allowed immediately)."""
+        return self._get("_reentry_same_direction_only")
+
+    @reentry_same_direction_only.setter
+    def reentry_same_direction_only(self, value: bool) -> None:
+        self._set("_reentry_same_direction_only", bool(value))
+
+    @property
+    def reentry_require_new_signal(self) -> bool:
+        """Require a fresh signal after the candle wait."""
+        return self._get("_reentry_require_new_signal")
+
+    @reentry_require_new_signal.setter
+    def reentry_require_new_signal(self, value: bool) -> None:
+        self._set("_reentry_require_new_signal", bool(value))
+
+    @property
+    def reentry_price_filter_enabled(self) -> bool:
+        """Enable price-chase filter on re-entry."""
+        return self._get("_reentry_price_filter_enabled")
+
+    @reentry_price_filter_enabled.setter
+    def reentry_price_filter_enabled(self, value: bool) -> None:
+        self._set("_reentry_price_filter_enabled", bool(value))
+
+    @property
+    def reentry_price_filter_pct(self) -> float:
+        """Max price increase (%) allowed before blocking re-entry."""
+        return self._get("_reentry_price_filter_pct")
+
+    @reentry_price_filter_pct.setter
+    def reentry_price_filter_pct(self, value: float) -> None:
+        self._set("_reentry_price_filter_pct", max(0.0, float(value)))
+
+    @property
+    def reentry_max_per_day(self) -> int:
+        """Max re-entries per day (0 = unlimited)."""
+        return self._get("_reentry_max_per_day")
+
+    @reentry_max_per_day.setter
+    def reentry_max_per_day(self, value: int) -> None:
+        self._set("_reentry_max_per_day", max(0, int(value)))
 
     @property
     def market_trend(self) -> Optional[int]:
@@ -2092,6 +2232,10 @@ class TradeState:
                     "original_profit_per": self._original_profit_per,
                     "original_stoploss_per": self._original_stoploss_per,
                     "trailing_first_profit": self._trailing_first_profit,
+                    "trailing_activation_pct": self._trailing_activation_pct,
+                    "trailing_sl_at_activation": self._trailing_sl_at_activation,
+                    "trailing_activated": self._trailing_activated,
+                    "trailing_last_step_pct": self._trailing_last_step_pct,
                     "max_profit": self._max_profit,
                     "profit_step": self._profit_step,
                     "loss_step": self._loss_step,
@@ -2161,6 +2305,18 @@ class TradeState:
                     "session_id": self._session_id,
                     "app_session_id": self._app_session_id,
                     "session_start_time": self._session_start_time,
+
+                    # Re-entry guard settings
+                    "reentry_allow": self._reentry_allow,
+                    "reentry_min_candles_sl": self._reentry_min_candles_sl,
+                    "reentry_min_candles_tp": self._reentry_min_candles_tp,
+                    "reentry_min_candles_signal": self._reentry_min_candles_signal,
+                    "reentry_min_candles_default": self._reentry_min_candles_default,
+                    "reentry_same_direction_only": self._reentry_same_direction_only,
+                    "reentry_require_new_signal": self._reentry_require_new_signal,
+                    "reentry_price_filter_enabled": self._reentry_price_filter_enabled,
+                    "reentry_price_filter_pct": self._reentry_price_filter_pct,
+                    "reentry_max_per_day": self._reentry_max_per_day,
                 }
         except Exception as e:
             logger.error(f"[get_snapshot] Failed: {e}", exc_info=True)
@@ -2359,6 +2515,10 @@ class TradeState:
                 self._last_mtf_summary = None
                 self._mtf_allowed = True
                 self._mtf_results = {}
+
+                # Trailing guard fields — reset for next trade
+                self._trailing_activated = False
+                self._trailing_last_step_pct = 0.0
 
                 # Restore preserved settings
                 self._trading_mode = trading_mode

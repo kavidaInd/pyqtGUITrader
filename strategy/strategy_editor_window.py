@@ -264,7 +264,8 @@ try:
     from strategy.indicator_registry import (
         ALL_INDICATORS, get_indicator_params, get_indicator_category,
         get_indicators_by_category, get_suggested_weight,
-        get_indicator_sub_columns, get_rule_weight_range
+        get_indicator_sub_columns, get_rule_weight_range,
+        get_param_type, get_param_description
     )
 except ImportError:
     ALL_INDICATORS = [
@@ -316,6 +317,26 @@ except ImportError:
     def get_rule_weight_range():
         return {"min": 0.1, "max": 5.0, "step": 0.1, "default": 1.0,
                 "description": "Rule weight for confidence scoring (0.1–5.0)"}
+
+
+    def get_param_type(param):
+        _int = {"length", "fast", "slow", "signal", "k", "d", "smooth_k",
+                "drift", "offset", "ddof", "atr_length"}
+        _float = {"std", "multiplier", "scalar", "af0", "af", "max_af",
+                  "bb_std", "kc_scalar", "q"}
+        if param in _int:
+            return "int"
+        if param in _float:
+            return "float"
+        return "string"
+
+
+    def get_param_description(param):
+        _desc = {"length": "Number of periods", "fast": "Fast period",
+                 "slow": "Slow period", "signal": "Signal period",
+                 "std": "Std deviation multiplier", "multiplier": "ATR multiplier",
+                 "drift": "Lookback for difference", "offset": "Period offset"}
+        return _desc.get(param, "")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -1367,12 +1388,173 @@ class RuleRowWidget(QFrame):
         sub_col_cb.hide()
         ind_lay.addWidget(sub_col_cb)
 
+        # ── Indicator Parameters Panel ────────────────────────────────────────
+        # Shown below the indicator combo; rebuilt whenever the indicator changes.
+        # Each parameter gets a compact labeled row: int → QSpinBox,
+        # float → QDoubleSpinBox, others → QLineEdit.
+        params_frame = QFrame()
+        params_frame.setStyleSheet(f"""
+            QFrame {{
+                background: transparent;
+                border: 1px solid {c().BORDER};
+                border-radius: {sp().RADIUS_SM}px;
+                padding: 2px;
+            }}
+        """)
+        params_frame_lay = QVBoxLayout(params_frame)
+        params_frame_lay.setContentsMargins(4, 4, 4, 4)
+        params_frame_lay.setSpacing(2)
+
+        params_header = QLabel("⚙ Parameters")
+        params_header.setStyleSheet(f"""
+            color: {c().TEXT_DIM};
+            font-size: {ty().SIZE_XS}pt;
+            font-weight: bold;
+            letter-spacing: 0.3px;
+            padding: 0px;
+            border: none;
+        """)
+        params_frame_lay.addWidget(params_header)
+
+        # Inner container — gets cleared & rebuilt on indicator change
+        params_inner = QWidget()
+        params_inner.setStyleSheet("background: transparent; border: none;")
+        params_inner_lay = QGridLayout(params_inner)
+        params_inner_lay.setContentsMargins(0, 0, 0, 0)
+        params_inner_lay.setSpacing(3)
+        params_frame_lay.addWidget(params_inner)
+
+        ind_lay.addWidget(params_frame)
+
+        # Dict that maps param_name → input widget (populated by _rebuild_params)
+        params_widgets: Dict[str, QWidget] = {}
+        setattr(self, f"{side}_params_widgets", params_widgets)
+        setattr(self, f"{side}_params_inner", params_inner)
+        setattr(self, f"{side}_params_frame", params_frame)
+
+        def _rebuild_params(indicator_text: str, _inner=params_inner,
+                            _lay=params_inner_lay, _widgets=params_widgets,
+                            _frame=params_frame):
+            """Clear and rebuild the params grid for the selected indicator."""
+            # Clear old widgets
+            _widgets.clear()
+            while _lay.count():
+                item = _lay.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            ind_key = indicator_text.strip().lower()
+            defaults = get_indicator_params(ind_key)
+
+            # Filter out params that are None or have None defaults (optional/advanced)
+            # Also skip 'drift' and 'offset' as they're rarely changed
+            SKIP_PARAMS = {"drift", "offset", "ddof", "scalar", "sort", "width", "weight"}
+            visible = {k: v for k, v in defaults.items()
+                       if v is not None and k not in SKIP_PARAMS}
+
+            if not visible:
+                _frame.hide()
+                return
+
+            _frame.show()
+            _inner.show()
+
+            row = 0
+            col_pairs = list(visible.items())
+            # Layout: 2 params per row (label + input | label + input)
+            for i in range(0, len(col_pairs), 2):
+                for j, (param, default) in enumerate(col_pairs[i:i+2]):
+                    ptype = get_param_type(param)
+                    desc = get_param_description(param)
+
+                    lbl = QLabel(f"{param}:")
+                    lbl.setToolTip(desc)
+                    lbl.setStyleSheet(f"""
+                        color: {c().TEXT_DIM};
+                        font-size: {ty().SIZE_XS}pt;
+                        border: none;
+                        padding: 0px;
+                        min-width: 52px;
+                    """)
+
+                    if ptype == "int":
+                        w = QSpinBox()
+                        w.setRange(1, 1000)
+                        try:
+                            w.setValue(int(default))
+                        except (TypeError, ValueError):
+                            w.setValue(14)
+                        w.setFixedWidth(58)
+                        w.setStyleSheet(f"""
+                            QSpinBox {{
+                                background: {c().BG_MAIN};
+                                color: {c().TEXT_MAIN};
+                                border: 1px solid {c().BORDER};
+                                border-radius: {sp().RADIUS_SM}px;
+                                padding: 1px 2px;
+                                font-size: {ty().SIZE_XS}pt;
+                            }}
+                            QSpinBox:focus {{ border-color: {c().BORDER_FOCUS}; }}
+                        """)
+                        w.valueChanged.connect(lambda _: self.rule_changed.emit())
+                    elif ptype == "float":
+                        w = QDoubleSpinBox()
+                        w.setRange(0.01, 100.0)
+                        w.setDecimals(2)
+                        w.setSingleStep(0.1)
+                        try:
+                            w.setValue(float(default))
+                        except (TypeError, ValueError):
+                            w.setValue(2.0)
+                        w.setFixedWidth(68)
+                        w.setStyleSheet(f"""
+                            QDoubleSpinBox {{
+                                background: {c().BG_MAIN};
+                                color: {c().TEXT_MAIN};
+                                border: 1px solid {c().BORDER};
+                                border-radius: {sp().RADIUS_SM}px;
+                                padding: 1px 2px;
+                                font-size: {ty().SIZE_XS}pt;
+                            }}
+                            QDoubleSpinBox:focus {{ border-color: {c().BORDER_FOCUS}; }}
+                        """)
+                        w.valueChanged.connect(lambda _: self.rule_changed.emit())
+                    else:
+                        w = QLineEdit()
+                        w.setText(str(default) if default is not None else "")
+                        w.setFixedWidth(68)
+                        w.setStyleSheet(f"""
+                            QLineEdit {{
+                                background: {c().BG_MAIN};
+                                color: {c().TEXT_MAIN};
+                                border: 1px solid {c().BORDER};
+                                border-radius: {sp().RADIUS_SM}px;
+                                padding: 1px 4px;
+                                font-size: {ty().SIZE_XS}pt;
+                            }}
+                            QLineEdit:focus {{ border-color: {c().BORDER_FOCUS}; }}
+                        """)
+                        w.textChanged.connect(lambda _: self.rule_changed.emit())
+
+                    w.setToolTip(f"{param}: {desc}")
+                    _widgets[param] = w
+                    col_base = j * 2
+                    _lay.addWidget(lbl, row, col_base, Qt.AlignVCenter)
+                    _lay.addWidget(w, row, col_base + 1, Qt.AlignVCenter)
+                row += 1
+
+        setattr(self, f"{side}_rebuild_params", _rebuild_params)
+
+        # Initial build
+        _rebuild_params(ind_cb.currentText())
+
         ind_cb.currentTextChanged.connect(
             lambda txt, cb=sub_col_cb: self._update_sub_cols(txt.lower(), cb)
         )
+        ind_cb.currentTextChanged.connect(
+            lambda txt, fn=_rebuild_params: fn(txt)
+        )
         stack.addWidget(ind_page)
-
-        # Page 1: Scalar
         scalar_page = QWidget()
         scalar_lay = QVBoxLayout(scalar_page)
         scalar_lay.setContentsMargins(0, 0, 0, 0)
@@ -1584,6 +1766,23 @@ class RuleRowWidget(QFrame):
                             if sub_cb.itemData(i, Qt.UserRole) == saved_sub.upper():
                                 sub_cb.setCurrentIndex(i)
                                 break
+                    # Restore saved parameter values into the dynamic params panel
+                    saved_params = data.get("params", {})
+                    if saved_params:
+                        pw = getattr(self, f"{side}_params_widgets", {})
+                        for pname, pval in saved_params.items():
+                            w = pw.get(pname)
+                            if w is None:
+                                continue
+                            try:
+                                if isinstance(w, QSpinBox):
+                                    w.setValue(int(pval))
+                                elif isinstance(w, QDoubleSpinBox):
+                                    w.setValue(float(pval))
+                                elif isinstance(w, QLineEdit):
+                                    w.setText(str(pval))
+                            except Exception:
+                                pass
                 elif dtype == "column":
                     col = data.get("column", "close")
                     idx = col_cb.findText(col, Qt.MatchFixedString | Qt.MatchCaseSensitive)
@@ -1623,6 +1822,22 @@ class RuleRowWidget(QFrame):
                         side_data["shift"] = shift
                     if sub_cb.isVisible() and sub_cb.currentData(Qt.UserRole):
                         side_data["sub_col"] = sub_cb.currentData(Qt.UserRole)
+                    # Collect indicator parameter values from the dynamic params panel
+                    pw = getattr(self, f"{side}_params_widgets", {})
+                    if pw:
+                        collected_params = {}
+                        for pname, widget in pw.items():
+                            try:
+                                if isinstance(widget, QSpinBox):
+                                    collected_params[pname] = widget.value()
+                                elif isinstance(widget, QDoubleSpinBox):
+                                    collected_params[pname] = widget.value()
+                                elif isinstance(widget, QLineEdit):
+                                    collected_params[pname] = widget.text()
+                            except Exception:
+                                pass
+                        if collected_params:
+                            side_data["params"] = collected_params
                 elif dtype == "column":
                     col = col_cb.currentText()
                     side_data = {"type": "column", "column": col}

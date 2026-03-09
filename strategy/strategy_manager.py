@@ -205,12 +205,15 @@ class StrategyManager:
                     else:
                         data["engine"]["min_confidence"] = 0.6
 
-                # Validate timeframe
+                # Validate timeframe — also keep engine["timeframe"] in sync so
+                # strategy_crud.save() stores the canonical value in the engine blob.
                 valid_tfs = {"1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"}
-                tf = data.get("timeframe", "1h")
+                tf = data.get("timeframe") or data.get("engine", {}).get("timeframe", "1h")
                 if tf not in valid_tfs:
                     logger.warning(f"[save] Unknown timeframe '{tf}', defaulting to '1h'")
-                    data["timeframe"] = "1h"
+                    tf = "1h"
+                data["timeframe"] = tf                      # top-level (used by readers)
+                data.setdefault("engine", {})["timeframe"] = tf  # engine blob (written to DB)
 
                 return strategy_crud.save(slug, data, db)
             except Exception as e:

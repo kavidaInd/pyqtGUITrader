@@ -98,9 +98,33 @@ class StrategyCRUD:
         """
         return strategies.list_all(db)
 
+    # ------------------------------------------------------------------
+    # Internal helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hydrate(strategy: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Promote engine["timeframe"] to the top-level key so that all
+        consumers can do strategy.get("timeframe", "1h") without knowing
+        where the value is physically stored.
+
+        Because timeframe has no dedicated DB column it is serialised
+        inside the engine JSON blob by save().  This single helper
+        normalises the shape on every read path.
+        """
+        if strategy is None:
+            return None
+        engine = strategy.get("engine") or {}
+        if "timeframe" not in strategy:
+            strategy["timeframe"] = engine.get("timeframe", "1h") or "1h"
+        return strategy
+
     def get(self, slug: str, db: DatabaseConnector = None) -> Optional[Dict[str, Any]]:
         """
         Return a full strategy dict (indicators + engine decoded).
+        ``timeframe`` is always present at the top level, promoted from
+        engine["timeframe"] if needed.
 
         Args:
             slug: Strategy unique identifier
@@ -109,7 +133,7 @@ class StrategyCRUD:
         Returns:
             Optional[Dict[str, Any]]: Full strategy data if found, None otherwise
         """
-        return strategies.get(slug, db)
+        return self._hydrate(strategies.get(slug, db))
 
     def create(
             self,
@@ -230,8 +254,11 @@ class StrategyCRUD:
                 name=new_name,
                 description=source.get("description", ""),
                 indicators=source.get("indicators", {}),
-                engine=source.get("engine", {}),
-                timeframe=source.get("timeframe", "1h"),
+                engine={
+                    **source.get("engine", {}),
+                    "timeframe": source.get("engine", {}).get("timeframe",
+                                 source.get("timeframe", "1h")),
+                },
                 db=db
             )
 
@@ -273,8 +300,12 @@ class StrategyCRUD:
             engine = data.get("engine", {})
             timeframe = data.get("timeframe", "1h") or "1h"
 
+            # Store timeframe inside engine dict so it persists without
+            # requiring a separate DB column (upsert doesn't accept timeframe)
+            engine["timeframe"] = timeframe
+
             # FEATURE 3: Ensure engine has confidence threshold
-            if engine and "min_confidence" not in engine:
+            if "min_confidence" not in engine:
                 # Get from global config or use default
                 from db.config_crud import config_crud
                 engine["min_confidence"] = config_crud.get("min_confidence", 0.6, db)
@@ -286,7 +317,6 @@ class StrategyCRUD:
                 description=description,
                 indicators=indicators,
                 engine=engine,
-                timeframe=timeframe,
                 db=db
             )
 
@@ -417,7 +447,7 @@ class StrategyCRUD:
             Optional[Dict[str, Any]]: Full strategy data, or None if none active
         """
         db = db or get_db()
-        return strategies.get_active(db)
+        return self._hydrate(strategies.get_active(db))
 
     def get_active_name(self, db: DatabaseConnector = None) -> str:
         """

@@ -142,6 +142,9 @@ class OrderExecutor:
             # FIX: Idempotency tracking
             self._submitted_order_ids: Set[str] = set()
             self._idempotency_keys: Dict[str, str] = {}  # idempotency_key -> order_id
+            self._last_failed_entry_time: float = 0.0
+            self._entry_cooldown_seconds: int = 30
+            self._exit_in_progress: bool = False
 
             logger.info("OrderExecutor initialized with thread safety and idempotency")
         except Exception as e:
@@ -158,6 +161,15 @@ class OrderExecutor:
         self.on_trade_closed_callback = None
         self._submitted_order_ids = set()
         self._idempotency_keys = {}
+        # Timestamp of the last failed entry attempt — used to enforce a cooldown
+        # so a persistent BUY signal does not immediately re-fire buy_option after
+        # all placement attempts fail.
+        self._last_failed_entry_time: float = 0.0
+        self._entry_cooldown_seconds: int = 30  # minimum gap between failed attempts
+        # Dedicated exit guard — prevents sending a second sell order while the
+        # first broker sell call is still in flight or the position hasn't been
+        # fully reset yet.  Cleared only after current_position is set to None.
+        self._exit_in_progress: bool = False
 
     # ------------------------------------------------------------------
     # Mode helper
@@ -229,6 +241,20 @@ class OrderExecutor:
 
             if state.order_pending:
                 logger.warning("Order already pending")
+                return False
+
+            # ── Cooldown guard after failed attempts ───────────────────────────
+            # If the last entry attempt failed (all 3 tries + reconciliation),
+            # we wait at least _entry_cooldown_seconds before trying again.
+            # This prevents hammering the broker with repeated orders every tick
+            # when the BUY signal persists after a failed attempt.
+            elapsed_since_failure = time.time() - self._last_failed_entry_time
+            if elapsed_since_failure < self._entry_cooldown_seconds:
+                remaining = self._entry_cooldown_seconds - elapsed_since_failure
+                logger.info(
+                    f"[BUY] Cooldown active — {remaining:.0f}s remaining after last failed attempt. "
+                    f"Skipping entry to avoid repeat broker submissions."
+                )
                 return False
 
             # Claim the pending slot
@@ -308,6 +334,25 @@ class OrderExecutor:
                 )
                 if success:
                     logger.info(f"{option_type} position entered successfully.")
+                    # On success: clear any lingering cooldown
+                    self._last_failed_entry_time = 0.0
+                else:
+                    # All attempts failed — arm cooldown and set previous_position so
+                    # determine_trend_from_signals blocks immediate same-direction re-entry.
+                    self._last_failed_entry_time = time.time()
+                    try:
+                        # Use state_manager to get fresh state ref (state var may be stale
+                        # after adjust_positions refreshes it)
+                        _s = state_manager.get_state()
+                        if _s and _s.current_position is None and _s.previous_position is None:
+                            _s.previous_position = option_type
+                            logger.warning(
+                                f"[BUY] Entry failed — set previous_position={option_type!r} "
+                                f"to block re-entry for {self._entry_cooldown_seconds}s. "
+                                "Signal must reset before next attempt."
+                            )
+                    except Exception as _prev_err:
+                        logger.debug(f"[BUY] Could not set previous_position: {_prev_err}")
                 return success
 
             finally:
@@ -376,6 +421,12 @@ class OrderExecutor:
             logger.info(f"[ORDER] Attempt 1/3: LIMIT at mid-price Rs{mid_price:.2f}")
             orders = self.place_orders(option_name, shares, mid_price, state, option_type=option_type)
             if not orders:
+                # Broker returned no order ID — wait briefly for it to settle,
+                # then check orderbook before giving up.
+                logger.warning("[ORDER] Attempt 1 returned no orders — waiting 1s then reconciling")
+                time.sleep(1.0)
+                if self._reconcile_with_broker(state, option_type, option_name, shares, mid_price):
+                    return True
                 return False
 
             if self._wait_for_fill(orders, state, timeout_seconds=3):
@@ -393,6 +444,12 @@ class OrderExecutor:
             logger.info(f"[ORDER] Attempt 2/3: LIMIT at LTP Rs{ltp_price:.2f}")
             orders = self.place_orders(option_name, shares, ltp_price, state, option_type=option_type)
             if not orders:
+                # Broker returned no order ID — wait briefly for it to settle,
+                # then check orderbook before giving up.
+                logger.warning("[ORDER] Attempt 2 returned no orders — waiting 1s then reconciling")
+                time.sleep(1.0)
+                if self._reconcile_with_broker(state, option_type, option_name, shares, ltp_price):
+                    return True
                 return False
 
             if self._wait_for_fill(orders, state, timeout_seconds=3):
@@ -443,6 +500,14 @@ class OrderExecutor:
                         self.record_trade_state(
                             state, option_type, option_name, ltp_price, shares, mkt_orders
                         )
+                        # Market orders are executed synchronously — no need to poll for
+                        # confirmation.  Set the flag immediately so confirm_trade() does
+                        # not cancel the live position after cancel_after seconds.
+                        state.current_trade_confirmed = True
+                        logger.info(
+                            "[ORDER] Market order confirmed immediately "
+                            "(no confirmation polling needed for market orders)"
+                        )
                         state.last_slippage = ltp_price - mid_price
                         logger.info(f'[FILL] MARKET fill. Slippage: Rs{state.last_slippage:+.2f}')
                         self._notify_entry(state, option_type, option_name, price=ltp_price)
@@ -452,7 +517,17 @@ class OrderExecutor:
             else:
                 logger.warning("[ORDER] MARKET order not available (paper or no API)")
 
-            logger.error('[ORDER] All attempts failed.')
+            # ── Final safety net: reconcile with broker ──────────────────────────
+            # All 3 order attempts exhausted. Before declaring failure, wait briefly
+            # for the broker to settle the last order (MARKET fills go PENDING →
+            # TRADE_CONFIRMED → COMPLETE in ~200-800ms; querying immediately will
+            # find the order still PENDING and report "no fill").
+            logger.error('[ORDER] All placement attempts failed — attempting broker reconciliation.')
+            logger.info('[ORDER] Waiting 2s for broker fill settlement before reconciliation …')
+            time.sleep(2.0)
+            if self._reconcile_with_broker(state, option_type, option_name, shares, ltp_price):
+                return True
+            logger.error('[ORDER] Reconciliation found no matching fill. Trade not entered.')
             return False
 
         except Exception as e:
@@ -473,18 +548,38 @@ class OrderExecutor:
 
     def _calculate_mid_price(self, state, option_name, market_price):
         try:
+            # Use configured lower_percentage (e.g. 0.5 means 0.5% below market).
+            # Default 0.1% if unset or zero so we always place slightly below LTP.
+            lower_pct = 0.0
+            try:
+                raw = float(safe_getattr(state, 'lower_percentage', 0.0) or 0.0)
+                lower_pct = raw / 100.0   # convert e.g. 0.5 → 0.005
+            except (ValueError, TypeError):
+                pass
+            if lower_pct <= 0.0:
+                lower_pct = 0.001  # 0.1% fallback so we always post below LTP
+
             chain_data = {}
             if safe_hasattr(state, 'option_chain') and state.option_chain:
                 chain_data = state.option_chain.get(option_name, {})
             ask = chain_data.get('ask') or market_price
             bid = chain_data.get('bid')
-            mid = Utils.round_off((ask + bid) / 2) if (bid and bid > 0) else Utils.round_off(market_price * 0.999)
+            if bid and bid > 0:
+                raw_mid = (ask + bid) / 2
+            else:
+                raw_mid = market_price * (1.0 - lower_pct)
+            mid = Utils.round_off(raw_mid)
+            logger.debug(
+                f"[_calculate_mid_price] {option_name}: market={market_price:.2f} "
+                f"lower_pct={lower_pct*100:.2f}% mid={mid:.2f}"
+            )
             return max(Utils.round_to_nse_price(mid), 0.05)
         except Exception as e:
             logger.warning(f"[_calculate_mid_price] fallback: {e}")
-            return Utils.round_to_nse_price(market_price * 0.999)
+            lower_pct = float(safe_getattr(state, 'lower_percentage', 0.1) or 0.1) / 100.0
+            return Utils.round_to_nse_price(market_price * (1.0 - lower_pct))
 
-    def _wait_for_fill(self, orders, state, timeout_seconds=3) -> bool:
+    def _wait_for_fill(self, orders, state, timeout_seconds=None) -> bool:
         if not orders:
             return False
 
@@ -496,6 +591,18 @@ class OrderExecutor:
 
         if not self.api:
             return False
+
+        # Honour the configured cancel_after timeout (seconds).
+        # If not set, fall back to the supplied default (or 5s as a safe floor).
+        if timeout_seconds is None:
+            try:
+                cfg = int(safe_getattr(state, 'cancel_after', 0) or 0)
+                timeout_seconds = cfg if cfg > 0 else 5
+            except (ValueError, TypeError):
+                timeout_seconds = 5
+        timeout_seconds = max(timeout_seconds, 2)  # never poll less than 2s
+
+        logger.debug(f"[_wait_for_fill] Waiting up to {timeout_seconds}s for fill on {len(live_orders)} order(s)")
 
         start = time.time()
         while time.time() - start < timeout_seconds:
@@ -512,6 +619,10 @@ class OrderExecutor:
             except Exception as e:
                 logger.debug(f"[_wait_for_fill] poll error: {e}")
                 time.sleep(0.5)
+        logger.info(
+            f"[_wait_for_fill] Timeout after {timeout_seconds}s — orders not filled: "
+            f"{[o.get('broker_id') for o in live_orders]}"
+        )
         return False
 
     def _cancel_unconfirmed_orders(self, orders, state):
@@ -544,24 +655,38 @@ class OrderExecutor:
             logger.info(f"Duplicate submission detected for key {idempotency_key}, returning {existing_order_id}")
             return existing_order_id
 
-        # Generate a unique client order ID
-        client_order_id = f"ORD_{int(time.time()*1000)}_{random.randint(1000, 9999)}"
         try:
+            # NOTE: client_order_id is intentionally NOT passed — brokers accept
+            # **kwargs so it wouldn't cause an error, but some reject it as an
+            # unsupported field at the exchange level which can cause silent failures.
             broker_order_id = self.api.place_order(
                 symbol=symbol,
                 qty=quantity,
                 limitPrice=price,
-                client_order_id=client_order_id  # Pass to broker if supported
             )
 
             if broker_order_id:
                 # Store mapping — caller uses this to write the single DB record
                 self._idempotency_keys[idempotency_key] = broker_order_id
                 self._submitted_order_ids.add(broker_order_id)
+                logger.debug(
+                    f"[place_order_with_idempotency] Placed: {symbol} qty={quantity} "
+                    f"price={price:.2f} → broker_id={broker_order_id}"
+                )
                 return broker_order_id
+            else:
+                logger.error(
+                    f"[place_order_with_idempotency] Broker returned no order ID for "
+                    f"{symbol} qty={quantity} @ {price:.2f}"
+                )
+                return None
 
         except Exception as e:
-            logger.error(f"Order submission failed: {e}", exc_info=True)
+            logger.error(
+                f"[place_order_with_idempotency] Order submission failed: "
+                f"{symbol} qty={quantity} @ {price:.2f}: {e}",
+                exc_info=True,
+            )
             return None
 
     def place_orders(self, symbol: str, shares: int, price: float, state,
@@ -813,6 +938,119 @@ class OrderExecutor:
             return shares or 0
 
     # ------------------------------------------------------------------
+    # Broker reconciliation — recover state when order ID is missing
+    # ------------------------------------------------------------------
+
+    def _reconcile_with_broker(self, state, option_type: str, symbol: str,
+                                shares: int, fallback_price: float) -> bool:
+        """
+        Query the broker orderbook to detect whether *symbol* was actually
+        filled even though place_orders() returned an empty list (e.g. the
+        broker executed the order but the API response lost the order ID).
+
+        If a matching COMPLETE order is found the trade state is recorded so
+        the UI, SL/TP logic, and position monitor all see the open position.
+
+        Returns True if a position was recovered, False otherwise.
+        """
+        if not self.api:
+            return False
+        try:
+            logger.info(
+                f"[reconcile] Querying broker orderbook for {symbol} "
+                f"after failed order-ID responses …"
+            )
+            orderbook = self.api.get_orderbook()
+            if not orderbook:
+                logger.warning("[reconcile] Broker returned empty orderbook — cannot reconcile")
+                return False
+
+            # Look for a recently filled BUY order matching the symbol
+            # Brokers return tradingsymbol without exchange prefix in the orderbook
+            bare_symbol = symbol.split(":")[-1] if ":" in symbol else symbol
+
+            matched = None
+            for entry in orderbook:
+                if not isinstance(entry, dict):
+                    continue
+                entry_sym = str(entry.get("tradingsymbol", "") or entry.get("symbol", ""))
+                # Match by symbol, BUY side, and COMPLETE status
+                txn = str(entry.get("transaction_type", "") or entry.get("side", "")).upper()
+                status = str(entry.get("status", "")).upper()
+                qty = int(entry.get("quantity", 0) or entry.get("qty", 0))
+                if (bare_symbol in entry_sym or entry_sym in bare_symbol)                         and txn in ("BUY", "B", "1")                         and status == "COMPLETE"                         and qty > 0:
+                    matched = entry
+                    break
+
+            if matched is None:
+                logger.warning(
+                    f"[reconcile] No COMPLETE BUY order found for {symbol} in orderbook"
+                )
+                return False
+
+            # Extract fill price (average_price / price / entry_price)
+            fill_price = (
+                float(matched.get("average_price") or 0)
+                or float(matched.get("price") or 0)
+                or fallback_price
+            )
+            fill_qty = int(matched.get("quantity", 0) or matched.get("qty", 0))
+            broker_order_id = str(matched.get("order_id", "") or matched.get("id", ""))
+
+            logger.warning(
+                f"[reconcile] ⚠️  Recovered position from broker orderbook: "
+                f"{symbol} qty={fill_qty} fill={fill_price:.2f} "
+                f"broker_id={broker_order_id}"
+            )
+
+            # Write a DB record so the order monitor and trade history work correctly
+            session_id = safe_getattr(state, "session_id", None)
+            position_type = str(option_type) if option_type else "UNKNOWN"
+            oid = 0
+            try:
+                oid = orders_crud.create(
+                    session_id=session_id,
+                    symbol=symbol,
+                    position_type=position_type,
+                    quantity=fill_qty,
+                    broker_order_id=broker_order_id or None,
+                    entry_price=fill_price,
+                    stop_loss=state.stop_loss,
+                    take_profit=state.tp_point,
+                    db=get_db(),
+                )
+            except Exception as db_err:
+                logger.error(f"[reconcile] DB record failed: {db_err}", exc_info=True)
+
+            recovered_orders = [{
+                "id": oid,
+                "broker_id": broker_order_id or None,
+                "qty": fill_qty,
+                "symbol": symbol,
+                "price": fill_price,
+            }]
+
+            self.record_trade_state(
+                state, option_type, symbol, fill_price, fill_qty, recovered_orders
+            )
+            # Recovered orders are already COMPLETE on the broker side — mark confirmed
+            # immediately so confirm_trade() does not cancel the recovered position.
+            state.current_trade_confirmed = True
+            logger.info(
+                "[reconcile] Trade confirmed immediately (recovered from COMPLETE broker order)"
+            )
+            self._notify_entry(state, option_type, symbol, price=fill_price)
+            logger.info(
+                f"[reconcile] ✅ State updated from broker reconciliation: "
+                f"position={option_type} fill={fill_price:.2f}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"[reconcile] Failed: {e}", exc_info=True)
+            return False
+
+    # ------------------------------------------------------------------
     # Exit
     # ------------------------------------------------------------------
 
@@ -837,10 +1075,17 @@ class OrderExecutor:
         if state.order_pending:
             logger.warning("[EXIT] Order already pending")
             return False
+        if self._exit_in_progress:
+            logger.warning(
+                "[EXIT] Exit already in progress — ignoring duplicate call. "
+                "Broker sell is still being processed or position not yet cleared."
+            )
+            return False
 
         # BUG 3 FIX: set pending flag before the try block so the finally
         # clause is always responsible for clearing it.
         state.order_pending = True
+        self._exit_in_progress = True
         _exit_succeeded = False
 
         try:
@@ -980,6 +1225,7 @@ class OrderExecutor:
                     logger.warning(f"[EXIT] Risk manager cache invalidation failed: {e}")
 
             _exit_succeeded = True
+            self._exit_in_progress = False  # position fully closed — allow future entries/exits
             return True
 
         except Exception as e:
@@ -991,6 +1237,15 @@ class OrderExecutor:
                 state.order_pending = False
             except Exception as e:
                 logger.error(f"[EXIT] Failed to clear order_pending in finally: {e}", exc_info=True)
+            try:
+                # Only clear exit guard if the position was actually closed.
+                # If exit failed (e.g. broker sell rejected), keep _exit_in_progress=True
+                # so the SL/TP monitor does not immediately re-fire another sell.
+                # It will be cleared explicitly on success below, or on next app start.
+                if _exit_succeeded:
+                    self._exit_in_progress = False
+            except Exception as e:
+                logger.error(f"[EXIT] Failed to clear _exit_in_progress: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # DB helpers
@@ -1078,6 +1333,8 @@ class OrderExecutor:
             self.on_trade_closed_callback = None
             self._submitted_order_ids.clear()
             self._idempotency_keys.clear()
+            self._exit_in_progress = False
+            self._last_failed_entry_time = 0.0
             logger.info("[OrderExecutor] Cleanup completed")
         except Exception as e:
             logger.error(f"[OrderExecutor.cleanup] Error: {e}", exc_info=True)

@@ -621,6 +621,27 @@ class FyersBroker(BaseBroker):
             return []
 
     def get_current_order_status(self, order_id: str) -> Optional[int]:
+        """
+        Return a normalised order status integer for *order_id*:
+            2  = TRADED / FILLED (fully executed)
+           -1  = CANCELLED / REJECTED / EXPIRED
+            1  = still open / pending / in-transit
+
+        Fyers v3 API returns **numeric** status codes in the orderBook:
+            2  → TRADED
+            1  → CANCELLED
+            5  → REJECTED
+            6  → PENDING
+           20  → OPEN
+            4  → TRANSIT / AMO_REQ_RECEIVED
+
+        The previous implementation converted the status to a string and
+        compared it against text labels ("COMPLETE", "TRADED", …).  Since
+        Fyers sends integers, str(2) == "2" which is never equal to "COMPLETE",
+        so every live order was permanently reported as "not filled".  This
+        caused confirm_trade() to time out after cancel_after seconds and
+        cancel the live position.
+        """
         self._check_token_before_request()
         try:
             if not order_id or not self.fyers:
@@ -637,13 +658,30 @@ class FyersBroker(BaseBroker):
             orders = response.get("orderBook", [])
             for order in orders:
                 if str(order.get("id")) == str(order_id):
-                    status_str = str(order.get("status") or "").upper()
-                    if status_str in ("COMPLETE", "COMPLETED", "FILLED", "TRADED"):
+                    raw_status = order.get("status")
+
+                    # ── Numeric path (Fyers v3 native) ────────────────────────
+                    if isinstance(raw_status, int):
+                        if raw_status == 2:      # TRADED / fully filled
+                            return 2
+                        if raw_status in (1, 5):  # CANCELLED (1) or REJECTED (5)
+                            return -1
+                        # 6=PENDING, 20=OPEN, 4=TRANSIT, anything else = still working
+                        return 1
+
+                    # ── String path (normalise for robustness) ─────────────────
+                    status_str = str(raw_status or "").upper().strip()
+                    if status_str in ("2", "COMPLETE", "COMPLETED", "FILLED", "TRADED"):
                         return 2
-                    if status_str in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED"):
+                    if status_str in ("1", "5", "REJECTED", "CANCELLED",
+                                      "CANCELED", "EXPIRED"):
                         return -1
-                    # OPEN, PENDING, TRIGGER_PENDING, etc.
+                    # OPEN, PENDING, TRIGGER_PENDING, TRANSIT, etc.
                     return 1
+
+            logger.debug(
+                f"[get_current_order_status] order_id={order_id} not found in orderbook"
+            )
             return None
         except TokenExpiredError:
             raise

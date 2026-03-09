@@ -35,11 +35,14 @@ class ProfitStoplossSetting:
     DEFAULTS = {
         "profit_type": "STOP",  # STOP, TRAILING, FIXED
         "tp_percentage": 15.0,
-        "stoploss_percentage": 7.0,  # Stored as positive absolute value
-        "trailing_first_profit": 3.0,
+        "stoploss_percentage": 7.0,   # Stored as positive absolute value
+        # Trailing-specific: activation threshold and initial SL shift
+        "trailing_activation_pct": 10.0,   # % above entry before trailing engages
+        "trailing_sl_at_activation": 5.0,  # % above entry that SL jumps to on activation
+        "trailing_first_profit": 3.0,      # kept for backward compat
         "max_profit": 30.0,
         "profit_step": 2.0,
-        "loss_step": 2.0
+        "loss_step": 2.0,
     }
 
     # Type mapping for validation
@@ -47,20 +50,24 @@ class ProfitStoplossSetting:
         "profit_type": str,
         "tp_percentage": float,
         "stoploss_percentage": float,
+        "trailing_activation_pct": float,
+        "trailing_sl_at_activation": float,
         "trailing_first_profit": float,
         "max_profit": float,
         "profit_step": float,
-        "loss_step": float
+        "loss_step": float,
     }
 
     # Validation ranges
     VALIDATION_RANGES = {
         "tp_percentage": (0.1, 100.0),
-        "stoploss_percentage": (0.1, 50.0),  # Positive range
+        "stoploss_percentage": (0.1, 50.0),
+        "trailing_activation_pct": (0.1, 100.0),
+        "trailing_sl_at_activation": (-50.0, 100.0),  # can be negative (still below entry)
         "trailing_first_profit": (0.1, 50.0),
         "max_profit": (0.1, 200.0),
         "profit_step": (0.1, 20.0),
-        "loss_step": (0.1, 20.0)
+        "loss_step": (0.1, 20.0),
     }
 
     def __init__(self):
@@ -203,19 +210,19 @@ class ProfitStoplossSetting:
         reflected in the running trading application.
         """
         try:
-            # Get state instance
             state = state_manager.get_state()
 
-            # Apply profit/loss settings to state
             state.tp_percentage = self.tp_percentage
             state.stoploss_percentage = self.stoploss_percentage
+            state.trailing_activation_pct = self.trailing_activation_pct
+            state.trailing_sl_at_activation = self.trailing_sl_at_activation
             state.trailing_first_profit = self.trailing_first_profit
             state.max_profit = self.max_profit
             state.profit_step = self.profit_step
             state.loss_step = self.loss_step
             state.take_profit_type = self.profit_type
 
-            # Also update original values (for reset)
+            # Original values (anchor for reset after trade closes)
             state.original_profit_per = self.tp_percentage
             state.original_stoploss_per = self.stoploss_percentage
 
@@ -353,6 +360,56 @@ class ProfitStoplossSetting:
             self.data["stoploss_percentage"] = self.DEFAULTS["stoploss_percentage"]
         except Exception as e:
             logger.error(f"[ProfitStoplossSetting.stoploss_percentage setter] Failed: {e}", exc_info=True)
+
+    @property
+    def trailing_activation_pct(self) -> float:
+        """% rise above entry price that triggers trailing mechanism for the first time."""
+        try:
+            val = self.data.get("trailing_activation_pct", self.DEFAULTS["trailing_activation_pct"])
+            return float(val) if val is not None else self.DEFAULTS["trailing_activation_pct"]
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSetting.trailing_activation_pct getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["trailing_activation_pct"]
+
+    @trailing_activation_pct.setter
+    def trailing_activation_pct(self, value):
+        try:
+            if value is None:
+                self.data["trailing_activation_pct"] = self.DEFAULTS["trailing_activation_pct"]
+            else:
+                val = float(value)
+                min_val, max_val = self.VALIDATION_RANGES["trailing_activation_pct"]
+                self.data["trailing_activation_pct"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid trailing_activation_pct value {value!r}: {e}")
+            self.data["trailing_activation_pct"] = self.DEFAULTS["trailing_activation_pct"]
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSetting.trailing_activation_pct setter] Failed: {e}", exc_info=True)
+
+    @property
+    def trailing_sl_at_activation(self) -> float:
+        """SL level (% above/below entry) that SL jumps to when trailing first activates."""
+        try:
+            val = self.data.get("trailing_sl_at_activation", self.DEFAULTS["trailing_sl_at_activation"])
+            return float(val) if val is not None else self.DEFAULTS["trailing_sl_at_activation"]
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSetting.trailing_sl_at_activation getter] Failed: {e}", exc_info=True)
+            return self.DEFAULTS["trailing_sl_at_activation"]
+
+    @trailing_sl_at_activation.setter
+    def trailing_sl_at_activation(self, value):
+        try:
+            if value is None:
+                self.data["trailing_sl_at_activation"] = self.DEFAULTS["trailing_sl_at_activation"]
+            else:
+                val = float(value)
+                min_val, max_val = self.VALIDATION_RANGES["trailing_sl_at_activation"]
+                self.data["trailing_sl_at_activation"] = max(min_val, min(max_val, val))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid trailing_sl_at_activation value {value!r}: {e}")
+            self.data["trailing_sl_at_activation"] = self.DEFAULTS["trailing_sl_at_activation"]
+        except Exception as e:
+            logger.error(f"[ProfitStoplossSetting.trailing_sl_at_activation setter] Failed: {e}", exc_info=True)
 
     @property
     def trailing_first_profit(self) -> float:

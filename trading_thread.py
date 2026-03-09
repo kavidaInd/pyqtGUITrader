@@ -382,7 +382,7 @@ class TradingThread(QThread):
         try:
             risk_manager = safe_getattr(self.trading_app, 'risk_manager', None) if self.trading_app else None
             if risk_manager:
-                summary = risk_manager.get_risk_summary(self.trading_app.config)
+                summary = risk_manager.get_risk_summary()
                 logger.info(f"Risk summary at shutdown: {summary}")
                 self.status_update.emit(
                     f"Daily P&L: ₹{summary.get('pnl_today', 0):.2f} | "

@@ -101,12 +101,12 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
     operation_finished = pyqtSignal()
 
     VALIDATION_RANGES = {
-        "tp_percentage": (0.1, 100.0, "Take Profit"),
-        "stoploss_percentage": (0.1, 50.0, "Stoploss"),  # Positive range
-        "trailing_first_profit": (0.1, 50.0, "Trailing First Profit"),
-        "max_profit": (0.1, 200.0, "Max Profit"),
-        "profit_step": (0.1, 20.0, "Profit Step"),
-        "loss_step": (0.1, 20.0, "Loss Step"),
+        "tp_percentage":            (0.1,  100.0, "Take Profit"),
+        "stoploss_percentage":      (0.1,   50.0, "Stoploss"),
+        "trailing_activation_pct":  (0.1,  100.0, "Activation Threshold"),
+        "trailing_sl_at_activation":(-50.0, 100.0, "SL at Activation"),
+        "max_profit":               (0.1,  200.0, "Max Profit"),
+        "profit_step":              (0.1,   20.0, "Step Size"),
     }
 
     def __init__(self, parent, profit_stoploss_setting: ProfitStoplossSetting, app=None):
@@ -628,12 +628,18 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
 
         # (label, key, icon, tooltip)
         fields = [
-            ("Take Profit (%)", "tp_percentage", "💰", "Exit the trade when profit reaches this % (0.1–100)."),
-            ("Stoploss (%)", "stoploss_percentage", "🛑", "Exit the trade when loss reaches this % (0.1–50). Enter as positive number."),
-            ("Trailing First Profit (%)", "trailing_first_profit", "📈", "Minimum profit % before the trailing stop activates (TRAILING only)."),
-            ("Max Profit (%)", "max_profit", "🏆", "Upper profit ceiling; trailing stop range ends here (TRAILING only)."),
-            ("Profit Step (%)", "profit_step", "➕", "How much profit must increase to move the trailing stop up (TRAILING only)."),
-            ("Loss Step (%)", "loss_step", "➖", "How far price can fall back from peak before the stop triggers (TRAILING only)."),
+            ("Take Profit (%)",            "tp_percentage",            "💰", "Exit the trade when profit reaches this % (0.1–100)."),
+            ("Stoploss (%)",               "stoploss_percentage",      "🛑", "Initial stop-loss % below entry. Enter as positive number (0.1–50)."),
+            ("Activation Threshold (%)",   "trailing_activation_pct",  "🎯",
+             "TRAILING only — price must rise this much above entry before trailing engages.\n"
+             "Example: 10 means SL does not start moving until price is +10% above entry."),
+            ("SL at Activation (%)",       "trailing_sl_at_activation","🔒",
+             "TRAILING only — when activation threshold is first hit, SL immediately jumps to\n"
+             "this % above entry (positive = profit lock). Example: 5 means SL moves to +5% of entry."),
+            ("Max Profit (%)",             "max_profit",               "🏆", "TRAILING only — trailing steps stop once SL reaches this % above entry."),
+            ("Step Size (%)",              "profit_step",              "➕",
+             "TRAILING only — after activation, every time price rises another step_size % above\n"
+             "the last step, both SL and TP are raised by step_size %."),
         ]
 
         for label, key, icon, tooltip in fields:
@@ -735,47 +741,56 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
                 "• Valid range: 0.1 – 100."
             ),
             (
-                "🛑 Stoploss (%) — BUG #1 FIX",
-                "The maximum loss percentage tolerated before the position is force-closed.\n\n"
-                "• **IMPORTANT**: For long positions (CALL/PUT buyers), this is applied BELOW the entry price.\n"
-                "• Enter the percentage as a **positive number** (e.g., 1.5 for a 1.5% stop).\n"
-                "• The system automatically applies the correct sign based on position type.\n"
+                "🛑 Stoploss (%)",
+                "Initial stop-loss percentage BELOW entry price.\n\n"
+                "• Enter as a positive number (e.g., 7 = stop at entry × 0.93).\n"
+                "• In TRAILING mode this is only active before the activation threshold is reached.\n"
+                "  Once the threshold is crossed, SL jumps to 'SL at Activation' and never goes back.\n"
                 "• Valid range: 0.1 – 50."
             ),
             (
-                "📈 Trailing First Profit (%) — TRAILING only",
-                "The minimum profit the trade must reach before the trailing stop mechanism activates.\n\n"
-                "• Prevents the trailing stop from triggering on tiny initial moves.\n"
-                "• Once this level is crossed, the trailing ladder begins stepping up.\n"
-                "• Must be less than Max Profit. Valid range: 0.1 – 50."
+                "🎯 Activation Threshold (%) — TRAILING only",
+                "How much the price must rise above entry before the trailing mechanism first engages.\n\n"
+                "Example with entry = 200, activation = 10%:\n"
+                "  • SL stays at -7% of entry (= 186) until price reaches 220 (+10%).\n"
+                "  • When price first hits 220, trailing activates immediately.\n\n"
+                "• Keeps the initial stop-loss in place during early price discovery.\n"
+                "• Valid range: 0.1 – 100."
+            ),
+            (
+                "🔒 SL at Activation (%) — TRAILING only",
+                "The SL level (as % above/below entry) that the stop jumps to the moment activation fires.\n\n"
+                "Example with entry = 200, SL at activation = 5%:\n"
+                "  • When price first hits the activation threshold, SL immediately moves to 200 × 1.05 = 210.\n"
+                "  • This locks in a 5% profit buffer — the trade cannot close below breakeven+5%.\n\n"
+                "• Positive value = SL above entry (profit locked in).\n"
+                "• Negative value = SL still below entry but tighter than initial.\n"
+                "• Range: -50 – 100."
             ),
             (
                 "🏆 Max Profit (%) — TRAILING only",
-                "The upper ceiling of the trailing profit ladder.\n\n"
-                "• The trailing stop will not step beyond this level.\n"
-                "• Must be strictly greater than Trailing First Profit.\n"
-                "• Think of it as the top rung of the profit ladder. Valid range: 0.1 – 200."
+                "Trailing steps stop once the SL has reached this % above entry.\n\n"
+                "• Acts as the top of the staircase — SL will not be raised further beyond this point.\n"
+                "• Must be strictly greater than the Activation Threshold.\n"
+                "• Valid range: 0.1 – 200."
             ),
             (
-                "➕ Profit Step (%) — TRAILING only",
-                "How much the unrealised profit must increase to move the trailing stop up one step.\n\n"
-                "• Smaller steps = tighter trailing, locks in more gains but risks an early exit on normal retracements.\n"
-                "• Larger steps = more room for the trade to breathe before the stop moves.\n"
-                "• Valid range: 0.1 – 20."
-            ),
-            (
-                "➖ Loss Step (%) — TRAILING only",
-                "How far the price is allowed to pull back from its peak profit before the stop fires.\n\n"
-                "• This is the 'give-back' allowance above the current trailing stop level.\n"
-                "• Smaller values = stop triggered quickly on any dip (tighter protection).\n"
-                "• Larger values = trade has more room to rebound before being stopped out.\n"
+                "➕ Step Size (%) — TRAILING only",
+                "After activation, every time the price makes a new high that is step_size% above the last step,\n"
+                "BOTH the SL and TP are raised by step_size% of entry.\n\n"
+                "Example with entry = 200, activation = 10%, SL-at-activation = 5%, step = 2%:\n"
+                "  • Price hits 220 (+10%) → SL jumps to 210 (+5%), TP advances by 2%\n"
+                "  • Price hits 224 (+12%) → SL moves to 214 (+7%), TP advances by 2%\n"
+                "  • Price hits 228 (+14%) → SL moves to 218 (+9%), TP advances by 2%\n"
+                "  • All SL prices anchored to entry (200), never to the current peak.\n"
+                "  • SL never moves down, only up.\n\n"
+                "• Smaller step = tighter trailing, more profit locked in.\n"
                 "• Valid range: 0.1 – 20."
             ),
             (
                 "📁 Storage",
-                "Profit & stoploss settings are saved locally to:\n\n"
-                "    config/profit_stoploss_setting.json\n\n"
-                "The file is written atomically to prevent corruption."
+                "Profit & stoploss settings are saved locally to the app database.\n\n"
+                "Changes take effect immediately for any new trades opened after saving."
             ),
         ]
 
@@ -813,7 +828,7 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
     # ── Profit type toggle ────────────────────────────────────────────────────
     def _on_profit_type_change(self):
         selected = self.profit_type_combo.currentData()
-        trailing_keys = {"trailing_first_profit", "max_profit", "profit_step", "loss_step"}
+        trailing_keys = {"trailing_activation_pct", "trailing_sl_at_activation", "max_profit", "profit_step"}
 
         for key, edit in self.entries.items():
             if key in trailing_keys:
@@ -848,11 +863,11 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             if not (min_val <= val <= max_val):
                 return False, None, f"{name} must be between {min_val} and {max_val}"
 
-            # Special validation for trailing values
+            # Cross-field validations for trailing settings
             if key == "max_profit":
-                trailing_first = float(self.entries["trailing_first_profit"].text() or "0")
-                if val <= trailing_first:
-                    return False, None, "Max Profit must be greater than Trailing First Profit"
+                activation = float(self.entries.get("trailing_activation_pct", type('', (), {'text': lambda s: '0'})()).text() or "0")
+                if val <= activation:
+                    return False, None, "Max Profit must be greater than Activation Threshold"
 
             return True, val, None
         except ValueError:
@@ -985,7 +1000,10 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         profit_type = self.profit_type_combo.currentData()
         required_fields = ["tp_percentage", "stoploss_percentage"]
         if profit_type == TRAILING:
-            required_fields.extend(["trailing_first_profit", "max_profit", "profit_step", "loss_step"])
+            required_fields.extend([
+                "trailing_activation_pct", "trailing_sl_at_activation",
+                "max_profit", "profit_step",
+            ])
 
         for key in required_fields:
             edit = self.entries[key]

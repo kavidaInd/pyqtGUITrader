@@ -64,7 +64,7 @@ class TradingApp:
 
             self.config = config
             self.trading_mode_setting = trading_mode_var
-            self._broker_setting = broker_setting   # stored for initialize()
+            self._broker_setting = broker_setting  # stored for initialize()
 
             self._tick_queue = queue.Queue(maxsize=500)
             self._stage2_thread = threading.Thread(
@@ -155,6 +155,15 @@ class TradingApp:
         self._indicator_cache = {}
         self._last_bar_times = {}
 
+        # Re-entry guard runtime state
+        self._reentry_exit_time: Optional[datetime] = None        # wall-clock time of last exit
+        self._reentry_exit_bars: int = 0                          # closed bars since last exit
+        self._reentry_exit_reason: str = "default"                # "sl" | "tp" | "signal" | "default"
+        self._reentry_exit_price: float = 0.0                     # entry price of the closed trade
+        self._reentry_exit_direction: Optional[Any] = None        # BaseEnums.CALL or PUT
+        self._reentry_count_today: int = 0                        # re-entries taken today
+        self._reentry_signal_seen: bool = False                   # fresh signal observed after wait
+
     def initialize(self) -> bool:
         """
         Perform all network/broker initialisation on the WORKER THREAD.
@@ -177,6 +186,11 @@ class TradingApp:
             self.trade_config = DailyTradeSetting()
             self.profit_loss_config = ProfitStoplossSetting()
 
+            # Re-entry guard settings
+            from gui.reentry.ReEntrySetting import ReEntrySetting
+            self.reentry_setting = ReEntrySetting()
+            self.reentry_setting._apply_to_state()  # push into trade state immediately
+
             state_manager.get_state().cancel_pending_trade = self.cancel_pending_trade
 
             self.strategy_manager = StrategyManager()
@@ -192,8 +206,8 @@ class TradingApp:
             self.risk_manager.risk_breach.connect(
                 lambda reason: (
                     self.executor.exit_position() if (
-                        self.executor and
-                        state_manager.get_state().current_position is not None
+                            self.executor and
+                            state_manager.get_state().current_position is not None
                     ) else None,
                     self.stop(),
                     self.notifier.notify_risk_breach(reason),
@@ -301,7 +315,7 @@ class TradingApp:
             # ── 1. Write into TradeState so OrderExecutor reads the correct value ──
             state = state_manager.get_state()
             if state is not None:
-                state.trading_mode = mode_str          # sets _trading_mode + _is_paper_mode atomically
+                state.trading_mode = mode_str  # sets _trading_mode + _is_paper_mode atomically
                 logger.info(
                     f"[TradingApp] state.trading_mode = {mode_str!r}, "
                     f"state.is_paper_mode = {state.is_paper_mode}"
@@ -395,15 +409,30 @@ class TradingApp:
                 return
 
             if not self.signal_engine:
-                logger.warning("Cannot reload signal engine: signal_engine is None")
+                logger.warning(
+                    "Cannot reload signal engine: signal_engine is None. "
+                    "This is expected before initialize() runs."
+                )
                 return
 
+            active_slug = self.strategy_manager.get_active_slug()
             new_config = self.strategy_manager.get_active_engine_config()
             if new_config:
                 self.signal_engine.from_dict(new_config)
-                # Update trend detector's signal engine
-                if safe_hasattr(self.detector, 'set_signal_engine') and self.detector:
+                # Re-link the updated engine into the detector so detect() uses new rules
+                if self.detector and safe_hasattr(self.detector, 'set_signal_engine'):
                     self.detector.set_signal_engine(self.signal_engine)
+                logger.info(
+                    f"[TradingApp.reload_signal_engine] Engine reloaded from strategy "
+                    f"'{active_slug}' — "
+                    f"{sum(len(v.get('rules', [])) for v in new_config.values() if isinstance(v, dict))} "
+                    f"rules loaded"
+                )
+            else:
+                logger.warning(
+                    f"[TradingApp.reload_signal_engine] No engine config found for "
+                    f"strategy '{active_slug}' — engine unchanged"
+                )
 
         except Exception as e:
             logger.error(f"[TradingApp.reload_signal_engine] Failed: {e}", exc_info=True)
@@ -466,14 +495,15 @@ class TradingApp:
                         # 2. Read back through the store so state is consistent
                         store = candle_store_manager.get_store(state.derivative)
                         state.derivative_current_price = (
-                            store.get_current_close() or bootstrap_price
+                                store.get_current_close() or bootstrap_price
                         )
                         logger.info(
                             f"[initialize_market_state] Bootstrap derivative price "
                             f"{state.derivative_current_price:.2f} seeded into CandleStore"
                         )
                     else:
-                        logger.warning("[initialize_market_state] Bootstrap price was None/zero; CandleStore stays empty until first WS tick")
+                        logger.warning(
+                            "[initialize_market_state] Bootstrap price was None/zero; CandleStore stays empty until first WS tick")
                 except TokenExpiredError:
                     raise
                 except Exception as price_error:
@@ -935,11 +965,160 @@ class TradingApp:
     def _on_trade_closed(self, pnl: float, is_winner: bool):
         """
         FEATURE 5: Callback for DailyPnLWidget when a trade is closed.
+        Also records re-entry guard state.
         """
         try:
             logger.info(f"Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
+            self._record_reentry_exit()
         except Exception as e:
             logger.error(f"Error in _on_trade_closed: {e}", exc_info=True)
+
+    def _record_reentry_exit(self):
+        """
+        Capture everything needed by the re-entry guard at the moment a
+        position closes.  Called immediately after the trade exits.
+        """
+        try:
+            state = state_manager.get_state()
+            self._reentry_exit_time = datetime.now()
+            self._reentry_exit_bars = 0
+            self._reentry_signal_seen = False
+            # Exit direction
+            self._reentry_exit_direction = getattr(state, 'previous_position', None)
+            # Entry price of the closed trade
+            self._reentry_exit_price = float(getattr(state, 'current_buy_price', 0.0) or 0.0)
+            # Exit reason classification
+            reason = (getattr(state, 'reason_to_exit', '') or '').lower()
+            if 'stop' in reason or 'sl' in reason:
+                self._reentry_exit_reason = 'sl'
+            elif 'target' in reason or 'tp' in reason or 'profit' in reason:
+                self._reentry_exit_reason = 'tp'
+            elif 'signal' in reason or 'exit' in reason or 'buy_' in reason:
+                self._reentry_exit_reason = 'signal'
+            else:
+                self._reentry_exit_reason = 'default'
+            logger.info(
+                f"[ReEntry] Exit recorded — reason={self._reentry_exit_reason!r}, "
+                f"direction={self._reentry_exit_direction!r}, "
+                f"price={self._reentry_exit_price:.2f}"
+            )
+        except Exception as e:
+            logger.error(f"[_record_reentry_exit] {e}", exc_info=True)
+
+    def _on_bar_closed_reentry_tick(self):
+        """
+        Called once each time a bar completes (from evaluate_trend_from_snapshot).
+        Increments the bar counter used by the re-entry guard.
+        Also marks whether a fresh signal has been seen since the exit.
+        """
+        try:
+            if self._reentry_exit_time is None:
+                return  # no exit has occurred yet this session
+            self._reentry_exit_bars += 1
+
+            # Check if a new signal fired this bar
+            if not self._reentry_signal_seen:
+                state = state_manager.get_state()
+                signal = getattr(state, 'option_signal', None)
+                if self._reentry_exit_direction == BaseEnums.CALL and signal == 'BUY_CALL':
+                    self._reentry_signal_seen = True
+                    logger.debug("[ReEntry] Fresh BUY_CALL signal seen after exit — re-entry eligible")
+                elif self._reentry_exit_direction == BaseEnums.PUT and signal == 'BUY_PUT':
+                    self._reentry_signal_seen = True
+                    logger.debug("[ReEntry] Fresh BUY_PUT signal seen after exit — re-entry eligible")
+        except Exception as e:
+            logger.error(f"[_on_bar_closed_reentry_tick] {e}", exc_info=True)
+
+    def _check_reentry_allowed(self, direction: Any, state: Any) -> bool:
+        """
+        Returns True if a new entry in *direction* is permitted under the
+        re-entry guard settings.  Returns False (with a log message) if blocked.
+
+        This is called ONLY when current_position is None — i.e. a fresh entry
+        is about to be attempted.  The first entry of the day (no prior exit
+        this session) always returns True immediately.
+        """
+        try:
+            # ── No previous exit this session → first trade, always allowed ──
+            if self._reentry_exit_time is None:
+                return True
+
+            # ── Load settings from state (applied by ReEntrySetting.save()) ──
+            allow = getattr(state, 'reentry_allow', True)
+            if not allow:
+                logger.info("[ReEntry] Re-entry disabled by settings — blocking entry")
+                return False
+
+            same_dir_only = getattr(state, 'reentry_same_direction_only', False)
+
+            # ── Direction check ───────────────────────────────────────────────
+            is_same_direction = (direction == self._reentry_exit_direction)
+            if same_dir_only and not is_same_direction:
+                # Opposite direction re-entry — allowed immediately
+                logger.debug("[ReEntry] Opposite direction — re-entry allowed immediately")
+                return True
+
+            # ── Daily cap ─────────────────────────────────────────────────────
+            max_per_day = getattr(state, 'reentry_max_per_day', 0)
+            if max_per_day > 0 and self._reentry_count_today >= max_per_day:
+                logger.info(
+                    f"[ReEntry] Daily cap reached ({self._reentry_count_today}/{max_per_day}) — blocking entry"
+                )
+                return False
+
+            # ── Candle wait ───────────────────────────────────────────────────
+            wait_map = {
+                'sl':      getattr(state, 'reentry_min_candles_sl', 3),
+                'tp':      getattr(state, 'reentry_min_candles_tp', 1),
+                'signal':  getattr(state, 'reentry_min_candles_signal', 2),
+                'default': getattr(state, 'reentry_min_candles_default', 2),
+            }
+            required_bars = wait_map.get(self._reentry_exit_reason, wait_map['default'])
+
+            if self._reentry_exit_bars < required_bars:
+                logger.info(
+                    f"[ReEntry] Waiting for candles — bars elapsed: {self._reentry_exit_bars}, "
+                    f"required: {required_bars} (reason: {self._reentry_exit_reason}) — blocking"
+                )
+                return False
+
+            # ── Fresh signal requirement ──────────────────────────────────────
+            require_new = getattr(state, 'reentry_require_new_signal', True)
+            if require_new and not self._reentry_signal_seen:
+                logger.info(
+                    "[ReEntry] Waiting for fresh signal after exit — current signal is stale — blocking"
+                )
+                return False
+
+            # ── Price filter ──────────────────────────────────────────────────
+            price_filter = getattr(state, 'reentry_price_filter_enabled', True)
+            if price_filter and self._reentry_exit_price > 0:
+                pct_threshold = getattr(state, 'reentry_price_filter_pct', 5.0)
+                current_price = float(getattr(state, 'current_price', 0.0) or 0.0)
+                if current_price > 0:
+                    price_change_pct = ((current_price - self._reentry_exit_price)
+                                        / self._reentry_exit_price * 100.0)
+                    if price_change_pct > pct_threshold:
+                        logger.info(
+                            f"[ReEntry] Price filter blocked — current ₹{current_price:.2f}, "
+                            f"original entry ₹{self._reentry_exit_price:.2f}, "
+                            f"change +{price_change_pct:.1f}% > threshold {pct_threshold:.1f}%"
+                        )
+                        return False
+
+            logger.info(
+                f"[ReEntry] ✅ Re-entry ALLOWED — bars waited: {self._reentry_exit_bars}, "
+                f"reason: {self._reentry_exit_reason}, direction: {direction!r}"
+            )
+            # Reset exit state so the NEXT exit starts a fresh count
+            self._reentry_exit_time = None
+            self._reentry_exit_bars = 0
+            self._reentry_signal_seen = False
+            return True
+
+        except Exception as e:
+            logger.error(f"[_check_reentry_allowed] {e}", exc_info=True)
+            return True  # fail open — never silently block trading on an exception
 
     def update_market_state(self, symbol: str, ltp: float, ask_price: float, bid_price: float,
                             volume: float = 0.0, sequence: Optional[int] = None) -> None:
@@ -1116,6 +1295,9 @@ class TradingApp:
             bar_just_completed = self._last_bar_completed
             if bar_just_completed:
                 self._last_bar_completed = False  # consume the flag immediately
+
+                # Advance re-entry candle counter
+                self._on_bar_closed_reentry_tick()
 
                 # Also trigger if history is simply stale (handles startup / gaps)
                 history_stale = not Utils.is_history_updated(
@@ -1463,6 +1645,11 @@ class TradingApp:
             state = state_manager.get_state()
 
             if not state.dynamic_signals_active:
+                logger.debug(
+                    "[determine_trend] dynamic_signals_active=False — "
+                    "signal engine result not yet available (waiting for first bar fetch). "
+                    "No trend will be computed until the first history+indicator run completes."
+                )
                 return None
 
             signal_value = state.option_signal
@@ -1568,6 +1755,13 @@ class TradingApp:
                     logger.info(
                         f"Reset previous {previous_pos} trade flag - neutral {signal_value} signal "
                         "(unblocking entry)"
+                    )
+                else:
+                    # No matching RESET condition — previous_pos still blocking entry.
+                    logger.debug(
+                        f"[determine_trend] Entry blocked: previous_pos={previous_pos!r}, "
+                        f"signal={signal_value!r}. No RESET branch matched — "
+                        "waiting for an opposite/reversal/neutral signal to unblock."
                     )
 
             if trend:
@@ -1774,23 +1968,44 @@ class TradingApp:
                 logger.info("Market closed - skipping trading decision")
                 return
 
-            if Utils.check_sideway_time() and not state.sideway_zone_trade:
-                logger.info("Sideways period (12:00–2:00). Skipping trading decision.")
+            # Sideways zone: skip auto entries during lunch-hour chop (12:00-14:00 IST)
+            # unless the user has explicitly enabled sideways-zone trading.
+            # NOTE: only applied in live/paper mode — backtest runs the full session.
+            if not self._backtest_mode and Utils.check_sideway_time() and not state.sideway_zone_trade:
+                logger.info(
+                    "Sideways period (12:00–14:00 IST): auto entry blocked. "
+                    "Enable 'Sideways Zone Trade' in Daily settings to trade this window."
+                )
                 return
 
-            if not Utils.is_market_open():
-                logger.info("Market is closed. Skipping trading execution.")
-                return
+            # NOTE: Utils.is_market_open() removed — it duplicated the broker-backed
+            # _check_market_status() check above and incorrectly blocked backtest runs
+            # (backtest does not guard that call with _backtest_mode).
 
-            if Utils.is_near_market_close(buffer_minutes=5):
-                logger.info("Too close to market close. Skipping trading decision.")
+            if not self._backtest_mode and Utils.is_near_market_close(buffer_minutes=5):
+                logger.info("Too close to market close (≤5 min). Skipping trading decision.")
                 return
 
             trend = state.trend
 
+            if trend is None:
+                # No actionable trend — signal not yet available or guard filtered it.
+                # This is normal on every tick between bar completions.
+                logger.debug(
+                    f"[execute_based_on_trend] trend=None, signal={state.option_signal!r}, "
+                    f"dynamic_active={state.dynamic_signals_active}, "
+                    f"pos={state.current_position!r}, prev={state.previous_position!r}"
+                )
+                return
+
             if state.current_position is None:
                 if trend == BaseEnums.ENTER_CALL and state.should_buy_call:
                     logger.info("🎯 ENTER_CALL confirmed by BUY_CALL")
+
+                    # ── Re-entry guard ────────────────────────────────────────
+                    if not self._check_reentry_allowed(BaseEnums.CALL, state):
+                        return
+                    # ─────────────────────────────────────────────────────────
 
                     # FEATURE 6: Multi-Timeframe Filter check
                     if self.config.get('use_mtf_filter', False):
@@ -1808,6 +2023,7 @@ class TradingApp:
                         success = self.executor.buy_option(option_type=BaseEnums.CALL)
                         if success:
                             self.ensure_symbol_subscribed(state.call_option)
+                            self._reentry_count_today += 1  # record re-entry if applicable
                     except TokenExpiredError:
                         raise
                     except Exception as e:
@@ -1815,6 +2031,11 @@ class TradingApp:
 
                 elif trend == BaseEnums.ENTER_PUT and state.should_buy_put:
                     logger.info("🎯 ENTER_PUT confirmed by BUY_PUT")
+
+                    # ── Re-entry guard ────────────────────────────────────────
+                    if not self._check_reentry_allowed(BaseEnums.PUT, state):
+                        return
+                    # ─────────────────────────────────────────────────────────
 
                     # FEATURE 6: Multi-Timeframe Filter check
                     if self.config.get('use_mtf_filter', False):
@@ -1832,13 +2053,17 @@ class TradingApp:
                         success = self.executor.buy_option(option_type=BaseEnums.PUT)
                         if success:
                             self.ensure_symbol_subscribed(state.put_option)
+                            self._reentry_count_today += 1  # record re-entry if applicable
                     except TokenExpiredError:
                         raise
                     except Exception as e:
                         logger.error(f"Failed to execute PUT: {e}", exc_info=True)
 
                 elif trend == BaseEnums.RESET_PREVIOUS_TRADE:
-                    logger.info("🔄 Resetting previous trade flag")
+                    logger.info(
+                        f"🔄 RESET_PREVIOUS_TRADE: cleared previous_position={state.previous_position!r}. "
+                        "Re-entry will be evaluated on the next signal tick."
+                    )
                     state.previous_position = None
 
             else:
@@ -1954,6 +2179,24 @@ class TradingApp:
             self.reload_signal_engine()
             logger.info("Signal engine configuration reloaded")
 
+            # Sync state.interval from the active strategy's timeframe so that
+            # candle resampling (and bar-completion logic) uses the correct
+            # bar-size immediately after a strategy switch.
+            if self.strategy_manager:
+                try:
+                    active_tf = self.strategy_manager.get_active_timeframe()
+                    if active_tf:
+                        state = state_manager.get_state()
+                        old_interval = state.interval
+                        state.interval = active_tf
+                        if old_interval != active_tf:
+                            logger.info(
+                                f"[refresh_settings_live] state.interval updated: "
+                                f"{old_interval!r} → {active_tf!r} (from active strategy)"
+                            )
+                except Exception as _tf_err:
+                    logger.warning(f"[refresh_settings_live] Could not sync timeframe: {_tf_err}")
+
             # Clear all candle stores - interval or symbol may have changed
             candle_store_manager.clear()
             logger.debug("CandleStore caches cleared on settings refresh")
@@ -1991,12 +2234,32 @@ class TradingApp:
                 state.original_put_lookback = state.put_lookback
                 state.interval = safe_getattr(self.trade_config, "history_interval", "")
                 state.max_num_of_option = safe_getattr(self.trade_config, "max_num_of_option", 0)
+
+            if self.strategy_manager:
+                try:
+                    strategy_tf = self.strategy_manager.get_active_timeframe()
+                    if strategy_tf:
+                        old_tf = state.interval
+                        state.interval = strategy_tf
+                        if old_tf != strategy_tf:
+                            logger.info(
+                                f"[apply_settings_to_state] state.interval overridden by "
+                                f"active strategy timeframe: {old_tf!r} → {strategy_tf!r}"
+                            )
+                        else:
+                            logger.debug(
+                                f"[apply_settings_to_state] state.interval confirmed "
+                                f"from strategy: {strategy_tf!r}"
+                            )
+                except Exception as _tf_e:
+                    logger.warning(
+                        f"[apply_settings_to_state] Could not read strategy timeframe "
+                        f"(using trade_config value): {_tf_e}"
+                    )
                 state.lower_percentage = safe_getattr(self.trade_config, "lower_percentage", 0)
                 state.cancel_after = safe_getattr(self.trade_config, "cancel_after", 0)
                 state.sideway_zone_trade = safe_getattr(self.trade_config, "sideway_zone_trade", False)
 
-            # Get balance — paper mode uses the configured paper_balance from
-            # TradingModeSetting instead of querying the real broker API.
             if self.trading_mode_setting and not self.trading_mode_setting.is_live():
                 # Paper / Simulation / Backtest: use the paper balance from settings
                 paper_bal = safe_getattr(self.trading_mode_setting, 'paper_balance', 100000.0) or 100000.0
@@ -2022,16 +2285,10 @@ class TradingApp:
             # Apply profit/loss settings
             if self.profit_loss_config:
                 plc = self.profit_loss_config
-                # BUG FIX: safe_getattr(..., 0) previously used 0 as the fallback for
-                # tp_percentage and stoploss_percentage.  A 0% SL means
-                # stop_loss == entry_price → the position exits on the very first tick.
-                # A 0% TP means tp_point == entry_price → same instant exit.
-                # Use the TradeState defaults (15% TP, 7% SL) as the fallback so
-                # a missing config field never produces an unintended zero.
-                _tp  = safe_getattr(plc, "tp_percentage",      None)
-                _sl  = safe_getattr(plc, "stoploss_percentage", None)
-                if _tp  is not None: state.tp_percentage        = state.original_profit_per  = float(_tp)
-                if _sl  is not None: state.stoploss_percentage  = state.original_stoploss_per = float(_sl)
+                _tp = safe_getattr(plc, "tp_percentage", None)
+                _sl = safe_getattr(plc, "stoploss_percentage", None)
+                if _tp is not None: state.tp_percentage = state.original_profit_per = float(_tp)
+                if _sl is not None: state.stoploss_percentage = state.original_stoploss_per = float(_sl)
                 if _tp is None:
                     logger.warning("[apply_settings_to_state] tp_percentage missing from config — "
                                    f"keeping state default {state.tp_percentage}%")
@@ -2039,10 +2296,10 @@ class TradingApp:
                     logger.warning("[apply_settings_to_state] stoploss_percentage missing from config — "
                                    f"keeping state default {state.stoploss_percentage}%")
                 state.trailing_first_profit = safe_getattr(plc, "trailing_first_profit", state.trailing_first_profit)
-                state.max_profit            = safe_getattr(plc, "max_profit",            state.max_profit)
-                state.profit_step           = safe_getattr(plc, "profit_step",           state.profit_step)
-                state.loss_step             = safe_getattr(plc, "loss_step",             state.loss_step)
-                state.take_profit_type      = safe_getattr(plc, "profit_type",           state.take_profit_type)
+                state.max_profit = safe_getattr(plc, "max_profit", state.max_profit)
+                state.profit_step = safe_getattr(plc, "profit_step", state.profit_step)
+                state.loss_step = safe_getattr(plc, "loss_step", state.loss_step)
+                state.take_profit_type = safe_getattr(plc, "profit_type", state.take_profit_type)
 
             logger.info(f"[Settings] Applied trade and P/L configs - Capital: {state.capital_reserve}, "
                         f"Lot size: {state.lot_size}, TP: {state.tp_percentage}%, "

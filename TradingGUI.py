@@ -91,6 +91,8 @@ from gui.popups.trade_history_popup import TradeHistoryPopup
 from gui.profit_loss.ProfitStoplossSetting import ProfitStoplossSetting
 from gui.profit_loss.ProfitStoplossSettingGUI import ProfitStoplossSettingGUI
 from gui.profit_loss.daily_pnl_widget import DailyPnLWidget
+from gui.re_entry.ReEntrySetting import ReEntrySetting
+from gui.re_entry.ReEntrySettingGUI import ReEntrySettingGUI
 from gui.status_panel import StatusPanel
 from gui.theme_manager import theme_manager
 from gui.trading_mode.TradingModeSetting import TradingModeSetting
@@ -124,6 +126,7 @@ class TradingGUI(QMainWindow):
     _chart_data_ready = pyqtSignal(dict)
     _broker_ready     = pyqtSignal()        # emitted by BrokerInitThread on success
     _broker_failed    = pyqtSignal(str, bool)  # (error_msg, is_token_expired)
+    _balance_fetched  = pyqtSignal(float)      # emitted by BalanceFetchThread on success
 
     def __init__(self):
         self._safe_defaults_init()
@@ -153,6 +156,9 @@ class TradingGUI(QMainWindow):
 
             self.profit_loss_setting = ProfitStoplossSetting()
             self.profit_loss_setting.load()
+
+            self.reentry_setting = ReEntrySetting()
+            self.reentry_setting.load()
 
             self.trading_mode_setting = TradingModeSetting()
             self.trading_mode_setting.load()
@@ -204,6 +210,7 @@ class TradingGUI(QMainWindow):
             self.brokerage_setting = None
             self.daily_setting = None
             self.profit_loss_setting = None
+            self.reentry_setting = None
             self.trading_mode_setting = None
             self.app_running = False
             self.trading_mode = "algo"
@@ -504,6 +511,7 @@ class TradingGUI(QMainWindow):
             self._chart_data_ready.connect(self._on_chart_data_ready)
             self._broker_ready.connect(self._on_broker_ready)
             self._broker_failed.connect(self._on_broker_failed)
+            self._balance_fetched.connect(self._on_balance_fetched)
 
             logger.debug("[TradingGUI._setup_internal_signals] Signals connected")
         except Exception as e:
@@ -1536,6 +1544,19 @@ class TradingGUI(QMainWindow):
                 lambda sym, pnl: self.trade_closed.emit(pnl, pnl > 0)
             )
 
+            # Wire the executor callback so that every in-session trade close
+            # (live OR paper) reaches the P&L widget in real time.
+            # The callback fires on the trading thread, so we emit the Qt signal
+            # which is automatically queued onto the GUI thread.
+            executor = safe_getattr(self.trading_app, 'executor', None)
+            if executor is not None:
+                executor.on_trade_closed_callback = (
+                    lambda pnl, is_winner: self.trade_closed.emit(float(pnl), bool(is_winner))
+                )
+                logger.info("[TradingGUI._start_app] on_trade_closed_callback wired to P&L widget")
+            else:
+                logger.warning("[TradingGUI._start_app] executor not found — P&L widget won't auto-update on trade close")
+
             self.app_running = True
             self.app_status_bar.update_status(
                 {'status': 'Starting...'},
@@ -1692,8 +1713,69 @@ class TradingGUI(QMainWindow):
             # and kick off an immediate fetch without waiting for the 5-s timer.
             self._do_chart_update()
 
+            # Fetch live account balance in the background — mirrors how
+            # historical candles are loaded: broker work on a daemon thread,
+            # result delivered to the GUI thread via a signal.
+            if self._is_live_mode():
+                threading.Thread(
+                    target=self._fetch_live_balance_bg,
+                    daemon=True,
+                    name="BalanceFetchThread",
+                ).start()
+
         except Exception as e:
             logger.error(f"[TradingGUI._on_broker_ready] Failed: {e}", exc_info=True)
+
+    def _fetch_live_balance_bg(self) -> None:
+        """
+        Daemon-thread worker: fetch real account balance from the broker and
+        deliver the result to the GUI thread via _balance_fetched signal.
+
+        Called from _on_broker_ready when LIVE mode is active, using the same
+        background-thread pattern as historical candle loading.
+        """
+        try:
+            if self.trading_app is None or self._closing:
+                return
+            broker = safe_getattr(self.trading_app, 'broker', None)
+            if broker is None:
+                logger.warning("[TradingGUI._fetch_live_balance_bg] No broker — skipping balance fetch")
+                return
+            state = state_manager.get_state()
+            capital_reserve = safe_getattr(state, 'capital_reserve', 0.0) or 0.0
+            balance = broker.get_balance(capital_reserve)
+            if balance and balance > 0:
+                self._balance_fetched.emit(float(balance))
+            else:
+                logger.warning(
+                    f"[TradingGUI._fetch_live_balance_bg] Broker returned invalid balance: {balance}"
+                )
+        except TokenExpiredError as e:
+            logger.warning(f"[TradingGUI._fetch_live_balance_bg] Token expired: {e}")
+            self._broker_failed.emit(str(e), True)
+        except Exception as e:
+            logger.error(f"[TradingGUI._fetch_live_balance_bg] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(float)
+    def _on_balance_fetched(self, balance: float) -> None:
+        """
+        GUI-thread slot — receives the live account balance fetched by
+        _fetch_live_balance_bg and writes it into the trading state.
+
+        Runs on the GUI thread (via signal/slot) so there is no race with
+        the state reads that happen in the tick loop.
+        """
+        try:
+            if self._closing:
+                return
+            state = state_manager.get_state()
+            state.account_balance = balance
+            logger.info(
+                f"[TradingGUI._on_balance_fetched] Live balance loaded: ₹{balance:,.2f}"
+            )
+            self.status_updated.emit(f"Account balance: ₹{balance:,.2f}")
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_balance_fetched] Failed: {e}", exc_info=True)
 
     @pyqtSlot(str, bool)
     def _on_broker_failed(self, error_msg: str, is_token_expired: bool):
@@ -1727,6 +1809,31 @@ class TradingGUI(QMainWindow):
 
         except Exception as e:
             logger.error(f"[TradingGUI._on_broker_failed] Failed: {e}", exc_info=True)
+
+    def _reset_mode_to_paper(self) -> None:
+        """
+        Reset trading mode to PAPER and persist to the database.
+
+        Called whenever the trading engine stops (normally or on error) and on
+        application close, so the persisted mode is NEVER left as LIVE between
+        sessions.  This prevents accidental live trades if the user starts the
+        app again without explicitly re-selecting LIVE mode.
+        """
+        try:
+            if self.trading_mode_setting is None:
+                return
+            from gui.trading_mode.TradingModeSetting import TradingMode
+            if self.trading_mode_setting.mode == TradingMode.LIVE:
+                self.trading_mode_setting.mode = TradingMode.PAPER
+                self.trading_mode_setting.allow_live_trading = False
+                self.trading_mode_setting.save()
+                logger.info(
+                    "[TradingGUI._reset_mode_to_paper] Mode reset to PAPER and saved. "
+                    "User must explicitly re-select LIVE before next session."
+                )
+                self.status_updated.emit("Trading mode reset to PAPER for safety.")
+        except Exception as e:
+            logger.error(f"[TradingGUI._reset_mode_to_paper] Failed: {e}", exc_info=True)
 
     def _is_live_mode(self) -> bool:
         """Return True when the trading mode setting is set to LIVE"""
@@ -1867,6 +1974,9 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             self.app_running = False
+            # Safety: always revert to PAPER when the engine stops so the persisted
+            # mode is never left as LIVE between sessions.
+            self._reset_mode_to_paper()
             self.app_status_bar.update_status({'status': 'Stopped'}, self.trading_mode, False)
             self._update_button_states()
             self.status_updated.emit("Trading engine stopped")
@@ -2067,6 +2177,7 @@ class TradingGUI(QMainWindow):
                 ("⚙️ Strategy Settings",       self._show_strategy_picker),
                 ("📅 Daily Trade Settings",     self._open_daily),
                 ("💰 Profit & Loss Settings",   self._open_pnl),
+                ("🔄 Re-Entry Guard Settings",  self._open_reentry),
                 ("🏦 Brokerage Settings",       self._open_brokerage),
                 ("🔑 Manual Broker Login",      self._open_login),
                 ("🎮 Trading Mode Settings",    self._open_trading_mode),
@@ -2302,6 +2413,22 @@ class TradingGUI(QMainWindow):
             dlg.exec_()
         except Exception as e:
             logger.error(f"[TradingGUI._open_pnl] Failed: {e}", exc_info=True)
+
+    def _open_reentry(self):
+        """Open the Re-Entry Guard Settings dialog."""
+        try:
+            if self._closing:
+                return
+            dlg = ReEntrySettingGUI(setting=self.reentry_setting, parent=self)
+            if dlg.exec_() == ReEntrySettingGUI.Accepted:
+                # Reload from DB in case the dialog updated it, then push to engine
+                self.reentry_setting.load()
+                if self.trading_app and safe_hasattr(self.trading_app, 'reentry_setting'):
+                    self.trading_app.reentry_setting = self.reentry_setting
+                self.reentry_setting._apply_to_state()
+                logger.info("[TradingGUI._open_reentry] Re-entry settings applied")
+        except Exception as e:
+            logger.error(f"[TradingGUI._open_reentry] Failed: {e}", exc_info=True)
 
     def _on_settings_saved(self) -> None:
         """
@@ -2701,6 +2828,8 @@ class TradingGUI(QMainWindow):
                 return
             self._closing = True
             logger.info("[TradingGUI.closeEvent] Application closing, starting cleanup...")
+            # Always revert to PAPER on exit — LIVE must never persist across sessions.
+            self._reset_mode_to_paper()
 
             for timer in [self.timer_fast, self.timer_chart, self.timer_app_status,
                           self.timer_connection_check, self.timer_market_status]:

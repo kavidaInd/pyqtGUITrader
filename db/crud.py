@@ -264,7 +264,15 @@ class ProfitStoplossCRUD:
         "profit_type": "STOP",
         "tp_percentage": 15.0,
         "stoploss_percentage": 7.0,
-        "trailing_first_profit": 3.0,
+        # Trailing-specific fields
+        # trailing_activation_pct  : price must rise this much above entry (%) before
+        #                            the trailing mechanism first engages.  Example: 10.0
+        # trailing_sl_at_activation: when activation triggers, SL is immediately moved
+        #                            to this % above entry (locking in some profit).
+        #                            Example: 5.0  (SL shifts from -7% to +5% of entry)
+        "trailing_activation_pct": 10.0,
+        "trailing_sl_at_activation": 5.0,
+        "trailing_first_profit": 3.0,   # kept for backward compat (legacy field)
         "max_profit": 30.0,
         "profit_step": 2.0,
         "loss_step": 2.0,
@@ -281,7 +289,9 @@ class ProfitStoplossCRUD:
             "profit_type": str(merged["profit_type"]),
             "tp_percentage": float(merged["tp_percentage"]),
             "stoploss_percentage": float(merged["stoploss_percentage"]),
-            "trailing_first_profit": float(merged["trailing_first_profit"]),
+            "trailing_activation_pct": max(0.1, float(merged.get("trailing_activation_pct", 10.0))),
+            "trailing_sl_at_activation": float(merged.get("trailing_sl_at_activation", 5.0)),
+            "trailing_first_profit": float(merged.get("trailing_first_profit", 3.0)),
             "max_profit": float(merged["max_profit"]),
             "profit_step": float(merged["profit_step"]),
             "loss_step": float(merged["loss_step"]),
@@ -748,7 +758,7 @@ class OrderCRUD:
             return False
 
 
-orders = OrderCRUD()
+orders: OrderCRUD = OrderCRUD()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -810,6 +820,70 @@ class DailyPnLCRUD:
 
 
 daily_pnl = DailyPnLCRUD()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. Re-Entry Settings  → app_kv  (reentry:<field>)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ReEntryCRUD:
+    """
+    KV-backed re-entry guard settings.
+    All fields stored under the 'reentry' namespace in app_kv.
+    """
+
+    NS = "reentry"
+    DEFAULTS: Dict[str, Any] = {
+        "allow_reentry": True,
+        "min_candles_after_sl": 3,
+        "min_candles_after_tp": 1,
+        "min_candles_after_signal": 2,
+        "min_candles_default": 2,
+        "same_direction_only": False,
+        "require_new_signal": True,
+        "price_filter_enabled": True,
+        "price_filter_pct": 5.0,
+        "max_reentries_per_day": 0,
+    }
+
+    def get(self, db: DatabaseConnector = None) -> Dict[str, Any]:
+        db = db or get_db()
+        data = _kv_get_ns(self.NS, self.DEFAULTS, db)
+        # Coerce bool fields (stored as int in SQLite)
+        for f in ("allow_reentry", "same_direction_only", "require_new_signal", "price_filter_enabled"):
+            data[f] = bool(data.get(f, self.DEFAULTS[f]))
+        return data
+
+    def save(self, data: Dict[str, Any], db: DatabaseConnector = None) -> bool:
+        db = db or get_db()
+        merged = {**self.DEFAULTS, **data}
+        normalised: Dict[str, Any] = {
+            "allow_reentry": bool(merged["allow_reentry"]),
+            "min_candles_after_sl": max(0, int(merged["min_candles_after_sl"])),
+            "min_candles_after_tp": max(0, int(merged["min_candles_after_tp"])),
+            "min_candles_after_signal": max(0, int(merged["min_candles_after_signal"])),
+            "min_candles_default": max(0, int(merged["min_candles_default"])),
+            "same_direction_only": bool(merged["same_direction_only"]),
+            "require_new_signal": bool(merged["require_new_signal"]),
+            "price_filter_enabled": bool(merged["price_filter_enabled"]),
+            "price_filter_pct": max(0.0, float(merged["price_filter_pct"])),
+            "max_reentries_per_day": max(0, int(merged["max_reentries_per_day"])),
+        }
+        return _kv_set_ns(self.NS, normalised, db)
+
+    def update_field(self, field: str, value: Any, db: DatabaseConnector = None) -> bool:
+        if field not in self.DEFAULTS:
+            logger.warning(f"[ReEntryCRUD.update_field] Unknown field: {field!r}")
+            return False
+        current = self.get(db)
+        current[field] = value
+        return self.save(current, db)
+
+    def reset(self, db: DatabaseConnector = None) -> bool:
+        return self.save(self.DEFAULTS, db)
+
+
+reentry = ReEntryCRUD()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
