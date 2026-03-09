@@ -1252,17 +1252,7 @@ class TradingGUI(QMainWindow):
 
             time_col = df["time"] if "time" in df.columns else pd.Series()
 
-            # BUG-10 FIX: chart_widget._to_epoch() cannot parse bare "HH:MM" strings —
-            # it tries float("09:15") which raises ValueError, returns None for every bar,
-            # then _filter_today_data finds zero valid timestamps and falls back to the
-            # last-50-bars emergency path → chart shows only ~2:45–3:30.
-            #
-            # Fix: always pass Unix epoch integers (seconds since 1970 UTC).
-            # _to_epoch handles int/float via the fast path `return float(ts)`.
-            # The HH:MM display strings are kept separately under "time_labels" so
-            # the chart can still use them for x-axis tick text.
             if hasattr(time_col, 'dt'):
-                # IST-aware → .timestamp() gives correct UTC epoch
                 timestamps = [int(t.timestamp()) for t in time_col]
             else:
                 timestamps = []
@@ -1287,6 +1277,20 @@ class TradingGUI(QMainWindow):
             # Marshal back to the main/GUI thread via signal — safe cross-thread call
             self._chart_data_ready.emit(chart_data)
             logger.debug(f"[ChartFetch] Emitted {len(df)} bars for {symbol} at {tf_minutes}m")
+
+            try:
+                state = state_manager.get_state()
+                existing = getattr(state, 'derivative_current_price', 0.0) or 0.0
+                if existing == 0.0:
+                    store_price = candle_store_manager.get_current_price(symbol)
+                    if store_price and store_price > 0:
+                        state.derivative_current_price = store_price
+                        logger.info(
+                            f"[ChartFetch] Seeded derivative_current_price "
+                            f"{store_price:.2f} from CandleStore history for {symbol}"
+                        )
+            except Exception as seed_err:
+                logger.debug(f"[ChartFetch] Could not seed derivative_current_price: {seed_err}")
 
         except Exception as e:
             logger.error(f"[ChartFetch] Background fetch failed: {e}", exc_info=True)

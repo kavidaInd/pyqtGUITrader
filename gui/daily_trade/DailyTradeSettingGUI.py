@@ -723,7 +723,8 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             """)
             static_form.addRow("🔢 Lot Size:", lot_edit)
             self.entries["lot_size"] = lot_edit
-            self.vars["lot_size"] = (lot_edit, int)
+            # NOTE: lot_size is NOT added to self.vars — it's read-only and derived
+            # from OptionUtils.get_lot_size() at save time, never from user input.
 
             # Freeze Size
             freeze_edit = QLineEdit()
@@ -764,8 +765,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             fields = [
                 ("📆 Week", "week", int, "Weekly expiry offset (0 = current)"),
-                ("🔎 Call Lookback", "call_lookback", int, "Candles to look back for calls"),
-                ("🔎 Put Lookback", "put_lookback", int, "Candles to look back for puts"),
                 ("📈 Max Options", "max_num_of_option", int, "Maximum open positions"),
                 ("🔻 Lower %", "lower_percentage", float, "Minimum move % to trigger entry"),
                 ("⏰ Cancel After (Seconds)", "cancel_after", int, "Cancel unfilled orders after (seconds)"),
@@ -799,6 +798,61 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
                 config_form.addRow(f"{label}:", edit)
                 self.vars[key] = (edit, typ)
                 self.entries[key] = edit
+
+            # ── Lookback spinners (0–10 strikes from ATM) ─────────────────────
+            # Value is an integer count of strikes away from ATM.
+            # 0 = ATM, 1 = one strike OTM, 2 = two strikes OTM, etc.
+            # The instrument multiplier (50 for NIFTY, 100 for BANKNIFTY, etc.)
+            # is applied automatically in order_executor and subscribe_market_data.
+            _lb_spinbox_style = f"""
+                QSpinBox {{
+                    background: {self._c.BG_INPUT};
+                    color: {self._c.TEXT_MAIN};
+                    border: 1px solid {self._c.BORDER};
+                    border-radius: {self._sp.RADIUS_MD}px;
+                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
+                    min-height: {self._sp.INPUT_HEIGHT}px;
+                    font-size: {self._ty.SIZE_BODY}pt;
+                }}
+                QSpinBox:focus {{ border-color: {self._c.BORDER_FOCUS}; }}
+                QSpinBox::up-button, QSpinBox::down-button {{
+                    width: 18px;
+                    border: none;
+                    background: {self._c.BG_HOVER};
+                }}
+            """
+            _lb_tooltip_call = (
+                "Strikes from ATM for the CALL leg.\n"
+                "0 = ATM  |  1 = one strike OTM  |  2 = two strikes OTM …\n"
+                "Higher values select cheaper (further OTM) options."
+            )
+            _lb_tooltip_put = (
+                "Strikes from ATM for the PUT leg.\n"
+                "0 = ATM  |  1 = one strike OTM  |  2 = two strikes OTM …\n"
+                "Higher values select cheaper (further OTM) options."
+            )
+
+            call_lb_spin = QSpinBox()
+            call_lb_spin.setRange(0, 10)
+            call_lb_spin.setSuffix(" strike(s) from ATM")
+            call_lb_spin.setToolTip(_lb_tooltip_call)
+            call_lb_spin.setStyleSheet(_lb_spinbox_style)
+            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'data'):
+                call_lb_spin.setValue(int(self.daily_setting.data.get("call_lookback", 0)))
+            config_form.addRow("🔎 Call Lookback:", call_lb_spin)
+            self.vars["call_lookback"] = (call_lb_spin, int)
+            self.entries["call_lookback"] = call_lb_spin
+
+            put_lb_spin = QSpinBox()
+            put_lb_spin.setRange(0, 10)
+            put_lb_spin.setSuffix(" strike(s) from ATM")
+            put_lb_spin.setToolTip(_lb_tooltip_put)
+            put_lb_spin.setStyleSheet(_lb_spinbox_style)
+            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'data'):
+                put_lb_spin.setValue(int(self.daily_setting.data.get("put_lookback", 0)))
+            config_form.addRow("🔎 Put Lookback:", put_lb_spin)
+            self.vars["put_lookback"] = (put_lb_spin, int)
+            self.entries["put_lookback"] = put_lb_spin
 
             config_layout.addLayout(config_form)
             layout.addWidget(config_card)
@@ -1723,6 +1777,20 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             # Ensure sideway is captured
             if "sideway_zone_trade" not in data_to_save and self.sideway_check is not None:
                 data_to_save["sideway_zone_trade"] = self.sideway_check.isChecked()
+
+            # Derive lot_size from OptionUtils — never from user input.
+            # This ensures SEBI-regulated values are always used regardless of what
+            # was previously stored in the database.
+            try:
+                deriv = data_to_save.get("derivative") or (
+                    self.derivative_combo.currentData() if self.derivative_combo else None
+                )
+                if deriv:
+                    data_to_save["lot_size"] = OptionUtils.get_lot_size(
+                        deriv, fallback=data_to_save.get("lot_size", 0)
+                    )
+            except Exception as _e:
+                logger.warning(f"[save] Could not derive lot_size from OptionUtils: {_e}")
 
             threading.Thread(
                 target=self._threaded_save,

@@ -558,14 +558,9 @@ class DailyPnLWidget(QWidget):
 
     def _load_daily_data(self):
         try:
+            from db.crud import daily_pnl as daily_pnl_crud
             today_str = datetime.now().date().isoformat()
-            from db.connector import get_db
-            db = get_db()
-            row = db.fetchone(
-                "SELECT realized_pnl, unrealized_pnl, trades_count, winners_count, "
-                "max_drawdown, peak FROM daily_pnl WHERE date = ?",
-                (today_str,)
-            )
+            row = daily_pnl_crud.get(today_str)
             if row:
                 self._realized = float(row['realized_pnl'])
                 self._unrealized = float(row['unrealized_pnl'])
@@ -610,26 +605,17 @@ class DailyPnLWidget(QWidget):
 
     def _save_daily_data(self):
         try:
+            from db.crud import daily_pnl as daily_pnl_crud
             today_str = datetime.now().date().isoformat()
-            from db.connector import get_db
-            db = get_db()
-            db.execute("""
-                INSERT INTO daily_pnl
-                (date, realized_pnl, unrealized_pnl, trades_count,
-                 winners_count, max_drawdown, peak, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date) DO UPDATE SET
-                    realized_pnl = excluded.realized_pnl,
-                    unrealized_pnl = excluded.unrealized_pnl,
-                    trades_count = excluded.trades_count,
-                    winners_count = excluded.winners_count,
-                    max_drawdown = excluded.max_drawdown,
-                    peak = excluded.peak,
-                    updated_at = excluded.updated_at
-            """, (
-                today_str, self._realized, self._unrealized, self._trades,
-                self._winners, self._max_dd, self._peak, datetime.now().isoformat()
-            ))
+            daily_pnl_crud.upsert(
+                date_str=today_str,
+                realized_pnl=self._realized,
+                unrealized_pnl=self._unrealized,
+                trades_count=self._trades,
+                winners_count=self._winners,
+                max_drawdown=self._max_dd,
+                peak=self._peak,
+            )
         except Exception as e:
             logger.error(f"[DailyPnLWidget._save_daily_data] {e}", exc_info=True)
 

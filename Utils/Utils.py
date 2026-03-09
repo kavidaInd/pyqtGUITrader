@@ -950,47 +950,6 @@ class Utils:
         except Exception:
             return False
 
-    @staticmethod
-    def load_access_token(token_path=None) -> Optional[str]:
-        """
-        Loads the Fyers API access token from the given file.
-        Returns the token string, or None if not found.
-        """
-        try:
-            CONFIG_PATH = os.getenv("CONFIG_PATH", "config")
-            token_path = token_path or os.path.join(CONFIG_PATH, "fyers_token.json")
-
-            if not os.path.exists(token_path):
-                logger.error(f"Token file not found at: {token_path}")
-                return None
-
-            # Bug #30 fix: Use a single with-block and proper JSON parsing
-            with open(token_path, "r", encoding='utf-8') as f:
-                content = f.read().strip()
-                if not content:
-                    logger.error("Token file is empty")
-                    return None
-
-                try:
-                    token_obj = json.loads(content)
-                    token = token_obj.get("access_token")
-                    if token:
-                        return token
-                except json.JSONDecodeError:
-                    # Try treating the entire file as the token
-                    if len(content) > 50 and ' ' not in content and '\n' not in content:
-                        return content
-
-            logger.error("Token not found! Please check token file or authentication flow.")
-            return None
-
-        except PermissionError as e:
-            logger.error(f"Permission denied reading token file: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error reading access token: {e!r}", exc_info=True)
-            return None
-
     # Rule 8: Cleanup method
     @classmethod
     def cleanup(cls):

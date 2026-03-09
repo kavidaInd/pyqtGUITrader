@@ -54,10 +54,7 @@ ensures:
   - Efficient resampling for multiple timeframes
   - Clean separation between mutable trading state and immutable historical data
 
-The `current_index_data` field is kept for backward compatibility but should
-be considered deprecated. Use CandleStoreManager to access candle data instead.
-
-Version: 2.6.0 (Fixed should_* atomicity, _default_signal_result position_context, I/O-under-lock in update_from_dict, _set safe_hasattr recursion)
+Version: 2.7.0 (Removed deprecated option/index DataFrame fields: current_call_data, current_put_data, current_index_data, derivative_history_df, option_history_df — all OHLCV data now lives exclusively in CandleStoreManager)
 """
 
 import copy
@@ -237,12 +234,6 @@ class TradeState:
                 # ── Auth ────────────────────────────────────────────────────
                 self._token: Optional[str] = None
 
-                # ── Candle snapshots (DEPRECATED - use CandleStore) ─────────
-                # Kept for backward compatibility but should not be used
-                self._current_index_data: Optional[Dict[str, Any]] = None
-                self._current_put_data: Optional[pd.DataFrame] = None
-                self._current_call_data: Optional[pd.DataFrame] = None
-
                 # ── Instrument identifiers ───────────────────────────────────
                 self._call_option: Optional[str] = None
                 self._put_option: Optional[str] = None
@@ -256,9 +247,9 @@ class TradeState:
                 self._put_current_close: Optional[float] = None
                 self._call_current_close: Optional[float] = None
 
-                # ── History / DataFrames (DEPRECATED - use CandleStore) ─────
-                self._derivative_history_df: Optional[pd.DataFrame] = None
-                self._option_history_df: Optional[pd.DataFrame] = None
+                # ── History / DataFrames (REMOVED - use CandleStore) ────────
+                # derivative_history_df and option_history_df have been removed.
+                # Use candle_store_manager.get_store(symbol).resample(minutes).
                 self._last_index_updated: Optional[int] = None
 
                 # ── Orders ───────────────────────────────────────────────────
@@ -593,92 +584,6 @@ class TradeState:
         self._set("_token", value)
 
     # ------------------------------------------------------------------
-    # Candle snapshots (DEPRECATED - use CandleStoreManager)
-    # ------------------------------------------------------------------
-
-    @property
-    def current_index_data(self) -> Optional[Dict[str, Any]]:
-        """
-        Current index candle data.
-
-        DEPRECATED: This field is kept for backward compatibility.
-        Use CandleStoreManager to access candle data instead.
-        """
-        return self._get("_current_index_data")
-
-    @current_index_data.setter
-    def current_index_data(self, value: Optional[Dict[str, Any]]) -> None:
-        """
-        Set current index candle data.
-
-        DEPRECATED: This field is kept for backward compatibility.
-        Use CandleStoreManager to store candle data instead.
-        """
-        if value is not None and not isinstance(value, (dict, pd.DataFrame)):
-            logger.warning(f"current_index_data should be dict or None, got {type(value)}")
-            value = None
-        self._set("_current_index_data", value)
-
-    @property
-    def current_put_data(self) -> Optional[pd.DataFrame]:
-        """
-        Current put option historical data.
-
-        DEPRECATED: This field is kept for backward compatibility.
-        Use CandleStoreManager to access option data instead.
-
-        Returns a read-only copy to prevent external mutation.
-        """
-        try:
-            with self._lock:
-                if self._current_put_data is None:
-                    return None
-                # Return a copy to prevent external mutation
-                return self._current_put_data.copy()
-        except Exception as e:
-            logger.error(f"[current_put_data getter] Failed: {e}", exc_info=True)
-            return None
-
-    @current_put_data.setter
-    def current_put_data(self, value: Optional[pd.DataFrame]) -> None:
-        """
-        Set current put option historical data.
-
-        DEPRECATED: This field is kept for backward compatibility.
-        Use CandleStoreManager to store option data instead.
-        """
-        self._set("_current_put_data", value)
-
-    @property
-    def current_call_data(self) -> Optional[pd.DataFrame]:
-        """
-        Current call option historical data.
-
-        DEPRECATED: This field is kept for backward compatibility.
-        Use CandleStoreManager to access option data instead.
-
-        Returns a read-only copy to prevent external mutation.
-        """
-        try:
-            with self._lock:
-                if self._current_call_data is None:
-                    return None
-                # Return a copy to prevent external mutation
-                return self._current_call_data.copy()
-        except Exception as e:
-            logger.error(f"[current_call_data getter] Failed: {e}", exc_info=True)
-            return None
-
-    @current_call_data.setter
-    def current_call_data(self, value: Optional[pd.DataFrame]) -> None:
-        """
-        Set current call option historical data.
-
-        DEPRECATED: This field is kept for backward compatibility.
-        Use CandleStoreManager to store option data instead.
-        """
-        self._set("_current_call_data", value)
-
     # ------------------------------------------------------------------
     # Instrument identifiers
     # ------------------------------------------------------------------
@@ -869,72 +774,6 @@ class TradeState:
             logger.error(f"[TradeState.update_prices] Failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
-    # DataFrames (DEPRECATED - use CandleStore)
-    # Returned as copies to prevent external mutation.
-    # ------------------------------------------------------------------
-
-    @property
-    def derivative_history_df(self) -> Optional[pd.DataFrame]:
-        """
-        Historical OHLC data for derivative.
-
-        DEPRECATED: Use CandleStoreManager.get_store(symbol).resample(minutes) instead.
-
-        Returns a read-only copy to prevent external mutation.
-        """
-        try:
-            with self._lock:
-                if self._derivative_history_df is None:
-                    return None
-                # Return a copy to prevent external mutation
-                return self._derivative_history_df.copy()
-        except Exception as e:
-            logger.error(f"[derivative_history_df getter] Failed: {e}", exc_info=True)
-            return None
-
-    @derivative_history_df.setter
-    def derivative_history_df(self, value: Optional[pd.DataFrame]) -> None:
-        """
-        Set derivative historical data.
-
-        DEPRECATED: Use CandleStoreManager to store historical data instead.
-        """
-        if value is not None and not isinstance(value, pd.DataFrame):
-            logger.error(
-                f"[TradeState] derivative_history_df setter received unexpected type "
-                f"{type(value).__name__!r}; storing None instead"
-            )
-            value = None
-        self._set("_derivative_history_df", value)
-
-    @property
-    def option_history_df(self) -> Optional[pd.DataFrame]:
-        """
-        Historical OHLC data for options.
-
-        DEPRECATED: Use CandleStoreManager.get_store(symbol).resample(minutes) instead.
-
-        Returns a read-only copy to prevent external mutation.
-        """
-        try:
-            with self._lock:
-                if self._option_history_df is None:
-                    return None
-                # Return a copy to prevent external mutation
-                return self._option_history_df.copy()
-        except Exception as e:
-            logger.error(f"[option_history_df getter] Failed: {e}", exc_info=True)
-            return None
-
-    @option_history_df.setter
-    def option_history_df(self, value: Optional[pd.DataFrame]) -> None:
-        """
-        Set option historical data.
-
-        DEPRECATED: Use CandleStoreManager to store historical data instead.
-        """
-        self._set("_option_history_df", value)
-
     @property
     def last_index_updated(self) -> Optional[int]:
         """Timestamp of last index update."""
@@ -2319,13 +2158,6 @@ class TradeState:
                     "signal_confidence": dict(confidence) if confidence else {},
                     "signal_explanation": explanation,
 
-                    # DataFrame summaries (not full data) - DEPRECATED
-                    "derivative_history_df": _df_repr(self._derivative_history_df),
-                    "option_history_df": _df_repr(self._option_history_df),
-                    "current_put_data": _df_repr(self._current_put_data),
-                    "current_call_data": _df_repr(self._current_call_data),
-                    "current_index_data": str(self._current_index_data) if self._current_index_data else "None",
-
                     "session_id": self._session_id,
                     "app_session_id": self._app_session_id,
                     "session_start_time": self._session_start_time,
@@ -2361,9 +2193,6 @@ class TradeState:
             'should_sell_call', 'should_sell_put', 'should_hold',
             'should_wait', 'signal_conflict', 'dynamic_signals_active',
             'signal_confidence', 'signal_explanation',
-            # get_snapshot() summary strings that must not be written back
-            'derivative_history_df', 'option_history_df',
-            'current_put_data', 'current_call_data', 'current_index_data',
         }
 
         # Collection-type guards (checked outside lock — no I/O under lock)
@@ -2589,13 +2418,6 @@ class TradeState:
                 self._all_symbols.clear()
                 self._mtf_results.clear()
                 object.__setattr__(self, "_option_chain", {})
-
-                # Clear DataFrames (DEPRECATED)
-                self._derivative_history_df = None
-                self._option_history_df = None
-                self._current_put_data = None
-                self._current_call_data = None
-                self._current_index_data = None
 
                 # Clear dictionaries
                 self._current_order_id.clear()

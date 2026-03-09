@@ -856,7 +856,7 @@ class FyersBroker(BaseBroker):
     # ── Retry wrapper ────────────────────────────────────────────────────────
 
     def retry_on_failure(self, func: Callable, context: str = "",
-                         max_retries: int = 3, base_delay: int = 1):
+                         max_retries: int = 3, base_delay: int = 1, respect_market_hours: bool = True,):
         for attempt in range(max_retries):
             try:
                 self._check_token_before_request()
@@ -868,7 +868,7 @@ class FyersBroker(BaseBroker):
 
                 error_code = self._get_error_code(response)
 
-                if error_code in self.FATAL_CODES:
+                if error_code in self.TOKEN_EXPIRY_CODES:
                     raise TokenExpiredError(f"Fyers auth error", error_code)
 
                 if error_code in self.RETRYABLE_CODES:

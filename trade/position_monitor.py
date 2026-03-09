@@ -212,7 +212,12 @@ class PositionMonitor:
                         logger.warning("Order missing 'id'; skipping.")
                         continue
 
-                    if broker_id is None:
+                    # BUG FIX: Auto-confirm paper orders. broker_id is None for paper
+                    # orders created via place_orders(), but is_paper_mode is the
+                    # authoritative check — if mode is paper we must never call the
+                    # broker's status API regardless of what broker_id contains.
+                    is_paper = safe_getattr(state, "is_paper_mode", True)
+                    if broker_id is None or is_paper:
                         orders_crud.confirm(order_id, db=db)
                         confirmed.append(order)
                         logger.debug(f"Paper order {order_id} auto-confirmed.")
@@ -250,10 +255,18 @@ class PositionMonitor:
             if not unconfirmed:
                 state.current_trade_confirmed = True
                 logger.info("✅ All orders confirmed.")
-                state.current_trade_started_time = now
+                # BUG FIX: Only set current_trade_started_time when it hasn't been set yet.
+                # record_trade_state() already initialises it at entry; overwriting it here
+                # would reset the cancel_after deadline every time a partial confirmation
+                # arrives, making it impossible for the timeout to ever fire.
+                if state.current_trade_started_time is None:
+                    state.current_trade_started_time = now
                 return
 
-            # Cancel if price has drifted too far or order has timed out
+            # Cancel if price has drifted too far (in either direction) or order has timed out.
+            # BUG FIX 1: Use abs(change) so a rapidly falling price also triggers cancellation.
+            # BUG FIX 2: lower_percentage is stored as a decimal fraction (e.g. 0.01 = 1%).
+            #            Convert to percentage points before comparing against the 3% threshold.
             try:
                 change = ((current_price - buy_price) / buy_price) * 100 if buy_price else 0
             except ZeroDivisionError:
@@ -263,8 +276,9 @@ class PositionMonitor:
             cancel_after = safe_getattr(state, "cancel_after", 5)
             deadline = trade_start_time + timedelta(seconds=cancel_after)
             lower_per = safe_getattr(state, "lower_percentage", 0)
+            drift_threshold = 3 + (lower_per * 100)  # convert fraction → percentage points
 
-            if now > deadline or change > (3 + lower_per):
+            if now > deadline or abs(change) > drift_threshold:
                 logger.warning(
                     f"❌ Trade not confirmed in time or price drifted. "
                     f"Change: {change:.2f}%, Deadline: {deadline}"

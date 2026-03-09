@@ -23,6 +23,7 @@ from db.crud import orders as orders_crud
 
 # Import state manager for state access
 from data.trade_state_manager import state_manager
+from data.candle_store_manager import candle_store_manager
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class OrderStatus(Enum):
 
 class Order:
     """Order model with state machine."""
-    
+
     def __init__(self, order_id: str, symbol: str, quantity: int, order_type: str,
                  price: Optional[float] = None, stop_price: Optional[float] = None):
         self.id = order_id
@@ -55,7 +56,7 @@ class Order:
         self.broker_order_id: Optional[str] = None
         self.fills: list = []
         self.error: Optional[str] = None
-    
+
     def submit(self, broker_order_id: str) -> bool:
         """Transition from PENDING to SUBMITTED."""
         if self.status != OrderStatus.PENDING:
@@ -65,28 +66,28 @@ class Order:
         self.broker_order_id = broker_order_id
         self.updated_at = datetime.now()
         return True
-    
+
     def fill(self, quantity: int, price: float) -> bool:
         """Process a fill (partial or full)."""
         if self.status not in [OrderStatus.SUBMITTED, OrderStatus.PARTIAL]:
             logger.warning(f"Cannot fill order {self.id} in state {self.status}")
             return False
-        
+
         self.filled_quantity += quantity
         self.fills.append({
             'quantity': quantity,
             'price': price,
             'time': datetime.now()
         })
-        
+
         if self.filled_quantity >= self.quantity:
             self.status = OrderStatus.FILLED
         else:
             self.status = OrderStatus.PARTIAL
-        
+
         self.updated_at = datetime.now()
         return True
-    
+
     def cancel(self) -> bool:
         """Cancel the order."""
         if self.status not in [OrderStatus.SUBMITTED, OrderStatus.PARTIAL, OrderStatus.PENDING]:
@@ -95,7 +96,7 @@ class Order:
         self.status = OrderStatus.CANCELLED
         self.updated_at = datetime.now()
         return True
-    
+
     def reject(self, reason: str) -> bool:
         """Reject the order."""
         if self.status != OrderStatus.SUBMITTED:
@@ -105,17 +106,17 @@ class Order:
         self.error = reason
         self.updated_at = datetime.now()
         return True
-    
+
     @property
     def is_active(self) -> bool:
         """Check if order is still active (not terminal)."""
         return self.status in [OrderStatus.SUBMITTED, OrderStatus.PARTIAL]
-    
+
     @property
     def is_terminal(self) -> bool:
         """Check if order is in terminal state."""
         return self.status in [OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED]
-    
+
     @property
     def average_fill_price(self) -> Optional[float]:
         """Calculate average fill price."""
@@ -137,11 +138,11 @@ class OrderExecutor:
             self.notifier = None
             self.risk_manager = None
             self.on_trade_closed_callback = None
-            
+
             # FIX: Idempotency tracking
             self._submitted_order_ids: Set[str] = set()
             self._idempotency_keys: Dict[str, str] = {}  # idempotency_key -> order_id
-            
+
             logger.info("OrderExecutor initialized with thread safety and idempotency")
         except Exception as e:
             logger.critical(f"[OrderExecutor.__init__] Failed: {e}", exc_info=True)
@@ -318,13 +319,51 @@ class OrderExecutor:
             return False
 
     def _fetch_live_price(self, option_name: Optional[str]) -> Optional[float]:
-        if not self.api or not option_name:
+        """
+        Return the current price for *option_name*.
+
+        Source priority (CandleStore is always the primary source):
+        1. candle_store_manager.get_current_price() — populated by WS ticks
+           via push_tick().  Zero broker API calls, always consistent with
+           what the signal engine and SL/TP logic see.
+        2. broker REST API (get_option_current_price) — used only when the
+           CandleStore has no price yet (symbol just subscribed, store cold
+           at startup).  The returned price is also pushed into the store so
+           subsequent calls hit path 1 instead.
+        """
+        if not option_name:
+            return None
+
+        # ── Path 1: CandleStore (preferred) ──────────────────────────────────
+        try:
+            price = candle_store_manager.get_current_price(option_name)
+            if price is not None and price > 0:
+                logger.debug(f"[_fetch_live_price] {option_name}: {price:.2f} (CandleStore)")
+                return price
+        except Exception as e:
+            logger.debug(f"[_fetch_live_price] CandleStore lookup failed for {option_name}: {e}")
+
+        # ── Path 2: Broker REST fallback ──────────────────────────────────────
+        if not self.api:
+            logger.warning(f"[_fetch_live_price] No price in CandleStore and no api for {option_name}")
             return None
         try:
-            return self.api.get_option_current_price(option_name)
+            price = self.api.get_option_current_price(option_name)
+            if price is not None and price > 0:
+                logger.debug(
+                    f"[_fetch_live_price] {option_name}: {price:.2f} "
+                    f"(broker REST fallback — CandleStore was empty)"
+                )
+                # Seed the store so future calls use path 1
+                try:
+                    candle_store_manager.push_tick(option_name, price)
+                except Exception:
+                    pass
+                return price
         except Exception as e:
-            logger.error(f"Failed to fetch live price for {option_name}: {e}", exc_info=True)
-            return None
+            logger.error(f"[_fetch_live_price] Broker REST also failed for {option_name}: {e}", exc_info=True)
+
+        return None
 
     # ------------------------------------------------------------------
     # Smart order execution (Feature 2)
@@ -691,14 +730,28 @@ class OrderExecutor:
 
     def adjust_positions(self, shares, side):
         """
-        Try cheaper strikes when insufficient balance.
+        Step further OTM (cheaper strikes) until balance is sufficient for one lot.
+
+        Each iteration increments the lookback by 1 strike.  The same
+        ``broker.build_option_symbol(lookback_strikes=N)`` call used in
+        ``subscribe_market_data()`` is used here so the strike-count semantics
+        are identical throughout:
+
+            lookback_strikes = 0   → ATM
+            lookback_strikes = 1   → one strike OTM
+            lookback_strikes = 2   → two strikes OTM  … etc.
+
+        The broker translates the count to the correct price offset using its
+        own multiplier (50 pts for NIFTY, 100 pts for BANKNIFTY, etc.).
+
+        ``state.call_lookback`` / ``state.put_lookback`` are updated in place so
+        the caller can read back the final adjusted symbol.
         """
         try:
             state = state_manager.get_state()
             if state is None:
                 return shares or 0
 
-            # Resolve lot size from index (same logic as buy_option)
             lot_size = OptionUtils.get_lot_size(
                 state.derivative, fallback=state.lot_size
             )
@@ -707,45 +760,50 @@ class OrderExecutor:
                 try:
                     if shares >= lot_size:
                         break
+
                     if side == BaseEnums.CALL:
-                        state.call_lookback = OptionUtils.lookbacks(
-                            derivative=state.derivative,
-                            lookback=state.call_lookback,
-                            side=side,
-                        )
-                        state.call_option = OptionUtils.get_option_at_price(
-                            derivative_price=state.derivative_current_price,
-                            lookback=state.call_lookback,
-                            expiry=state.expiry,
-                            op_type='CE',
-                            derivative_name=state.derivative,
-                        )
+                        state.call_lookback = state.call_lookback + 1
+                        new_symbol = self.api.build_option_symbol(
+                            underlying=state.derivative,
+                            spot_price=state.derivative_current_price,
+                            option_type="CE",
+                            weeks_offset=state.expiry,
+                            lookback_strikes=state.call_lookback,
+                        ) if self.api else None
+                        if new_symbol:
+                            state.call_option = new_symbol
                         option_name = state.call_option
                     else:
-                        state.put_lookback = OptionUtils.lookbacks(
-                            derivative=state.derivative,
-                            lookback=state.put_lookback,
-                            side=side,
-                        )
-                        state.put_option = OptionUtils.get_option_at_price(
-                            derivative_price=state.derivative_current_price,
-                            lookback=state.put_lookback,
-                            expiry=state.expiry,
-                            op_type='PE',
-                            derivative_name=state.derivative,
-                        )
+                        # Move one strike further OTM for puts
+                        state.put_lookback = state.put_lookback + 1
+                        new_symbol = self.api.build_option_symbol(
+                            underlying=state.derivative,
+                            spot_price=state.derivative_current_price,
+                            option_type="PE",
+                            weeks_offset=state.expiry,
+                            lookback_strikes=state.put_lookback,
+                        ) if self.api else None
+                        if new_symbol:
+                            state.put_option = new_symbol
                         option_name = state.put_option
 
                     if not option_name:
+                        logger.warning(f"[ADJUST] Attempt {attempt+1}: no symbol built, skipping")
                         continue
+
                     price = self._fetch_live_price(option_name)
                     if price is None:
+                        logger.warning(f"[ADJUST] Attempt {attempt+1}: no price for {option_name}")
                         continue
 
                     shares = Utils.calculate_shares_to_buy(
                         price=price,
                         balance=state.account_balance,
                         lot_size=lot_size,
+                    )
+                    logger.info(
+                        f"[ADJUST] Attempt {attempt+1}: {option_name} "
+                        f"@ {price:.2f}, shares={shares}, lot={lot_size}"
                     )
                 except Exception as e:
                     logger.warning(f"[ADJUST] Attempt {attempt + 1} failed: {e}")

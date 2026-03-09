@@ -353,6 +353,27 @@ class CandleStoreManager:
             logger.error(f"Error resampling data for {symbol}: {e}", exc_info=True)
             return None
 
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """
+        Single source of truth for the live price of any symbol.
+
+        Returns the most recent value from the symbol's CandleStore:
+        - ``_tick_close`` if a WS tick has arrived since the last bar close
+        - Otherwise the last bar's close column value
+        - ``None`` when no data is available yet (store is empty and no tick
+          has been received)
+
+        This is the canonical way for any module (order_executor,
+        position_monitor, etc.) to read a price without going to the broker
+        REST API.
+        """
+        try:
+            store = self.get_store(symbol)
+            return store.get_current_close()
+        except Exception as e:
+            logger.error(f"[CandleStoreManager.get_current_price] {symbol}: {e}", exc_info=True)
+            return None
+
     def get_1min(self, symbol: str) -> Optional[pd.DataFrame]:
         """Get raw 1-min data for a symbol."""
         try:

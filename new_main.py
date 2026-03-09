@@ -54,6 +54,7 @@ class TradingApp:
 
     def __init__(self, config: Any, trading_mode_var: Optional[Any] = None, broker_setting: Optional[Any] = None):
         # Rule 2: Safe defaults first
+        self._last_bar_completed = None
         self._safe_defaults_init()
 
         try:
@@ -61,17 +62,10 @@ class TradingApp:
             if config is None:
                 logger.warning("config is None in TradingApp.__init__")
 
-            # FIX-6: Store constructor args only — no network I/O in __init__.
-            # BrokerFactory.create() performs network calls (token validation,
-            # balance fetch) which previously blocked the GUI thread because
-            # TradingApp() was constructed in TradingGUI._init_trading_app()
-            # (main thread).  All heavy initialisation now runs in initialize(),
-            # which TradingThread.run() calls on the worker thread.
             self.config = config
             self.trading_mode_setting = trading_mode_var
             self._broker_setting = broker_setting   # stored for initialize()
 
-            # BUG #6 FIX: Replace Event with Queue + dedicated worker thread
             self._tick_queue = queue.Queue(maxsize=500)
             self._stage2_thread = threading.Thread(
                 target=self._stage2_worker,
@@ -80,9 +74,6 @@ class TradingApp:
             )
             self._stage2_thread.start()
 
-            # Thread pool and fetch-lock created in initialize() on the worker thread.
-
-            # Option chain: stores live tick data for all subscribed options
             self._option_chain_lock = threading.Lock()
 
             # Initialize option chain in state
@@ -154,9 +145,6 @@ class TradingApp:
         self._last_market_status_check = 0
         self._market_is_open = None
         self._backtest_mode = False
-        # Set to True by update_market_state when a 1-min bar is completed.
-        # Consumed (reset to False) by evaluate_trend_and_decision to gate
-        # the heavy (indicator) recomputation path.
         self._last_bar_completed = False
 
         # FIX: Tick validation
@@ -463,12 +451,29 @@ class TradingApp:
             self._apply_trading_mode_to_executor()
             state = state_manager.get_state()
 
-            # Get initial price for derivative
+            # Get initial price for derivative and seed the CandleStore.
+            # All subsequent reads (subscribe_market_data, signal engine, etc.)
+            # will then use candle_store_manager.get_current_price() rather than
+            # issuing a second broker REST call.
             if self.broker and safe_hasattr(self.broker, 'get_option_current_price'):
                 try:
-                    state.derivative_current_price = self.broker.get_option_current_price(
+                    bootstrap_price = self.broker.get_option_current_price(
                         state.derivative
                     )
+                    if bootstrap_price is not None and bootstrap_price > 0:
+                        # 1. Push into CandleStore — becomes the authoritative price
+                        candle_store_manager.push_tick(state.derivative, bootstrap_price)
+                        # 2. Read back through the store so state is consistent
+                        store = candle_store_manager.get_store(state.derivative)
+                        state.derivative_current_price = (
+                            store.get_current_close() or bootstrap_price
+                        )
+                        logger.info(
+                            f"[initialize_market_state] Bootstrap derivative price "
+                            f"{state.derivative_current_price:.2f} seeded into CandleStore"
+                        )
+                    else:
+                        logger.warning("[initialize_market_state] Bootstrap price was None/zero; CandleStore stays empty until first WS tick")
                 except TokenExpiredError:
                     raise
                 except Exception as price_error:
@@ -614,6 +619,101 @@ class TradingApp:
 
         except Exception as ws_error:
             logger.error(f"WebSocket connection/subscription failed: {ws_error!r}", exc_info=True)
+
+    def ensure_symbol_subscribed(self, symbol: str) -> bool:
+        """
+        Guarantee that *symbol* is receiving live WebSocket ticks.
+
+        Called BEFORE an order is placed whenever a lookback adjustment or a
+        user-configured deep ITM/OTM lookback may have chosen a strike that
+        sits outside the initial ±3 strike chain window.
+
+        Strategy
+        --------
+        1. If the symbol is already in the subscribed chain → nothing to do.
+        2. If it is missing:
+           a. Add it to state.option_chain so tick routing will accept it.
+           b. Append it to ws.symbols and call ws_subscribe() with ONLY the
+              new symbol — this avoids tearing down and rebuilding the entire
+              subscription (which would cause a momentary data blackout for all
+              other symbols and trigger a heavy re-subscribe_market_data()).
+           c. If the incremental subscribe fails, fall back to a full
+              subscribe_market_data() rebuild so we never silently trade a
+              symbol with no live price feed.
+
+        Returns True if the symbol is (or becomes) subscribed, False on error.
+        """
+        try:
+            if not symbol:
+                logger.warning("[ensure_symbol_subscribed] called with empty symbol")
+                return False
+
+            full_sym = self.symbol_full(symbol)
+            if not full_sym:
+                logger.warning(f"[ensure_symbol_subscribed] symbol_full() returned None for {symbol!r}")
+                return False
+
+            state = state_manager.get_state()
+            all_syms = state.all_symbols or []
+
+            # ── Already subscribed ────────────────────────────────────────────
+            if full_sym in all_syms:
+                logger.debug(f"[ensure_symbol_subscribed] {full_sym} already subscribed")
+                return True
+
+            logger.info(
+                f"[ensure_symbol_subscribed] {full_sym} NOT in subscription "
+                f"(chain has {len(all_syms)} symbols). Subscribing incrementally."
+            )
+
+            # ── Step 1: Register symbol in option_chain so ticks are routed ──
+            with self._option_chain_lock:
+                current_chain = state.option_chain or {}
+                if full_sym not in current_chain:
+                    current_chain[full_sym] = {"ltp": None, "ask": None, "bid": None}
+                    state.option_chain = current_chain
+
+            # ── Step 2: Add to ws.symbols list ───────────────────────────────
+            updated_syms = list(all_syms)
+            if full_sym not in updated_syms:
+                updated_syms.append(full_sym)
+            state.all_symbols = updated_syms
+
+            if self.ws:
+                self.ws.symbols = updated_syms
+
+            # ── Step 3: Incremental broker subscribe (single symbol) ──────────
+            incremental_ok = False
+            if self.ws and self.ws.is_connected() and self.ws._ws_obj is not None:
+                try:
+                    self.broker.ws_subscribe(self.ws._ws_obj, [full_sym])
+                    incremental_ok = True
+                    logger.info(
+                        f"[ensure_symbol_subscribed] ✅ Incremental subscribe OK: {full_sym}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[ensure_symbol_subscribed] Incremental subscribe failed ({e}); "
+                        "falling back to full subscribe_market_data()"
+                    )
+
+            # ── Step 4: Full fallback if incremental subscribe failed ─────────
+            if not incremental_ok:
+                logger.info("[ensure_symbol_subscribed] Triggering full subscribe_market_data()")
+                self.subscribe_market_data()
+                # Verify the symbol made it in after the rebuild
+                if full_sym not in (state.all_symbols or []):
+                    logger.error(
+                        f"[ensure_symbol_subscribed] {full_sym} still missing after "
+                        "full subscribe_market_data() — live price feed unavailable!"
+                    )
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[ensure_symbol_subscribed] Unexpected error: {e}", exc_info=True)
+            return False
 
     def on_message(self, message: dict) -> None:
         """
@@ -898,8 +998,13 @@ class TradingApp:
                         )
                     except Exception as e:
                         logger.debug(f"CandleStore push/read error for derivative: {e}")
-                        # Fallback: keep raw ltp so state is never stale
-                        state.derivative_current_price = ltp
+                        try:
+                            candle_store_manager.push_tick(derivative, ltp)
+                            store = candle_store_manager.get_store(derivative)
+                            state.derivative_current_price = store.get_current_close() or ltp
+                        except Exception:
+                            # Last resort only — store is completely broken
+                            state.derivative_current_price = ltp
                 return
 
             # ── Option chain tick ──────────────────────────────────────────────
@@ -923,9 +1028,6 @@ class TradingApp:
             atm_put_sym = self.symbol_full(state.put_option)
             atm_call_sym = self.symbol_full(state.call_option)
 
-            # The price we push into the option's candle store is the
-            # trade-relevant price: ask when flat (entry), bid when in position
-            # (exit). This matches what was previously stored directly.
             option_price = ask_price if use_ask else bid_price
 
             if full_symbol == atm_put_sym and state.put_option:
@@ -939,8 +1041,15 @@ class TradingApp:
                     logger.debug(f"✅ PUT price (from store): {old_put} -> {state.put_current_close}")
                 except Exception as e:
                     logger.debug(f"CandleStore push/read error for PUT: {e}")
-                    if option_price is not None:
-                        state.put_current_close = option_price
+                    try:
+                        recovered = candle_store_manager.get_current_price(state.put_option)
+                        if recovered is not None:
+                            state.put_current_close = recovered
+                        elif option_price is not None:
+                            state.put_current_close = option_price
+                    except Exception:
+                        if option_price is not None:
+                            state.put_current_close = option_price
 
             elif full_symbol == atm_call_sym and state.call_option:
                 try:
@@ -953,8 +1062,15 @@ class TradingApp:
                     logger.debug(f"✅ CALL price (from store): {old_call} -> {state.call_current_close}")
                 except Exception as e:
                     logger.debug(f"CandleStore push/read error for CALL: {e}")
-                    if option_price is not None:
-                        state.call_current_close = option_price
+                    try:
+                        recovered = candle_store_manager.get_current_price(state.call_option)
+                        if recovered is not None:
+                            state.call_current_close = recovered
+                        elif option_price is not None:
+                            state.call_current_close = option_price
+                    except Exception:
+                        if option_price is not None:
+                            state.call_current_close = option_price
 
             # ── Sync current_price for open position P&L ──────────────────────
             # current_price is always sourced from the relevant option store,
@@ -1213,23 +1329,12 @@ class TradingApp:
                 except Exception as e:
                     logger.error(f"Failed to fetch derivative history: {e}", exc_info=True)
 
-                # ── Fetch call option ──────────────────────────────────────────
-                try:
-                    call_opt = state.call_option
-                    _fetch_and_resample(call_opt)
-                except TokenExpiredError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Failed to fetch call data: {e}", exc_info=True)
-
-                # ── Fetch put option ───────────────────────────────────────────
-                try:
-                    put_opt = state.put_option
-                    _fetch_and_resample(put_opt)
-                except TokenExpiredError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Failed to fetch put data: {e}", exc_info=True)
+                # NOTE: Option (CE/PE) historical OHLC is intentionally NOT fetched
+                # here via the broker REST API.  Option prices are received
+                # exclusively from live WebSocket ticks (push_tick → CandleStore).
+                # Fetching historical bars for short-lived option contracts is
+                # unreliable (many brokers return sparse/empty data intraday) and
+                # the signal engine only consumes *derivative* (index) OHLC anyway.
 
                 # ── Update last_index_updated from derivative CandleStore ──────
                 deriv_store = candle_store_manager.get_store(derivative)
@@ -1266,31 +1371,15 @@ class TradingApp:
                             logger.error(f"Derivative trend detection failed: {e}", exc_info=True)
                             state.derivative_trend = None
 
-                        try:
-                            call_opt_sym = state.call_option
-                            if call_opt_sym:
-                                call_store = candle_store_manager.get_store(call_opt_sym)
-                                df_call = call_store.resample(target_minutes) if not call_store.is_empty() else None
-                                state.call_trend = self.detector.detect(
-                                    df_call, call_opt_sym, eval_position
-                                )
-                            else:
-                                logger.debug("call_option not yet set — skipping call trend detection")
-                        except Exception as e:
-                            logger.error(f"Call trend detection failed: {e}", exc_info=True)
-
-                        try:
-                            put_opt_sym = state.put_option
-                            if put_opt_sym:
-                                put_store = candle_store_manager.get_store(put_opt_sym)
-                                df_put = put_store.resample(target_minutes) if not put_store.is_empty() else None
-                                state.put_trend = self.detector.detect(
-                                    df_put, put_opt_sym, eval_position
-                                )
-                            else:
-                                logger.debug("put_option not yet set — skipping put trend detection")
-                        except Exception as e:
-                            logger.error(f"Put trend detection failed: {e}", exc_info=True)
+                        # NOTE: call_trend / put_trend detection via option OHLC has
+                        # been removed.  The signal engine is designed exclusively for
+                        # derivative (index) OHLC.  Running it against option candles
+                        # produced by sparse intraday WS ticks yielded noisy, incorrect
+                        # signals and — critically — overwrote state.option_signal_result
+                        # (the authoritative derivative-based signal) with option-based
+                        # results, corrupting trade decisions.
+                        # state.call_trend and state.put_trend remain in TradeState for
+                        # any future display use but are no longer computed here.
 
                         live_position = state.current_position
                         if live_position != eval_position:
@@ -1715,9 +1804,10 @@ class TradingApp:
                         logger.info(f'[MTF] Entry allowed: {summary}')
 
                     try:
+                        self.ensure_symbol_subscribed(state.call_option)
                         success = self.executor.buy_option(option_type=BaseEnums.CALL)
-                        if success and state.call_option not in (state.all_symbols or []):
-                            self.subscribe_market_data()
+                        if success:
+                            self.ensure_symbol_subscribed(state.call_option)
                     except TokenExpiredError:
                         raise
                     except Exception as e:
@@ -1738,9 +1828,10 @@ class TradingApp:
                         logger.info(f'[MTF] Entry allowed: {summary}')
 
                     try:
+                        self.ensure_symbol_subscribed(state.put_option)
                         success = self.executor.buy_option(option_type=BaseEnums.PUT)
-                        if success and state.put_option not in (state.all_symbols or []):
-                            self.subscribe_market_data()
+                        if success:
+                            self.ensure_symbol_subscribed(state.put_option)
                     except TokenExpiredError:
                         raise
                     except Exception as e:

@@ -752,7 +752,68 @@ orders = OrderCRUD()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 9. Generic Key-Value Store  (app_kv table — unchanged)
+# 9. Daily PnL  (daily_pnl table)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class DailyPnLCRUD:
+    """
+    CRUD for the daily_pnl table.
+    Replaces all raw SQL in daily_pnl_widget.py.
+    """
+
+    TABLE = "daily_pnl"
+
+    def get(self, date_str: str, db: DatabaseConnector = None) -> Optional[Dict[str, Any]]:
+        """Return the daily_pnl row for *date_str* (ISO format), or None."""
+        db = db or get_db()
+        row = db.fetchone(
+            f"SELECT realized_pnl, unrealized_pnl, trades_count, winners_count, "
+            f"max_drawdown, peak FROM {self.TABLE} WHERE date = ?",
+            (date_str,),
+        )
+        return _row_to_dict(row) if row else None
+
+    def upsert(
+        self,
+        date_str: str,
+        realized_pnl: float,
+        unrealized_pnl: float,
+        trades_count: int,
+        winners_count: int,
+        max_drawdown: float,
+        peak: float,
+        db: DatabaseConnector = None,
+    ) -> bool:
+        """Insert or update the daily_pnl row for *date_str*."""
+        db = db or get_db()
+        try:
+            db.execute(
+                f"INSERT INTO {self.TABLE} "
+                "(date, realized_pnl, unrealized_pnl, trades_count, "
+                " winners_count, max_drawdown, peak, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                f"ON CONFLICT(date) DO UPDATE SET "
+                "    realized_pnl   = excluded.realized_pnl, "
+                "    unrealized_pnl = excluded.unrealized_pnl, "
+                "    trades_count   = excluded.trades_count, "
+                "    winners_count  = excluded.winners_count, "
+                "    max_drawdown   = excluded.max_drawdown, "
+                "    peak           = excluded.peak, "
+                "    updated_at     = excluded.updated_at",
+                (date_str, realized_pnl, unrealized_pnl, trades_count,
+                 winners_count, max_drawdown, peak, _NOW()),
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[DailyPnLCRUD.upsert] date={date_str!r}: {e}", exc_info=True)
+            return False
+
+
+daily_pnl = DailyPnLCRUD()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. Generic Key-Value Store  (app_kv table — unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class KVCRUD:

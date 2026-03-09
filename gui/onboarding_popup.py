@@ -1427,14 +1427,29 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
             self.derivative_combo.setStyleSheet(self._get_combobox_style())
             instr_layout.addRow(self._create_label("Derivative:"), self.derivative_combo)
 
-            # Lot Size
-            self.lot_size = QSpinBox()
-            self.lot_size.setRange(1, 10000)
-            self.lot_size.setValue(self.defaults.get("lot_size", 50))
-            self.lot_size.setSuffix(" units")
-            self.lot_size.setMinimumHeight(self._sp.INPUT_HEIGHT)
-            self.lot_size.setStyleSheet(self._get_spinbox_style())
-            instr_layout.addRow(self._create_label("Lot Size:"), self.lot_size)
+            # Lot Size — read-only, auto-filled from OptionUtils when derivative changes.
+            # SEBI regulations fix lot sizes per index; they cannot be edited.
+            self.lot_size_display = QLineEdit()
+            self.lot_size_display.setReadOnly(True)
+            self.lot_size_display.setMinimumHeight(self._sp.INPUT_HEIGHT)
+            self.lot_size_display.setToolTip(
+                "Lot size is fixed by SEBI for each index and cannot be edited.\n"
+                "NIFTY=65  BANKNIFTY=30  FINNIFTY=60  MIDCPNIFTY=120  SENSEX=20"
+            )
+            instr_layout.addRow(self._create_label("Lot Size (Auto):"), self.lot_size_display)
+
+            # Wire derivative combo → auto-update lot size display
+            def _update_lot_size_display(index):
+                try:
+                    from Utils.OptionUtils import OptionUtils as _OU
+                    sym = self.derivative_combo.currentText()
+                    lot = _OU.get_lot_size(sym)
+                    self.lot_size_display.setText(f"{lot} units")
+                except Exception:
+                    self.lot_size_display.setText("—")
+
+            self.derivative_combo.currentIndexChanged.connect(_update_lot_size_display)
+            _update_lot_size_display(0)  # set initial value
 
             # Exchange
             self.exchange = QLineEdit()
@@ -1480,18 +1495,31 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
             hist_layout.addRow(self._create_label("Candle Interval:"), self.interval_combo)
 
             # Lookback periods
+            # Lookback — number of strikes from ATM (0 = ATM, 1 = one strike OTM/ITM, …)
             self.call_lookback = QSpinBox()
-            self.call_lookback.setRange(0, 100)
-            self.call_lookback.setValue(self.defaults.get("call_lookback", 5))
+            self.call_lookback.setRange(0, 10)
+            self.call_lookback.setValue(self.defaults.get("call_lookback", 0))
+            self.call_lookback.setSuffix(" strike(s) from ATM")
             self.call_lookback.setMinimumHeight(self._sp.INPUT_HEIGHT)
             self.call_lookback.setStyleSheet(self._get_spinbox_style())
+            self.call_lookback.setToolTip(
+                "Number of strikes away from ATM for the CALL leg.\n"
+                "0 = ATM  |  1 = one strike OTM  |  2 = two strikes OTM  …\n"
+                "Positive values move further OTM (cheaper premium)."
+            )
             hist_layout.addRow(self._create_label("Call Lookback:"), self.call_lookback)
 
             self.put_lookback = QSpinBox()
-            self.put_lookback.setRange(0, 100)
-            self.put_lookback.setValue(self.defaults.get("put_lookback", 5))
+            self.put_lookback.setRange(0, 10)
+            self.put_lookback.setValue(self.defaults.get("put_lookback", 0))
+            self.put_lookback.setSuffix(" strike(s) from ATM")
             self.put_lookback.setMinimumHeight(self._sp.INPUT_HEIGHT)
             self.put_lookback.setStyleSheet(self._get_spinbox_style())
+            self.put_lookback.setToolTip(
+                "Number of strikes away from ATM for the PUT leg.\n"
+                "0 = ATM  |  1 = one strike OTM  |  2 = two strikes OTM  …\n"
+                "Positive values move further OTM (cheaper premium)."
+            )
             hist_layout.addRow(self._create_label("Put Lookback:"), self.put_lookback)
 
             layout.addWidget(hist_group)
@@ -1713,7 +1741,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
         try:
             self.registerField("trading_mode", self.mode_live, "checked")
             self.registerField("derivative", self.derivative_combo, "currentText")
-            self.registerField("lot_size", self.lot_size)
             self.registerField("exchange", self.exchange)
             self.registerField("week", self.week)
             self.registerField("history_interval", self.interval_combo, "currentText")
@@ -1737,8 +1764,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
                 self.live_warning.setStyleSheet(self._get_warning_style())
             if self.derivative_combo:
                 self.derivative_combo.setStyleSheet(self._get_combobox_style())
-            if self.lot_size:
-                self.lot_size.setStyleSheet(self._get_spinbox_style())
             if self.exchange:
                 self.exchange.setStyleSheet(self._get_lineedit_style())
             if self.week:
@@ -1770,7 +1795,7 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
             self.mode_paper = None
             self.mode_live = None
             self.derivative_combo = None
-            self.lot_size = None
+            self.lot_size_display = None
             self.exchange = None
             self.week = None
             self.interval_combo = None
@@ -2936,7 +2961,9 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
                 'trading': {
                     'mode': 'live' if self.preferences_page.mode_live.isChecked() else 'paper',
                     'derivative': self.preferences_page.derivative_combo.currentText(),
-                    'lot_size': self.preferences_page.lot_size.value(),
+                    'lot_size': __import__('Utils.OptionUtils', fromlist=['OptionUtils']).OptionUtils.get_lot_size(
+                        self.preferences_page.derivative_combo.currentText()
+                    ),
                     'exchange': self.preferences_page.exchange.text(),
                     'week': self.preferences_page.week.value(),
                     'history_interval': self.preferences_page.interval_combo.currentText(),
@@ -3036,7 +3063,9 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
         """Save daily trade settings to database."""
         daily = DailyTradeSetting()
         daily.derivative = self.config['trading']['derivative']
-        daily.lot_size = self.config['trading']['lot_size']
+        # lot_size is always derived from OptionUtils — never stored from user input
+        from Utils.OptionUtils import OptionUtils as _OU
+        daily.lot_size = _OU.get_lot_size(daily.derivative, fallback=self.config['trading'].get('lot_size', 0))
         daily.exchange = self.config['trading']['exchange']
         daily.week = self.config['trading']['week']
         daily.history_interval = self.config['trading']['history_interval']
