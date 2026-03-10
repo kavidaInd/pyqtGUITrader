@@ -187,7 +187,7 @@ class TradingApp:
             self.profit_loss_config = ProfitStoplossSetting()
 
             # Re-entry guard settings
-            from gui.reentry.ReEntrySetting import ReEntrySetting
+            from gui.re_entry.ReEntrySetting import ReEntrySetting
             self.reentry_setting = ReEntrySetting()
             self.reentry_setting._apply_to_state()  # push into trade state immediately
 
@@ -404,19 +404,27 @@ class TradingApp:
     def reload_signal_engine(self):
         """Reload signal engine from active strategy (called when strategy changes)"""
         try:
-            if not self.strategy_manager:
-                logger.warning("Cannot reload signal engine: strategy_manager is None")
-                return
+            # BUG FIX: self.strategy_manager is None until initialize() runs, but
+            # the strategy editor can fire strategy_saved at any time (even before
+            # trading is started).  The module-level singleton is always available
+            # and backed by the same database, so use it as a fallback instead of
+            # bailing out with a warning that silently drops the user's save.
+            from strategy.strategy_manager import get_strategy_manager
+            mgr = self.strategy_manager or get_strategy_manager()
 
             if not self.signal_engine:
-                logger.warning(
-                    "Cannot reload signal engine: signal_engine is None. "
-                    "This is expected before initialize() runs."
+                # signal_engine is None before initialize() — the strategy has been
+                # saved to the DB already (strategy_manager.save() succeeded), so
+                # the new timeframe/rules will be picked up automatically when
+                # initialize() runs.  No further action needed here.
+                logger.debug(
+                    "[reload_signal_engine] signal_engine not yet initialised — "
+                    "updated strategy will be loaded on next trading start."
                 )
                 return
 
-            active_slug = self.strategy_manager.get_active_slug()
-            new_config = self.strategy_manager.get_active_engine_config()
+            active_slug = mgr.get_active_slug()
+            new_config = mgr.get_active_engine_config()
             if new_config:
                 self.signal_engine.from_dict(new_config)
                 # Re-link the updated engine into the detector so detect() uses new rules
@@ -428,6 +436,32 @@ class TradingApp:
                     f"{sum(len(v.get('rules', [])) for v in new_config.values() if isinstance(v, dict))} "
                     f"rules loaded"
                 )
+                # BUG FIX: Also sync state.interval with the strategy's (possibly
+                # updated) timeframe.  reload_signal_engine() was previously called
+                # only from _on_strategy_saved, which does NOT call
+                # refresh_settings_live.  Without this block, editing a strategy's
+                # timeframe and saving it updates the engine rules but leaves
+                # state.interval (and therefore candle resampling) on the old value.
+                try:
+                    new_tf = mgr.get_active_timeframe()
+                    if new_tf:
+                        state = state_manager.get_state()
+                        old_interval = state.interval
+                        if old_interval != new_tf:
+                            state.interval = new_tf
+                            # Candle stores must be cleared so they rebuild at the
+                            # new bar-size; stale bars at the old interval would
+                            # produce nonsense signals on the very first tick.
+                            from data.candle_store_manager import candle_store_manager
+                            candle_store_manager.clear()
+                            logger.info(
+                                f"[TradingApp.reload_signal_engine] state.interval updated: "
+                                f"{old_interval!r} → {new_tf!r}; candle stores cleared"
+                            )
+                except Exception as _tf_e:
+                    logger.warning(
+                        f"[TradingApp.reload_signal_engine] Could not sync timeframe: {_tf_e}"
+                    )
             else:
                 logger.warning(
                     f"[TradingApp.reload_signal_engine] No engine config found for "
@@ -947,18 +981,32 @@ class TradingApp:
 
     def _update_unrealized_pnl_from_snapshot(self, snapshot: Dict[str, Any]):
         """
-        Update unrealized P&L using snapshot.
+        Update unrealized P&L and percentage_change every tick.
+
+        FIX: Do NOT gate on positions_hold > 0 — after broker reconciliation,
+        positions_hold is set correctly but there is a window where it may be
+        0 if record_trade_state hasn't run yet. Guard on current_position and
+        buy_price instead, which are set atomically by record_trade_state.
+        Also always update percentage_change so the status bar P&L% card
+        reflects real-time movement, not just the last new-high tick.
         """
         try:
-            if (snapshot.get('current_position') is not None and
-                    snapshot.get('current_buy_price') is not None and
-                    snapshot.get('current_price') is not None and
-                    snapshot.get('positions_hold', 0) > 0):
-                unrealized = (snapshot['current_price'] - snapshot['current_buy_price']) * snapshot['positions_hold']
+            current_position = snapshot.get('current_position')
+            buy_price = snapshot.get('current_buy_price')
+            current_price = snapshot.get('current_price')
 
-                # Update state directly (small, atomic operation)
-                state = state_manager.get_state()
-                state.current_pnl = unrealized
+            if current_position is None or buy_price is None or current_price is None:
+                return
+            if buy_price == 0:
+                return
+
+            positions_hold = snapshot.get('positions_hold', 0) or 0
+            unrealized = (current_price - buy_price) * positions_hold
+            pct_change = round(((current_price - buy_price) / buy_price) * 100, 4)
+
+            state = state_manager.get_state()
+            state.current_pnl = unrealized
+            state.percentage_change = pct_change
         except Exception as e:
             logger.error(f"Error updating unrealized P&L: {e}", exc_info=True)
 
@@ -981,7 +1029,12 @@ class TradingApp:
         try:
             state = state_manager.get_state()
             self._reentry_exit_time = datetime.now()
-            self._reentry_exit_bars = 0
+            # BUG FIX (off-by-one): The bar-close event that triggers an SL/TP
+            # exit also fires _on_bar_closed_reentry_tick on the same iteration,
+            # incrementing the counter from 0 to 1 before a single full wait-bar
+            # has actually elapsed.  Starting at -1 neutralises that spurious
+            # increment so bar #1 is the first COMPLETE bar after the exit bar.
+            self._reentry_exit_bars = -1
             self._reentry_signal_seen = False
             # Exit direction
             self._reentry_exit_direction = getattr(state, 'previous_position', None)
@@ -1015,17 +1068,20 @@ class TradingApp:
             if self._reentry_exit_time is None:
                 return  # no exit has occurred yet this session
             self._reentry_exit_bars += 1
-
-            # Check if a new signal fired this bar
-            if not self._reentry_signal_seen:
-                state = state_manager.get_state()
-                signal = getattr(state, 'option_signal', None)
-                if self._reentry_exit_direction == BaseEnums.CALL and signal == 'BUY_CALL':
-                    self._reentry_signal_seen = True
-                    logger.debug("[ReEntry] Fresh BUY_CALL signal seen after exit — re-entry eligible")
-                elif self._reentry_exit_direction == BaseEnums.PUT and signal == 'BUY_PUT':
-                    self._reentry_signal_seen = True
-                    logger.debug("[ReEntry] Fresh BUY_PUT signal seen after exit — re-entry eligible")
+            logger.debug(
+                f"[ReEntry] Bar #{self._reentry_exit_bars} elapsed since exit "
+                f"(reason={self._reentry_exit_reason!r})"
+            )
+            # BUG FIX: Do NOT check option_signal here for fresh-signal detection.
+            # _on_bar_closed_reentry_tick() runs BEFORE the async history fetch
+            # (_fetch_history_and_detect) has recomputed indicators for the new
+            # bar.  state.option_signal still holds the STALE result from the
+            # previous bar, so marking _reentry_signal_seen=True here would fire
+            # immediately on bar N+1 using the pre-exit signal — defeating the
+            # 'require fresh signal' guard entirely.
+            # The fresh-signal check now lives in _check_reentry_allowed, where
+            # it is evaluated only after _fetch_history_and_detect has produced
+            # a genuinely new option_signal value.
         except Exception as e:
             logger.error(f"[_on_bar_closed_reentry_tick] {e}", exc_info=True)
 
@@ -1083,12 +1139,29 @@ class TradingApp:
                 return False
 
             # ── Fresh signal requirement ──────────────────────────────────────
+            # BUG FIX: Check option_signal HERE (after _fetch_history_and_detect
+            # has run) rather than in _on_bar_closed_reentry_tick (where it was
+            # still the stale pre-exit value).  This guarantees we only mark the
+            # signal as fresh when the post-exit computation produced it.
             require_new = getattr(state, 'reentry_require_new_signal', True)
-            if require_new and not self._reentry_signal_seen:
-                logger.info(
-                    "[ReEntry] Waiting for fresh signal after exit — current signal is stale — blocking"
-                )
-                return False
+            if require_new:
+                # Mark seen if the fresh (just-computed) signal matches the
+                # exit direction and the minimum bar wait has already elapsed.
+                if not self._reentry_signal_seen:
+                    live_signal = getattr(state, 'option_signal', None)
+                    if (self._reentry_exit_direction == BaseEnums.CALL
+                            and live_signal == 'BUY_CALL'):
+                        self._reentry_signal_seen = True
+                        logger.debug("[ReEntry] Fresh BUY_CALL confirmed at entry check")
+                    elif (self._reentry_exit_direction == BaseEnums.PUT
+                            and live_signal == 'BUY_PUT'):
+                        self._reentry_signal_seen = True
+                        logger.debug("[ReEntry] Fresh BUY_PUT confirmed at entry check")
+                if not self._reentry_signal_seen:
+                    logger.info(
+                        "[ReEntry] Waiting for fresh signal after exit — current signal is stale — blocking"
+                    )
+                    return False
 
             # ── Price filter ──────────────────────────────────────────────────
             price_filter = getattr(state, 'reentry_price_filter_enabled', True)
@@ -1110,9 +1183,16 @@ class TradingApp:
                 f"[ReEntry] ✅ Re-entry ALLOWED — bars waited: {self._reentry_exit_bars}, "
                 f"reason: {self._reentry_exit_reason}, direction: {direction!r}"
             )
-            # Reset exit state so the NEXT exit starts a fresh count
+            # Reset ALL exit-context fields so the NEXT exit starts a completely
+            # fresh count.  Previously only 3 of the 6 fields were cleared, leaving
+            # _reentry_exit_reason, _reentry_exit_price, and _reentry_exit_direction
+            # stale -- which could incorrectly influence the guard after the new
+            # position closes.
             self._reentry_exit_time = None
             self._reentry_exit_bars = 0
+            self._reentry_exit_reason = "default"
+            self._reentry_exit_price = 0.0
+            self._reentry_exit_direction = None
             self._reentry_signal_seen = False
             return True
 
@@ -1254,7 +1334,19 @@ class TradingApp:
             # ── Sync current_price for open position P&L ──────────────────────
             # current_price is always sourced from the relevant option store,
             # already updated above.
-            if state.current_position:
+            #
+            # BUG FIX: Do NOT overwrite current_price while the trade is still
+            # unconfirmed.  record_trade_state() sets current_price = fill_price
+            # (e.g. 41.75 mid-price).  The very first WS tick that arrives after
+            # entry often carries the pre-entry ask/LTP (e.g. 83.45) still queued
+            # in the candle store, because the store hasn't received a post-fill
+            # tick yet.  Writing that stale value here would make the trailing-SL
+            # logic think the position is already +99 % in profit, immediately
+            # activating the trail and then hitting TP — all within 200 ms of
+            # entry.  We hold off until current_trade_confirmed=True, at which
+            # point the broker has acknowledged the fill and the WS stream has had
+            # at least one clean post-fill tick.
+            if state.current_position and state.current_trade_confirmed:
                 cp = state.current_position
                 if cp == BaseEnums.CALL and state.call_current_close is not None:
                     old_current = state.current_price
@@ -2256,7 +2348,12 @@ class TradingApp:
                         f"[apply_settings_to_state] Could not read strategy timeframe "
                         f"(using trade_config value): {_tf_e}"
                     )
-                state.lower_percentage = safe_getattr(self.trade_config, "lower_percentage", 0)
+                # lower_percentage is stored in DailyTradeSetting as a whole-number
+                # percentage (e.g. 5 = 5%).  The engine (order_executor,
+                # position_monitor) expects it as a decimal fraction (e.g. 0.05 = 5%).
+                # Divide by 100 here so downstream code always receives a fraction.
+                _raw_lower = float(safe_getattr(self.trade_config, "lower_percentage", 0) or 0)
+                state.lower_percentage = _raw_lower / 100.0
                 state.cancel_after = safe_getattr(self.trade_config, "cancel_after", 0)
                 state.sideway_zone_trade = safe_getattr(self.trade_config, "sideway_zone_trade", False)
 

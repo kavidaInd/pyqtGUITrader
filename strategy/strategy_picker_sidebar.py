@@ -43,12 +43,12 @@ SIGNAL_GROUPS = ["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "HOLD"]
 
 # Per-signal display metadata
 _SIG = {
-    "BUY_CALL":  dict(short="B↑",  label="BUY CALL",  attr="GREEN_BRIGHT"),
-    "BUY_PUT":   dict(short="B↓",  label="BUY PUT",   attr="BLUE"),
-    "EXIT_CALL": dict(short="X↑",  label="EXIT CALL", attr="RED_BRIGHT"),
-    "EXIT_PUT":  dict(short="X↓",  label="EXIT PUT",  attr="ORANGE"),
-    "HOLD":      dict(short="HLD", label="HOLD",      attr="YELLOW_BRIGHT"),
-    "WAIT":      dict(short="---", label="WAIT",      attr="TEXT_DISABLED"),
+    "BUY_CALL": dict(short="B↑", label="BUY CALL", attr="GREEN_BRIGHT"),
+    "BUY_PUT": dict(short="B↓", label="BUY PUT", attr="BLUE"),
+    "EXIT_CALL": dict(short="X↑", label="EXIT CALL", attr="RED_BRIGHT"),
+    "EXIT_PUT": dict(short="X↓", label="EXIT PUT", attr="ORANGE"),
+    "HOLD": dict(short="HLD", label="HOLD", attr="YELLOW_BRIGHT"),
+    "WAIT": dict(short="---", label="WAIT", attr="TEXT_DISABLED"),
 }
 
 
@@ -57,18 +57,27 @@ _SIG = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _p():  return theme_manager.palette
+
+
 def _ty(): return theme_manager.typography
+
+
 def _sp(): return theme_manager.spacing
+
+
 def _tok(attr: str, fallback: str = "#888") -> str:
     return getattr(theme_manager.palette, attr, fallback)
 
 
 class _TM:
     """Mixin: shortcuts to current theme tokens."""
+
     @property
     def _c(self):  return theme_manager.palette
+
     @property
     def _ty(self): return theme_manager.typography
+
     @property
     def _sp(self): return theme_manager.spacing
 
@@ -85,7 +94,7 @@ class _LiveDot(QWidget):
         self.setFixedSize(10, 10)
         self._color = color
         self._alpha = 1.0
-        self._dir   = -1
+        self._dir = -1
         t = QTimer(self)
         t.timeout.connect(self._step)
         t.start(35)
@@ -124,9 +133,9 @@ class _ConfCell(QWidget, _TM):
     def __init__(self, signal: str, parent=None):
         super().__init__(parent)
         self.signal = signal
-        self._meta  = _SIG.get(signal, _SIG["WAIT"])
-        self._conf  = 0.0
-        self._thr   = 0.6
+        self._meta = _SIG.get(signal, _SIG["WAIT"])
+        self._conf = 0.0
+        self._thr = 0.6
         self._build()
         self._restyle()
         try:
@@ -170,8 +179,8 @@ class _ConfCell(QWidget, _TM):
         root.addWidget(self._label_lbl)
 
     def _restyle(self, _=None):
-        c   = self._c
-        ty  = self._ty
+        c = self._c
+        ty = self._ty
         col = _tok(self._meta["attr"])
 
         self._code_lbl.setStyleSheet(f"""
@@ -226,7 +235,7 @@ class _ConfCell(QWidget, _TM):
     def set_confidence(self, conf: float, threshold: float = 0.6):
         try:
             self._conf = conf
-            self._thr  = threshold
+            self._thr = threshold
             pct = int(conf * 100)
             self._bar.setValue(pct)
             self._pct_lbl.setText(f"{pct}%")
@@ -264,10 +273,10 @@ class _HeroStrip(QFrame, _TM):
         super().__init__(parent)
         self.setObjectName("heroStrip")
         self._dot = None
-        self._name_lbl      = None
-        self._desc_lbl      = None
-        self._sig_lbl       = None
-        self._meta_labels   = {}
+        self._name_lbl = None
+        self._desc_lbl = None
+        self._sig_lbl = None
+        self._meta_labels = {}
         self._build()
         self._restyle()
         try:
@@ -372,7 +381,7 @@ class _HeroStrip(QFrame, _TM):
         root.addLayout(meta)
 
     def _restyle(self, _=None):
-        c  = self._c
+        c = self._c
         ty = self._ty
         sp = self._sp
         accent = _tok("YELLOW_BRIGHT")
@@ -486,16 +495,16 @@ class _HeroStrip(QFrame, _TM):
                 len((engine.get(s) or {}).get("rules", []))
                 for s in SIGNAL_GROUPS
             )
-            tf  = (strategy.get("timeframe", "1h") or "1h").upper()
+            tf = (strategy.get("timeframe", "1h") or "1h").upper()
             upd = strategy.get("updated_at", "—")
             if upd and "T" in upd:
                 upd = upd.replace("T", " ")[:10]
 
             vals = {
-                "RULES":     str(total_rules),
+                "RULES": str(total_rules),
                 "TIMEFRAME": tf,
-                "CONF":      f"{int(threshold * 100)}%",
-                "SAVED":     upd or "—",
+                "CONF": f"{int(threshold * 100)}%",
+                "SAVED": upd or "—",
             }
             for key, val in vals.items():
                 lbl = self._meta_labels.get(key)
@@ -532,7 +541,7 @@ class _StratRow(QWidget, _TM):
         lay.setSpacing(0)
         self.setStyleSheet("background: transparent;")
 
-        c  = self._c
+        c = self._c
         ty = self._ty
         accent = _tok("YELLOW_BRIGHT")
 
@@ -609,7 +618,7 @@ class StrategyPickerSidebar(QDialog, _TM):
     440 × 700–920 px. Draggable title bar. 2-s live refresh.
     """
 
-    strategy_activated    = pyqtSignal(str)
+    strategy_activated = pyqtSignal(str)
     open_editor_requested = pyqtSignal()
 
     # ── Init ──────────────────────────────────────────────────────────────────
@@ -625,7 +634,7 @@ class StrategyPickerSidebar(QDialog, _TM):
             self.setMaximumHeight(940)
 
             self.trading_app = trading_app
-            self._drag_pos   = None
+            self._drag_pos = None
 
             try:
                 theme_manager.theme_changed.connect(self.apply_theme)
@@ -648,21 +657,21 @@ class StrategyPickerSidebar(QDialog, _TM):
             self._create_error_dialog(parent)
 
     def _safe_defaults_init(self):
-        self.trading_app          = None
-        self._current_signal      = "WAIT"
-        self._current_threshold   = 0.6
+        self.trading_app = None
+        self._current_signal = "WAIT"
+        self._current_threshold = 0.6
         self._conf_cells: Dict[str, _ConfCell] = {}
-        self._timer               = None
-        self._hero                = None
-        self._list                = None
-        self._activate_btn        = None
-        self._status_lbl          = None
-        self._count_lbl           = None
-        self._last_snapshot       = {}
-        self._last_snapshot_time  = None
+        self._timer = None
+        self._hero = None
+        self._list = None
+        self._activate_btn = None
+        self._status_lbl = None
+        self._count_lbl = None
+        self._last_snapshot = {}
+        self._last_snapshot_time = None
         self._snapshot_cache_secs = 0.1
-        self._drag_pos            = None
-        self._outer               = None
+        self._drag_pos = None
+        self._outer = None
 
     # ── Error fallback ────────────────────────────────────────────────────────
 
@@ -725,8 +734,8 @@ class StrategyPickerSidebar(QDialog, _TM):
         bar = QWidget()
         bar.setObjectName("titleBar")
         bar.setFixedHeight(44)
-        bar.mousePressEvent   = self._drag_start
-        bar.mouseMoveEvent    = self._drag_move
+        bar.mousePressEvent = self._drag_start
+        bar.mouseMoveEvent = self._drag_move
         bar.mouseReleaseEvent = lambda e: setattr(self, "_drag_pos", None)
 
         lay = QHBoxLayout(bar)
@@ -1000,7 +1009,7 @@ class StrategyPickerSidebar(QDialog, _TM):
         """)
 
     def _restyle_list(self):
-        c  = _p()
+        c = _p()
         ty = _ty()
         accent = _tok("YELLOW_BRIGHT")
         self._list.setStyleSheet(f"""
@@ -1068,15 +1077,15 @@ class StrategyPickerSidebar(QDialog, _TM):
             self._list.blockSignals(True)
             self._list.clear()
 
-            strategies  = strategy_manager.list_strategies()
+            strategies = strategy_manager.list_strategies()
             active_slug = strategy_manager.get_active_slug()
 
             for s in strategies:
                 try:
-                    slug      = s.get("slug", "")
+                    slug = s.get("slug", "")
                     is_active = slug == active_slug
-                    full      = strategy_manager.get(slug) or {}
-                    engine    = full.get("engine", {}) or {}
+                    full = strategy_manager.get(slug) or {}
+                    engine = full.get("engine", {}) or {}
                     rule_count = sum(
                         len((engine.get(sig) or {}).get("rules", []))
                         for sig in SIGNAL_GROUPS
@@ -1130,19 +1139,19 @@ class StrategyPickerSidebar(QDialog, _TM):
     def _update_active_display(self):
         try:
             position_snap = state_manager.get_position_snapshot()
-            signal_value  = position_snap.get("option_signal", "WAIT")
+            signal_value = position_snap.get("option_signal", "WAIT")
 
             try:
                 signal_snap = state_manager.get_state().get_option_signal_snapshot()
-                confidence  = signal_snap.get("confidence", {})
-                threshold   = signal_snap.get("threshold", 0.6)
+                confidence = signal_snap.get("confidence", {})
+                threshold = signal_snap.get("threshold", 0.6)
             except Exception:
                 confidence = {}
-                threshold  = 0.6
+                threshold = 0.6
 
             active = strategy_manager.get_active()
             if active is not None:
-                engine    = active.get("engine", {}) or {}
+                engine = active.get("engine", {}) or {}
                 threshold = float(engine.get("min_confidence", threshold))
 
                 if self._hero is not None:
@@ -1188,7 +1197,7 @@ class StrategyPickerSidebar(QDialog, _TM):
             def _do():
                 try:
                     ok = strategy_manager.activate(slug)
-                    m  = "_on_activation_success" if ok else "_on_activation_failure"
+                    m = "_on_activation_success" if ok else "_on_activation_failure"
                     QMetaObject.invokeMethod(
                         self, m, Qt.QueuedConnection, Q_ARG(str, slug)
                     )
@@ -1252,13 +1261,13 @@ class StrategyPickerSidebar(QDialog, _TM):
         try:
             if self._timer and self._timer.isActive():
                 self._timer.stop()
-            self._timer            = None
-            self.trading_app       = None
-            self._hero             = None
-            self._list             = None
-            self._activate_btn     = None
-            self._status_lbl       = None
-            self._last_snapshot    = {}
+            self._timer = None
+            self.trading_app = None
+            self._hero = None
+            self._list = None
+            self._activate_btn = None
+            self._status_lbl = None
+            self._last_snapshot = {}
             self._last_snapshot_time = None
             self._conf_cells.clear()
         except Exception as e:

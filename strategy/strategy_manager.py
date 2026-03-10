@@ -207,8 +207,16 @@ class StrategyManager:
 
                 # Validate timeframe — also keep engine["timeframe"] in sync so
                 # strategy_crud.save() stores the canonical value in the engine blob.
+                # BUG FIX: use an explicit None/empty-string check instead of `or`.
+                # Previously  `data.get("timeframe") or engine.get("timeframe", "1h")`
+                # would silently fall through to the stale engine value whenever the
+                # top-level "timeframe" key was an empty string, causing the saved
+                # timeframe to be the OLD engine value rather than what the user set.
                 valid_tfs = {"1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"}
-                tf = data.get("timeframe") or data.get("engine", {}).get("timeframe", "1h")
+                _top_tf = data.get("timeframe")
+                _eng_tf = data.get("engine", {}).get("timeframe")
+                tf = (_top_tf if _top_tf not in (None, "") else
+                      _eng_tf  if _eng_tf  not in (None, "") else "1h")
                 if tf not in valid_tfs:
                     logger.warning(f"[save] Unknown timeframe '{tf}', defaulting to '1h'")
                     tf = "1h"

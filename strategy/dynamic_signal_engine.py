@@ -206,10 +206,14 @@ MULTI_COLUMN_INDICATORS = [
 # Indicator categories for column requirements
 NEEDS_CLOSE_ONLY = ['rsi', 'ema', 'sma', 'wma', 'tema', 'dema', 'hma', 'zlma',
                     'roc', 'mom', 'willr', 'linreg', 'slope', 'kama', 'rvi', 'trix']
-NEEDS_HIGH_LOW = ['atr', 'natr', 'true_range', 'massi']
+NEEDS_HIGH_LOW = ['massi']  # massi only needs high+low
+# atr/natr/true_range require high+low+close (NOT just high+low as previously set)
 NEEDS_HIGH_LOW_CLOSE = ['adx', 'supertrend', 'kc', 'donchian', 'stoch', 'stochrsi',
-                        'aroon', 'dm', 'uo', 'ao', 'psar', 'vwap']
-NEEDS_VOLUME = ['obv', 'ad', 'adosc', 'cmf', 'efi', 'eom', 'kvo', 'mfi', 'nvi', 'pvi', 'pvt']
+                        'aroon', 'dm', 'uo', 'ao', 'psar',
+                        'atr', 'natr', 'true_range']
+# vwap requires high, low, close AND volume
+NEEDS_VOLUME = ['obv', 'ad', 'adosc', 'cmf', 'efi', 'eom', 'kvo', 'mfi', 'nvi', 'pvi', 'pvt',
+                'vwap']
 
 
 def _get_required_columns(indicator: str) -> List[str]:
@@ -233,7 +237,8 @@ def _get_required_columns(indicator: str) -> List[str]:
     elif indicator_lower in NEEDS_VOLUME:
         if indicator_lower == 'obv':
             return ['close', 'volume']
-        elif indicator_lower in ['ad', 'adosc']:
+        elif indicator_lower in ['ad', 'adosc', 'vwap']:
+            # vwap(high, low, close, volume) — all four OHLCV columns required
             return ['high', 'low', 'close', 'volume']
         else:
             return ['close', 'volume']
@@ -757,6 +762,64 @@ def _compute_indicator_normalised(
         method = safe_getattr(ta, ind_name, None)
         if not method:
             return {}
+
+        # ── VWAP special handling ─────────────────────────────────────────────
+        # pandas_ta.vwap() calls index.to_period() internally, which requires a
+        # DatetimeIndex.  The candle DataFrames produced by CandleStore always
+        # have a plain RangeIndex (time is a regular column after reset_index()).
+        # Fix: temporarily promote the "time" column to a tz-aware DatetimeIndex,
+        # run vwap on that frame, then map the result back to the original
+        # RangeIndex so downstream cache/reindex logic works unchanged.
+        if indicator.lower() == "vwap":
+            if "time" in df.columns:
+                try:
+                    # pandas_ta.vwap() calls index.to_period(anchor) which:
+                    #   (a) requires a DatetimeIndex (not RangeIndex), AND
+                    #   (b) requires the index to be tz-NAIVE — to_period() on a
+                    #       tz-aware index raises "will drop timezone information".
+                    # Fix: parse the "time" column, strip any timezone, then use
+                    # that tz-naive DatetimeIndex only for the vwap call.
+                    # The result is mapped back to the original RangeIndex so
+                    # all downstream cache/reindex logic stays unchanged.
+                    _time_col = pd.to_datetime(df["time"])
+                    # Strip timezone → tz-naive DatetimeIndex for to_period()
+                    if _time_col.dt.tz is not None:
+                        _time_col = _time_col.dt.tz_localize(None)
+
+                    _df_dt = df.copy()
+                    _df_dt.index = pd.DatetimeIndex(_time_col)
+                    _df_dt.index.name = "time"
+
+                    _vwap_kwargs: Dict[str, Any] = {}
+                    for col in required_cols:
+                        if col in _df_dt.columns:
+                            _vwap_kwargs[col] = _df_dt[col]
+                    _vwap_kwargs.update(params)
+                    _vwap_kwargs = {k: v for k, v in _vwap_kwargs.items() if v is not None}
+
+                    _result = method(**_vwap_kwargs)
+                    if _result is None:
+                        return {}
+
+                    # Map result (tz-naive DatetimeIndex) back to original RangeIndex
+                    _normalised = _normalise_indicator_result(_result, indicator, params)
+                    return {
+                        k: pd.Series(s.values, index=df.index)
+                        for k, s in _normalised.items()
+                        if not (hasattr(s, "isna") and s.isna().all())
+                    }
+                except Exception as _vwap_e:
+                    logger.warning(
+                        f"[_compute_indicator_normalised] vwap failed: {_vwap_e}"
+                    )
+                    return {}
+            else:
+                logger.warning(
+                    "[_compute_indicator_normalised] vwap requires a 'time' "
+                    "column — not found in DataFrame"
+                )
+                return {}
+        # ── end VWAP special handling ─────────────────────────────────────────
 
         kwargs: Dict[str, Any] = {}
         for col in required_cols:
@@ -1579,6 +1642,24 @@ class DynamicSignalEngine:
             passed_weight = 0.0
             rules_evaluated = 0
 
+            # FIX: separate the AND/OR short-circuit (for group_result) from
+            # the confidence pass (which must see ALL rules).
+            #
+            # PROBLEM with the old approach:
+            #   AND short-circuits after the first False rule. The remaining
+            #   rules were never evaluated, yet all_weights_total already
+            #   included their weights in the denominator. This caused
+            #   artificially crushed confidence — e.g. 3/12 rules passed →
+            #   short-circuit fires → confidence = 5.5/20.3 = 27% even though
+            #   the other 8 rules might all be passing.
+            #
+            # FIX: evaluate EVERY rule for confidence tracking regardless of
+            # AND/OR outcome. group_result still uses correct AND/OR logic.
+            # Confidence = (weight of truly-passed rules) / all_weights_total.
+            # This gives a meaningful "how close are we to a signal" reading.
+            _and_failed = False   # tracks whether AND logic has already failed
+            _or_passed  = False   # tracks whether OR logic has already passed
+
             for rule in rules:
                 try:
                     weight = float(rule.get("weight", 1.0))
@@ -1624,16 +1705,16 @@ class DynamicSignalEngine:
                     }
                     rule_results.append(entry)
 
-                    # Update group result based on logic
+                    # Update group_result using AND/OR logic (no early exit —
+                    # we continue the loop so confidence sees every rule).
                     if logic == "AND":
-                        group_result = group_result and result
+                        if not result:
+                            _and_failed = True
+                        group_result = not _and_failed
                     else:  # OR logic
-                        group_result = group_result or result
-
-                    if logic == "AND" and not group_result:
-                        break
-                    if logic == "OR" and group_result:
-                        break
+                        if result:
+                            _or_passed = True
+                        group_result = _or_passed
 
                 except Exception as e:
                     logger.error(f"Rule eval error: {e}", exc_info=True)
@@ -1650,12 +1731,14 @@ class DynamicSignalEngine:
                     })
                     # For AND logic, any error means group doesn't fire
                     if logic == "AND":
+                        _and_failed = True
                         group_result = False
 
-            # Confidence = rules-passed weight / ALL rules weight.
-            # Using all_weights_total (not just evaluated) means that an
-            # AND group that short-circuited after 1 of 3 rules won't show
-            # artificially high confidence (e.g. 1/1 instead of 1/3).
+            # Confidence = weight of rules that ACTUALLY passed / total weight of
+            # ALL rules.  Because we now evaluate every rule (no early break),
+            # this is a true measure of "how aligned is the market with this signal".
+            # A score of 85% means 85% of the signal's conviction weight is confirmed,
+            # even if the group didn't fire (AND logic failed on one rule).
             if rules_evaluated > 0:
                 confidence = passed_weight / all_weights_total if all_weights_total > 0 else 0.0
             else:

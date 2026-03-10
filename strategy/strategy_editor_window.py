@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+from strategy.strategy_presets import get_preset_names, get_preset_rules
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -1820,8 +1821,15 @@ class RuleRowWidget(QFrame):
                     side_data = {"type": "indicator", "indicator": ind}
                     if shift:
                         side_data["shift"] = shift
-                    if sub_cb.isVisible() and sub_cb.currentData(Qt.UserRole):
-                        side_data["sub_col"] = sub_cb.currentData(Qt.UserRole)
+                    # FIX: save sub_col whenever the combo has items (i.e. it is a
+                    # multi-output indicator) regardless of its current visibility.
+                    # The combo is temporarily hidden during _load() while items are
+                    # being populated, so gating on isVisible() caused sub_col to be
+                    # silently dropped on every save triggered during load.
+                    sub_has_items = sub_cb.count() > 0
+                    sub_data = sub_cb.currentData(Qt.UserRole) if sub_has_items else None
+                    if sub_data:
+                        side_data["sub_col"] = sub_data
                     # Collect indicator parameter values from the dynamic params panel
                     pw = getattr(self, f"{side}_params_widgets", {})
                     if pw:
@@ -2025,9 +2033,14 @@ class SignalGroupPanel(QWidget):
         add_btn.clicked.connect(lambda: self.add_rule())
         actions_lay.addWidget(add_btn)
 
-        # Preset loader
-        self.preset_cb = styled_combo(["📋 Load Preset…", "RSI Overbought", "EMA Cross", "MACD Signal"])
-        self.preset_cb.setFixedWidth(200)
+        # Preset loader — populated from strategy_presets.PRESETS[signal_key]
+        # BUG FIX: was hardcoded with 3 stub names and never connected to a
+        # handler, so clicking did nothing and real preset names never showed.
+        _preset_names = get_preset_names(self._signal_key)
+        self.preset_cb = styled_combo(["📋 Load Preset…"] + _preset_names)
+        self.preset_cb.setFixedWidth(220)
+        self.preset_cb.setToolTip("Select a preset to append its rules")
+        self.preset_cb.currentIndexChanged.connect(self._on_preset_selected)
         actions_lay.addWidget(self.preset_cb)
 
         actions_lay.addStretch()
@@ -2057,6 +2070,37 @@ class SignalGroupPanel(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             QScrollBar:horizontal {{ height: 0; }}
         """)
+
+    def _on_preset_selected(self, index: int):
+        """
+        BUG FIX: Previously missing — preset combobox had no connected handler.
+        Appends all rules from the selected preset into this signal group.
+        """
+        if index <= 0:  # index 0 is the placeholder '📋 Load Preset…'
+            return
+        try:
+            preset_name = self.preset_cb.currentText()
+            rules = get_preset_rules(self._signal_key, preset_name)
+            if not rules:
+                logger.warning(
+                    f"[SignalGroupPanel] Preset '{preset_name}' for "
+                    f"'{self._signal_key}' returned no rules"
+                )
+                return
+            for rule in rules:
+                self.add_rule(rule)
+            logger.info(
+                f"[SignalGroupPanel] Preset '{preset_name}' inserted "
+                f"{len(rules)} rule(s) into {self._signal_key}"
+            )
+        except Exception as e:
+            logger.error(f"[SignalGroupPanel._on_preset_selected] {e}", exc_info=True)
+        finally:
+            # Reset dropdown back to placeholder so the same preset can be
+            # selected again without needing to pick another item first.
+            self.preset_cb.blockSignals(True)
+            self.preset_cb.setCurrentIndex(0)
+            self.preset_cb.blockSignals(False)
 
     def add_rule(self, rule: Dict = None):
         """Append a new rule row."""
@@ -2919,9 +2963,16 @@ class StrategyEditorWindow(QDialog):
 
     Signals:
         strategy_activated(str) — emitted when user activates a strategy
+        strategy_saved(str)     — emitted when any strategy is saved; slug is
+                                  the saved strategy's slug.  TradingGUI listens
+                                  to this and calls reload_signal_engine() when
+                                  the saved slug matches the active strategy so
+                                  evaluation updates immediately without needing
+                                  to re-activate or restart.
     """
 
     strategy_activated = pyqtSignal(str)
+    strategy_saved     = pyqtSignal(str)   # NEW: fires on every successful save
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Window)
@@ -3454,6 +3505,9 @@ class StrategyEditorWindow(QDialog):
                 self._strategy_name_lbl.setText(name)
                 self._list_panel.refresh()
                 self._flash_status("✓ Saved")
+                # Notify TradingGUI so it can hot-reload the signal engine when
+                # this slug is the currently active strategy.
+                self.strategy_saved.emit(self._current_slug)
                 return True
             else:
                 self._flash_status("✗ Save failed")

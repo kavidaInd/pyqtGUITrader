@@ -262,6 +262,22 @@ class PositionMonitor:
                 logger.info("Cannot update trailing SL/TP: Missing buy/current price in snapshot.")
                 return
 
+            # ── Sanity-check: guard against stale pre-entry prices ─────────────
+            # The first WS tick after an order fills can carry the pre-entry
+            # ask/LTP still queued in the candle store (e.g. option ask=83.45
+            # while fill was at mid-price 41.75).  If current_price is more than
+            # 3× the fill price the snapshot is stale — skip this tick entirely
+            # rather than activating trailing or recording P&L at a nonsense level.
+            # The correct price will arrive on the next genuine post-fill tick.
+            _STALE_PRICE_MULTIPLIER = 3.0
+            if current_price > buy_price * _STALE_PRICE_MULTIPLIER:
+                logger.warning(
+                    f"[trailing] Skipping tick — current_price {current_price:.2f} is "
+                    f">{_STALE_PRICE_MULTIPLIER:.0f}× buy_price {buy_price:.2f}. "
+                    f"Likely stale pre-entry price in snapshot. Will retry next tick."
+                )
+                return
+
             # ── All mutations go to live state ─────────────────────────────────
             state = state_manager.get_state()
 
@@ -441,6 +457,18 @@ class PositionMonitor:
 
             order_list = safe_getattr(state, "orders", [])
             if not order_list:
+                # FIX: If state.orders is empty but current_position is set, it means
+                # _reconcile_with_broker has not yet recovered the fill (broker still
+                # settling).  Do NOT auto-confirm here — that would immediately mark
+                # the position confirmed with no order record, bypassing all SL/TP
+                # tracking.  Instead, warn and return so the next tick retries.
+                # Only auto-confirm if there genuinely is no open position (defensive).
+                if safe_getattr(state, "current_position", None) is not None:
+                    logger.warning(
+                        "[confirm_trade] No orders in state but position is open — "
+                        "broker fill may still be settling. Deferring confirmation."
+                    )
+                    return
                 logger.info("No orders to confirm.")
                 state.current_trade_confirmed = True
                 return
@@ -526,8 +554,11 @@ class PositionMonitor:
             trade_start_time = safe_getattr(state, "current_trade_started_time", now) or now
             cancel_after = safe_getattr(state, "cancel_after", 5)
             deadline = trade_start_time + timedelta(seconds=cancel_after)
-            lower_per = safe_getattr(state, "lower_percentage", 0)
-            drift_threshold = 3 + (lower_per * 100)  # convert fraction → percentage points
+            # lower_percentage is stored as a decimal fraction (e.g. 0.01 = 1%).
+            # Multiply by 100 to get percentage points, then add a 3% base buffer
+            # so minor market fluctuation never triggers a spurious cancel.
+            lower_per = float(safe_getattr(state, "lower_percentage", 0) or 0)
+            drift_threshold = 3.0 + (lower_per * 100.0)  # e.g. 0.01 → 1% + 3% = 4%
 
             if now > deadline or abs(change) > drift_threshold:
                 logger.warning(

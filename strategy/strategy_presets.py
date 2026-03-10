@@ -895,6 +895,111 @@ PRESETS: Dict[str, List[Dict]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# ⚡ 1-MINUTE SCALPING PRESETS
+# ---------------------------------------------------------------------------
+# All indicators tuned for 1-min bars. Parameters chosen to be highly
+# responsive:
+#   EMA  9/21     — micro-trend (responds in seconds)
+#   RSI  7        — twice as fast as the standard RSI-14
+#   MACD 5/13/3   — much faster than 12/26/9; picks up 1-min impulses
+#   Stoch 5/3/3   — aggressive stochastic for intrabar momentum
+#   SuperTrend 3×1.5 — tight trailing stop that flips within 2-3 bars
+#   VWAP          — intraday institutional reference price
+#   ATR  7 vs 14  — short-term vs mid-term volatility expansion filter
+#
+# Entry logic (BUY_CALL / BUY_PUT):
+#   All 4 momentum conditions must agree + SuperTrend + VWAP bias
+#   → keeps false entries low despite the fast indicators
+#
+# Exit logic (EXIT_CALL / EXIT_PUT):
+#   Any major reversal signal triggers (EMA cross OR overbought RSI OR
+#   MACD flip OR SuperTrend flip) → exits are fast and not waiting for
+#   all conditions to align simultaneously
+# ---------------------------------------------------------------------------
+
+def _scalp_long_entry():
+    return {
+        "name": "\u26a1 1-Min Scalp \u2014 Long Entry",
+        "rules": [
+            # Micro-trend up: EMA9 > EMA21 and EMA9 rising
+            _rule(_ind("ema", {"length": 9}), ">", _ind("ema", {"length": 21}), weight=2.0),
+            _rule(_ind("ema", {"length": 9}), ">", _ind("ema", {"length": 9}, shift=1), weight=1.5),
+            # RSI-7 above 50 and rising (fresh bullish momentum)
+            _rule(_ind("rsi", {"length": 7}), ">", _scalar(50), weight=2.0),
+            _rule(_ind("rsi", {"length": 7}), ">", _ind("rsi", {"length": 7}, shift=1), weight=1.5),
+            # MACD(5,13,3) histogram positive and expanding
+            _rule(_ind("macd", {"fast": 5, "slow": 13, "signal": 3}), ">", _scalar(0), weight=2.0),
+            _rule(_ind("macd", {"fast": 5, "slow": 13, "signal": 3}), ">",
+                  _ind("macd", {"fast": 5, "slow": 13, "signal": 3}, shift=1), weight=1.5),
+            # Stoch(5,3,3)-K rising and not overbought
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), ">", _scalar(30), weight=1.5),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), "<", _scalar(75), weight=1.5),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), ">",
+                  _ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}, shift=1), weight=1.2),
+            # SuperTrend(3, 1.5) direction positive (+1)
+            _rule(_ind("supertrend", {"length": 3, "multiplier": 1.5}), ">", _scalar(0), weight=2.5),
+            # Price above VWAP (buy-side bias)
+            _rule(_col("close"), ">", _ind("vwap", {}), weight=1.8),
+            # Short ATR > mid ATR — volatility expanding (real move, not chop)
+            _rule(_ind("atr", {"length": 7}), ">", _ind("atr", {"length": 14}), weight=1.3),
+        ],
+    }
+
+def _scalp_short_entry():
+    return {
+        "name": "\u26a1 1-Min Scalp \u2014 Short Entry",
+        "rules": [
+            _rule(_ind("ema", {"length": 9}), "<", _ind("ema", {"length": 21}), weight=2.0),
+            _rule(_ind("ema", {"length": 9}), "<", _ind("ema", {"length": 9}, shift=1), weight=1.5),
+            _rule(_ind("rsi", {"length": 7}), "<", _scalar(50), weight=2.0),
+            _rule(_ind("rsi", {"length": 7}), "<", _ind("rsi", {"length": 7}, shift=1), weight=1.5),
+            _rule(_ind("macd", {"fast": 5, "slow": 13, "signal": 3}), "<", _scalar(0), weight=2.0),
+            _rule(_ind("macd", {"fast": 5, "slow": 13, "signal": 3}), "<",
+                  _ind("macd", {"fast": 5, "slow": 13, "signal": 3}, shift=1), weight=1.5),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), "<", _scalar(70), weight=1.5),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), ">", _scalar(25), weight=1.5),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), "<",
+                  _ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}, shift=1), weight=1.2),
+            _rule(_ind("supertrend", {"length": 3, "multiplier": 1.5}), "<", _scalar(0), weight=2.5),
+            _rule(_col("close"), "<", _ind("vwap", {}), weight=1.8),
+            _rule(_ind("atr", {"length": 7}), ">", _ind("atr", {"length": 14}), weight=1.3),
+        ],
+    }
+
+def _scalp_exit_long():
+    return {
+        "name": "\u26a1 1-Min Scalp \u2014 Exit Long",
+        "rules": [
+            _rule(_ind("ema", {"length": 9}), "<", _ind("ema", {"length": 21}), weight=2.5),
+            _rule(_ind("rsi", {"length": 7}), ">", _scalar(75), weight=2.0),
+            _rule(_ind("rsi", {"length": 7}), "<", _ind("rsi", {"length": 7}, shift=1), weight=1.5),
+            _rule(_ind("macd", {"fast": 5, "slow": 13, "signal": 3}), "<", _scalar(0), weight=2.0),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), ">", _scalar(80), weight=1.8),
+            _rule(_ind("supertrend", {"length": 3, "multiplier": 1.5}), "<", _scalar(0), weight=2.5),
+        ],
+    }
+
+def _scalp_exit_short():
+    return {
+        "name": "\u26a1 1-Min Scalp \u2014 Exit Short",
+        "rules": [
+            _rule(_ind("ema", {"length": 9}), ">", _ind("ema", {"length": 21}), weight=2.5),
+            _rule(_ind("rsi", {"length": 7}), "<", _scalar(25), weight=2.0),
+            _rule(_ind("rsi", {"length": 7}), ">", _ind("rsi", {"length": 7}, shift=1), weight=1.5),
+            _rule(_ind("macd", {"fast": 5, "slow": 13, "signal": 3}), ">", _scalar(0), weight=2.0),
+            _rule(_ind("stoch", {"k": 5, "d": 3, "smooth_k": 3}), "<", _scalar(20), weight=1.8),
+            _rule(_ind("supertrend", {"length": 3, "multiplier": 1.5}), ">", _scalar(0), weight=2.5),
+        ],
+    }
+
+
+PRESETS["BUY_CALL"].append(_scalp_long_entry())
+PRESETS["BUY_PUT"].append(_scalp_short_entry())
+PRESETS["EXIT_CALL"].append(_scalp_exit_long())
+PRESETS["EXIT_PUT"].append(_scalp_exit_short())
+
+
 def get_preset_names(signal: str) -> List[str]:
     """Return a list of preset names for the given signal type."""
     return [p["name"] for p in PRESETS.get(signal, [])]

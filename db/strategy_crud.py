@@ -116,8 +116,11 @@ class StrategyCRUD:
         if strategy is None:
             return None
         engine = strategy.get("engine") or {}
-        if "timeframe" not in strategy:
-            strategy["timeframe"] = engine.get("timeframe", "1h") or "1h"
+        # BUG FIX: also replace an empty-string timeframe that may have been
+        # persisted by older code before the `or`-fallback bug was fixed.
+        existing_tf = strategy.get("timeframe")
+        if not existing_tf:  # covers missing key AND empty string
+            strategy["timeframe"] = engine.get("timeframe") or "1h"
         return strategy
 
     def get(self, slug: str, db: DatabaseConnector = None) -> Optional[Dict[str, Any]]:

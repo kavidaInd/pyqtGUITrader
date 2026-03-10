@@ -33,13 +33,13 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from PyQt5.QtCore    import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from Utils.Utils     import Utils
+from Utils.Utils import Utils
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from data.trade_state_manager import state_manager
 from gui.theme_manager import theme_manager
@@ -59,9 +59,9 @@ class StatusCard(QFrame):
 
     def __init__(self, icon: str, label: str, parent: QWidget = None) -> None:
         super().__init__(parent)
-        self._dimmed       = False
-        self._last_value:  Optional[str] = None
-        self._last_color:  Optional[str] = None
+        self._dimmed = False
+        self._last_value: Optional[str] = None
+        self._last_color: Optional[str] = None
 
         lay = QVBoxLayout(self)
 
@@ -81,11 +81,16 @@ class StatusCard(QFrame):
 
     # ── theme shortcuts ───────────────────────────────────────────────────────
     @property
-    def _c(self):  return theme_manager.palette
+    def _c(self):
+        return theme_manager.palette
+
     @property
-    def _ty(self): return theme_manager.typography
+    def _ty(self):
+        return theme_manager.typography
+
     @property
-    def _sp(self): return theme_manager.spacing
+    def _sp(self):
+        return theme_manager.spacing
 
     def apply_theme(self, _: str = None) -> None:
         try:
@@ -143,7 +148,7 @@ class StatusCard(QFrame):
         try:
             if text is None:
                 text = "—"
-            c  = self._c
+            c = self._c
             ty = self._ty
             color = color or c.TEXT_MAIN
 
@@ -191,40 +196,40 @@ class StatusPanel(QWidget):
 
     FIELDS: List[tuple] = [
         # Key         Icon   Label
-        ("position",       "🟢", "Position"),
-        ("signal",         "📊", "Signal"),
-        ("balance",        "🏦", "Balance"),
-        ("derivative",     "📈", "Index"),
-        ("daily_pnl",      "📉", "Daily P&L"),
-        ("trades_today",   "🎯", "Trades"),
+        ("position", "🟢", "Position"),
+        ("signal", "📊", "Signal"),
+        ("balance", "🏦", "Balance"),
+        ("derivative", "📈", "Index"),
+        ("daily_pnl", "📉", "Daily P&L"),
+        ("trades_today", "🎯", "Trades"),
         # Trade-specific
-        ("symbol",         "💹", "Symbol"),
-        ("buy_price",      "🛒", "Entry"),
-        ("current_price",  "💰", "Current"),
-        ("target_price",   "🎯", "Target"),
+        ("symbol", "💹", "Symbol"),
+        ("buy_price", "🛒", "Entry"),
+        ("current_price", "💰", "Current"),
+        ("target_price", "🎯", "Target"),
         ("stoploss_price", "🛑", "Stop"),
-        ("pnl",            "💵", "P&L"),
+        ("pnl", "💵", "P&L"),
     ]
 
     # Signals
     exit_position_clicked = pyqtSignal()
-    modify_sl_clicked     = pyqtSignal()
-    modify_tp_clicked     = pyqtSignal()
+    modify_sl_clicked = pyqtSignal()
+    modify_tp_clicked = pyqtSignal()
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
-        self._lock          = threading.RLock()
-        self._last_state:   Dict[str, str] = {}
+        self._lock = threading.RLock()
+        self._last_state: Dict[str, str] = {}
         self._refresh_enabled = True
-        self._trade_active  = False
-        self._closing       = False
+        self._trade_active = False
+        self._closing = False
         self._recent_trades: List[Dict] = []
-        self._market_open   = Utils.is_market_open()
-        self._is_holiday    = Utils.is_today_holiday()
-        self._snapshot_ts:  Optional[datetime] = None
-        self._snapshot:     dict = {}
+        self._market_open = Utils.is_market_open()
+        self._is_holiday = Utils.is_today_holiday()
+        self._snapshot_ts: Optional[datetime] = None
+        self._snapshot: dict = {}
         self._pos_snapshot: dict = {}
 
         # Width — wide enough to show all text, constrained to not dominate
@@ -265,11 +270,16 @@ class StatusPanel(QWidget):
 
     # ── theme shortcuts ───────────────────────────────────────────────────────
     @property
-    def _c(self):  return theme_manager.palette
+    def _c(self):
+        return theme_manager.palette
+
     @property
-    def _ty(self): return theme_manager.typography
+    def _ty(self):
+        return theme_manager.typography
+
     @property
-    def _sp(self): return theme_manager.spacing
+    def _sp(self):
+        return theme_manager.spacing
 
     # ── theme application ─────────────────────────────────────────────────────
 
@@ -364,8 +374,8 @@ class StatusPanel(QWidget):
         if hasattr(self, "exit_btn") and self.exit_btn:
             self.exit_btn.setStyleSheet(exit_btn_ss)
         for btn in (
-            getattr(self, "modify_sl_btn", None),
-            getattr(self, "modify_tp_btn", None),
+                getattr(self, "modify_sl_btn", None),
+                getattr(self, "modify_tp_btn", None),
         ):
             if btn:
                 btn.setStyleSheet(base_btn)
@@ -499,12 +509,12 @@ class StatusPanel(QWidget):
         )
 
         fields = [
-            ("Balance",      "balance",        "₹0"),
-            ("Margin",       "margin",         "₹0"),
-            ("Buying Power", "buying_power",   "₹0"),
-            ("M2M",          "m2m",            "₹0"),
-            ("Day Trades",   "day_trades",     "0"),
-            ("Open Pos",     "open_positions", "0"),
+            ("Balance", "balance", "₹0"),
+            ("Margin", "margin", "₹0"),
+            ("Buying Power", "buying_power", "₹0"),
+            ("M2M", "m2m", "₹0"),
+            ("Day Trades", "day_trades", "0"),
+            ("Open Pos", "open_positions", "0"),
         ]
 
         self._account_labels: Dict[str, QLabel] = {}
@@ -523,7 +533,7 @@ class StatusPanel(QWidget):
     def _on_tab_changed(self, idx: int) -> None:
         """Visual feedback when switching tabs."""
         from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore    import Qt
+        from PyQt5.QtCore import Qt
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QTimer.singleShot(120, QApplication.restoreOverrideCursor)
 
@@ -531,8 +541,8 @@ class StatusPanel(QWidget):
 
     def _refresh_market_status(self) -> None:
         try:
-            self._market_open  = Utils.is_market_open()
-            self._is_holiday   = Utils.is_today_holiday()
+            self._market_open = Utils.is_market_open()
+            self._is_holiday = Utils.is_today_holiday()
             self._update_market_status_display()
         except Exception as exc:
             logger.debug(f"[StatusPanel._refresh_market_status] {exc}")
@@ -560,12 +570,12 @@ class StatusPanel(QWidget):
     def _get_cached_snapshot(self) -> dict:
         now = datetime.now()
         if (
-            self._snapshot_ts is None
-            or (now - self._snapshot_ts).total_seconds() > 0.1
+                self._snapshot_ts is None
+                or (now - self._snapshot_ts).total_seconds() > 0.1
         ):
-            self._snapshot      = state_manager.get_snapshot()
-            self._pos_snapshot  = state_manager.get_position_snapshot()
-            self._snapshot_ts   = now
+            self._snapshot = state_manager.get_snapshot()
+            self._pos_snapshot = state_manager.get_position_snapshot()
+            self._snapshot_ts = now
         return self._snapshot
 
     def _get_cached_position_snapshot(self) -> dict:
@@ -576,27 +586,33 @@ class StatusPanel(QWidget):
 
     def _fmt(self, v: Any, spec: str = ".2f") -> str:
         if v is None: return "—"
-        try: return f"{float(v):{spec}}"
-        except: return str(v)
+        try:
+            return f"{float(v):{spec}}"
+        except:
+            return str(v)
 
     def _fmt_currency(self, v: Any) -> str:
         if v is None: return "—"
         try:
             f = float(v)
             return f"₹{f:,.0f}" if abs(f) >= 1000 else f"₹{f:.2f}"
-        except: return str(v) if v else "—"
+        except:
+            return str(v) if v else "—"
 
     def _fmt_percent(self, v: Any) -> str:
         if v is None: return "—"
-        try: return f"{float(v):+.1f}%"
-        except: return str(v) if v else "—"
+        try:
+            return f"{float(v):+.1f}%"
+        except:
+            return str(v) if v else "—"
 
     def _pnl_color(self, v: Any) -> str:
         c = self._c
         try:
             f = float(v) if v is not None else 0.0
             return c.GREEN if f > 0 else (c.RED if f < 0 else c.TEXT_DIM)
-        except: return c.TEXT_DIM
+        except:
+            return c.TEXT_DIM
 
     def _pos_color(self, pos: Any) -> str:
         c = self._c
@@ -608,36 +624,40 @@ class StatusPanel(QWidget):
         c = self._c
         if signal is None: return c.TEXT_DISABLED
         return {
-            "BUY_CALL":  c.GREEN,
-            "BUY_PUT":   c.BLUE,
+            "BUY_CALL": c.GREEN,
+            "BUY_PUT": c.BLUE,
             "EXIT_CALL": c.RED,
-            "EXIT_PUT":  c.ORANGE,
-            "HOLD":      c.YELLOW,
+            "EXIT_PUT": c.ORANGE,
+            "HOLD": c.YELLOW,
         }.get(signal, c.TEXT_DISABLED)
 
     def _safe_float(self, snap: dict, key: str, default: float = 0.0) -> Optional[float]:
         try:
             v = snap.get(key)
             return float(v) if v is not None else default
-        except: return default
+        except:
+            return default
 
     def _safe_str(self, snap: dict, key: str, default: str = "") -> str:
         try:
             v = snap.get(key)
             return str(v) if v is not None else default
-        except: return default
+        except:
+            return default
 
     def _safe_bool(self, snap: dict, key: str, default: bool = False) -> bool:
         try:
             v = snap.get(key)
             return bool(v) if v is not None else default
-        except: return default
+        except:
+            return default
 
     def _trade_open(self, snap: dict) -> bool:
         try:
             pos = snap.get("current_position")
             return pos is not None and str(pos).upper() not in ("NONE", "")
-        except: return False
+        except:
+            return False
 
     def _set_card(self, key: str, text: str, color: str) -> None:
         try:
@@ -663,7 +683,7 @@ class StatusPanel(QWidget):
             self.timestamp.setText(datetime.now().strftime("%H:%M:%S"))
 
             snap = self._get_cached_snapshot()
-            pos  = self._get_cached_position_snapshot()
+            pos = self._get_cached_position_snapshot()
 
             # Trade-open guard
             trade_active = self._trade_open(snap)
@@ -676,7 +696,7 @@ class StatusPanel(QWidget):
                     if btn: btn.setEnabled(trade_active)
 
             # Signal
-            signal   = self._safe_str(pos, "option_signal", "WAIT")
+            signal = self._safe_str(pos, "option_signal", "WAIT")
             conflict = self._safe_bool(pos, "signal_conflict", False)
             self._set_card("signal", signal, self._signal_color(signal))
             self.conflict_label.setVisible(conflict)
@@ -684,37 +704,58 @@ class StatusPanel(QWidget):
                 self.conflict_label.setText("⚠ Signal Conflict")
 
             # Always-on cards
-            cur_pos  = snap.get("current_position")
-            balance  = self._safe_float(snap, "account_balance", 0.0)
-            deriv    = self._safe_float(snap, "derivative_current_price", 0.0)
-            daily_pnl = self._safe_float(pos, "current_pnl", 0.0)
+            cur_pos = snap.get("current_position")
+            balance = self._safe_float(snap, "account_balance", 0.0)
+            deriv = self._safe_float(snap, "derivative_current_price", 0.0)
+            daily_pnl = self._safe_float(pos, "current_pnl", None)
+            if daily_pnl is None:
+                daily_pnl = self._safe_float(snap, "current_pnl", 0.0)
 
-            self._set_card("position",    str(cur_pos) if cur_pos else "None",  self._pos_color(cur_pos))
-            self._set_card("balance",     self._fmt_currency(balance),           c.TEXT_MAIN)
-            self._set_card("derivative",  self._fmt(deriv),                      c.BLUE)
-            self._set_card("daily_pnl",   self._fmt_currency(daily_pnl),         self._pnl_color(daily_pnl))
-            self._set_card("trades_today","1" if trade_active else "0",           c.TEXT_MAIN)
+            trades_today_count = 1 if trade_active else 0
+            try:
+                from trade.risk_manager import RiskManager
+                if config is not None and hasattr(config, 'risk_manager') and config.risk_manager:
+                    summary = config.risk_manager.get_risk_summary()
+                    trades_today_count = summary.get("trades_today", trades_today_count)
+            except Exception:
+                pass
 
-            # Trade-specific cards
+            self._set_card("position", str(cur_pos) if cur_pos else "None", self._pos_color(cur_pos))
+            self._set_card("balance", self._fmt_currency(balance), c.TEXT_MAIN)
+            self._set_card("derivative", self._fmt(deriv) if deriv else "—", c.BLUE)
+            self._set_card("daily_pnl", self._fmt_currency(daily_pnl), self._pnl_color(daily_pnl))
+            self._set_card("trades_today", str(trades_today_count), c.TEXT_MAIN)
+
             if trade_active:
-                symbol     = snap.get("current_trading_symbol")
-                entry      = self._safe_float(pos, "current_buy_price")
-                curr       = self._safe_float(pos, "current_price")
-                tp         = self._safe_float(pos, "tp_point")
-                sl         = self._safe_float(pos, "stop_loss")
-                pnl_pct    = self._safe_float(pos, "percentage_change")
+                symbol = snap.get("current_trading_symbol")
+                entry = self._safe_float(pos, "current_buy_price")
+                curr = self._safe_float(pos, "current_price")
+                tp = self._safe_float(pos, "tp_point")
+                sl = self._safe_float(pos, "stop_loss")
+                pnl_pct = self._safe_float(pos, "percentage_change")
 
-                self._set_card("symbol",        str(symbol) if symbol else "—",  c.TEXT_MAIN)
-                self._set_card("buy_price",     self._fmt(entry),                 c.TEXT_MAIN)
-                self._set_card("current_price", self._fmt(curr),                  c.TEXT_MAIN)
-                self._set_card("target_price",  self._fmt(tp),                    c.GREEN)
-                self._set_card("stoploss_price",self._fmt(sl),                    c.RED)
-                self._set_card("pnl",           self._fmt_percent(pnl_pct),       self._pnl_color(pnl_pct))
+                # Fall back to snap for prices if pos values are None
+                if curr is None or curr == 0:
+                    curr = self._safe_float(snap, "current_price")
+                if tp is None or tp == 0:
+                    tp = self._safe_float(snap, "tp_point")
+                if sl is None or sl == 0:
+                    sl = self._safe_float(snap, "stop_loss")
+                if pnl_pct is None:
+                    pnl_pct = self._safe_float(snap, "percentage_change")
+
+                self._set_card("symbol", str(symbol) if symbol else "—", c.TEXT_MAIN)
+                self._set_card("buy_price", self._fmt(entry), c.TEXT_MAIN)
+                self._set_card("current_price", self._fmt(curr), c.TEXT_MAIN)
+                self._set_card("target_price", self._fmt(tp) if tp else "—", c.GREEN)
+                self._set_card("stoploss_price", self._fmt(sl) if sl else "—", c.RED)
+                self._set_card("pnl", self._fmt_percent(pnl_pct), self._pnl_color(pnl_pct))
 
             # Account tab
-            self._account_labels.get("balance",        _NullLabel()).setText(self._fmt_currency(balance))
-            self._account_labels.get("m2m",             _NullLabel()).setText(self._fmt_currency(daily_pnl))
-            self._account_labels.get("open_positions",  _NullLabel()).setText("1" if trade_active else "0")
+            self._account_labels.get("balance", _NullLabel()).setText(self._fmt_currency(balance))
+            self._account_labels.get("m2m", _NullLabel()).setText(self._fmt_currency(daily_pnl))
+            self._account_labels.get("open_positions", _NullLabel()).setText("1" if trade_active else "0")
+            self._account_labels.get("day_trades", _NullLabel()).setText(str(trades_today_count))
 
         except Exception as exc:
             logger.error(f"[StatusPanel.refresh] {exc}", exc_info=True)
@@ -727,15 +768,18 @@ class StatusPanel(QWidget):
             f"background: transparent; border: none;"
         )
 
-    def pause_refresh(self)  -> None: self._refresh_enabled = False
-    def resume_refresh(self) -> None: self._refresh_enabled = True
+    def pause_refresh(self) -> None:
+        self._refresh_enabled = False
+
+    def resume_refresh(self) -> None:
+        self._refresh_enabled = True
 
     def clear_cache(self) -> None:
         with self._lock:
             self._last_state.clear()
-            self._snapshot      = {}
-            self._pos_snapshot  = {}
-            self._snapshot_ts   = None
+            self._snapshot = {}
+            self._pos_snapshot = {}
+            self._snapshot_ts = None
 
     def cleanup(self) -> None:
         try:
@@ -756,5 +800,6 @@ class StatusPanel(QWidget):
 
 class _NullLabel:
     """Fallback when an account label key is missing — silently absorbs setText."""
+
     def setText(self, _: str) -> None:
         pass

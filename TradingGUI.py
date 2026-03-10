@@ -1550,10 +1550,23 @@ class TradingGUI(QMainWindow):
             # which is automatically queued onto the GUI thread.
             executor = safe_getattr(self.trading_app, 'executor', None)
             if executor is not None:
-                executor.on_trade_closed_callback = (
-                    lambda pnl, is_winner: self.trade_closed.emit(float(pnl), bool(is_winner))
-                )
-                logger.info("[TradingGUI._start_app] on_trade_closed_callback wired to P&L widget")
+                # BUG FIX: Previously this overwrote the callback set by
+                # TradingApp.initialize() (which calls _on_trade_closed →
+                # _record_reentry_exit).  Replacing it meant the re-entry guard
+                # exit state was never recorded so the guard never activated.
+                # Chain both: keep the existing trading-app callback and add
+                # the GUI P&L emission on top.
+                _existing_cb = executor.on_trade_closed_callback
+                def _chained_trade_closed(pnl, is_winner,
+                                          _existing=_existing_cb):
+                    if _existing:
+                        try:
+                            _existing(pnl, is_winner)
+                        except Exception as _cb_e:
+                            logger.error(f"[on_trade_closed_callback] existing cb failed: {_cb_e}")
+                    self.trade_closed.emit(float(pnl), bool(is_winner))
+                executor.on_trade_closed_callback = _chained_trade_closed
+                logger.info("[TradingGUI._start_app] on_trade_closed_callback chained (reentry + P&L widget)")
             else:
                 logger.warning("[TradingGUI._start_app] executor not found — P&L widget won't auto-update on trade close")
 
@@ -2724,6 +2737,10 @@ class TradingGUI(QMainWindow):
             if not self.strategy_editor:
                 self.strategy_editor = StrategyEditorWindow(parent=self)
                 self.strategy_editor.strategy_activated.connect(self._on_strategy_changed)
+                # Hot-reload: when the user saves the active strategy the engine
+                # updates immediately — no re-activate or restart needed, and it
+                # works while a trade is running.
+                self.strategy_editor.strategy_saved.connect(self._on_strategy_saved)
                 self.strategy_editor.setWindowState(Qt.WindowMaximized)
                 self.strategy_editor.setWindowFlags(Qt.Window)
             self.strategy_editor.show()
@@ -2733,6 +2750,36 @@ class TradingGUI(QMainWindow):
                 self.strategy_editor.showMaximized()
         except Exception as e:
             logger.error(f"[TradingGUI._open_strategy_editor] Failed: {e}", exc_info=True)
+
+    def _on_strategy_saved(self, slug: str):
+        """
+        Called whenever a strategy is saved in the editor.
+
+        If the saved slug is the currently active strategy we hot-reload
+        the signal engine so the new rules take effect on the very next
+        evaluation tick — even while a trade is running.
+        If a different (inactive) strategy was saved we leave the running
+        engine alone; the rules will be picked up the next time that
+        strategy is activated.
+        """
+        try:
+            if self._closing:
+                return
+            active_slug = self.strategy_manager.get_active_slug() if self.strategy_manager else None
+            if active_slug and slug == active_slug:
+                logger.info(
+                    f"[TradingGUI._on_strategy_saved] Active strategy '{slug}' saved — "
+                    "hot-reloading signal engine"
+                )
+                if self.trading_app and safe_hasattr(self.trading_app, "reload_signal_engine"):
+                    self.trading_app.reload_signal_engine()
+            else:
+                logger.debug(
+                    f"[TradingGUI._on_strategy_saved] Saved '{slug}' is not active "
+                    f"(active='{active_slug}') — engine unchanged"
+                )
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_strategy_saved] Failed: {e}", exc_info=True)
 
     def _on_strategy_changed(self, slug: str):
         try:

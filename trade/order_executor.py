@@ -421,15 +421,12 @@ class OrderExecutor:
             logger.info(f"[ORDER] Attempt 1/3: LIMIT at mid-price Rs{mid_price:.2f}")
             orders = self.place_orders(option_name, shares, mid_price, state, option_type=option_type)
             if not orders:
-                # Broker returned no order ID — wait briefly for it to settle,
-                # then check orderbook before giving up.
-                logger.warning("[ORDER] Attempt 1 returned no orders — waiting 1s then reconciling")
-                time.sleep(1.0)
+                logger.warning("[ORDER] Attempt 1 returned no orders — reconciling with broker")
                 if self._reconcile_with_broker(state, option_type, option_name, shares, mid_price):
                     return True
                 return False
 
-            if self._wait_for_fill(orders, state, timeout_seconds=3):
+            if self._wait_for_fill(orders, state, timeout_seconds=None):
                 fill_price = state.current_buy_price or mid_price
                 self.record_trade_state(state, option_type, option_name, fill_price, shares, orders)
                 slippage = fill_price - mid_price
@@ -444,10 +441,7 @@ class OrderExecutor:
             logger.info(f"[ORDER] Attempt 2/3: LIMIT at LTP Rs{ltp_price:.2f}")
             orders = self.place_orders(option_name, shares, ltp_price, state, option_type=option_type)
             if not orders:
-                # Broker returned no order ID — wait briefly for it to settle,
-                # then check orderbook before giving up.
-                logger.warning("[ORDER] Attempt 2 returned no orders — waiting 1s then reconciling")
-                time.sleep(1.0)
+                logger.warning("[ORDER] Attempt 2 returned no orders — reconciling with broker")
                 if self._reconcile_with_broker(state, option_type, option_name, shares, ltp_price):
                     return True
                 return False
@@ -517,15 +511,9 @@ class OrderExecutor:
             else:
                 logger.warning("[ORDER] MARKET order not available (paper or no API)")
 
-            # ── Final safety net: reconcile with broker ──────────────────────────
-            # All 3 order attempts exhausted. Before declaring failure, wait briefly
-            # for the broker to settle the last order (MARKET fills go PENDING →
-            # TRADE_CONFIRMED → COMPLETE in ~200-800ms; querying immediately will
-            # find the order still PENDING and report "no fill").
             logger.error('[ORDER] All placement attempts failed — attempting broker reconciliation.')
-            logger.info('[ORDER] Waiting 2s for broker fill settlement before reconciliation …')
-            time.sleep(2.0)
-            if self._reconcile_with_broker(state, option_type, option_name, shares, ltp_price):
+            if self._reconcile_with_broker(state, option_type, option_name, shares, ltp_price,
+                                           max_wait_seconds=10):
                 return True
             logger.error('[ORDER] Reconciliation found no matching fill. Trade not entered.')
             return False
@@ -548,16 +536,14 @@ class OrderExecutor:
 
     def _calculate_mid_price(self, state, option_name, market_price):
         try:
-            # Use configured lower_percentage (e.g. 0.5 means 0.5% below market).
-            # Default 0.1% if unset or zero so we always place slightly below LTP.
             lower_pct = 0.0
             try:
                 raw = float(safe_getattr(state, 'lower_percentage', 0.0) or 0.0)
-                lower_pct = raw / 100.0   # convert e.g. 0.5 → 0.005
+                lower_pct = raw   # already a fraction, e.g. 0.01 = 1%
             except (ValueError, TypeError):
                 pass
             if lower_pct <= 0.0:
-                lower_pct = 0.001  # 0.1% fallback so we always post below LTP
+                lower_pct = 0.001
 
             chain_data = {}
             if safe_hasattr(state, 'option_chain') and state.option_chain:
@@ -576,7 +562,7 @@ class OrderExecutor:
             return max(Utils.round_to_nse_price(mid), 0.05)
         except Exception as e:
             logger.warning(f"[_calculate_mid_price] fallback: {e}")
-            lower_pct = float(safe_getattr(state, 'lower_percentage', 0.1) or 0.1) / 100.0
+            lower_pct = float(safe_getattr(state, 'lower_percentage', 0.001) or 0.001)
             return Utils.round_to_nse_price(market_price * (1.0 - lower_pct))
 
     def _wait_for_fill(self, orders, state, timeout_seconds=None) -> bool:
@@ -592,8 +578,6 @@ class OrderExecutor:
         if not self.api:
             return False
 
-        # Honour the configured cancel_after timeout (seconds).
-        # If not set, fall back to the supplied default (or 5s as a safe floor).
         if timeout_seconds is None:
             try:
                 cfg = int(safe_getattr(state, 'cancel_after', 0) or 0)
@@ -656,9 +640,6 @@ class OrderExecutor:
             return existing_order_id
 
         try:
-            # NOTE: client_order_id is intentionally NOT passed — brokers accept
-            # **kwargs so it wouldn't cause an error, but some reject it as an
-            # unsupported field at the exchange level which can cause silent failures.
             broker_order_id = self.api.place_order(
                 symbol=symbol,
                 qty=quantity,
@@ -666,7 +647,6 @@ class OrderExecutor:
             )
 
             if broker_order_id:
-                # Store mapping — caller uses this to write the single DB record
                 self._idempotency_keys[idempotency_key] = broker_order_id
                 self._submitted_order_ids.add(broker_order_id)
                 logger.debug(
@@ -942,7 +922,8 @@ class OrderExecutor:
     # ------------------------------------------------------------------
 
     def _reconcile_with_broker(self, state, option_type: str, symbol: str,
-                                shares: int, fallback_price: float) -> bool:
+                                shares: int, fallback_price: float,
+                                max_wait_seconds: int = 8) -> bool:
         """
         Query the broker orderbook to detect whether *symbol* was actually
         filled even though place_orders() returned an empty list (e.g. the
@@ -960,27 +941,48 @@ class OrderExecutor:
                 f"[reconcile] Querying broker orderbook for {symbol} "
                 f"after failed order-ID responses …"
             )
-            orderbook = self.api.get_orderbook()
-            if not orderbook:
-                logger.warning("[reconcile] Broker returned empty orderbook — cannot reconcile")
-                return False
 
-            # Look for a recently filled BUY order matching the symbol
-            # Brokers return tradingsymbol without exchange prefix in the orderbook
             bare_symbol = symbol.split(":")[-1] if ":" in symbol else symbol
-
             matched = None
-            for entry in orderbook:
-                if not isinstance(entry, dict):
+            poll_interval = 1.5
+            deadline = time.time() + max_wait_seconds
+
+            while time.time() < deadline:
+                try:
+                    orderbook = self.api.get_orderbook()
+                except Exception as _oe:
+                    logger.warning(f"[reconcile] get_orderbook() raised: {_oe} — retrying …")
+                    time.sleep(poll_interval)
                     continue
-                entry_sym = str(entry.get("tradingsymbol", "") or entry.get("symbol", ""))
-                # Match by symbol, BUY side, and COMPLETE status
-                txn = str(entry.get("transaction_type", "") or entry.get("side", "")).upper()
-                status = str(entry.get("status", "")).upper()
-                qty = int(entry.get("quantity", 0) or entry.get("qty", 0))
-                if (bare_symbol in entry_sym or entry_sym in bare_symbol)                         and txn in ("BUY", "B", "1")                         and status == "COMPLETE"                         and qty > 0:
-                    matched = entry
+
+                if not orderbook:
+                    logger.warning("[reconcile] Broker returned empty orderbook — retrying …")
+                    time.sleep(poll_interval)
+                    continue
+
+                for entry in orderbook:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_sym = str(entry.get("tradingsymbol", "") or entry.get("symbol", ""))
+                    txn = str(entry.get("transaction_type", "") or entry.get("side", "")).upper()
+                    status = str(entry.get("status", "")).upper()
+                    qty = int(entry.get("quantity", 0) or entry.get("qty", 0))
+                    if (bare_symbol in entry_sym or entry_sym in bare_symbol) \
+                            and txn in ("BUY", "B", "1") \
+                            and status == "COMPLETE" \
+                            and qty > 0:
+                        matched = entry
+                        break
+
+                if matched is not None:
                     break
+
+                elapsed = time.time() - (deadline - max_wait_seconds)
+                logger.info(
+                    f"[reconcile] No COMPLETE BUY found yet for {symbol} "
+                    f"(elapsed ~{elapsed:.0f}s / {max_wait_seconds}s) — retrying …"
+                )
+                time.sleep(poll_interval)
 
             if matched is None:
                 logger.warning(
