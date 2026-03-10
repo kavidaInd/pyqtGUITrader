@@ -1542,11 +1542,23 @@ class DynamicSignalDebugPopup(QDialog, _TM):
                 self._set_status("⚠  state_manager returned None")
                 return
 
-            trend_data    = safe_getattr(state, "derivative_trend", None) or {}
-            option_signal = trend_data.get("option_signal")
+            # ── BUG FIX: Read from state.option_signal_result first.
+            # This is updated every tick (via _evaluate_tick_close_gate and
+            # _update_state_with_signal_result), so it always holds the latest
+            # evaluation result.  derivative_trend["option_signal"] is only
+            # written on candle close (Tier 1 fetch) and goes stale between bars.
+            option_signal = safe_getattr(state, "option_signal_result", None)
+
+            # Fallback to derivative_trend for backward compatibility
+            if option_signal is None:
+                trend_data    = safe_getattr(state, "derivative_trend", None) or {}
+                option_signal = trend_data.get("option_signal")
+
+            # Also pull trend_data for symbol/close metadata (always from derivative_trend)
+            trend_data = safe_getattr(state, "derivative_trend", None) or {}
 
             if option_signal is None:
-                self._set_status("⚠  No option_signal in state.derivative_trend yet.")
+                self._set_status("⚠  No signal data in state yet — waiting for first candle.")
                 return
 
             if not option_signal.get("available", False):
@@ -1598,8 +1610,16 @@ class DynamicSignalDebugPopup(QDialog, _TM):
 
             # ── Fired pills ────────────────────────────────────────────────
             fired_map = option_signal.get("fired", {})
+            # Normalise: fired_map may have string keys ("BUY_CALL") while
+            # self._fired_pills uses OptionSignal enum keys.  Build a str-keyed
+            # copy so all lookups work regardless of key type.
+            fired_str = {
+                (k.value if hasattr(k, "value") else str(k)): v
+                for k, v in fired_map.items()
+            }
             for sig, pill in self._fired_pills.items():
-                pill.set_fired(bool(fired_map.get(sig, False)))
+                sig_str = sig.value if hasattr(sig, "value") else str(sig)
+                pill.set_fired(bool(fired_str.get(sig_str, False)))
 
             # ── Group cards (left) ─────────────────────────────────────────
             rule_results = option_signal.get("rule_results", {})
@@ -1607,12 +1627,23 @@ class DynamicSignalDebugPopup(QDialog, _TM):
             threshold    = option_signal.get("threshold", 0.6)
             explanation  = option_signal.get("explanation", "")
 
+            # Normalise conf_dict and rule_results to string keys
+            conf_str = {
+                (k.value if hasattr(k, "value") else str(k)): v
+                for k, v in conf_dict.items()
+            }
+            rules_str = {
+                (k.value if hasattr(k, "value") else str(k)): v
+                for k, v in rule_results.items()
+            }
+
             for sig in SIGNAL_GROUPS:
                 if sig not in self._group_cards:
                     continue
+                sig_str = sig.value if hasattr(sig, "value") else str(sig)
                 card    = self._group_cards[sig]
-                rules   = rule_results.get(sig, [])
-                is_fired = fired_map.get(sig, False)
+                rules   = rules_str.get(sig_str, [])
+                is_fired = fired_str.get(sig_str, False)
                 logic   = "AND"
                 enabled = True
                 try:
@@ -1626,12 +1657,12 @@ class DynamicSignalDebugPopup(QDialog, _TM):
                 except Exception:
                     pass
                 card.update_data(rules, is_fired, logic, enabled,
-                                 conf_dict.get(sig, 0.0), threshold)
+                                 conf_str.get(sig_str, 0.0), threshold)
 
             # ── Right panel ────────────────────────────────────────────────
             ind_values = option_signal.get("indicator_values", {})
             if self._right_panel:
-                self._right_panel.update(conf_dict, threshold, explanation, ind_values)
+                self._right_panel.update(conf_str, threshold, explanation, ind_values)
 
             # ── Raw JSON ───────────────────────────────────────────────────
             if self._json_panel:

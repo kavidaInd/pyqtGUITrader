@@ -2324,7 +2324,6 @@ class TradingApp:
                 state.put_lookback = safe_getattr(self.trade_config, "put_lookback", 0)
                 state.original_call_lookback = state.call_lookback
                 state.original_put_lookback = state.put_lookback
-                state.interval = safe_getattr(self.trade_config, "history_interval", "")
                 state.max_num_of_option = safe_getattr(self.trade_config, "max_num_of_option", 0)
 
             if self.strategy_manager:

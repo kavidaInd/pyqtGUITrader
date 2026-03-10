@@ -120,14 +120,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
     operation_started = pyqtSignal()
     operation_finished = pyqtSignal()
 
-    INTERVAL_CHOICES = [
-        ("1 minute", "1m"),
-        ("2 minutes", "2m"), ("3 minutes", "3m"), ("5 minutes", "5m"),
-        ("10 minutes", "10m"), ("15 minutes", "15m"), ("20 minutes", "20m"),
-        ("30 minutes", "30m"), ("60 minutes", "60m"), ("120 minutes", "120m"),
-        ("240 minutes", "240m")
-    ]
-
     # Exchange choices
     EXCHANGE_CHOICES = [
         ("NSE - National Stock Exchange", "NSE"),
@@ -424,7 +416,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
         self.vars = {}
         self.entries = {}
         self.exchange_combo = None
-        self.interval_combo = None
         self.derivative_combo = None
         self.expiry_badge = None
         self.sideway_check = None
@@ -856,56 +847,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
 
             config_layout.addLayout(config_form)
             layout.addWidget(config_card)
-
-            # History Interval Card
-            interval_card = ModernCard()
-            interval_layout = QVBoxLayout(interval_card)
-            interval_layout.setSpacing(self._sp.GAP_MD)
-
-            interval_header = QLabel("⏱️ History Interval")
-            interval_header.setStyleSheet(f"""
-                QLabel {{
-                    color: {self._c.TEXT_MAIN};
-                    font-size: {self._ty.SIZE_MD}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                }}
-            """)
-            interval_layout.addWidget(interval_header)
-
-            self.interval_combo = QComboBox()
-            for display, value in self.INTERVAL_CHOICES:
-                self.interval_combo.addItem(display, value)
-            self.interval_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background: {self._c.BG_INPUT};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_MD}px;
-                    min-height: {self._sp.INPUT_HEIGHT}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {self._c.BORDER_FOCUS};
-                }}
-            """)
-
-            current_val = "2m"
-            if self.daily_setting is not None and safe_hasattr(self.daily_setting, 'data'):
-                current_val = self.daily_setting.data.get("history_interval", "2m")
-
-            for i in range(self.interval_combo.count()):
-                if self.interval_combo.itemData(i) == current_val:
-                    self.interval_combo.setCurrentIndex(i)
-                    break
-
-            interval_layout.addWidget(self.interval_combo)
-            interval_hint = QLabel("Candle size for historical data and signal generation")
-            interval_hint.setStyleSheet(f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_XS}pt;")
-            interval_layout.addWidget(interval_hint)
-
-            self.vars["history_interval"] = (self.interval_combo, str)
-            layout.addWidget(interval_card)
 
             # Sideway Zone Checkbox Card
             sideway_card = ModernCard()
@@ -1770,10 +1711,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             if "derivative" not in data_to_save and self.derivative_combo is not None:
                 data_to_save["derivative"] = self.derivative_combo.currentData()
 
-            # Ensure interval is captured
-            if self.interval_combo is not None:
-                data_to_save["history_interval"] = self.interval_combo.currentData()
-
             # Ensure sideway is captured
             if "sideway_zone_trade" not in data_to_save and self.sideway_check is not None:
                 data_to_save["sideway_zone_trade"] = self.sideway_check.isChecked()
@@ -1903,7 +1840,6 @@ class DailyTradeSettingGUI(QDialog, ThemedMixin):
             self.vars.clear()
             self.entries.clear()
             self.exchange_combo = None
-            self.interval_combo = None
             self.derivative_combo = None
             self.expiry_badge = None
             self.sideway_check = None

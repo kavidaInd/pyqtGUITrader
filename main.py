@@ -276,7 +276,7 @@ def _init_db_session(splash=None) -> Optional[int]:
             exchange=daily_settings.get("exchange", "NSE"),
             derivative=daily_settings.get("derivative", "NIFTY"),
             lot_size=daily_settings.get("lot_size", 65),
-            interval=daily_settings.get("history_interval", "1m"),
+            interval=daily_settings.get("history_interval", "1m"),  # Always 1m; candles are resampled by candle manager
             strategy_slug=active_strategy
         )
 

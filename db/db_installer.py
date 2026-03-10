@@ -216,7 +216,6 @@ _KV_SEEDS: Dict[str, str] = {
     "daily_trade:lot_size":           "75",
     "daily_trade:call_lookback":      "0",
     "daily_trade:put_lookback":       "0",
-    "daily_trade:history_interval":   '"2m"',
     "daily_trade:max_num_of_option":  "1800",
     "daily_trade:lower_percentage":   "0.0",
     "daily_trade:cancel_after":       "5",

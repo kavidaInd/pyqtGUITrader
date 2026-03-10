@@ -1349,7 +1349,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
         self.lot_size = None
         self.exchange = None
         self.week = None
-        self.interval_combo = None
         self.call_lookback = None
         self.put_lookback = None
         self.sideway_check = None
@@ -1483,16 +1482,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
             )
             hist_layout.setVerticalSpacing(self._sp.GAP_LG)
             hist_layout.setHorizontalSpacing(self._sp.PAD_XL)
-
-            # History interval
-            self.interval_combo = QComboBox()
-            intervals = ["1m", "2m", "3m", "5m", "10m", "15m", "30m", "60m"]
-            for i in intervals:
-                self.interval_combo.addItem(i)
-            self.interval_combo.setCurrentText(self.defaults.get("history_interval", "2m"))
-            self.interval_combo.setMinimumHeight(self._sp.INPUT_HEIGHT)
-            self.interval_combo.setStyleSheet(self._get_combobox_style())
-            hist_layout.addRow(self._create_label("Candle Interval:"), self.interval_combo)
 
             # Lookback periods
             # Lookback — number of strikes from ATM (0 = ATM, 1 = one strike OTM/ITM, …)
@@ -1743,7 +1732,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
             self.registerField("derivative", self.derivative_combo, "currentText")
             self.registerField("exchange", self.exchange)
             self.registerField("week", self.week)
-            self.registerField("history_interval", self.interval_combo, "currentText")
             self.registerField("call_lookback", self.call_lookback)
             self.registerField("put_lookback", self.put_lookback)
             self.registerField("sideway_zone_trade", self.sideway_check)
@@ -1768,8 +1756,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
                 self.exchange.setStyleSheet(self._get_lineedit_style())
             if self.week:
                 self.week.setStyleSheet(self._get_spinbox_style())
-            if self.interval_combo:
-                self.interval_combo.setStyleSheet(self._get_combobox_style())
             if self.call_lookback:
                 self.call_lookback.setStyleSheet(self._get_spinbox_style())
             if self.put_lookback:
@@ -1798,7 +1784,6 @@ class TradingPreferencesPage(QWizardPage, ThemedPageMixin):
             self.lot_size_display = None
             self.exchange = None
             self.week = None
-            self.interval_combo = None
             self.call_lookback = None
             self.put_lookback = None
             self.sideway_check = None
@@ -2966,7 +2951,6 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
                     ),
                     'exchange': self.preferences_page.exchange.text(),
                     'week': self.preferences_page.week.value(),
-                    'history_interval': self.preferences_page.interval_combo.currentText(),
                     'call_lookback': self.preferences_page.call_lookback.value(),
                     'put_lookback': self.preferences_page.put_lookback.value(),
                     'sideway_zone_trade': self.preferences_page.sideway_check.isChecked(),
@@ -3068,7 +3052,6 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
         daily.lot_size = _OU.get_lot_size(daily.derivative, fallback=self.config['trading'].get('lot_size', 0))
         daily.exchange = self.config['trading']['exchange']
         daily.week = self.config['trading']['week']
-        daily.history_interval = self.config['trading']['history_interval']
         daily.call_lookback = self.config['trading']['call_lookback']
         daily.put_lookback = self.config['trading']['put_lookback']
         daily.sideway_zone_trade = self.config['trading']['sideway_zone_trade']

@@ -361,6 +361,11 @@ class TrendDetector:
         """
         FEATURE 3: Update state with signal result via state_manager.
 
+        FIX: Also syncs the result into derivative_trend["option_signal"] so
+        that any code reading derivative_trend (e.g. chart overlays) stays
+        consistent with the latest tick-level evaluation stored in
+        state.option_signal_result.
+
         Args:
             signal_result: Signal evaluation result
         """
@@ -371,10 +376,17 @@ class TrendDetector:
             # Get state instance
             state = state_manager.get_state()
 
-            # Update option_signal_result directly
-            # The state properties (option_signal, should_buy_call, etc.) will
-            # automatically reflect these changes
+            # Primary store — authoritative for signal logic and the debug popup
             state.option_signal_result = signal_result
+
+            # Keep derivative_trend["option_signal"] in sync so legacy read
+            # paths (chart widgets, other UI) also see the latest evaluation.
+            try:
+                trend = state.derivative_trend or {}
+                trend["option_signal"] = signal_result
+                state.derivative_trend = trend
+            except Exception as sync_err:
+                logger.debug(f"[_update_state_with_signal_result] derivative_trend sync failed: {sync_err}")
 
             logger.debug(f"Updated state with signal result: {signal_result.get('signal_value', 'WAIT')}")
 

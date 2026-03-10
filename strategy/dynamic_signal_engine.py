@@ -957,12 +957,12 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
         # DSE-2 fix: cache the selected series under a key that includes the
         # sub_col so that the indicator_values snapshot in evaluate() shows the
         # actually-selected output column rather than always showing the default.
-        # Previously sub_col-specific series were never stored in the plain_key
-        # cache, so MACD[SIGNAL] lookups never appeared in the dashboard.
+        # Always overwrite — the cache is fresh per evaluate() call so there is
+        # no cross-call staleness; within a single call we just want one entry
+        # per (indicator, params, shift, sub_col) combination.
         _sub_col_tag = sub_col if sub_col is not None else "default"
         plain_key = f"{indicator}_{json.dumps(params, sort_keys=True)}_{shift}_{_sub_col_tag}"
-        if plain_key not in cache:
-            cache[plain_key] = series
+        cache[plain_key] = series
 
         return series
 

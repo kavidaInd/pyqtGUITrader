@@ -169,8 +169,8 @@ class HistoryManager(QObject):
                 return False
 
             try:
-                target_interval = str(self.config.get('history_interval', '1'))
-                target_minutes  = int(target_interval)
+                target_interval = '1'  # Always fetch 1m candles from broker; resampling is handled by candle manager
+                target_minutes  = 1
             except (TypeError, ValueError):
                 target_minutes  = 1
 
@@ -225,8 +225,8 @@ class HistoryManager(QObject):
                 return
 
             try:
-                target_interval = str(self.config.get('history_interval', '1'))
-                target_minutes  = int(target_interval)
+                target_interval = '1'  # Always fetch 1m candles from broker; resampling is handled by candle manager
+                target_minutes  = 1
             except (TypeError, ValueError):
                 target_minutes = 1
 

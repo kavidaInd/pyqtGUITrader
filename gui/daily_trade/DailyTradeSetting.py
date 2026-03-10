@@ -44,7 +44,6 @@ class DailyTradeSetting:
         "lot_size": 65,
         "call_lookback": 0,
         "put_lookback": 0,
-        "history_interval": "2m",
         "max_num_of_option": 1800,
         "lower_percentage": 0,
         "cancel_after": 5,
@@ -80,7 +79,6 @@ class DailyTradeSetting:
         "lot_size": int,
         "call_lookback": int,
         "put_lookback": int,
-        "history_interval": str,
         "max_num_of_option": int,
         "lower_percentage": float,
         "cancel_after": int,
@@ -265,7 +263,6 @@ class DailyTradeSetting:
             state.put_lookback = self.put_lookback
             state.original_call_lookback = self.call_lookback
             state.original_put_lookback = self.put_lookback
-            state.interval = self.history_interval
             state.max_num_of_option = self.max_num_of_option
             state.lower_percentage = self.lower_percentage
             state.cancel_after = self.cancel_after
@@ -415,22 +412,6 @@ class DailyTradeSetting:
             self.data["put_lookback"] = self.DEFAULTS["put_lookback"]
         except Exception as e:
             logger.error(f"[DailyTradeSetting.put_lookback setter] Failed: {e}", exc_info=True)
-
-    @property
-    def history_interval(self) -> str:
-        """Get history interval setting."""
-        try:
-            return str(self.data.get("history_interval", self.DEFAULTS["history_interval"]))
-        except Exception as e:
-            logger.error(f"[DailyTradeSetting.history_interval getter] Failed: {e}", exc_info=True)
-            return self.DEFAULTS["history_interval"]
-
-    @history_interval.setter
-    def history_interval(self, value):
-        try:
-            self.data["history_interval"] = str(value) if value is not None else self.DEFAULTS["history_interval"]
-        except Exception as e:
-            logger.error(f"[DailyTradeSetting.history_interval setter] Failed: {e}", exc_info=True)
 
     @property
     def max_num_of_option(self) -> int:
