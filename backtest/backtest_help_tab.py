@@ -2733,7 +2733,6 @@ class BacktestHelpTab(QWidget, ThemedMixin):
                 <tr><td><b>Angel One</b></td><td>₹20 per lot</td><td>For active plan</td></tr>
                 <tr><td><b>Upstox</b></td><td>₹20 per lot</td><td>Standard plan</td></tr>
                 <tr><td><b>Groww</b></td><td>₹20 per lot</td><td>Options</td></tr>
-                <tr><td><b>ICICI Direct</b></td><td>0.25-0.50%</td><td>Percentage based</td></tr>
             </table>
 
             <h2 style='color:{c.GREEN}'>Additional Charges</h2>

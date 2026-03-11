@@ -11,8 +11,6 @@ Supported brokers:
 - AngelOne   (smartapi-python)
 - Upstox     (upstox-python-sdk)
 - Shoonya    (NorenRestApiPy)
-- Kotak Neo  (neo_api_client)
-- ICICI      (breeze-connect)
 - AliceBlue  (pya3)
 - Flattrade  (NorenRestApiPy)
 
@@ -155,7 +153,6 @@ class BaseBroker(ABC):
         Return the broker type identifier matching BrokerType constants.
 
         Strips the trailing "Broker" suffix from the class name and lowercases.
-        KotakNeoBroker MUST override this to return "kotak".
         """
         class_name = self.__class__.__name__
         if class_name.endswith("Broker"):
@@ -508,10 +505,8 @@ class BaseBroker(ABC):
             FlatTrade   "NFO|NIFTY2531825000CE"
             AliceBlue   "NIFTY2531825000CE" (bare, via instrument object)
             AngelOne    "NIFTY2531825000CE" (bare, token looked up separately)
-            KotakNeo    "NIFTY2531825000CE" (bare, exchange passed separately)
             Dhan        numeric security_id  (instrument master lookup)
             Upstox      "NSE_FO|<ISIN>"     (instrument_key lookup)
-            ICICI       "NFO:NIFTY:18MAR2025:25000:CE"  (structured string)
 
         The previous approach — building symbols in OptionUtils and then
         translating them — only worked for Fyers (prefix-based).  Every other

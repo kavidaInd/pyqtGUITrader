@@ -30,8 +30,6 @@ Supported Brokers (10 total):
     │ angelone   │ Angel One       │ totp          │ Yes           │
     │ upstox     │ Upstox          │ oauth         │ Yes           │
     │ shoonya    │ Shoonya/Finvasia│ totp          │ Yes           │
-    │ kotak      │ Kotak Neo       │ totp          │ No            │
-    │ icici      │ ICICI Breeze    │ session       │ Yes           │
     │ aliceblue  │ Alice Blue      │ password      │ No            │
     │ flattrade  │ FlatTrade (Pi)  │ oauth         │ Yes           │
     └────────────┴─────────────────┴───────────────┴───────────────┘
@@ -56,8 +54,6 @@ from broker.AngelOneBroker import AngelOneBroker
 from broker.DhanBroker import DhanBroker
 from broker.FlattradeBroker import FlattradeBroker
 from broker.FyersBroker import FyersBroker
-from broker.IciciBroker import IciciBroker
-from broker.KotakNeoBroker import KotakNeoBroker
 from broker.ShoonyaBroker import ShoonyaBroker
 from broker.UpstoxBroker import UpstoxBroker
 from broker.ZerodhaBroker import ZerodhaBroker
@@ -88,8 +84,6 @@ class BrokerType:
     ANGELONE = "angelone"
     UPSTOX = "upstox"
     SHOONYA = "shoonya"
-    KOTAK = "kotak"
-    ICICI = "icici"
     ALICEBLUE = "aliceblue"
     FLATTRADE = "flattrade"
 
@@ -100,7 +94,7 @@ class BrokerType:
     ALL = (
         FYERS, ZERODHA, DHAN,
         ANGELONE, UPSTOX, SHOONYA,
-        KOTAK, ICICI, ALICEBLUE, FLATTRADE,
+        ALICEBLUE, FLATTRADE,
     )
 
     # ── Human-readable display names for UI components ────────────────────────
@@ -112,8 +106,6 @@ class BrokerType:
         ANGELONE: "Angel One (SmartAPI)",
         UPSTOX: "Upstox",
         SHOONYA: "Shoonya / Finvasia",
-        KOTAK: "Kotak Neo",
-        ICICI: "ICICI Breeze",
         ALICEBLUE: "Alice Blue",
         FLATTRADE: "FlatTrade (Pi)",
     }
@@ -132,8 +124,6 @@ class BrokerType:
         ANGELONE: "totp",
         UPSTOX: "oauth",
         SHOONYA: "totp",
-        KOTAK: "totp",
-        ICICI: "session",
         ALICEBLUE: "password",
         FLATTRADE: "oauth",
     }
@@ -148,8 +138,6 @@ class BrokerType:
         ANGELONE: True,
         UPSTOX: True,
         SHOONYA: True,
-        KOTAK: False,  # Kotak Neo API does not provide historical data
-        ICICI: True,
         ALICEBLUE: False,  # Alice Blue SDK lacks historical data
         FLATTRADE: True,
     }
@@ -223,13 +211,6 @@ class BrokerFactory:
 
         logger.info(f"BrokerFactory: creating broker '{broker_type}'")
 
-        # Route to appropriate broker implementation.
-        # NOTE: KotakNeoBroker's auto-derived broker_type would be "kotakneo"
-        # (class name minus "Broker" suffix), but BrokerType.KOTAK is "kotak".
-        # The factory routes by the config string ("kotak"), which is correct.
-        # However KotakNeoBroker must override the broker_type property to return
-        # "kotak" explicitly, or the base-class derivation will produce a mismatch
-        # when any code compares broker.broker_type against BrokerType.KOTAK.
         if broker_type == BrokerType.FYERS:
             return FyersBroker(state=state, broker_setting=broker_setting)
         elif broker_type == BrokerType.ZERODHA:
@@ -242,19 +223,11 @@ class BrokerFactory:
             return UpstoxBroker(state=state, broker_setting=broker_setting)
         elif broker_type == BrokerType.SHOONYA:
             return ShoonyaBroker(state=state, broker_setting=broker_setting)
-        elif broker_type == BrokerType.KOTAK:
-            return KotakNeoBroker(state=state, broker_setting=broker_setting)
-        elif broker_type == BrokerType.ICICI:
-            return IciciBroker(state=state, broker_setting=broker_setting)
         elif broker_type == BrokerType.ALICEBLUE:
             return AliceBlueBroker(state=state, broker_setting=broker_setting)
         elif broker_type == BrokerType.FLATTRADE:
             return FlattradeBroker(state=state, broker_setting=broker_setting)
         else:
-            # BUG FIX: The ValueError was raised bare with no log entry, so in
-            # production it would silently disappear if the caller catches broadly.
-            # Log it as CRITICAL first so it always appears in the log file even
-            # if the exception is swallowed higher up.
             msg = (
                 f"BrokerFactory: unknown broker_type '{broker_type}'. "
                 f"Supported types: {list(BrokerType.ALL)}"
@@ -299,13 +272,11 @@ class BrokerFactory:
             bool: True if the broker supports historical data, False otherwise
 
         Example:
-            >>> BrokerFactory.supports_history("kotak")
-            False
             >>> BrokerFactory.supports_history("fyers")
             True
 
         Note:
-            Brokers without historical data support (Kotak, Alice Blue) will
+            Brokers without historical data support (Alice Blue) will
             need an alternative data source for backtesting and charting.
         """
         # BUG FIX: Same None guard as get_display_name — broker_type.lower() will

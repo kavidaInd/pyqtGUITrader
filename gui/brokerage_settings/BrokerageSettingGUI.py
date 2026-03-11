@@ -83,24 +83,6 @@ BROKER_HINTS = {
         "auth_note":    "TOTP-based login. Call broker.login() each morning before market open.",
         "redirect_disabled": False,
     },
-    BrokerType.KOTAK: {
-        "client_id":    ("Consumer Key",           "From Kotak Neo app → Trade API card"),
-        "secret_key":   ("Consumer Secret",        "From Kotak Neo app → Trade API card"),
-        "redirect_uri": ("TOTP Secret",            "Base32 TOTP secret for auto-TOTP"),
-        "redirect_note": "TOTP secret from Kotak Securities TOTP registration page.",
-        "help_url":     "https://github.com/Kotak-Neo/kotak-neo-api",
-        "auth_note":    "TOTP + MPIN login. Call broker.login_totp(mobile, ucc, mpin) at startup.",
-        "redirect_disabled": False,
-    },
-    BrokerType.ICICI: {
-        "client_id":    ("API Key",                "From https://api.icicidirect.com"),
-        "secret_key":   ("Secret Key",             "From https://api.icicidirect.com"),
-        "redirect_uri": ("Not required",           "Leave blank for ICICI Breeze"),
-        "redirect_note": "Visit get_login_url() each day to obtain a session token. Static IP required (SEBI mandate).",
-        "help_url":     "https://api.icicidirect.com",
-        "auth_note":    "Session-token auth. Visit login URL daily, paste token into broker.generate_session().",
-        "redirect_disabled": True,
-    },
     BrokerType.ALICEBLUE: {
         "client_id":    ("App ID",                 "From Alice Blue developer console"),
         "secret_key":   ("API Secret",             "From Alice Blue developer console"),
@@ -129,8 +111,6 @@ BROKER_ORDER = [
     BrokerType.ANGELONE,
     BrokerType.UPSTOX,
     BrokerType.SHOONYA,
-    BrokerType.KOTAK,
-    BrokerType.ICICI,
     BrokerType.ALICEBLUE,
     BrokerType.FLATTRADE,
 ]
@@ -1142,8 +1122,8 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
                 "🏦 Broker Selection",
                 "Choose your brokerage from the dropdown. Each broker has specific credential requirements:\n\n"
                 "• **Fyers/Zerodha/Upstox**: OAuth based - requires redirect URI\n"
-                "• **Dhan/ICICI**: Static token based - no redirect needed\n"
-                "• **AngelOne/Shoonya/Kotak**: TOTP based - requires TOTP secret\n"
+                "• **Dhan**: Static token based - no redirect needed\n"
+                "• **AngelOne/Shoonya**: TOTP based - requires TOTP secret\n"
                 "• **AliceBlue/Flattrade**: Combined credentials format"
             ),
             (
@@ -1295,7 +1275,6 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             BrokerType.FYERS:     f"https://api-t1.fyers.in/api/v3/generate-authcode?client_id={api_key}&redirect_uri={self.redirect_entry.text()}&response_type=code&state=algotrade",
             BrokerType.ZERODHA:   f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}",
             BrokerType.UPSTOX:    f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={api_key}&redirect_uri={self.redirect_entry.text()}",
-            BrokerType.ICICI:     f"https://api.icicidirect.com/apiuser/login?api_key={api_key}",
             BrokerType.FLATTRADE: f"https://auth.flattrade.in/?api_key={api_key.split('|')[-1] if '|' in api_key else api_key}",
         }
 

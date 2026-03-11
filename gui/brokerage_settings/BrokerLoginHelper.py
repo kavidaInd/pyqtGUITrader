@@ -23,18 +23,13 @@ Usage:
     # For static-token brokers (dhan):
     tok  = helper.exchange_code_for_token(access_token)
 
-    # For session-token brokers (icici):
-    url  = helper.generate_login_url()
-    tok  = helper.exchange_code_for_token(session_token)
-
     # For password brokers (aliceblue):
     tok  = helper.exchange_code_for_token("")   # credentials already in helper
 
 Auth methods (mirrors BrokerType.AUTH_METHOD):
     oauth    — Fyers, Zerodha, Upstox, FlatTrade
-    totp     — Angel One, Shoonya, Kotak Neo
+    totp     — Angel One, Shoonya
     static   — Dhan
-    session  — ICICI Breeze
     password — Alice Blue
 """
 
@@ -86,8 +81,6 @@ class BrokerLoginHelper(ABC):
             "angelone": AngelOneLoginHelper,
             "upstox": UpstoxLoginHelper,
             "shoonya": ShoonyaLoginHelper,
-            "kotak": KotakLoginHelper,
-            "icici": IciciLoginHelper,
             "aliceblue": AliceBlueLoginHelper,
             "flattrade": FlattradeLoginHelper,
         }
@@ -584,113 +577,6 @@ class ShoonyaLoginHelper(BrokerLoginHelper):
             logger.error(f"[ShoonyaLoginHelper.exchange_code_for_token] {e}", exc_info=True)
             return None
 
-
-# ── Kotak Neo ─────────────────────────────────────────────────────────────────
-
-class KotakLoginHelper(BrokerLoginHelper):
-    """
-    client_id    = Consumer Key
-    secret_key   = Consumer Secret
-    redirect_uri = TOTP base32 secret
-
-    TOTP login requires mobile + UCC + MPIN passed as kwargs.
-    """
-    auth_method = "totp"
-    broker_display_name = "Kotak Neo"
-    needs_password_field = True
-    password_field_label = "MPIN (4-digit)"
-    password_field_placeholder = "Enter your Kotak Neo MPIN"
-
-    step1_title = "TOTP-based login — no browser required"
-    step1_hint = ("Kotak Neo uses TOTP + MPIN. No browser login is needed.")
-    step2_title = "Enter TOTP and additional details"
-    step2_hint = ("Enter your TOTP code (or leave blank to auto-generate).\n"
-                  "Provide your MPIN in the password field below.\n"
-                  "Mobile number and UCC must be set in the extra fields.")
-    code_entry_placeholder = "6-digit TOTP code (blank = auto-generate)"
-
-    def __init__(self, client_id: str, secret_key: str, redirect_uri: str = "", **kwargs):
-        self.totp_secret = redirect_uri or kwargs.get("totp_secret", "")
-        self.mobile = kwargs.get("mobile", "")
-        self.ucc = kwargs.get("ucc", "")
-        super().__init__(client_id=client_id, secret_key=secret_key, redirect_uri=redirect_uri)
-
-    def generate_login_url(self) -> str:
-        return "https://github.com/Kotak-Neo/kotak-neo-api"
-
-    def exchange_code_for_token(self, code_or_token: str, **kwargs) -> Optional[str]:
-        try:
-            from neo_api_client import NeoAPI
-            import pyotp
-            password = kwargs.get("password", "")
-            mobile = kwargs.get("mobile", self.mobile or "")
-            ucc = kwargs.get("ucc", self.ucc or "")
-
-            if not mobile or not ucc:
-                logger.error("KotakNeo: mobile and UCC are required")
-                return None
-            if not password:
-                logger.error("KotakNeo: MPIN is required")
-                return None
-
-            totp = code_or_token.strip() or (
-                pyotp.TOTP(self.totp_secret).now() if self.totp_secret else ""
-            )
-            if not totp:
-                logger.error("KotakNeo: TOTP required")
-                return None
-
-            client = NeoAPI(
-                consumer_key=self.client_id,
-                consumer_secret=self.secret_key,
-                environment="prod",
-                neo_fin_key="neotradeapi",
-            )
-            client.totp_login(mobile_number=mobile, ucc=ucc, totp=totp)
-            ret = client.totp_validate(mpin=password)
-            if ret:
-                access_token = str(ret.get("data", {}).get("token") or ret)
-                self._save_token(access_token, hours_valid=8)
-                return access_token
-            logger.error(f"KotakNeo login failed: {ret}")
-            return None
-        except Exception as e:
-            logger.error(f"[KotakLoginHelper.exchange_code_for_token] {e}", exc_info=True)
-            return None
-
-
-# ── ICICI Breeze ──────────────────────────────────────────────────────────────
-
-class IciciLoginHelper(BrokerLoginHelper):
-    auth_method = "session"
-    broker_display_name = "ICICI Breeze"
-
-    step1_title = "Step 1 — Open the ICICI Breeze login URL"
-    step1_hint = ("Click below to open the ICICI Direct login page.\n"
-                  "⚠️  ICICI Breeze now requires a Static IP for API usage (SEBI mandate).")
-    step2_title = "Step 2 — Paste the session token"
-    step2_hint = ("After login, the page redirects to your app with a session token.\n"
-                  "Copy the token value and paste it here.")
-    code_entry_placeholder = "Paste ICICI Breeze session token here…"
-
-    def generate_login_url(self) -> str:
-        if not self.client_id:
-            return ""
-        import urllib.parse
-        return f"https://api.icicidirect.com/apiuser/login?api_key={urllib.parse.quote_plus(self.client_id)}"
-
-    def exchange_code_for_token(self, code_or_token: str, **kwargs) -> Optional[str]:
-        try:
-            from breeze_connect import BreezeConnect
-            if not code_or_token:
-                return None
-            breeze = BreezeConnect(api_key=self.client_id)
-            breeze.generate_session(api_secret=self.secret_key, session_token=code_or_token)
-            self._save_token(code_or_token, hours_valid=10)
-            return code_or_token
-        except Exception as e:
-            logger.error(f"[IciciLoginHelper.exchange_code_for_token] {e}", exc_info=True)
-            return None
 
 
 # ── Alice Blue ────────────────────────────────────────────────────────────────

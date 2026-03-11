@@ -16,8 +16,6 @@ hidden_imports = [
     "broker.AngelOneBroker",
     "broker.UpstoxBroker",
     "broker.ShoonyaBroker",
-    "broker.KotakNeoBroker",
-    "broker.IciciBroker",
     "broker.AliceBlueBroker",
     "broker.FlattradeBroker",
     # PyQt5

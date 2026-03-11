@@ -80,8 +80,7 @@ VIX_SYMBOL_MAP: Dict[str, str] = {
 _CLASS_TO_BROKER: Dict[str, str] = {
     "Fyers": "fyers", "Zerodha": "zerodha", "Dhan": "dhan",
     "Angel": "angelone", "Upstox": "upstox", "Shoonya": "shoonya",
-    "Flattrade": "flattrade", "ICICI": "icici",
-    "Kotak": "kotak", "AliceBlue": "aliceblue",
+    "Flattrade": "flattrade", "AliceBlue": "aliceblue",
 }
 
 

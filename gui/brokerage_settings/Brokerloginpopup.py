@@ -6,8 +6,7 @@ Matches the theme of DailyTradeSettingGUI.py and BrokerageSettingGUI.py
 
 Auth method variants handled:
     oauth    — URL display + auth-code/URL paste  (Fyers, Zerodha, Upstox, FlatTrade)
-    session  — URL display + plain session token  (ICICI Breeze)
-    totp     — No URL; TOTP entry + optional MPIN (Angel One, Shoonya, Kotak)
+    totp     — No URL; TOTP entry + optional MPIN (Angel One, Shoonya)
     static   — No URL; plain token paste          (Dhan)
     password — No URL; no entry; auto-login btn   (Alice Blue)
 
@@ -785,20 +784,6 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                 step2_layout.addWidget(pwd_label)
                 step2_layout.addWidget(self.password_entry)
 
-            # Mobile + UCC fields for Kotak Neo
-            if (safe_getattr(self.brokerage_setting, 'broker_type', '') or '') == 'kotak':
-                kotak_label = QLabel("Mobile number and UCC (required for Kotak Neo):")
-                kotak_label.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt;")
-                self.mobile_entry = QLineEdit()
-                self.mobile_entry.setPlaceholderText("Mobile number with country code (e.g. +919999999999)")
-                self.mobile_entry.setStyleSheet(self._get_lineedit_style())
-                self.ucc_entry = QLineEdit()
-                self.ucc_entry.setPlaceholderText("UCC (Unique Client Code)")
-                self.ucc_entry.setStyleSheet(self._get_lineedit_style())
-                step2_layout.addWidget(kotak_label)
-                step2_layout.addWidget(self.mobile_entry)
-                step2_layout.addWidget(self.ucc_entry)
-
             scroll_layout.addWidget(step2_card)
             scroll_layout.addStretch()
 
@@ -1048,7 +1033,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                     "in the redirect_uri field is correct.")
         if auth == "session":
             return (base +
-                    "Static IP required — ICICI Breeze enforces a static IP per SEBI rules. "
+                    "Static IP required — enforces a static IP per SEBI rules. "
                     "Ensure you're on the whitelisted IP address.\n\n"
                     "Session token expired — session tokens are single-use. "
                     "Visit the login URL again to get a fresh token.")
@@ -1268,17 +1253,6 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                     )
                     return
                 extra["password"] = password
-
-            # Kotak Neo — mobile + UCC required
-            if (safe_getattr(self.brokerage_setting, 'broker_type', '') or '') == 'kotak':
-                mobile_val = self.mobile_entry.text().strip() if self.mobile_entry else ""
-                ucc_val = self.ucc_entry.text().strip() if self.ucc_entry else ""
-                if not mobile_val or not ucc_val:
-                    QMessageBox.warning(self, "Input Needed",
-                                        "Mobile number and UCC are required for Kotak Neo.")
-                    return
-                extra["mobile"] = mobile_val
-                extra["ucc"] = ucc_val
 
             # For OAuth/session brokers: extract code from URL
             if auth in ("oauth", "session"):

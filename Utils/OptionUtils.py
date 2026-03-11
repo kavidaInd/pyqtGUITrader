@@ -18,8 +18,6 @@ BROKER_DHAN = "dhan"
 BROKER_ANGELONE = "angelone"
 BROKER_UPSTOX = "upstox"
 BROKER_SHOONYA = "shoonya"
-BROKER_KOTAK = "kotak"
-BROKER_ICICI = "icici"
 BROKER_ALICEBLUE = "aliceblue"
 BROKER_FLATTRADE = "flattrade"
 
@@ -144,13 +142,6 @@ class OptionUtils:
             "MIDCPNIFTY": "NSE|MIDCPNIFTY-INDEX",
             "SENSEX": "BSE|SENSEX-INDEX",
         },
-        BROKER_ICICI: {
-            "NIFTY": "NIFTY",
-            "BANKNIFTY": "BANKNIFTY",
-            "FINNIFTY": "FINNIFTY",
-            "MIDCPNIFTY": "MIDCPNIFTY",
-            "SENSEX": "SENSEX",
-        },
     }
 
     # ── Option symbol prefix per broker ─────────────────────────────────────────
@@ -162,8 +153,6 @@ class OptionUtils:
         BROKER_UPSTOX: "NSE_FO|",
         BROKER_SHOONYA: "NFO|",
         BROKER_FLATTRADE: "NFO|",
-        BROKER_ICICI: "",
-        BROKER_KOTAK: "",
         BROKER_ALICEBLUE: "",
     }
 
@@ -230,17 +219,6 @@ class OptionUtils:
             "1": "1", "3": "3", "5": "5", "10": "10",
             "15": "15", "30": "30", "60": "60",
             "120": "120", "240": "240", "D": "D", "W": "W",
-        },
-        BROKER_ICICI: {
-            "1": "1minute",
-            "5": "5minute",
-            "10": "10minute",
-            "30": "30minute",
-            "60": "1hour",
-            "D": "1day",
-            "2": "5minute",
-            "3": "5minute",
-            "15": "30minute",
         },
     }
 
@@ -366,7 +344,7 @@ class OptionUtils:
     @classmethod
     def get_supported_intervals(cls, broker_type: str) -> List[str]:
         """Return the list of canonical interval strings supported by the given broker."""
-        _NO_HISTORY = {BROKER_KOTAK, BROKER_ALICEBLUE}
+        _NO_HISTORY = {BROKER_ALICEBLUE}
         if broker_type.lower() in _NO_HISTORY:
             return []
 

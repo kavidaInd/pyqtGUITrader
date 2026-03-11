@@ -22,9 +22,6 @@ different format:
     AngelOne        NIFTY2531825000CE        (no prefix, numeric token lookup)
     Dhan            numeric security_id      (instrument master lookup)
     Upstox          NSE_FO|<ISIN>            (instrument_key lookup)
-    KotakNeo        NIFTY2531825000CE        (no prefix, exchange param)
-    ICICI Breeze    NFO:NIFTY:25JAN2025:21000:CE  (structured colon-string)
-
 PUBLIC API
 ----------
 ``OptionSymbolBuilder.get_option_params(...)``
@@ -148,7 +145,6 @@ class OptionParams:
     day_str     : Zero-padded day string, e.g. "18".
     compact_core: The NSE compact symbol core (no broker prefix),
                   e.g. "NIFTY2531825000CE" or "NIFTY25MAR25000CE".
-    expiry_str_breeze: ICICI Breeze format, e.g. "18-MAR-2025".
     expiry_str_ddmmmyyyy: Human-readable, e.g. "18MAR2025".
     """
     underlying: str
@@ -163,7 +159,6 @@ class OptionParams:
     month_code_monthly: str = field(init=False)
     day_str: str = field(init=False)
     compact_core: str = field(init=False)
-    expiry_str_breeze: str = field(init=False)     # "18-MAR-2025"  (ICICI)
     expiry_str_ddmmmyyyy: str = field(init=False)  # "18MAR2025"    (generic)
 
     def __post_init__(self):

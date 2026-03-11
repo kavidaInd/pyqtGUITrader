@@ -51,8 +51,6 @@ BROKER_ORDER = [
     BrokerType.ANGELONE,
     BrokerType.UPSTOX,
     BrokerType.SHOONYA,
-    BrokerType.KOTAK,
-    BrokerType.ICICI,
     BrokerType.ALICEBLUE,
     BrokerType.FLATTRADE,
 ]
@@ -106,22 +104,6 @@ BROKER_HINTS = {
         "redirect_note": "Store TOTP base32 secret here. Obtain from Shoonya app → TOTP setup.",
         "auth_note": "TOTP-based login. Call broker.login() each morning before market open.",
         "redirect_disabled": False,
-    },
-    BrokerType.KOTAK: {
-        "client_id": ("Consumer Key", "From Kotak Neo app → Trade API card"),
-        "secret_key": ("Consumer Secret", "From Kotak Neo app → Trade API card"),
-        "redirect_uri": ("TOTP Secret", "Base32 TOTP secret for auto-TOTP"),
-        "redirect_note": "TOTP secret from Kotak Securities TOTP registration page.",
-        "auth_note": "TOTP + MPIN login. Call broker.login_totp(mobile, ucc, mpin) at startup.",
-        "redirect_disabled": False,
-    },
-    BrokerType.ICICI: {
-        "client_id": ("API Key", "From https://api.icicidirect.com"),
-        "secret_key": ("Secret Key", "From https://api.icicidirect.com"),
-        "redirect_uri": ("Not required", "Leave blank for ICICI Breeze"),
-        "redirect_note": "Visit get_login_url() each day to obtain a session token. Static IP required (SEBI mandate).",
-        "auth_note": "Session-token auth. Visit login URL daily, paste token into broker.generate_session().",
-        "redirect_disabled": True,
     },
     BrokerType.ALICEBLUE: {
         "client_id": ("App ID", "From Alice Blue developer console"),

@@ -7,16 +7,16 @@ Supports 10 brokers, live/paper/backtest modes, and runs as a native desktop app
 
 ## Features
 
-| Feature | Details |
-|---------|---------|
-| **Brokers** | Fyers, Zerodha, Dhan, Angel One, Upstox, Shoonya, Kotak Neo, ICICI Breeze, Alice Blue, FlatTrade |
-| **Trading Modes** | Live, Paper (simulation), Backtest |
-| **Strategy Engine** | Rule-based dynamic signal engine with confidence scoring |
-| **Risk Controls** | TP %, SL %, Trailing SL, Index SL, Max Hold Bars, Max Daily Loss, Max Trades/Day |
-| **Options** | ATM CE/PE, weekly & monthly expiry, auto expiry selection |
-| **Backtest** | Bar-by-bar replay with Black-Scholes option pricing, per-candle debug log |
+| Feature | Details                                                                             |
+|---------|-------------------------------------------------------------------------------------|
+| **Brokers** | Fyers, Zerodha, Dhan, Angel One, Upstox, Shoonya, Alice Blue, FlatTrade             |
+| **Trading Modes** | Live, Paper (simulation), Backtest                                                  |
+| **Strategy Engine** | Rule-based dynamic signal engine with confidence scoring                            |
+| **Risk Controls** | TP %, SL %, Trailing SL, Index SL, Max Hold Bars, Max Daily Loss, Max Trades/Day    |
+| **Options** | ATM CE/PE, weekly & monthly expiry, auto expiry selection                           |
+| **Backtest** | Bar-by-bar replay with Black-Scholes option pricing, per-candle debug log           |
 | **Caching** | Indicator results cached per candle-close — no redundant calculations on every tick |
-| **Platforms** | Windows 10+, macOS 11+, Ubuntu 20.04+ |
+| **Platforms** | Windows 10+, macOS 11+, Ubuntu 20.04+                                               |
 
 ---
 
