@@ -8,7 +8,7 @@ Single plan: ₹4,999 / month per user.
 import logging
 import webbrowser
 
-from PyQt5.QtCore    import Qt
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QWidget
@@ -21,18 +21,20 @@ logger = logging.getLogger(__name__)
 # ── Customise these ───────────────────────────────────────────────────────────
 WEBSITE_SUBSCRIPTION_URL = "https://your-website.com/pricing"
 
-PLAN_PRICE    = "₹4,999"
-PLAN_PERIOD   = "/ month"
-PLAN_TAGLINE  = "Per user · Cancel anytime"
+PLAN_PRICE = "₹4,999"
+PLAN_PERIOD = "/ month"
+PLAN_TAGLINE = "Per user · Cancel anytime"
 
 FEATURES = [
-    ("⚡", "Real-time live execution",  "Orders routed directly to your broker in milliseconds."),
-    ("🛡️", "Full risk controls",       "Live SL, TP, max-loss and daily trade-count limits."),
-    ("📊", "Live P&L dashboard",        "P&L widget and daily stats updated on every price tick."),
-    ("🔗", "All supported brokers",     "Works with Zerodha, Fyers, Upstox, Angel One and more."),
-    ("🎯", "Algo + Manual trading",     "Switch between automated signals and manual order entry."),
-    ("💬", "Priority support",          "Dedicated email support with faster response times."),
+    ("⚡", "Real-time live execution", "Orders routed directly to your broker in milliseconds."),
+    ("🛡️", "Full risk controls", "Live SL, TP, max-loss and daily trade-count limits."),
+    ("📊", "Live P&L dashboard", "P&L widget and daily stats updated on every price tick."),
+    ("🔗", "All supported brokers", "Works with Zerodha, Fyers, Upstox, Angel One and more."),
+    ("🎯", "Algo + Manual trading", "Switch between automated signals and manual order entry."),
+    ("💬", "Priority support", "Dedicated email support with faster response times."),
 ]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -60,11 +62,16 @@ class UpgradePopup(QDialog):
         self._build()
 
     @property
-    def _c(self):  return theme_manager.palette
+    def _c(self):
+        return theme_manager.palette
+
     @property
-    def _ty(self): return theme_manager.typography
+    def _ty(self):
+        return theme_manager.typography
+
     @property
-    def _sp(self): return theme_manager.spacing
+    def _sp(self):
+        return theme_manager.spacing
 
     # ── build ─────────────────────────────────────────────────────────────────
 
@@ -76,7 +83,8 @@ class UpgradePopup(QDialog):
                 if item.widget():
                     item.widget().deleteLater()
             try:
-                import sip; sip.delete(old)
+                import sip;
+                sip.delete(old)
             except Exception:
                 pass
 
@@ -113,13 +121,13 @@ class UpgradePopup(QDialog):
 
         if self._trial_expired:
             title_text = "Your free trial has ended"
-            sub_text   = (
+            sub_text = (
                 "Your 7-day trial included live trading. "
                 "Subscribe to keep trading live — Paper Trading and Backtesting remain free forever."
             )
         else:
             title_text = "Live Trading requires a subscription"
-            sub_text   = (
+            sub_text = (
                 "Paper Trading and Backtesting are always free. "
                 "Subscribe to connect to a live broker and trade with real money."
             )

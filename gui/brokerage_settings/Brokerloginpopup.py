@@ -498,13 +498,6 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         content_layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
         content_layout.setSpacing(sp.GAP_LG)
 
-        # Header
-        broker_name = self._helper.broker_display_name
-        header_text = f"🔐 {broker_name} Authentication"
-        if self._reason:
-            header_text = f"🔄 {broker_name} — Re-authentication Required"
-        header = ModernHeader(header_text)
-        content_layout.addWidget(header)
 
         # Warning banner (token-expiry reason)
         if self._reason:
@@ -580,38 +573,61 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
 
     def _create_title_bar(self):
         """Create custom title bar with close button."""
+        c  = self._c
+        ty = self._ty
+        sp = self._sp
+
         title_bar = QWidget()
-        title_bar.setFixedHeight(40)
-        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
+        title_bar.setObjectName("dialogTitleBar")
+        title_bar.setFixedHeight(46)
+        title_bar.setStyleSheet(f"""
+            QWidget#dialogTitleBar {{
+                background: {c.BG_CARD};
+                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
+            }}
+        """)
 
         layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
+        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
+        layout.setSpacing(8)
+
+        # Blue accent bar on left
+        accent = QFrame()
+        accent.setFixedSize(3, 20)
+        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
+        layout.addWidget(accent)
 
         broker_name = self._helper.broker_display_name if self._helper else "Broker"
         title = QLabel(f"🔐 {broker_name} Login")
         title.setStyleSheet(f"""
             QLabel {{
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
+                color: {c.TEXT_BRIGHT};
+                font-size: {ty.SIZE_LG}pt;
+                font-weight: {ty.WEIGHT_BOLD};
+                background: transparent;
+                border: none;
             }}
         """)
 
         close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
+        close_btn.setFixedSize(28, 28)
         close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setToolTip("Close")
         close_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {self._c.BG_HOVER};
-                color: {self._c.TEXT_DIM};
+                background: {c.BG_HOVER};
+                color: {c.TEXT_DIM};
                 border: none;
-                border-radius: {self._sp.RADIUS_SM}px;
-                font-size: {self._ty.SIZE_MD}pt;
+                border-radius: {sp.RADIUS_SM}px;
+                font-size: {ty.SIZE_MD}pt;
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background: {self._c.RED};
+                background: {c.RED};
                 color: white;
+            }}
+            QPushButton:pressed {{
+                background: {c.RED_BRIGHT};
             }}
         """)
         close_btn.clicked.connect(self.reject)
@@ -619,6 +635,11 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         layout.addWidget(title)
         layout.addStretch()
         layout.addWidget(close_btn)
+
+        self._drag_pos = None
+        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
+        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
+        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
 
         return title_bar
 

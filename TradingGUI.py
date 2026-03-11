@@ -327,9 +327,12 @@ class TradingGUI(QMainWindow):
                 self.btn_panel.setMaximumHeight(sp.BUTTON_PANEL_H + 8)
                 self.btn_panel.setStyleSheet(f"""
                     QWidget#buttonPanel {{
-                        background-color: {c.BG_PANEL};
+                        background: qlineargradient(
+                            x1:0, y1:0, x2:0, y2:1,
+                            stop:0 {c.BG_CARD}, stop:1 {c.BG_PANEL}
+                        );
                         border: {sp.SEPARATOR}px solid {c.BORDER};
-                        border-radius: {sp.RADIUS_MD}px;
+                        border-radius: {sp.RADIUS_LG}px;
                     }}
                 """)
 
@@ -354,14 +357,23 @@ class TradingGUI(QMainWindow):
                     background-color: {c.BG_MAIN};
                 }}
                 QFrame#buttonPanel {{
-                    background-color: {c.BG_PANEL};
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:0, y2:1,
+                        stop:0 {c.BG_CARD}, stop:1 {c.BG_PANEL}
+                    );
                     border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
+                    border-radius: {sp.RADIUS_LG}px;
                 }}
                 QFrame[frameShape="5"] {{
                     border: none;
-                    background-color: {c.BORDER};
+                    background-color: {c.BORDER_DIM};
                     width: {sp.SEPARATOR}px;
+                }}
+                QSplitter::handle {{
+                    background: {c.BORDER_DIM};
+                }}
+                QSplitter::handle:hover {{
+                    background: {c.BLUE};
                 }}
             """)
 
@@ -856,9 +868,12 @@ class TradingGUI(QMainWindow):
             panel.setMaximumHeight(sp.BUTTON_PANEL_H + 8)
             panel.setStyleSheet(f"""
                 QWidget#buttonPanel {{
-                    background-color: {c.BG_PANEL};
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:0, y2:1,
+                        stop:0 {c.BG_CARD}, stop:1 {c.BG_PANEL}
+                    );
                     border: {sp.SEPARATOR}px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_MD}px;
+                    border-radius: {sp.RADIUS_LG}px;
                 }}
             """)
 
@@ -871,12 +886,13 @@ class TradingGUI(QMainWindow):
             mode_layout = QHBoxLayout(mode_frame)
             mode_layout.setContentsMargins(0, 0, 0, 0)
 
-            lbl = QLabel("Mode:")
+            lbl = QLabel("MODE")
             lbl.setStyleSheet(f"""
-                color: {c.TEXT_DIM}; 
-                font-size: {ty.SIZE_SM}pt; 
+                color: {c.TEXT_MUTED};
+                font-size: {ty.SIZE_XS}pt;
                 font-weight: {ty.WEIGHT_BOLD};
                 background-color: transparent;
+                letter-spacing: 0.8px;
             """)
             lbl.setToolTip("Current trading mode")
             mode_layout.addWidget(lbl)
@@ -886,10 +902,11 @@ class TradingGUI(QMainWindow):
             mode_color = c.RED_BRIGHT if (
                     self.trading_mode_setting and self.trading_mode_setting.is_live()) else c.GREEN_BRIGHT
             self.mode_label.setStyleSheet(f"""
-                color: {mode_color}; 
-                font-weight: {ty.WEIGHT_BOLD}; 
-                padding: {sp.PAD_XS}px;
+                color: {mode_color};
+                font-weight: {ty.WEIGHT_BOLD};
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
                 background-color: transparent;
+                border-radius: {sp.RADIUS_SM}px;
             """)
             self.mode_label.setToolTip("Current trading mode - LIVE, PAPER, or BACKTEST")
             mode_layout.addWidget(self.mode_label)
@@ -908,8 +925,9 @@ class TradingGUI(QMainWindow):
 
             separator = QFrame()
             separator.setFrameShape(QFrame.VLine)
+            separator.setFixedWidth(1)
             separator.setStyleSheet(
-                f"QFrame {{ border: none; background-color: {c.BORDER}; width: {sp.SEPARATOR}px; }}")
+                f"QFrame {{ border: none; background-color: {c.BORDER_DIM}; max-width: 1px; }}")
             layout.addWidget(separator)
 
             self.btn_strategy = QPushButton("⚡ Strategy")

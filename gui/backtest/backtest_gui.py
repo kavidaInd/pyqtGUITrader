@@ -20,6 +20,8 @@ from backtest.backtest_engine import BacktestEngine, BacktestResult
 from config import Config
 from strategy.strategy_manager import StrategyManager
 
+from gui.theme_manager import theme_manager
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +83,207 @@ class BacktestGUI(QDialog):
 
         self._setup_ui()
         self._connect_signals()
+        self.apply_theme()
+
+        theme_manager.theme_changed.connect(self.apply_theme)
+        theme_manager.density_changed.connect(self.apply_theme)
+
+    # ── theme shortcuts ──────────────────────────────────────────────────────
+    @property
+    def _c(self):  return theme_manager.palette
+    @property
+    def _ty(self): return theme_manager.typography
+    @property
+    def _sp(self): return theme_manager.spacing
+
+    def apply_theme(self, _=None):
+        """Apply theme to the entire backtest window."""
+        try:
+            c  = self._c
+            ty = self._ty
+            sp = self._sp
+            self.setStyleSheet(f"""
+                QDialog, QWidget {{
+                    background: {c.BG_MAIN};
+                    color: {c.TEXT_MAIN};
+                    font-size: {ty.SIZE_SM}pt;
+                }}
+                QGroupBox {{
+                    background: {c.BG_PANEL};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                    margin-top: 8px;
+                    font-size: {ty.SIZE_SM}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    color: {c.TEXT_DIM};
+                    padding-top: 4px;
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: {sp.PAD_MD}px;
+                    padding: 0 4px;
+                    color: {c.TEXT_DIM};
+                }}
+                QLabel {{
+                    color: {c.TEXT_MAIN};
+                    background: transparent;
+                }}
+                QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
+                    background: {c.BG_CARD};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    font-size: {ty.SIZE_SM}pt;
+                    min-height: {sp.BTN_HEIGHT_SM}px;
+                }}
+                QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+                QDateEdit:focus, QComboBox:focus {{
+                    border-color: {c.BLUE};
+                }}
+                QComboBox::drop-down {{ border: none; }}
+                QComboBox::down-arrow {{ width: 12px; height: 12px; }}
+                QCheckBox {{
+                    color: {c.TEXT_MAIN};
+                    spacing: 6px;
+                }}
+                QCheckBox::indicator {{
+                    width: 14px; height: 14px;
+                    border: 1px solid {c.BORDER};
+                    border-radius: 3px;
+                    background: {c.BG_CARD};
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {c.BLUE};
+                    border-color: {c.BLUE};
+                }}
+                QPushButton {{
+                    background: {c.BG_CARD};
+                    color: {c.TEXT_MAIN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                    font-size: {ty.SIZE_SM}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    min-height: {sp.BTN_HEIGHT_SM}px;
+                }}
+                QPushButton:hover   {{ background: {c.BG_HOVER}; border-color: {c.BORDER_STRONG}; }}
+                QPushButton:pressed {{ background: {c.BG_MAIN}; }}
+                QPushButton:disabled {{ color: {c.TEXT_DISABLED}; border-color: {c.BORDER_DIM}; }}
+                QTableWidget {{
+                    background: {c.BG_PANEL};
+                    color: {c.TEXT_MAIN};
+                    gridline-color: {c.BORDER_DIM};
+                    border: 1px solid {c.BORDER};
+                    font-size: {ty.SIZE_SM}pt;
+                    alternate-background-color: {c.BG_ROW_B};
+                    selection-background-color: {c.BG_SELECTED};
+                }}
+                QTableWidget::item {{ padding: 3px; }}
+                QHeaderView::section {{
+                    background: {c.BG_CARD};
+                    color: {c.TEXT_DIM};
+                    border: none;
+                    border-right: 1px solid {c.BORDER_DIM};
+                    border-bottom: 1px solid {c.BORDER};
+                    padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                    font-size: {ty.SIZE_XS}pt;
+                    font-weight: {ty.WEIGHT_BOLD};
+                    letter-spacing: 0.5px;
+                }}
+                QTextEdit {{
+                    background: {c.BG_MAIN};
+                    color: {c.GREEN};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    font-family: Consolas, monospace;
+                    font-size: {ty.SIZE_SM}pt;
+                }}
+                QProgressBar {{
+                    background: {c.BG_CARD};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_SM}px;
+                    text-align: center;
+                    color: {c.TEXT_MAIN};
+                    min-height: {sp.PROGRESS_MD}px;
+                    max-height: {sp.PROGRESS_MD}px;
+                }}
+                QProgressBar::chunk {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                                stop:0 {c.BLUE_DARK}, stop:1 {c.BLUE_BRIGHT});
+                    border-radius: {sp.RADIUS_SM}px;
+                }}
+                QSplitter::handle {{ background: {c.BORDER_DIM}; }}
+                QSplitter::handle:horizontal {{ width: 1px; }}
+                QTabWidget::pane {{
+                    border: 1px solid {c.BORDER};
+                    border-top: none;
+                    border-radius: 0 0 {sp.RADIUS_MD}px {sp.RADIUS_MD}px;
+                    background: {c.BG_MAIN};
+                }}
+                QTabBar::tab {{
+                    background: {c.BG_CARD};
+                    color: {c.TEXT_DIM};
+                    padding: {sp.PAD_XS}px {sp.PAD_LG}px;
+                    border: 1px solid {c.BORDER};
+                    border-bottom: none;
+                    border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
+                    font-size: {ty.SIZE_SM}pt;
+                    font-weight: 600;
+                    margin-right: 2px;
+                }}
+                QTabBar::tab:selected {{
+                    background: {c.BG_MAIN};
+                    color: {c.TEXT_BRIGHT};
+                    border-bottom: 2px solid {c.BLUE};
+                    font-weight: {ty.WEIGHT_BOLD};
+                }}
+                QTabBar::tab:hover:!selected {{
+                    background: {c.BG_HOVER};
+                    color: {c.TEXT_MAIN};
+                }}
+                QScrollBar:vertical {{
+                    background: {c.BG_PANEL}; width: 8px; border-radius: 4px; margin: 0;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {c.BORDER}; min-height: 20px; border-radius: 4px;
+                }}
+                QScrollBar::handle:vertical:hover {{ background: {c.BORDER_STRONG}; }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            """)
+            # Style Run button as primary green
+            if hasattr(self, 'run_btn') and self.run_btn:
+                self.run_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                                    stop:0 {c.GREEN}, stop:1 {c.GREEN_DARK});
+                        color: {c.TEXT_INVERSE};
+                        border: none;
+                        border-radius: {sp.RADIUS_SM}px;
+                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        min-height: {sp.BTN_HEIGHT_SM}px;
+                    }}
+                    QPushButton:hover {{ background: {c.GREEN_BRIGHT}; }}
+                    QPushButton:disabled {{ background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; }}
+                """)
+            if hasattr(self, 'cancel_btn') and self.cancel_btn:
+                self.cancel_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                                    stop:0 {c.RED}, stop:1 {c.RED_DARK});
+                        color: {c.TEXT_INVERSE};
+                        border: none;
+                        border-radius: {sp.RADIUS_SM}px;
+                        padding: {sp.PAD_XS}px {sp.PAD_MD}px;
+                        font-weight: {ty.WEIGHT_BOLD};
+                        min-height: {sp.BTN_HEIGHT_SM}px;
+                    }}
+                    QPushButton:hover {{ background: {c.RED_BRIGHT}; }}
+                """)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"[BacktestGUI.apply_theme] {{e}}")
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -218,12 +421,12 @@ class BacktestGUI(QDialog):
         btn_layout = QHBoxLayout()
 
         self.run_btn = QPushButton("▶ Run Backtest")
-        self.run_btn.setStyleSheet("background-color: #238636; color: white;")
+        # Styled via apply_theme()
         btn_layout.addWidget(self.run_btn)
 
         self.cancel_btn = QPushButton("✕ Cancel")
         self.cancel_btn.setVisible(False)
-        self.cancel_btn.setStyleSheet("background-color: #da3633; color: white;")
+        # Styled via apply_theme()
         btn_layout.addWidget(self.cancel_btn)
 
         self.save_btn = QPushButton("💾 Save Results")
@@ -384,16 +587,16 @@ class BacktestGUI(QDialog):
 
             pnl_item = QTableWidgetItem(f"₹ {trade.pnl:.2f}")
             if trade.pnl > 0:
-                pnl_item.setForeground(QColor("#3fb950"))  # Green
+                pnl_item.setForeground(QColor(theme_manager.palette.GREEN))
             elif trade.pnl < 0:
-                pnl_item.setForeground(QColor("#f85149"))  # Red
+                pnl_item.setForeground(QColor(theme_manager.palette.RED))
             self.trades_table.setItem(i, 6, pnl_item)
 
             pnl_pct_item = QTableWidgetItem(f"{trade.pnl_percent:.2f}%")
             if trade.pnl_percent > 0:
-                pnl_pct_item.setForeground(QColor("#3fb950"))
+                pnl_pct_item.setForeground(QColor(theme_manager.palette.GREEN))
             elif trade.pnl_percent < 0:
-                pnl_pct_item.setForeground(QColor("#f85149"))
+                pnl_pct_item.setForeground(QColor(theme_manager.palette.RED))
             self.trades_table.setItem(i, 7, pnl_pct_item)
 
             self.trades_table.setItem(i, 8, QTableWidgetItem(trade.exit_reason or ""))
@@ -435,7 +638,7 @@ class BacktestGUI(QDialog):
         import_lines.setName("Initial Capital")
         import_lines.append(0, result.initial_capital)
         import_lines.append(len(result.equity_curve) - 1, result.initial_capital)
-        import_lines.setColor(QColor("#8b949e"))
+        import_lines.setColor(QColor(theme_manager.palette.TEXT_DIM))
         import_lines.setStyle(Qt.DashLine)
         chart.addSeries(import_lines)
         import_lines.attachAxis(axis_x)

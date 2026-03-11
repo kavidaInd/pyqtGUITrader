@@ -292,15 +292,16 @@ class ReEntrySettingGUI(QDialog, _ThemeMixin):
 
     def _make_title_bar(self) -> QWidget:
         bar = QWidget()
-        bar.setFixedHeight(38)
-        bar.setStyleSheet(f"background: transparent;")
+        bar.setObjectName("dialogTitleBar")
+        bar.setFixedHeight(46)
+        bar.setStyleSheet(f"""QWidget#dialogTitleBar {{ background: {self._c.BG_CARD}; border-radius: {self._sp.RADIUS_LG}px {self._sp.RADIUS_LG}px 0 0; }}""")
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
 
         title = QLabel("🔄 Re-Entry Guard Settings")
         title.setStyleSheet(f"""
             QLabel {{
-                color: {self._c.TEXT_MAIN};
+                color: {self._c.TEXT_BRIGHT};
                 font-size: {self._ty.SIZE_LG}pt;
                 font-weight: {self._ty.WEIGHT_BOLD};
                 background: transparent;
@@ -322,6 +323,12 @@ class ReEntrySettingGUI(QDialog, _ThemeMixin):
         lay.addWidget(title)
         lay.addStretch()
         lay.addWidget(close_btn)
+
+        self._drag_pos = None
+        bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
+        bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
+        bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
+
         return bar
 
     def _make_tabs(self) -> QTabWidget:

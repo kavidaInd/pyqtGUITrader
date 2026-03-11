@@ -18,7 +18,7 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QLabel, QPushButton, QComboBox, QHeaderView, QFileDialog,
-    QAbstractItemView, QGroupBox, QGridLayout, QMessageBox, QWidget
+    QAbstractItemView, QGroupBox, QGridLayout, QMessageBox, QWidget, QFrame
 )
 
 from Utils.safe_getattr import safe_hasattr
@@ -181,6 +181,24 @@ class TradeHistoryViewer(QDialog):
                 background: {c.BG_MAIN};
                 color: {c.TEXT_MAIN};
             }}
+            QComboBox {{
+                background: {c.BG_CARD};
+                color: {c.TEXT_MAIN};
+                border: 1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                min-height: {sp.BTN_HEIGHT_SM}px;
+            }}
+            QComboBox:focus {{ border-color: {c.BLUE}; }}
+            QComboBox::drop-down {{ border: none; }}
+            QScrollBar:vertical {{
+                background: {c.BG_PANEL}; width: 8px; border-radius: 4px; margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {c.BORDER}; min-height: 20px; border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {c.BORDER_STRONG}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             QTableWidget {{
                 background: {c.BG_PANEL};
                 color: {c.TEXT_MAIN};

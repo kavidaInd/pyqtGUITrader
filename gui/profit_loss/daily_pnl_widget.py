@@ -96,11 +96,12 @@ class _MetricCard(QFrame):
 
             self.setStyleSheet(f"""
                 QFrame {{
-                    background: {c.BG_PANEL};
+                    background: {c.BG_CARD};
                     border: {sp.SEPARATOR}px solid {c.BORDER};
                     border-radius: {sp.RADIUS_MD}px;
                 }}
                 QFrame:hover {{
+                    background: {c.BG_PANEL};
                     border-color: {c.BORDER_STRONG};
                 }}
             """)

@@ -52,110 +52,157 @@ class _Palette:
         return dict(self._tokens)
 
 
-# ── Dark palette (GitHub Dark) ────────────────────────────────────────────────
+# ── Dark palette (deep professional trading terminal aesthetic) ───────────────
 DARK_TOKENS: Dict[str, str] = {
-    # Backgrounds
-    "BG_MAIN":       "#0d1117",
-    "BG_PANEL":      "#161b22",
-    "BG_ROW_A":      "#1c2128",
-    "BG_ROW_B":      "#22272e",
-    "BG_HOVER":      "#21262d",
-    "BG_INPUT":      "#0d1117",
-    "BG_SELECTED":   "#1f3147",   # selected row / item
+    # Backgrounds — rich layered depth
+    "BG_MAIN":       "#0a0e1a",   # Deepest navy — main canvas
+    "BG_PANEL":      "#111827",   # Panel background
+    "BG_CARD":       "#161d2e",   # Card / elevated surface
+    "BG_ROW_A":      "#111827",
+    "BG_ROW_B":      "#151c2e",
+    "BG_HOVER":      "#1c2742",   # Richer hover
+    "BG_INPUT":      "#0d1220",   # Input fields
+    "BG_SELECTED":   "#1a3a5c",   # Selected rows / items
+    "BG_ELEVATED":   "#1e2840",   # Floating elements
 
-    # Borders
-    "BORDER":        "#30363d",
-    "BORDER_DIM":   "#30363d",
-    "BORDER_FOCUS":  "#58a6ff",
-    "BORDER_STRONG": "#484f58",
+    # Borders — subtle, layered
+    "BORDER":        "#2a3550",
+    "BORDER_DIM":    "#1f2d45",
+    "BORDER_FOCUS":  "#4f8ef7",
+    "BORDER_STRONG": "#3d5080",
+    "BORDER_ACCENT": "#2563eb33",  # Semi-transparent blue glow
 
-    # Text
-    "TEXT_MAIN":     "#e6edf3",
-    "TEXT_DIM":      "#8b949e",
-    "TEXT_DISABLED": "#484f58",
-    "TEXT_INVERSE":  "#0d1117",
-    "TEXT_LINK":     "#58a6ff",
+    # Text — crisp hierarchy
+    "TEXT_MAIN":     "#e8edf5",
+    "TEXT_DIM":      "#7b8db0",
+    "TEXT_MUTED":    "#4a5878",
+    "TEXT_DISABLED": "#374260",
+    "TEXT_INVERSE":  "#0a0e1a",
+    "TEXT_LINK":     "#4f8ef7",
+    "TEXT_BRIGHT":   "#f0f4ff",
 
-    # Trading / semantic (adjusted for dark background)
-    "GREEN":         "#2ea043",
-    "GREEN_BRIGHT":  "#3fb950",
-    "RED":           "#da3633",
-    "RED_BRIGHT":    "#f85149",
-    "YELLOW":        "#d29922",
-    "YELLOW_BRIGHT": "#e3b341",
-    "BLUE":          "#58a6ff",
-    "BLUE_DARK":     "#1f6feb",
-    "ORANGE":        "#ffa657",
-    "PURPLE":        "#bc8cff",
+    # Trading / semantic — vivid, professional
+    "GREEN":         "#10b981",
+    "GREEN_BRIGHT":  "#34d399",
+    "GREEN_GLOW":    "#10b98122",
+    "RED":           "#ef4444",
+    "RED_BRIGHT":    "#f87171",
+    "RED_GLOW":      "#ef444422",
+    "YELLOW":        "#f59e0b",
+    "YELLOW_BRIGHT": "#fbbf24",
+    "YELLOW_GLOW":   "#f59e0b22",
+    "BLUE":          "#4f8ef7",
+    "BLUE_BRIGHT":   "#6ba3ff",
+    "BLUE_DARK":     "#2563eb",
+    "BLUE_GLOW":     "#4f8ef722",
+    "ORANGE":        "#f97316",
+    "ORANGE_GLOW":   "#f9731622",
+    "PURPLE":        "#a78bfa",
+    "PURPLE_DARK":   "#7c3aed",
+    "CYAN":          "#22d3ee",
+    "TEAL":          "#14b8a6",
 
     # Status bar / toolbar
-    "BAR_BG":        "#161b22",
-    "BAR_BORDER":    "#30363d",
+    "BAR_BG":        "#0d1220",
+    "BAR_BORDER":    "#1f2d45",
 
     # Chart-specific
-    "CHART_BG":      "#0d1117",
-    "CHART_GRID":    "#21262d",
-    "CHART_AXIS":    "#8b949e",
-    "CHART_CANDLE_UP":   "#2ea043",
-    "CHART_CANDLE_DOWN": "#f85149",
+    "CHART_BG":          "#0a0e1a",
+    "CHART_GRID":        "#141e35",
+    "CHART_AXIS":        "#4a5878",
+    "CHART_CANDLE_UP":   "#10b981",
+    "CHART_CANDLE_DOWN": "#ef4444",
 
     # PnL widget specific
-    "PNL_CARD_BG":   "#1c2128",
-    "PNL_ACCENT":    "#1f6feb",
-    "PNL_DIVIDER":   "#30363d",
+    "PNL_CARD_BG":  "#111827",
+    "PNL_ACCENT":   "#2563eb",
+    "PNL_DIVIDER":  "#2a3550",
+
+    # Gradient stops (for use in qlineargradient)
+    "GRAD_START":   "#0a0e1a",
+    "GRAD_MID":     "#111827",
+    "GRAD_END":     "#161d2e",
+
+    # Shadow / glow approximation via bg colors
+    "SHADOW":       "#00000055",
+    "GLOW_BLUE":    "#4f8ef715",
+    "GLOW_GREEN":   "#10b98115",
 }
 
-# ── Light palette (GitHub Light) ──────────────────────────────────────────────
+# ── Light palette (clean, high-contrast professional) ─────────────────────────
 LIGHT_TOKENS: Dict[str, str] = {
     # Backgrounds
-    "BG_MAIN":       "#ffffff",
-    "BG_PANEL":      "#f6f8fa",
+    "BG_MAIN":       "#f8fafc",
+    "BG_PANEL":      "#ffffff",
+    "BG_CARD":       "#f1f5f9",
     "BG_ROW_A":      "#ffffff",
-    "BG_ROW_B":      "#f6f8fa",
-    "BG_HOVER":      "#eaeef2",
+    "BG_ROW_B":      "#f8fafc",
+    "BG_HOVER":      "#e2e8f4",
     "BG_INPUT":      "#ffffff",
-    "BG_SELECTED":   "#dbeafe",   # selected row / item
+    "BG_SELECTED":   "#dbeafe",
+    "BG_ELEVATED":   "#ffffff",
 
     # Borders
-    "BORDER":        "#d0d7de",
-    "BORDER_DIM":   "#d0d7de",
-    "BORDER_FOCUS":  "#0969da",
-    "BORDER_STRONG": "#8c959f",
+    "BORDER":        "#cbd5e1",
+    "BORDER_DIM":    "#e2e8f0",
+    "BORDER_FOCUS":  "#2563eb",
+    "BORDER_STRONG": "#94a3b8",
+    "BORDER_ACCENT": "#2563eb33",
 
     # Text
-    "TEXT_MAIN":     "#1f2328",
-    "TEXT_DIM":      "#636c76",
-    "TEXT_DISABLED": "#afb8c1",
+    "TEXT_MAIN":     "#0f172a",
+    "TEXT_DIM":      "#475569",
+    "TEXT_MUTED":    "#94a3b8",
+    "TEXT_DISABLED": "#cbd5e1",
     "TEXT_INVERSE":  "#ffffff",
-    "TEXT_LINK":     "#0969da",
+    "TEXT_LINK":     "#2563eb",
+    "TEXT_BRIGHT":   "#020617",
 
-    # Trading / semantic (darker shades for readability on white)
-    "GREEN":         "#1a7f37",
-    "GREEN_BRIGHT":  "#2da44e",
-    "RED":           "#cf222e",
-    "RED_BRIGHT":    "#a40e26",
-    "YELLOW":        "#9a6700",
-    "YELLOW_BRIGHT": "#bf8700",
-    "BLUE":          "#0969da",
-    "BLUE_DARK":     "#0550ae",
-    "ORANGE":        "#bc4c00",
-    "PURPLE":        "#8250df",
+    # Trading / semantic
+    "GREEN":         "#059669",
+    "GREEN_BRIGHT":  "#10b981",
+    "GREEN_GLOW":    "#05966922",
+    "RED":           "#dc2626",
+    "RED_BRIGHT":    "#ef4444",
+    "RED_GLOW":      "#dc262622",
+    "YELLOW":        "#d97706",
+    "YELLOW_BRIGHT": "#f59e0b",
+    "YELLOW_GLOW":   "#d9770622",
+    "BLUE":          "#2563eb",
+    "BLUE_BRIGHT":   "#3b82f6",
+    "BLUE_DARK":     "#1d4ed8",
+    "BLUE_GLOW":     "#2563eb22",
+    "ORANGE":        "#ea580c",
+    "ORANGE_GLOW":   "#ea580c22",
+    "PURPLE":        "#7c3aed",
+    "PURPLE_DARK":   "#6d28d9",
+    "CYAN":          "#0891b2",
+    "TEAL":          "#0d9488",
 
     # Status bar / toolbar
-    "BAR_BG":        "#f6f8fa",
-    "BAR_BORDER":    "#d0d7de",
+    "BAR_BG":        "#f1f5f9",
+    "BAR_BORDER":    "#e2e8f0",
 
     # Chart-specific
-    "CHART_BG":      "#ffffff",
-    "CHART_GRID":    "#eaeef2",
-    "CHART_AXIS":    "#636c76",
-    "CHART_CANDLE_UP":   "#1a7f37",
-    "CHART_CANDLE_DOWN": "#cf222e",
+    "CHART_BG":          "#ffffff",
+    "CHART_GRID":        "#f1f5f9",
+    "CHART_AXIS":        "#94a3b8",
+    "CHART_CANDLE_UP":   "#059669",
+    "CHART_CANDLE_DOWN": "#dc2626",
 
     # PnL widget specific
-    "PNL_CARD_BG":   "#f0f3f6",
-    "PNL_ACCENT":    "#0550ae",
-    "PNL_DIVIDER":   "#d0d7de",
+    "PNL_CARD_BG":  "#f8fafc",
+    "PNL_ACCENT":   "#2563eb",
+    "PNL_DIVIDER":  "#e2e8f0",
+
+    # Gradient stops
+    "GRAD_START":   "#f8fafc",
+    "GRAD_MID":     "#ffffff",
+    "GRAD_END":     "#f1f5f9",
+
+    "SHADOW":       "#00000015",
+    "GLOW_BLUE":    "#2563eb10",
+    "GLOW_GREEN":   "#05966910",
 }
 
 
@@ -164,13 +211,7 @@ LIGHT_TOKENS: Dict[str, str] = {
 # =============================================================================
 
 class _Typography:
-    """
-    Font-family, size, weight and line-height tokens.
-
-    All sizes are in points (pt) so they scale correctly on HiDPI displays.
-    Use these in setStyleSheet via:  f"font-size: {ty.SIZE_BODY}pt;"
-    Use in QFont via:                QFont(ty.FONT_UI, ty.SIZE_BODY)
-    """
+    """Font-family, size, weight and line-height tokens."""
 
     def __init__(self, tokens: Dict[str, object]):
         self._tokens = tokens
@@ -191,59 +232,50 @@ class _Typography:
         return dict(self._tokens)
 
 
-# ── Typography token sets (density-independent) ───────────────────────────────
-#
-# One typography object is shared between dark and light — only colours change
-# per theme, not type scales.  Density (compact / normal / relaxed) does change
-# the scale and is handled separately below.
-
-# Shared across ALL densities — only the SIZE_* values are overridden per density
 _TYPOGRAPHY_BASE: Dict[str, object] = {
-    # Families
-    "FONT_UI":       "Segoe UI",            # All UI elements
-    "FONT_MONO":     "Consolas, Monaco, 'Courier New', monospace",  # Logs / code
-    "FONT_NUMERIC":  "Consolas, 'Courier New', monospace",  # P&L, prices (monospaced digits)
+    # Families — refined trading terminal feel
+    "FONT_UI":       "Segoe UI",
+    "FONT_DISPLAY":  "Segoe UI Semibold, Segoe UI, sans-serif",
+    "FONT_MONO":     "Consolas, 'Cascadia Code', Monaco, 'Courier New', monospace",
+    "FONT_NUMERIC":  "Consolas, 'Cascadia Code', 'Courier New', monospace",
 
-    # Weights (CSS keyword strings, usable in stylesheets)
-    "WEIGHT_NORMAL":  "normal",   # 400
-    "WEIGHT_MEDIUM":  "500",      # medium — not a CSS keyword, use numeric
-    "WEIGHT_BOLD":    "bold",     # 700
+    # Weights
+    "WEIGHT_NORMAL":  "normal",
+    "WEIGHT_MEDIUM":  "500",
+    "WEIGHT_SEMIBOLD": "600",
+    "WEIGHT_BOLD":    "bold",
     "WEIGHT_HEAVY":   "800",
 
-    # Line heights (unitless multiplier — multiply by font size for px value)
-    "LINE_HEIGHT_TIGHT":   1.2,   # Labels, table cells — pack data closely
-    "LINE_HEIGHT_NORMAL":  1.4,   # General UI text
-    "LINE_HEIGHT_RELAXED": 1.6,   # Onboarding text, descriptions
-    "LINE_HEIGHT_LOG":     1.3,   # Log widget — readable but dense
+    # Line heights
+    "LINE_HEIGHT_TIGHT":   1.2,
+    "LINE_HEIGHT_NORMAL":  1.4,
+    "LINE_HEIGHT_RELAXED": 1.6,
+    "LINE_HEIGHT_LOG":     1.3,
 
-    # Letter spacing (pt, for use in stylesheet: letter-spacing: Xpt)
+    # Letter spacing
     "LETTER_TIGHT":  "-0.3px",
     "LETTER_NORMAL": "0px",
-    "LETTER_WIDE":   "0.5px",     # All-caps labels, status badges
+    "LETTER_WIDE":   "0.5px",
+    "LETTER_CAPS":   "0.8px",  # ALL-CAPS labels
 }
 
-# ── Normal density type scale (default) ───────────────────────────────────────
 TYPOGRAPHY_NORMAL: Dict[str, object] = {
     **_TYPOGRAPHY_BASE,
-
-    # Size scale (points)
-    "SIZE_XS":      8,    # Copyright, footnotes, badges
-    "SIZE_SM":      9,    # Table cells, status bar labels, dim metadata
-    "SIZE_BODY":    10,   # Default body text, button labels
-    "SIZE_MD":      11,   # Status messages, log text
-    "SIZE_LG":      12,   # Section headers, card titles
-    "SIZE_XL":      14,   # Panel headings
-    "SIZE_2XL":     16,   # Section titles, P&L totals
-    "SIZE_3XL":     20,   # Splash app name
-    "SIZE_DISPLAY": 24,   # Large metric display (e.g. index price)
-    "SIZE_MONO":    10,   # Log / code monospace body
-    "SIZE_NUMERIC": 11,   # Price / P&L figures
+    "SIZE_XS":      8,
+    "SIZE_SM":      9,
+    "SIZE_BODY":    10,
+    "SIZE_MD":      11,
+    "SIZE_LG":      12,
+    "SIZE_XL":      14,
+    "SIZE_2XL":     16,
+    "SIZE_3XL":     20,
+    "SIZE_DISPLAY": 24,
+    "SIZE_MONO":    10,
+    "SIZE_NUMERIC": 11,
 }
 
-# ── Compact density type scale (smaller screens / more data) ──────────────────
 TYPOGRAPHY_COMPACT: Dict[str, object] = {
     **_TYPOGRAPHY_BASE,
-
     "SIZE_XS":      7,
     "SIZE_SM":      8,
     "SIZE_BODY":    9,
@@ -257,10 +289,8 @@ TYPOGRAPHY_COMPACT: Dict[str, object] = {
     "SIZE_NUMERIC": 9,
 }
 
-# ── Relaxed density type scale (large monitors / accessibility) ───────────────
 TYPOGRAPHY_RELAXED: Dict[str, object] = {
     **_TYPOGRAPHY_BASE,
-
     "SIZE_XS":      9,
     "SIZE_SM":      10,
     "SIZE_BODY":    11,
@@ -286,15 +316,7 @@ _TYPOGRAPHY_MAP = {
 # =============================================================================
 
 class _Spacing:
-    """
-    Padding, margin, gap, border-radius and icon-size tokens.
-
-    All values are integers (pixels).  Use them in:
-      - setStyleSheet:      f"padding: {sp.PAD_SM}px {sp.PAD_MD}px;"
-      - setContentsMargins: layout.setContentsMargins(sp.PAD_MD, sp.PAD_SM, sp.PAD_MD, sp.PAD_SM)
-      - setSpacing:         layout.setSpacing(sp.GAP_SM)
-      - setFixedHeight:     widget.setMinimumHeight(sp.ROW_HEIGHT)
-    """
+    """Padding, margin, gap, border-radius and icon-size tokens."""
 
     def __init__(self, tokens: Dict[str, int]):
         self._tokens = tokens
@@ -315,41 +337,40 @@ class _Spacing:
         return dict(self._tokens)
 
 
-# ── Normal spacing scale ──────────────────────────────────────────────────────
 SPACING_NORMAL: Dict[str, int] = {
-    # Padding (inner whitespace)
-    "PAD_XS":    2,    # Tight badges, tiny chips
-    "PAD_SM":    4,    # Table cells, status bar items
-    "PAD_MD":    8,    # Buttons, cards, inputs
-    "PAD_LG":   12,    # Panel content areas
-    "PAD_XL":   16,    # Dialog content, section padding
-    "PAD_2XL":  24,    # Splash screen, onboarding
+    # Padding
+    "PAD_XS":    2,
+    "PAD_SM":    4,
+    "PAD_MD":    8,
+    "PAD_LG":   12,
+    "PAD_XL":   16,
+    "PAD_2XL":  24,
 
-    # Gaps (space between siblings in layouts)
+    # Gaps
     "GAP_XS":    2,
     "GAP_SM":    4,
     "GAP_MD":    8,
     "GAP_LG":   12,
     "GAP_XL":   16,
 
-    # Border radii
-    "RADIUS_SM":   3,   # Tags, small badges
-    "RADIUS_MD":   5,   # Buttons, inputs, cards
-    "RADIUS_LG":   8,   # Panels, dialogs
-    "RADIUS_XL":  12,   # Splash screen, large cards
-    "RADIUS_PILL": 999, # Pill badges (mode label)
+    # Border radii — refined, modern
+    "RADIUS_SM":   4,
+    "RADIUS_MD":   6,
+    "RADIUS_LG":   10,
+    "RADIUS_XL":   14,
+    "RADIUS_PILL": 999,
 
-    # Component heights (min-height for consistent rows/buttons)
-    "ROW_HEIGHT":      24,   # Table row height
-    "BTN_HEIGHT_SM":   28,   # Small button
-    "BTN_HEIGHT_MD":   36,   # Standard button
-    "BTN_HEIGHT_LG":   44,   # Large / primary button
-    "INPUT_HEIGHT":    32,   # Text inputs, combo boxes
-    "STATUS_BAR_H":    44,   # App status bar
-    "BUTTON_PANEL_H":  68,   # Button panel below chart
-    "HEADER_H":        40,   # Panel / section headers
-    "TAB_H":           36,   # Tab bar height
-    "PNL_WIDGET_H":    100,  # P&L widget height
+    # Component heights
+    "ROW_HEIGHT":      26,
+    "BTN_HEIGHT_SM":   28,
+    "BTN_HEIGHT_MD":   36,
+    "BTN_HEIGHT_LG":   44,
+    "INPUT_HEIGHT":    34,
+    "STATUS_BAR_H":    44,
+    "BUTTON_PANEL_H":  68,
+    "HEADER_H":        40,
+    "TAB_H":           36,
+    "PNL_WIDGET_H":    100,
 
     # Icon sizes
     "ICON_SM":   12,
@@ -357,19 +378,16 @@ SPACING_NORMAL: Dict[str, int] = {
     "ICON_LG":   20,
     "ICON_XL":   24,
 
-    # Separator thickness
+    # Separator
     "SEPARATOR":  1,
-
-    # Splitter handle width
     "SPLITTER":   2,
 
-    # Progress bar heights
+    # Progress bars
     "PROGRESS_SM":  4,
     "PROGRESS_MD":  8,
     "PROGRESS_LG": 12,
 }
 
-# ── Compact spacing scale ─────────────────────────────────────────────────────
 SPACING_COMPACT: Dict[str, int] = {
     "PAD_XS":    1,
     "PAD_SM":    3,
@@ -377,19 +395,16 @@ SPACING_COMPACT: Dict[str, int] = {
     "PAD_LG":    8,
     "PAD_XL":   12,
     "PAD_2XL":  16,
-
     "GAP_XS":    1,
     "GAP_SM":    3,
     "GAP_MD":    5,
     "GAP_LG":    8,
     "GAP_XL":   10,
-
-    "RADIUS_SM":   2,
+    "RADIUS_SM":   3,
     "RADIUS_MD":   4,
     "RADIUS_LG":   6,
     "RADIUS_XL":   8,
     "RADIUS_PILL": 999,
-
     "ROW_HEIGHT":      20,
     "BTN_HEIGHT_SM":   24,
     "BTN_HEIGHT_MD":   30,
@@ -400,21 +415,17 @@ SPACING_COMPACT: Dict[str, int] = {
     "HEADER_H":        32,
     "TAB_H":           28,
     "PNL_WIDGET_H":    82,
-
     "ICON_SM":   10,
     "ICON_MD":   14,
     "ICON_LG":   16,
     "ICON_XL":   20,
-
     "SEPARATOR":  1,
     "SPLITTER":   1,
-
     "PROGRESS_SM":  3,
     "PROGRESS_MD":  6,
     "PROGRESS_LG":  9,
 }
 
-# ── Relaxed spacing scale ─────────────────────────────────────────────────────
 SPACING_RELAXED: Dict[str, int] = {
     "PAD_XS":    3,
     "PAD_SM":    6,
@@ -422,19 +433,16 @@ SPACING_RELAXED: Dict[str, int] = {
     "PAD_LG":   16,
     "PAD_XL":   20,
     "PAD_2XL":  32,
-
     "GAP_XS":    3,
     "GAP_SM":    6,
     "GAP_MD":   10,
     "GAP_LG":   16,
     "GAP_XL":   20,
-
-    "RADIUS_SM":   4,
-    "RADIUS_MD":   6,
-    "RADIUS_LG":  10,
-    "RADIUS_XL":  16,
+    "RADIUS_SM":   5,
+    "RADIUS_MD":   8,
+    "RADIUS_LG":  12,
+    "RADIUS_XL":  18,
     "RADIUS_PILL": 999,
-
     "ROW_HEIGHT":      28,
     "BTN_HEIGHT_SM":   32,
     "BTN_HEIGHT_MD":   40,
@@ -445,15 +453,12 @@ SPACING_RELAXED: Dict[str, int] = {
     "HEADER_H":        48,
     "TAB_H":           42,
     "PNL_WIDGET_H":    120,
-
     "ICON_SM":   14,
     "ICON_MD":   18,
     "ICON_LG":   24,
     "ICON_XL":   28,
-
     "SEPARATOR":  1,
     "SPLITTER":   3,
-
     "PROGRESS_SM":  5,
     "PROGRESS_MD": 10,
     "PROGRESS_LG": 14,
@@ -473,30 +478,14 @@ _SPACING_MAP = {
 class ThemeManager(QObject):
     """
     Singleton that manages the active colour theme, typography scale,
-    and spacing density.  Emits signals when any of these change.
-
-    Properties:
-        palette     → _Palette   colour tokens
-        typography  → _Typography  font/size/weight/line-height tokens
-        spacing     → _Spacing   padding/gap/radius/height tokens
-
-    Signals:
-        theme_changed(str)    → "dark" | "light"
-        density_changed(str)  → "compact" | "normal" | "relaxed"
-
-    Quick access alias:
-        c  = theme_manager.palette
-        ty = theme_manager.typography
-        sp = theme_manager.spacing
+    and spacing density.
     """
 
-    theme_changed   = pyqtSignal(str)   # "dark" | "light"
-    density_changed = pyqtSignal(str)   # "compact" | "normal" | "relaxed"
+    theme_changed   = pyqtSignal(str)
+    density_changed = pyqtSignal(str)
 
     _instance    = None
     _initialized = False
-
-    # ── Singleton ──────────────────────────────────────────────────────────────
 
     def __new__(cls):
         if cls._instance is None:
@@ -522,33 +511,26 @@ class ThemeManager(QObject):
 
     @property
     def palette(self) -> _Palette:
-        """Active colour palette."""
         return self._palette
 
     @property
     def typography(self) -> _Typography:
-        """Active typography scale."""
         return self._typography
 
     @property
     def spacing(self) -> _Spacing:
-        """Active spacing scale."""
         return self._spacing
 
-    # Convenience short aliases
     @property
     def c(self) -> _Palette:
-        """Alias for palette — theme_manager.c.BLUE"""
         return self._palette
 
     @property
     def ty(self) -> _Typography:
-        """Alias for typography — theme_manager.ty.SIZE_BODY"""
         return self._typography
 
     @property
     def sp(self) -> _Spacing:
-        """Alias for spacing — theme_manager.sp.PAD_MD"""
         return self._spacing
 
     @property
@@ -568,7 +550,6 @@ class ThemeManager(QObject):
     # ── Theme control ──────────────────────────────────────────────────────────
 
     def set_theme(self, theme: str) -> None:
-        """Switch to 'dark' or 'light'. Persists nothing — call save_preference() if needed."""
         try:
             theme = theme.lower().strip()
             if theme not in ("dark", "light"):
@@ -591,19 +572,11 @@ class ThemeManager(QObject):
             logger.error(f"[ThemeManager.set_theme] Failed: {e}", exc_info=True)
 
     def toggle(self) -> None:
-        """Toggle dark ↔ light."""
         self.set_theme("light" if self._current_theme == "dark" else "dark")
 
     # ── Density control ────────────────────────────────────────────────────────
 
     def set_density(self, density: str) -> None:
-        """
-        Switch the spacing and typography density.
-        density: 'compact' | 'normal' | 'relaxed'
-
-        Use 'compact' for small/dense screens or power users who want more data
-        on screen at once.  Use 'relaxed' for accessibility / large monitors.
-        """
         try:
             density = density.lower().strip()
             if density not in _SPACING_MAP:
@@ -616,7 +589,6 @@ class ThemeManager(QObject):
             self._typography = _Typography(_TYPOGRAPHY_MAP[density])
             self._spacing    = _Spacing(_SPACING_MAP[density])
 
-            # Re-apply app stylesheet so global spacing tokens update
             app = QApplication.instance()
             if app:
                 app.setStyleSheet(self._build_app_stylesheet())
@@ -630,25 +602,16 @@ class ThemeManager(QObject):
     # ── Persistence ────────────────────────────────────────────────────────────
 
     def save_preference(self) -> None:
-        """Persist theme + density to QSettings."""
         try:
             from PyQt5.QtCore import QSettings
             s = QSettings("YourCompany", "AlgoTradingPro")
             s.setValue("theme",   self._current_theme)
             s.setValue("density", self._current_density)
-            logger.debug(f"[ThemeManager] Preferences saved (theme={self._current_theme}, density={self._current_density})")
+            logger.debug(f"[ThemeManager] Preferences saved")
         except Exception as e:
             logger.warning(f"[ThemeManager.save_preference] Failed: {e}")
 
     def load_preference(self) -> None:
-        """
-        Load and apply persisted theme + density from QSettings.
-
-        IMPORTANT: After loading, always force-pushes the full app stylesheet to
-        QApplication so widgets are correctly styled on first paint — even when the
-        saved values match the defaults (both guards in set_theme / set_density would
-        otherwise skip the stylesheet write).
-        """
         try:
             from PyQt5.QtCore import QSettings
             s = QSettings("YourCompany", "AlgoTradingPro")
@@ -656,28 +619,16 @@ class ThemeManager(QObject):
             density = s.value("density", "normal")
             self.set_density(density)
             self.set_theme(theme)
-            # Force-apply regardless of whether set_theme/set_density detected a change.
-            # This is the critical call that paints buttons/navbar correctly on startup.
             self.apply_startup_theme()
             logger.info(f"[ThemeManager] Preferences loaded (theme={theme}, density={density})")
         except Exception as e:
             logger.warning(f"[ThemeManager.load_preference] Failed: {e}")
 
     def apply_startup_theme(self) -> None:
-        """
-        Unconditionally push the current palette + spacing + typography to
-        QApplication.setStyleSheet() and emit both signals so every widget
-        that connected apply_theme() gets called on first paint.
-
-        Call this once after all widgets are constructed and signals are connected.
-        Unlike set_theme() / set_density() this method has NO same-value guard,
-        so it always fires even when dark+normal are already the defaults.
-        """
         try:
             app = QApplication.instance()
             if app:
                 app.setStyleSheet(self._build_app_stylesheet())
-            # Emit both signals so every connected apply_theme() slot fires
             self.theme_changed.emit(self._current_theme)
             self.density_changed.emit(self._current_density)
             logger.info(
@@ -692,11 +643,7 @@ class ThemeManager(QObject):
     def _build_app_stylesheet(self) -> str:
         """
         Build the global QApplication stylesheet from the active palette,
-        typography, and spacing tokens.
-
-        This stylesheet covers all standard Qt widgets.  Individual widget
-        classes should still call apply_theme() to handle custom styling
-        that cannot be expressed in a global stylesheet.
+        typography, and spacing tokens. Professional trading terminal aesthetic.
         """
         c  = self._palette
         ty = self._typography
@@ -718,29 +665,40 @@ class ThemeManager(QObject):
                 border-bottom: {sp.SEPARATOR}px solid {c.BAR_BORDER};
                 font-size:     {ty.SIZE_BODY}pt;
                 padding:       {sp.PAD_XS}px 0;
+                font-weight:   {ty.WEIGHT_MEDIUM};
             }}
             QMenuBar::item {{
                 padding:    {sp.PAD_SM}px {sp.PAD_MD}px;
                 background: transparent;
+                border-radius: {sp.RADIUS_SM}px;
+                margin: 0 2px;
             }}
-            QMenuBar::item:selected {{ background: {c.BG_HOVER}; border-radius: {sp.RADIUS_SM}px; }}
+            QMenuBar::item:selected {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_BRIGHT};
+            }}
 
             QMenu {{
-                background:  {c.BG_PANEL};
+                background:  {c.BG_CARD};
                 color:       {c.TEXT_MAIN};
                 border:      {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
+                border-radius: {sp.RADIUS_LG}px;
                 font-size:   {ty.SIZE_BODY}pt;
                 padding:     {sp.PAD_SM}px 0;
             }}
             QMenu::item {{
                 padding: {sp.PAD_SM}px {sp.PAD_XL}px;
+                border-radius: {sp.RADIUS_SM}px;
+                margin: 1px {sp.PAD_XS}px;
             }}
-            QMenu::item:selected {{ background: {c.BG_HOVER}; }}
+            QMenu::item:selected {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_BRIGHT};
+            }}
             QMenu::separator {{
                 height:     {sp.SEPARATOR}px;
-                background: {c.BORDER};
-                margin:     {sp.PAD_SM}px 0;
+                background: {c.BORDER_DIM};
+                margin:     {sp.PAD_SM}px {sp.PAD_MD}px;
             }}
 
             /* ── Status bar ─────────────────────────────────────────────────── */
@@ -754,7 +712,7 @@ class ThemeManager(QObject):
 
             /* ── Tooltips ────────────────────────────────────────────────────── */
             QToolTip {{
-                background:    {c.BG_PANEL};
+                background:    {c.BG_ELEVATED};
                 color:         {c.TEXT_MAIN};
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
                 padding:       {sp.PAD_SM}px {sp.PAD_MD}px;
@@ -765,88 +723,131 @@ class ThemeManager(QObject):
 
             /* ── Scroll bars ─────────────────────────────────────────────────── */
             QScrollBar:vertical {{
-                background:    {c.BG_PANEL};
-                width:         {sp.ICON_MD}px;
-                border-radius: {sp.RADIUS_MD}px;
+                background:    {c.BG_MAIN};
+                width:         8px;
+                border-radius: 4px;
                 border:        none;
+                margin: 2px 0;
             }}
             QScrollBar::handle:vertical {{
                 background:    {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
+                border-radius: 4px;
                 min-height:    {sp.BTN_HEIGHT_SM}px;
             }}
             QScrollBar::handle:vertical:hover  {{ background: {c.BORDER_STRONG}; }}
+            QScrollBar::handle:vertical:pressed {{ background: {c.BLUE}; }}
             QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical      {{ height: 0; }}
+            QScrollBar::sub-line:vertical      {{ height: 0; border: none; }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical      {{ background: none; }}
 
             QScrollBar:horizontal {{
-                background:    {c.BG_PANEL};
-                height:        {sp.ICON_MD}px;
-                border-radius: {sp.RADIUS_MD}px;
+                background:    {c.BG_MAIN};
+                height:        8px;
+                border-radius: 4px;
                 border:        none;
+                margin: 0 2px;
             }}
             QScrollBar::handle:horizontal {{
                 background:    {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
+                border-radius: 4px;
                 min-width:     {sp.BTN_HEIGHT_SM}px;
             }}
-            QScrollBar::handle:horizontal:hover {{ background: {c.BORDER_STRONG}; }}
+            QScrollBar::handle:horizontal:hover  {{ background: {c.BORDER_STRONG}; }}
+            QScrollBar::handle:horizontal:pressed {{ background: {c.BLUE}; }}
             QScrollBar::add-line:horizontal,
-            QScrollBar::sub-line:horizontal     {{ width: 0; }}
+            QScrollBar::sub-line:horizontal     {{ width: 0; border: none; }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal     {{ background: none; }}
 
             /* ── Tabs ────────────────────────────────────────────────────────── */
             QTabWidget::pane {{
-                border:     {sp.SEPARATOR}px solid {c.BORDER};
-                background: {c.BG_MAIN};
+                border:        {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: 0 0 {sp.RADIUS_MD}px {sp.RADIUS_MD}px;
+                background:    {c.BG_MAIN};
+                top: -1px;
+            }}
+            QTabBar {{
+                border: none;
+                background: transparent;
             }}
             QTabBar::tab {{
                 background:    {c.BG_PANEL};
                 color:         {c.TEXT_DIM};
                 padding:       {sp.PAD_SM}px {sp.PAD_LG}px;
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
+                border-bottom: none;
+                border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
                 min-width:     90px;
                 max-width:     160px;
                 font-size:     {ty.SIZE_SM}pt;
-                font-weight:   {ty.WEIGHT_BOLD};
+                font-weight:   {ty.WEIGHT_SEMIBOLD};
                 min-height:    {sp.TAB_H}px;
+                margin-right:  2px;
             }}
             QTabBar::tab:selected {{
-                background:    {c.BG_HOVER};
-                color:         {c.TEXT_MAIN};
+                background:    {c.BG_MAIN};
+                color:         {c.TEXT_BRIGHT};
+                border-color:  {c.BORDER};
                 border-bottom: 2px solid {c.BLUE};
+                font-weight:   {ty.WEIGHT_BOLD};
             }}
-            QTabBar::tab:hover:!selected {{ background: {c.BG_HOVER}; }}
+            QTabBar::tab:hover:!selected {{
+                background: {c.BG_HOVER};
+                color: {c.TEXT_MAIN};
+            }}
 
             /* ── Tables ──────────────────────────────────────────────────────── */
             QTableWidget {{
                 background:     {c.BG_PANEL};
-                gridline-color: {c.BORDER};
+                alternate-background-color: {c.BG_ROW_B};
+                gridline-color: {c.BORDER_DIM};
                 color:          {c.TEXT_MAIN};
                 border:         {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius:  {sp.RADIUS_MD}px;
                 font-size:      {ty.SIZE_SM}pt;
+                selection-background-color: {c.BG_SELECTED};
+                outline: none;
             }}
             QTableWidget::item {{
                 padding:     {sp.PAD_SM}px {sp.PAD_MD}px;
                 min-height:  {sp.ROW_HEIGHT}px;
+                border: none;
             }}
             QTableWidget::item:selected {{
                 background: {c.BG_SELECTED};
-                color:      {c.TEXT_MAIN};
+                color:      {c.TEXT_BRIGHT};
+            }}
+            QTableWidget::item:hover {{
+                background: {c.BG_HOVER};
+            }}
+            QHeaderView {{
+                border: none;
+                background: transparent;
             }}
             QHeaderView::section {{
-                background:  {c.BG_HOVER};
+                background:  {c.BG_CARD};
                 color:       {c.TEXT_DIM};
                 border:      none;
+                border-right:  {sp.SEPARATOR}px solid {c.BORDER_DIM};
                 border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
                 padding:     {sp.PAD_SM}px {sp.PAD_MD}px;
                 font-size:   {ty.SIZE_XS}pt;
                 font-weight: {ty.WEIGHT_BOLD};
-                letter-spacing: {ty.LETTER_WIDE};
+                letter-spacing: {ty.LETTER_CAPS};
+                text-transform: uppercase;
                 min-height:  {sp.HEADER_H}px;
+            }}
+            QHeaderView::section:first {{
+                border-radius: {sp.RADIUS_MD}px 0 0 0;
+            }}
+            QHeaderView::section:last {{
+                border-right: none;
+                border-radius: 0 {sp.RADIUS_MD}px 0 0;
             }}
 
             /* ── Inputs ──────────────────────────────────────────────────────── */
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
+            QLineEdit, QSpinBox, QDoubleSpinBox {{
                 background:    {c.BG_INPUT};
                 color:         {c.TEXT_MAIN};
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
@@ -856,29 +857,93 @@ class ThemeManager(QObject):
                 min-height:    {sp.INPUT_HEIGHT}px;
                 selection-background-color: {c.BG_SELECTED};
             }}
-            QLineEdit:focus, QComboBox:focus,
-            QSpinBox:focus,  QDoubleSpinBox:focus {{
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
                 border: {sp.SEPARATOR}px solid {c.BORDER_FOCUS};
+                background: {c.BG_INPUT};
             }}
-            QLineEdit:disabled, QComboBox:disabled,
-            QSpinBox:disabled, QDoubleSpinBox:disabled {{
+            QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
                 color:      {c.TEXT_DISABLED};
+                background: {c.BG_PANEL};
+                border-color: {c.BORDER_DIM};
+            }}
+
+            QComboBox {{
+                background:    {c.BG_INPUT};
+                color:         {c.TEXT_MAIN};
+                border:        {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding:       {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-size:     {ty.SIZE_BODY}pt;
+                min-height:    {sp.INPUT_HEIGHT}px;
+                selection-background-color: {c.BG_SELECTED};
+            }}
+            QComboBox:focus {{
+                border-color: {c.BORDER_FOCUS};
+            }}
+            QComboBox:disabled {{
+                color: {c.TEXT_DISABLED};
                 background: {c.BG_PANEL};
             }}
             QComboBox::drop-down {{
                 border: none;
                 width:  {sp.ICON_LG}px;
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+            }}
+            QComboBox QAbstractItemView {{
+                background:   {c.BG_CARD};
+                color:        {c.TEXT_MAIN};
+                border:       {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                selection-background-color: {c.BG_HOVER};
+                padding: {sp.PAD_XS}px;
+                outline: none;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                border-radius: {sp.RADIUS_SM}px;
+                margin: 1px 2px;
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {c.BG_HOVER};
+            }}
+
+            QTextEdit, QPlainTextEdit {{
+                background:    {c.BG_INPUT};
+                color:         {c.TEXT_MAIN};
+                border:        {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding:       {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-size:     {ty.SIZE_BODY}pt;
+                selection-background-color: {c.BG_SELECTED};
+            }}
+            QTextEdit:focus, QPlainTextEdit:focus {{
+                border-color: {c.BORDER_FOCUS};
+            }}
+
+            /* ── SpinBox buttons ─────────────────────────────────────────────── */
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                border: none;
+                width: {sp.ICON_LG}px;
+                background: {c.BG_HOVER};
+                border-radius: {sp.RADIUS_SM}px;
+            }}
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                background: {c.BORDER};
             }}
 
             /* ── Group boxes ─────────────────────────────────────────────────── */
             QGroupBox {{
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                margin-top:    {sp.PAD_MD}px;
-                padding-top:   {sp.PAD_SM}px;
+                border-radius: {sp.RADIUS_LG}px;
+                margin-top:    {sp.PAD_LG}px;
+                padding-top:   {sp.PAD_MD}px;
                 font-weight:   {ty.WEIGHT_BOLD};
                 font-size:     {ty.SIZE_SM}pt;
                 color:         {c.TEXT_MAIN};
+                background:    {c.BG_PANEL};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
@@ -886,149 +951,332 @@ class ThemeManager(QObject):
                 padding: 0 {sp.PAD_SM}px;
                 color:   {c.BLUE};
                 font-size: {ty.SIZE_SM}pt;
+                font-weight: {ty.WEIGHT_SEMIBOLD};
+                background: {c.BG_MAIN};
             }}
 
             /* ── Buttons ─────────────────────────────────────────────────────── */
             QPushButton {{
-                background:    {c.BG_HOVER};
+                background:    {c.BG_CARD};
                 color:         {c.TEXT_MAIN};
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
                 border-radius: {sp.RADIUS_MD}px;
                 padding:       {sp.PAD_SM}px {sp.PAD_LG}px;
-                font-weight:   {ty.WEIGHT_BOLD};
+                font-weight:   {ty.WEIGHT_SEMIBOLD};
                 font-size:     {ty.SIZE_BODY}pt;
                 min-height:    {sp.BTN_HEIGHT_MD}px;
             }}
-            QPushButton:hover   {{ background: {c.BORDER}; }}
-            QPushButton:pressed {{ background: {c.BG_ROW_B}; border-color: {c.BORDER_STRONG}; }}
+            QPushButton:hover {{
+                background: {c.BG_HOVER};
+                border-color: {c.BORDER_STRONG};
+                color: {c.TEXT_BRIGHT};
+            }}
+            QPushButton:pressed {{
+                background: {c.BG_MAIN};
+                border-color: {c.BLUE};
+            }}
             QPushButton:disabled {{
                 background: {c.BG_PANEL};
                 color:      {c.TEXT_DISABLED};
-                border-color: {c.BORDER};
+                border-color: {c.BORDER_DIM};
             }}
 
-            /* Named semantic buttons — use setObjectName() for zero-cost theme propagation */
+            /* Semantic named buttons */
             QPushButton#startBtn {{
-                background: {c.GREEN}; color: {c.TEXT_INVERSE}; border: none;
+                background: {c.GREEN};
+                color: {c.TEXT_INVERSE};
+                border: none;
+                font-weight: {ty.WEIGHT_BOLD};
             }}
-            QPushButton#startBtn:hover {{ background: {c.GREEN_BRIGHT}; }}
+            QPushButton#startBtn:hover   {{ background: {c.GREEN_BRIGHT}; }}
+            QPushButton#startBtn:pressed {{ background: {c.GREEN}; border: 1px solid {c.GREEN_BRIGHT}; }}
             QPushButton#startBtn:disabled {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DISABLED};
+                border: 1px solid {c.BORDER_DIM};
             }}
+
             QPushButton#stopBtn {{
-                background: {c.RED}; color: {c.TEXT_INVERSE}; border: none;
+                background: {c.RED};
+                color: {c.TEXT_INVERSE};
+                border: none;
+                font-weight: {ty.WEIGHT_BOLD};
             }}
-            QPushButton#stopBtn:hover {{ background: {c.RED_BRIGHT}; }}
+            QPushButton#stopBtn:hover   {{ background: {c.RED_BRIGHT}; }}
+            QPushButton#stopBtn:pressed {{ background: {c.RED}; border: 1px solid {c.RED_BRIGHT}; }}
             QPushButton#stopBtn:disabled {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DISABLED};
+                border: 1px solid {c.BORDER_DIM};
             }}
+
             QPushButton#strategyBtn {{
-                background: {c.BLUE_DARK}; color: {c.TEXT_INVERSE}; border: none;
+                background: {c.BLUE_DARK};
+                color: {c.TEXT_INVERSE};
+                border: none;
+                font-weight: {ty.WEIGHT_BOLD};
             }}
-            QPushButton#strategyBtn:hover {{ background: {c.BLUE}; }}
+            QPushButton#strategyBtn:hover   {{ background: {c.BLUE}; }}
+            QPushButton#strategyBtn:pressed {{ background: {c.BLUE_DARK}; border: 1px solid {c.BLUE}; }}
             QPushButton#strategyBtn:disabled {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DISABLED};
+                border: 1px solid {c.BORDER_DIM};
             }}
+
             QPushButton#callBtn {{
-                background: {c.BLUE_DARK}; color: {c.TEXT_INVERSE}; border: none;
+                background: {c.BLUE_DARK};
+                color: {c.TEXT_INVERSE};
+                border: none;
+                font-weight: {ty.WEIGHT_BOLD};
             }}
-            QPushButton#callBtn:hover {{ background: {c.BLUE}; }}
+            QPushButton#callBtn:hover   {{ background: {c.BLUE}; }}
             QPushButton#callBtn:disabled {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DISABLED};
+                border: 1px solid {c.BORDER_DIM};
             }}
+
             QPushButton#putBtn {{
-                background: {c.PURPLE}; color: {c.TEXT_INVERSE}; border: none;
+                background: {c.PURPLE_DARK};
+                color: {c.TEXT_INVERSE};
+                border: none;
+                font-weight: {ty.WEIGHT_BOLD};
             }}
-            QPushButton#putBtn:hover:enabled {{ background: {c.BLUE}; }}
+            QPushButton#putBtn:hover:enabled {{ background: {c.PURPLE}; }}
             QPushButton#putBtn:disabled {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DISABLED};
+                border: 1px solid {c.BORDER_DIM};
             }}
+
             QPushButton#exitBtn {{
-                background: {c.YELLOW}; color: {c.TEXT_INVERSE}; border: none;
+                background: {c.YELLOW};
+                color: {c.TEXT_INVERSE};
+                border: none;
+                font-weight: {ty.WEIGHT_BOLD};
             }}
             QPushButton#exitBtn:hover:enabled {{ background: {c.YELLOW_BRIGHT}; }}
             QPushButton#exitBtn:disabled {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; border: 1px solid {c.BORDER};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DISABLED};
+                border: 1px solid {c.BORDER_DIM};
             }}
+
             QPushButton#connectionBtn {{
-                background: {c.BG_PANEL}; color: {c.TEXT_DIM};
+                background: {c.BG_CARD};
+                color: {c.TEXT_DIM};
                 border: {sp.SEPARATOR}px solid {c.BORDER};
+                font-weight: {ty.WEIGHT_MEDIUM};
             }}
             QPushButton#connectionBtnConnected {{
-                background: {c.GREEN}22; color: {c.GREEN};
+                background: {c.GREEN_GLOW};
+                color: {c.GREEN};
                 border: 1px solid {c.GREEN}44;
+                font-weight: {ty.WEIGHT_SEMIBOLD};
             }}
             QPushButton#connectionBtnDisconnected {{
-                background: {c.RED}22; color: {c.RED};
+                background: {c.RED_GLOW};
+                color: {c.RED};
                 border: 1px solid {c.RED}44;
+                font-weight: {ty.WEIGHT_SEMIBOLD};
             }}
 
             /* ── Progress bars ───────────────────────────────────────────────── */
             QProgressBar {{
-                border:        {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
-                background:    {c.BG_PANEL};
+                border:        {sp.SEPARATOR}px solid {c.BORDER_DIM};
+                border-radius: {sp.RADIUS_MD}px;
+                background:    {c.BG_CARD};
                 text-align:    center;
                 color:         {c.TEXT_MAIN};
                 font-size:     {ty.SIZE_XS}pt;
+                font-weight:   {ty.WEIGHT_SEMIBOLD};
                 min-height:    {sp.PROGRESS_MD}px;
                 max-height:    {sp.PROGRESS_LG}px;
             }}
             QProgressBar::chunk {{
-                background:    {c.BLUE};
-                border-radius: {sp.RADIUS_SM}px;
+                background:    qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                               stop:0 {c.BLUE_DARK}, stop:1 {c.BLUE});
+                border-radius: {sp.RADIUS_MD}px;
             }}
 
             /* ── Labels ──────────────────────────────────────────────────────── */
             QLabel {{
                 color:     {c.TEXT_MAIN};
                 font-size: {ty.SIZE_BODY}pt;
+                background: transparent;
             }}
 
             /* ── Splitter ────────────────────────────────────────────────────── */
             QSplitter::handle {{
-                background: {c.BORDER};
+                background: {c.BORDER_DIM};
             }}
             QSplitter::handle:horizontal {{ width:  {sp.SPLITTER}px; }}
             QSplitter::handle:vertical   {{ height: {sp.SPLITTER}px; }}
+            QSplitter::handle:hover {{
+                background: {c.BLUE};
+            }}
 
             /* ── Checkboxes & Radio buttons ──────────────────────────────────── */
             QCheckBox, QRadioButton {{
                 color:     {c.TEXT_MAIN};
                 font-size: {ty.SIZE_BODY}pt;
                 spacing:   {sp.GAP_SM}px;
+                background: transparent;
             }}
             QCheckBox:disabled, QRadioButton:disabled {{
                 color: {c.TEXT_DISABLED};
+            }}
+            QCheckBox::indicator {{
+                width:  {sp.ICON_MD}px;
+                height: {sp.ICON_MD}px;
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_SM}px;
+                background: {c.BG_INPUT};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {c.BLUE_DARK};
+                border-color: {c.BLUE_DARK};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {c.BORDER_FOCUS};
+            }}
+            QRadioButton::indicator {{
+                width:  {sp.ICON_MD}px;
+                height: {sp.ICON_MD}px;
+                border: {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.ICON_MD // 2}px;
+                background: {c.BG_INPUT};
+            }}
+            QRadioButton::indicator:checked {{
+                background: {c.BLUE_DARK};
+                border-color: {c.BLUE_DARK};
+            }}
+            QRadioButton::indicator:hover {{
+                border-color: {c.BORDER_FOCUS};
             }}
 
             /* ── Frames ──────────────────────────────────────────────────────── */
             QFrame[frameShape="4"],
             QFrame[frameShape="5"] {{
                 color: {c.BORDER};
+                background: {c.BORDER};
+            }}
+
+            /* ── List Widget ─────────────────────────────────────────────────── */
+            QListWidget {{
+                background:   {c.BG_PANEL};
+                color:        {c.TEXT_MAIN};
+                border:       {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                font-size:    {ty.SIZE_BODY}pt;
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+                border-radius: {sp.RADIUS_SM}px;
+                margin: 1px 2px;
+            }}
+            QListWidget::item:selected {{
+                background: {c.BG_SELECTED};
+                color: {c.TEXT_BRIGHT};
+            }}
+            QListWidget::item:hover {{
+                background: {c.BG_HOVER};
+            }}
+
+            /* ── Tree Widget ─────────────────────────────────────────────────── */
+            QTreeWidget {{
+                background:   {c.BG_PANEL};
+                color:        {c.TEXT_MAIN};
+                border:       {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                font-size:    {ty.SIZE_BODY}pt;
+                outline: none;
+            }}
+            QTreeWidget::item {{
+                padding: {sp.PAD_XS}px {sp.PAD_SM}px;
+                border-radius: {sp.RADIUS_SM}px;
+            }}
+            QTreeWidget::item:selected {{
+                background: {c.BG_SELECTED};
+                color: {c.TEXT_BRIGHT};
+            }}
+            QTreeWidget::item:hover {{
+                background: {c.BG_HOVER};
+            }}
+
+            /* ── Dialog ──────────────────────────────────────────────────────── */
+            QDialog {{
+                background: {c.BG_MAIN};
+                border-radius: {sp.RADIUS_LG}px;
+            }}
+
+            /* ── Dock Widget ─────────────────────────────────────────────────── */
+            QDockWidget {{
+                color:       {c.TEXT_MAIN};
+                font-size:   {ty.SIZE_SM}pt;
+                font-weight: {ty.WEIGHT_SEMIBOLD};
+            }}
+            QDockWidget::title {{
+                background: {c.BG_CARD};
+                border-bottom: {sp.SEPARATOR}px solid {c.BORDER};
+                padding: {sp.PAD_SM}px {sp.PAD_MD}px;
+            }}
+
+            /* ── Tool Button ─────────────────────────────────────────────────── */
+            QToolButton {{
+                background:    {c.BG_CARD};
+                color:         {c.TEXT_MAIN};
+                border:        {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                padding:       {sp.PAD_SM}px {sp.PAD_MD}px;
+                font-size:     {ty.SIZE_BODY}pt;
+                min-height:    {sp.BTN_HEIGHT_SM}px;
+            }}
+            QToolButton:hover {{
+                background: {c.BG_HOVER};
+                border-color: {c.BORDER_STRONG};
+            }}
+            QToolButton:pressed {{
+                background: {c.BG_MAIN};
+            }}
+
+            /* ── Wizard ──────────────────────────────────────────────────────── */
+            QWizard {{
+                background: {c.BG_MAIN};
+            }}
+            QWizardPage {{
+                background: {c.BG_MAIN};
+            }}
+
+            /* ── MessageBox ──────────────────────────────────────────────────── */
+            QMessageBox {{
+                background: {c.BG_MAIN};
+            }}
+            QMessageBox QLabel {{
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_BODY}pt;
+                min-width: 300px;
             }}
         """
 
-    # ── Convenience stylesheet snippets for widget apply_theme() ──────────────
+    # ── Convenience stylesheet snippets ───────────────────────────────────────
 
     def card_stylesheet(self,
-                        radius_token: str = "RADIUS_MD",
+                        radius_token: str = "RADIUS_LG",
                         bg_token: str = "BG_PANEL") -> str:
-        """
-        Return a QFrame card stylesheet using current tokens.
-        Widgets can call this from apply_theme() instead of repeating the template.
-
-        Example:
-            self.setStyleSheet(theme_manager.card_stylesheet())
-        """
         c  = self._palette
         sp = self._spacing
         return f"""
             QFrame {{
                 background:    {c.get(bg_token, c.BG_PANEL)};
                 border:        {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.get(radius_token, sp.RADIUS_MD)}px;
+                border-radius: {sp.get(radius_token, sp.RADIUS_LG)}px;
                 padding:       {sp.PAD_SM}px;
+            }}
+            QFrame:hover {{
+                border-color: {c.BORDER_STRONG};
             }}
         """
 
@@ -1036,14 +1284,6 @@ class ThemeManager(QObject):
                          color_token: str = "TEXT_MAIN",
                          size_token:  str = "SIZE_BODY",
                          bold: bool = False) -> str:
-        """
-        Return a QLabel stylesheet using current tokens.
-
-        Example:
-            self.value_label.setStyleSheet(
-                theme_manager.label_stylesheet("BLUE", "SIZE_LG", bold=True)
-            )
-        """
         c  = self._palette
         ty = self._typography
         weight = ty.WEIGHT_BOLD if bold else ty.WEIGHT_NORMAL
@@ -1059,17 +1299,6 @@ class ThemeManager(QObject):
                           bg_token:    str = "GREEN",
                           hover_token: str = "GREEN_BRIGHT",
                           min_width:   int = 100) -> str:
-        """
-        Return a semantic-coloured QPushButton stylesheet.
-
-        Example:
-            self.btn_start.setStyleSheet(
-                theme_manager.button_stylesheet("GREEN", "GREEN_BRIGHT")
-            )
-            self.btn_stop.setStyleSheet(
-                theme_manager.button_stylesheet("RED", "RED_BRIGHT")
-            )
-        """
         c  = self._palette
         ty = self._typography
         sp = self._spacing
@@ -1090,19 +1319,13 @@ class ThemeManager(QObject):
             QPushButton:hover   {{ background: {hover}; }}
             QPushButton:pressed {{ background: {bg}; border: 1px solid {c.BORDER_STRONG}; }}
             QPushButton:disabled {{
-                background: {c.BG_HOVER};
+                background: {c.BG_CARD};
                 color:      {c.TEXT_DISABLED};
-                border:     1px solid {c.BORDER};
+                border:     1px solid {c.BORDER_DIM};
             }}
         """
 
     def badge_stylesheet(self, color_token: str = "BLUE") -> str:
-        """
-        Return a pill-badge stylesheet (e.g., for mode label, status chips).
-
-        Example:
-            self.mode_label.setStyleSheet(theme_manager.badge_stylesheet("GREEN"))
-        """
         c  = self._palette
         ty = self._typography
         sp = self._spacing
@@ -1114,16 +1337,10 @@ class ThemeManager(QObject):
             f"padding: {sp.PAD_XS}px {sp.PAD_MD}px; "
             f"font-weight: {ty.WEIGHT_BOLD}; "
             f"font-size: {ty.SIZE_XS}pt; "
-            f"letter-spacing: {ty.LETTER_WIDE};"
+            f"letter-spacing: {ty.LETTER_CAPS};"
         )
 
     def log_stylesheet(self) -> str:
-        """
-        Return a stylesheet for log text widgets (QTextEdit / QPlainTextEdit).
-
-        Example:
-            self.log_widget.setStyleSheet(theme_manager.log_stylesheet())
-        """
         c  = self._palette
         ty = self._typography
         sp = self._spacing
@@ -1132,6 +1349,7 @@ class ThemeManager(QObject):
                 background:  {c.BG_MAIN};
                 color:       {c.TEXT_MAIN};
                 border:      {sp.SEPARATOR}px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
                 font-family: {ty.FONT_MONO};
                 font-size:   {ty.SIZE_MONO}pt;
                 line-height: {ty.LINE_HEIGHT_LOG};
@@ -1141,26 +1359,25 @@ class ThemeManager(QObject):
         """
 
     def pnl_progress_stylesheet(self, positive: bool = True) -> str:
-        """Return a styled progress bar stylesheet for P&L widget."""
         c  = self._palette
         sp = self._spacing
         chunk_color = c.GREEN if positive else c.RED
-        bg_color = c.GREEN + "22" if positive else c.RED + "22"
+        glow_color  = c.GREEN_GLOW if positive else c.RED_GLOW
         return f"""
             QProgressBar {{
                 border:        none;
-                border-radius: {sp.RADIUS_SM}px;
-                background:    {bg_color};
+                border-radius: {sp.RADIUS_MD}px;
+                background:    {glow_color};
                 text-align:    center;
             }}
             QProgressBar::chunk {{
-                background:    {chunk_color};
-                border-radius: {sp.RADIUS_SM}px;
+                background:    qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                               stop:0 {chunk_color}cc, stop:1 {chunk_color});
+                border-radius: {sp.RADIUS_MD}px;
             }}
         """
 
     def pnl_stat_chip_stylesheet(self) -> str:
-        """Return stylesheet for inline stat chips in P&L widget."""
         c  = self._palette
         ty = self._typography
         sp = self._spacing
@@ -1178,21 +1395,9 @@ class ThemeManager(QObject):
 theme_manager = ThemeManager()
 
 
-# Add this helper function near the top of main.py after the imports:
-
 def show_themed_message_box(parent, title, text, buttons=QMessageBox.Ok, icon=QMessageBox.NoIcon):
     """
     Show a message box with proper theme styling.
-
-    Args:
-        parent: Parent widget (can be None)
-        title: Window title
-        text: Message text
-        buttons: QMessageBox button flags
-        icon: QMessageBox icon
-
-    Returns:
-        QMessageBox.StandardButton: The button that was clicked
     """
     try:
         from gui.theme_manager import theme_manager
@@ -1203,7 +1408,6 @@ def show_themed_message_box(parent, title, text, buttons=QMessageBox.Ok, icon=QM
         msg_box.setStandardButtons(buttons)
         msg_box.setIcon(icon)
 
-        # Apply theme
         c = theme_manager.palette
         ty = theme_manager.typography
         sp = theme_manager.spacing
@@ -1219,25 +1423,28 @@ def show_themed_message_box(parent, title, text, buttons=QMessageBox.Ok, icon=QM
                 min-width: 300px;
             }}
             QPushButton {{
-                background-color: {c.BG_PANEL};
+                background-color: {c.BG_CARD};
                 color: {c.TEXT_MAIN};
                 border: {sp.SEPARATOR}px solid {c.BORDER};
-                border-radius: {sp.RADIUS_SM}px;
+                border-radius: {sp.RADIUS_MD}px;
                 padding: {sp.PAD_SM}px {sp.PAD_MD}px;
                 min-width: 80px;
                 font-size: {ty.SIZE_BODY}pt;
+                font-weight: {ty.WEIGHT_SEMIBOLD};
             }}
             QPushButton:hover {{
                 background-color: {c.BG_HOVER};
                 border-color: {c.BORDER_FOCUS};
+                color: {c.TEXT_BRIGHT};
             }}
             QPushButton:pressed {{
-                background-color: {c.BORDER};
+                background-color: {c.BG_MAIN};
             }}
-            QMessageBox QPushButton[text="Yes"], 
+            QMessageBox QPushButton[text="Yes"],
             QMessageBox QPushButton[text="OK"] {{
                 background-color: {c.GREEN};
-                color: white;
+                color: {c.TEXT_INVERSE};
+                border: none;
             }}
             QMessageBox QPushButton[text="Yes"]:hover,
             QMessageBox QPushButton[text="OK"]:hover {{
@@ -1246,7 +1453,8 @@ def show_themed_message_box(parent, title, text, buttons=QMessageBox.Ok, icon=QM
             QMessageBox QPushButton[text="No"],
             QMessageBox QPushButton[text="Cancel"] {{
                 background-color: {c.RED};
-                color: white;
+                color: {c.TEXT_INVERSE};
+                border: none;
             }}
             QMessageBox QPushButton[text="No"]:hover,
             QMessageBox QPushButton[text="Cancel"]:hover {{
@@ -1258,5 +1466,4 @@ def show_themed_message_box(parent, title, text, buttons=QMessageBox.Ok, icon=QM
 
     except Exception as e:
         logger.error(f"[show_themed_message_box] Failed: {e}", exc_info=True)
-        # Fallback to regular QMessageBox
         return QMessageBox.question(parent, title, text, buttons)

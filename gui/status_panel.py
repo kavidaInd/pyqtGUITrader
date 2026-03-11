@@ -121,11 +121,12 @@ class StatusCard(QFrame):
             else:
                 self.setStyleSheet(f"""
                     QFrame {{
-                        background: {c.BG_PANEL};
+                        background: {c.BG_CARD};
                         border: {sp.SEPARATOR}px solid {c.BORDER};
                         border-radius: {sp.RADIUS_MD}px;
                     }}
                     QFrame:hover {{
+                        background: {c.BG_PANEL};
                         border-color: {c.BORDER_STRONG};
                     }}
                 """)
@@ -295,28 +296,41 @@ class StatusPanel(QWidget):
 
             self._tabs.setStyleSheet(f"""
                 QTabWidget::pane {{
-                    border: {sp.SEPARATOR}px solid {c.BORDER};
+                    border: 1px solid {c.BORDER};
+                    border-top: none;
                     background: {c.BG_MAIN};
                 }}
                 QTabBar::tab {{
-                    background:  {c.BG_PANEL};
-                    color:       {c.TEXT_DIM};
-                    border:      {sp.SEPARATOR}px solid {c.BORDER};
+                    background:    {c.BG_CARD};
+                    color:         {c.TEXT_DIM};
+                    border:        1px solid {c.BORDER};
                     border-bottom: none;
-                    padding:     {sp.PAD_XS}px {sp.PAD_MD}px;
-                    font-size:   {ty.SIZE_XS}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                    min-width:   80px;
+                    border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
+                    padding:       {sp.PAD_XS}px {sp.PAD_MD}px;
+                    font-size:     {ty.SIZE_XS}pt;
+                    font-weight:   {ty.WEIGHT_BOLD};
+                    min-width:     80px;
+                    margin-right:  2px;
                 }}
                 QTabBar::tab:selected {{
-                    background:   {c.BG_MAIN};
-                    color:        {c.TEXT_MAIN};
+                    background:    {c.BG_MAIN};
+                    color:         {c.TEXT_BRIGHT};
                     border-bottom: 2px solid {c.BLUE};
+                    font-weight:   {ty.WEIGHT_BOLD};
                 }}
                 QTabBar::tab:hover:!selected {{
                     background: {c.BG_HOVER};
                     color:      {c.TEXT_MAIN};
+                    border-color: {c.BORDER_STRONG};
                 }}
+                QScrollBar:vertical {{
+                    background: {c.BG_PANEL}; width: 6px; border-radius: 3px; margin: 0;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {c.BORDER}; min-height: 20px; border-radius: 3px;
+                }}
+                QScrollBar::handle:vertical:hover {{ background: {c.BORDER_STRONG}; }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             """)
 
             # Header labels
@@ -354,7 +368,7 @@ class StatusPanel(QWidget):
                 font-weight: {ty.WEIGHT_BOLD};
                 min-height:  {sp.BTN_HEIGHT_SM}px;
             }}
-            QPushButton:hover    {{ background: {c.BORDER}; }}
+            QPushButton:hover    {{ background: {c.BG_HOVER}; border-color: {c.BORDER_STRONG}; }}
             QPushButton:disabled {{ color: {c.TEXT_DISABLED}; border-color: {c.BORDER}; }}
         """
         exit_btn_ss = f"""

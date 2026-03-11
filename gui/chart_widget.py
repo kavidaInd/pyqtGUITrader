@@ -88,31 +88,37 @@ class ModernCard(QFrame):
         theme_manager.density_changed.connect(self._apply_style)
 
     def _apply_style(self, _: str = None):
-        c = theme_manager.palette
+        c  = theme_manager.palette
         sp = theme_manager.spacing
 
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-            QFrame#modernCard QLabel {{
-                background: transparent;
-            }}
-        """
-
         if self.elevated:
-            base_style += f"""
+            self.setStyleSheet(f"""
                 QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:0, y2:1,
+                        stop:0 {c.BG_CARD}, stop:1 {c.BG_PANEL}
+                    );
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_XL}px;
                 }}
-            """
-
-        self.setStyleSheet(base_style)
+                QFrame#modernCard QLabel {{
+                    background: transparent;
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QFrame#modernCard {{
+                    background: {c.BG_PANEL};
+                    border: 1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_LG}px;
+                }}
+                QFrame#modernCard:hover {{
+                    border-color: {c.BORDER_STRONG};
+                }}
+                QFrame#modernCard QLabel {{
+                    background: transparent;
+                }}
+            """)
 
 
 class StatusBadge(QLabel, ThemedMixin):
@@ -250,7 +256,7 @@ class DrawingObject:
     """User-drawn object on chart"""
     type: str  # 'trend_line', 'horizontal_line'
     points: List[Tuple[float, float]]
-    color: str = "#58a6ff"  # Will be replaced with token in rendering
+    color: str = ""  # Set dynamically from theme_manager.palette.BLUE
     width: int = 2
     style: str = "solid"  # 'solid', 'dash', 'dot'
     text: Optional[str] = None
@@ -268,7 +274,7 @@ class TradeAnnotation:
     position_type: str = "CALL"  # 'CALL', 'PUT'
     quantity: int = 1
     pnl: Optional[float] = None
-    color: str = "#3fb950"  # Will be replaced with token in rendering
+    color: str = ""  # Set dynamically from theme_manager.palette.GREEN
 
 
 # =============================================================================
