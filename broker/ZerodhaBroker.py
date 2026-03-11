@@ -74,15 +74,7 @@ class ZerodhaBroker(BaseBroker):
     FIXED: Added proper token expiry tracking and propagation.
     """
 
-    # Zerodha specific constants
-    TOKEN_EXPIRY_ERRORS = [
-        "TokenException",
-        "token",
-        "invalid_token",
-        "expired_token",
-        "access_token",
-    ]
-
+    MAX_REQUESTS_PER_SECOND = 3
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
         try:
@@ -158,6 +150,7 @@ class ZerodhaBroker(BaseBroker):
         self.redirect_uri = None
         self.kite = None
         self._last_request_time = 0
+        self._rate_lock = threading.Lock()
         self._request_count = 0
         self._instrument_cache: Dict[str, int] = {}
         self._token_expiry = None
@@ -291,17 +284,23 @@ class ZerodhaBroker(BaseBroker):
     # ── Rate limiting ─────────────────────────────────────────────────────────
 
     def _check_rate_limit(self):
-        current_time = time.time()
-        time_diff = current_time - self._last_request_time
-        if time_diff < 1.0:
-            self._request_count += 1
-            if self._request_count > self.MAX_REQUESTS_PER_SECOND:
-                time.sleep(1.0 - time_diff + 0.1)
-                self._request_count = 0
-                self._last_request_time = time.time()
-        else:
-            self._request_count = 1
-            self._last_request_time = current_time
+        with self._rate_lock:
+            current_time = time.time()
+            time_diff = current_time - self._last_request_time
+            if time_diff < 1.0:
+                self._request_count += 1
+                if self._request_count > self.MAX_REQUESTS_PER_SECOND:
+                    sleep_time = 1.0 - time_diff + 0.1
+                    self._rate_lock.release()
+                    try:
+                        time.sleep(sleep_time)
+                    finally:
+                        self._rate_lock.acquire()
+                    self._request_count = 0
+                    self._last_request_time = time.time()
+            else:
+                self._request_count = 1
+                self._last_request_time = current_time
 
     # ── Symbol helpers ────────────────────────────────────────────────────────
 

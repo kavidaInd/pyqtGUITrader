@@ -38,6 +38,7 @@ UPDATED:
 
 import logging
 import time
+import threading
 import random
 import math
 from abc import ABC, abstractmethod
@@ -128,6 +129,9 @@ class BaseBroker(ABC):
     # Subclasses that need their own counters should set these in __init__.
     _last_request_time: float = 0.0
     _request_count: int = 0
+    # _rate_lock is initialized as an instance variable in each subclass __init__.
+    # Class-level fallback prevents AttributeError if a subclass forgets to init it.
+    _rate_lock: "threading.Lock"  # type hint only; instance lock set in subclass __init__
 
     # ── Paper mode flag ───────────────────────────────────────────────────────
     # When True, place_order / exit_position / sell_at_current are intercepted
@@ -686,25 +690,31 @@ class BaseBroker(ABC):
 
     def _check_rate_limit(self) -> None:
         """
-        Token-bucket rate limiter.  Sleeps if requests-per-second would be
-        exceeded based on MAX_REQUESTS_PER_SECOND.
+        Thread-safe token-bucket rate limiter.
 
-        Uses per-instance _last_request_time / _request_count counters.
-        Subclasses that initialise these in __init__ get isolated counters.
+        Sleeps if requests-per-second would exceed MAX_REQUESTS_PER_SECOND.
+        All counter reads and writes are protected by _rate_lock to prevent
+        race conditions when multiple threads (e.g. history + order threads)
+        share the same broker instance.
         """
         try:
-            current_time = time.time()
-            time_diff = current_time - self._last_request_time
-            if time_diff < 1.0:
-                self._request_count += 1
-                if self._request_count > self.MAX_REQUESTS_PER_SECOND:
-                    sleep_time = 1.0 - time_diff + 0.1
-                    time.sleep(sleep_time)
-                    self._request_count = 0
-                    self._last_request_time = time.time()
-            else:
-                self._request_count = 1
-                self._last_request_time = current_time
+            with self._rate_lock:
+                current_time = time.time()
+                time_diff = current_time - self._last_request_time
+                if time_diff < 1.0:
+                    self._request_count += 1
+                    if self._request_count > self.MAX_REQUESTS_PER_SECOND:
+                        sleep_time = 1.0 - time_diff + 0.1
+                        self._rate_lock.release()
+                        try:
+                            time.sleep(sleep_time)
+                        finally:
+                            self._rate_lock.acquire()
+                        self._request_count = 0
+                        self._last_request_time = time.time()
+                else:
+                    self._request_count = 1
+                    self._last_request_time = current_time
         except Exception as e:
             logger.error(f"[BaseBroker._check_rate_limit] {e}", exc_info=True)
 

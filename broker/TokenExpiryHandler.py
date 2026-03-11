@@ -191,7 +191,7 @@ class TokenExpiryHandler(QObject):
         logger.info("Starting token recovery process")
 
         # Notify UI to show re-authentication dialog
-        self._show_auth_dialog()
+        # self._show_auth_dialog()
 
     def _show_auth_dialog(self) -> None:
         """Show re-authentication dialog in UI thread."""

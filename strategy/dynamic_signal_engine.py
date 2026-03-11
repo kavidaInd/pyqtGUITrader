@@ -24,6 +24,7 @@ Version: 2.9.0
 from __future__ import annotations
 import json
 import logging
+import threading
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
@@ -1180,6 +1181,8 @@ class DynamicSignalEngine:
         self.min_confidence = 0.6
         self.config = {}
         self._manager = None
+        self._indicator_cache: Dict = {}
+        self._indicator_cache_lock = threading.Lock()
 
     def _key(self, signal: Union[str, OptionSignal]) -> str:
         """

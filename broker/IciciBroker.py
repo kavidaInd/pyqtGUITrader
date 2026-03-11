@@ -196,6 +196,7 @@ class IciciBroker(BaseBroker):
         self.api_secret = None
         self.breeze = None
         self._last_request_time = 0
+        self._rate_lock = threading.Lock()
         self._request_count = 0
         self._token_expiry = None
         self._token_issued_at = None
@@ -329,18 +330,24 @@ class IciciBroker(BaseBroker):
     # ── Rate limiting ─────────────────────────────────────────────────────────
 
     def _check_rate_limit(self):
-        """ICICI Breeze: max 10 orders/sec per SEBI regulations."""
-        current = time.time()
-        diff = current - self._last_request_time
-        if diff < 1.0:
-            self._request_count += 1
-            if self._request_count >= 10:
-                time.sleep(1.0 - diff + 0.1)
-                self._request_count = 0
-                self._last_request_time = time.time()
-        else:
-            self._request_count = 1
-            self._last_request_time = current
+        """ICICI Breeze: max 10 requests/sec per SEBI regulations."""
+        with self._rate_lock:
+            current = time.time()
+            diff = current - self._last_request_time
+            if diff < 1.0:
+                self._request_count += 1
+                if self._request_count > self.MAX_REQUESTS_PER_SECOND:
+                    sleep_time = 1.0 - diff + 0.1
+                    self._rate_lock.release()
+                    try:
+                        time.sleep(sleep_time)
+                    finally:
+                        self._rate_lock.acquire()
+                    self._request_count = 0
+                    self._last_request_time = time.time()
+            else:
+                self._request_count = 1
+                self._last_request_time = current
 
     # ── Symbol helpers ────────────────────────────────────────────────────────
 
@@ -1006,6 +1013,7 @@ class IciciBroker(BaseBroker):
               max_retries: int = 3, base_delay: int = 1):
         for attempt in range(max_retries):
             try:
+                self._check_token_before_request()
                 self._check_rate_limit()
                 response = func()
                 if isinstance(response, dict):

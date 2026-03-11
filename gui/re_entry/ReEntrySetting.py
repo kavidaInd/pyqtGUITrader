@@ -148,17 +148,46 @@ class ReEntrySetting:
         """Push settings into trade state so the engine picks them up live."""
         try:
             state = state_manager.get_state()
-            state.reentry_allow                = self.allow_reentry
-            state.reentry_min_candles_sl       = self.min_candles_after_sl
-            state.reentry_min_candles_tp       = self.min_candles_after_tp
-            state.reentry_min_candles_signal   = self.min_candles_after_signal
-            state.reentry_min_candles_default  = self.min_candles_default
-            state.reentry_same_direction_only  = self.same_direction_only
-            state.reentry_require_new_signal   = self.require_new_signal
+            state.reentry_allow = self.allow_reentry
+            state.reentry_min_candles_sl = self.min_candles_after_sl
+            state.reentry_min_candles_tp = self.min_candles_after_tp
+            state.reentry_min_candles_signal = self.min_candles_after_signal
+            state.reentry_min_candles_default = self.min_candles_default
+            state.reentry_same_direction_only = self.same_direction_only
+            state.reentry_require_new_signal = self.require_new_signal
             state.reentry_price_filter_enabled = self.price_filter_enabled
-            state.reentry_price_filter_pct     = self.price_filter_pct
-            state.reentry_max_per_day          = self.max_reentries_per_day
+            state.reentry_price_filter_pct = self.price_filter_pct
+            state.reentry_max_per_day = self.max_reentries_per_day
             logger.debug("[ReEntrySetting] Applied to trade state")
+
+            # DATA-4 fix: Restore today's re-entry counts from persistent storage
+            # so a GUI restart during the trading day does not reset the guard.
+            try:
+                from db.connector import get_db
+                from db.config_crud import kv as kv_crud
+                from datetime import date as _date
+                today_str = _date.today().isoformat()
+                db = get_db()
+                stored_date = kv_crud.get("reentry:last_reset", None, db) or ""
+                if stored_date == today_str:
+                    call_count = int(kv_crud.get("reentry:call_count", 0, db) or 0)
+                    put_count = int(kv_crud.get("reentry:put_count", 0, db) or 0)
+                    if hasattr(state, 'reentry_call_count'):
+                        state.reentry_call_count = call_count
+                    if hasattr(state, 'reentry_put_count'):
+                        state.reentry_put_count = put_count
+                    logger.info(
+                        f"[ReEntrySetting] Restored re-entry counts from DB: "
+                        f"call={call_count} put={put_count}"
+                    )
+                else:
+                    # New day — reset stored counts
+                    kv_crud.set("reentry:call_count", "0", db)
+                    kv_crud.set("reentry:put_count", "0", db)
+                    kv_crud.set("reentry:last_reset", today_str, db)
+            except Exception as _kv_err:
+                logger.warning(f"[ReEntrySetting._apply_to_state] KV restore failed: {_kv_err}")
+
         except Exception as e:
             logger.error(f"[ReEntrySetting._apply_to_state] {e}", exc_info=True)
 

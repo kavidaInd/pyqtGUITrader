@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS trade_sessions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
     ended_at       TEXT,
+    last_seen_at   TEXT,
     mode           TEXT    NOT NULL DEFAULT 'PAPER',
     exchange       TEXT,
     derivative     TEXT,
@@ -234,6 +235,8 @@ _KV_SEEDS: Dict[str, str] = {
     "profit_stoploss:profit_type":           '"STOP"',
     "profit_stoploss:tp_percentage":         "15.0",
     "profit_stoploss:stoploss_percentage":   "7.0",
+    "profit_stoploss:trailing_activation_pct":    "10.0",
+    "profit_stoploss:trailing_sl_at_activation":  "5.0",
     "profit_stoploss:trailing_first_profit": "3.0",
     "profit_stoploss:max_profit":            "30.0",
     "profit_stoploss:profit_step":           "2.0",
@@ -257,6 +260,21 @@ _KV_SEEDS: Dict[str, str] = {
 
     # ── Active strategy pointer ────────────────────────────────────────────
     "strategy:active_slug": '""',
+
+    # ── Re-entry guard settings ────────────────────────────────────────────
+    "reentry:allow_reentry":            "true",
+    "reentry:min_candles_after_sl":     "3",
+    "reentry:min_candles_after_tp":     "1",
+    "reentry:min_candles_after_signal": "2",
+    "reentry:min_candles_default":      "2",
+    "reentry:same_direction_only":      "false",
+    "reentry:require_new_signal":       "true",
+    "reentry:price_filter_enabled":     "true",
+    "reentry:price_filter_pct":         "5.0",
+    "reentry:max_reentries_per_day":    "0",
+    "reentry:call_count":               "0",
+    "reentry:put_count":                "0",
+    "reentry:last_reset":               '""',
 
     # ── License activation record ──────────────────────────────────────────
     "license:license_key":    '""',
@@ -318,7 +336,7 @@ EXPECTED_TABLES: Dict[str, List[str]] = {
         "created_at", "updated_at",
     ],
     "trade_sessions": [
-        "id", "started_at", "ended_at", "mode", "exchange",
+        "id", "started_at", "ended_at", "last_seen_at", "mode", "exchange",
         "derivative", "lot_size", "interval", "total_pnl",
         "total_trades", "winning_trades", "losing_trades",
         "strategy_slug", "notes",
@@ -403,6 +421,7 @@ class DatabaseInstaller:
                 return result
 
             self._apply_schema(result)
+            self._migrate_columns(result)   # heal missing columns in existing DBs
             self._drop_legacy_tables(result)
             self._seed_kv(result)
             self._health_check(result)
@@ -478,6 +497,73 @@ class DatabaseInstaller:
         result.tables_created = new_tables
         if new_tables:
             logger.info(f"[DB Installer] New tables installed: {new_tables}")
+
+    def _migrate_columns(self, result: InstallResult) -> None:
+        """
+        For every column listed in EXPECTED_TABLES that is absent from an
+        existing table, issue ALTER TABLE … ADD COLUMN with a safe NULL default.
+
+        This heals databases created before a column was added to the schema —
+        e.g. trade_sessions.last_seen_at added after initial release.
+        CREATE TABLE IF NOT EXISTS is idempotent for new tables but does NOT
+        add columns to tables that already exist, so this step is necessary.
+
+        Column type definitions mirror EXPECTED_TABLES entries; unknown columns
+        are added as TEXT NULL which is safe for any new optional field.
+        """
+        # Map of (table, column) → SQLite column definition for ALTER TABLE.
+        # Only columns that need a non-TEXT type (or a DEFAULT) require an entry.
+        # Unlisted columns default to "TEXT" (NULL allowed).
+        _col_defs: Dict[str, str] = {
+            "last_seen_at":   "TEXT",
+            "ended_at":       "TEXT",
+            "total_pnl":      "REAL",
+            "total_trades":   "INTEGER DEFAULT 0",
+            "winning_trades": "INTEGER DEFAULT 0",
+            "losing_trades":  "INTEGER DEFAULT 0",
+            "notes":          "TEXT",
+            # orders columns
+            "broker_order_id": "TEXT",
+            "entry_price":     "REAL",
+            "exit_price":      "REAL",
+            "stop_loss":       "REAL",
+            "take_profit":     "REAL",
+            "pnl":             "REAL",
+            "is_confirmed":    "INTEGER NOT NULL DEFAULT 0",
+            "entered_at":      "TEXT",
+            "exited_at":       "TEXT",
+            "confirmed_at":    "TEXT",
+            "cancelled_at":    "TEXT",
+            "reason_to_exit":  "TEXT",
+        }
+
+        for table, expected_cols in EXPECTED_TABLES.items():
+            try:
+                actual_cols = self._existing_columns(table)
+            except Exception as exc:
+                logger.warning(f"[DB Installer] _migrate_columns: could not read {table}: {exc}")
+                continue
+
+            for col in expected_cols:
+                if col in actual_cols:
+                    continue
+                col_def = _col_defs.get(col, "TEXT")
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"
+                    )
+                    self._conn.commit()
+                    result.warnings.append(
+                        f"Migrated: added column '{table}.{col}' ({col_def})."
+                    )
+                    logger.info(
+                        f"[DB Installer] Added missing column: {table}.{col} {col_def}"
+                    )
+                except Exception as exc:
+                    # Column may already exist in a concurrent process — not fatal
+                    logger.warning(
+                        f"[DB Installer] Could not add {table}.{col}: {exc}"
+                    )
 
     def _drop_legacy_tables(self, result: InstallResult) -> None:
         """

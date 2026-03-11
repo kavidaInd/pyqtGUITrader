@@ -136,11 +136,26 @@ class StrategyManager:
                 return None
 
     def get_active_slug(self) -> Optional[str]:
-        """Get the slug of the active strategy."""
+        """Get the slug of the active strategy, validated against the DB."""
         with self._lock:
             try:
                 db = get_db()
-                return strategy_crud.get_active_slug(db)
+                slug = strategy_crud.get_active_slug(db)
+                if slug is None:
+                    return None
+                # BUG-H fix: Verify the slug still exists in the strategies table
+                strategy = strategy_crud.get(slug, db)
+                if strategy is None:
+                    logger.warning(
+                        f"[StrategyManager.get_active_slug] Active slug '{slug}' not found in DB "
+                        f"— the strategy was deleted. Clearing active slug."
+                    )
+                    try:
+                        strategy_crud.set_active(None, db)
+                    except Exception as clear_err:
+                        logger.error(f"[StrategyManager.get_active_slug] Failed to clear stale slug: {clear_err}")
+                    return None
+                return slug
             except Exception as e:
                 logger.error(f"[get_active_slug] Failed: {e}", exc_info=True)
                 return None

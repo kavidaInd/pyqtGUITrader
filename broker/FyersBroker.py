@@ -136,6 +136,7 @@ class FyersBroker(BaseBroker):
         self.redirect_uri = None
         self.fyers = None
         self._last_request_time = 0
+        self._rate_lock = threading.Lock()
         self._request_count = 0
         self._retry_count = 0
         self._token_expiry = None
@@ -268,18 +269,23 @@ class FyersBroker(BaseBroker):
 
     def _check_rate_limit(self):
         try:
-            current_time = time.time()
-            time_diff = current_time - self._last_request_time
-            if time_diff < 1.0:
-                self._request_count += 1
-                if self._request_count > self.MAX_REQUESTS_PER_SECOND:
-                    sleep_time = 1.0 - time_diff + 0.1
-                    time.sleep(sleep_time)
-                    self._request_count = 0
-                    self._last_request_time = time.time()
-            else:
-                self._request_count = 1
-                self._last_request_time = current_time
+            with self._rate_lock:
+                current_time = time.time()
+                time_diff = current_time - self._last_request_time
+                if time_diff < 1.0:
+                    self._request_count += 1
+                    if self._request_count > self.MAX_REQUESTS_PER_SECOND:
+                        sleep_time = 1.0 - time_diff + 0.1
+                        self._rate_lock.release()
+                        try:
+                            time.sleep(sleep_time)
+                        finally:
+                            self._rate_lock.acquire()
+                        self._request_count = 0
+                        self._last_request_time = time.time()
+                else:
+                    self._request_count = 1
+                    self._last_request_time = current_time
         except Exception as e:
             logger.error(f"[_check_rate_limit] {e}", exc_info=True)
 
@@ -349,12 +355,18 @@ class FyersBroker(BaseBroker):
 
     @staticmethod
     def _get_error_code(response: Any) -> int:
+        """
+        Extract the integer error code from a Fyers API response dict.
+
+        Returns the raw integer code only — never raises.  Token-expiry
+        detection is the responsibility of retry_on_failure(), which checks
+        the returned value against TOKEN_EXPIRY_CODES.  Raising here caused
+        the exception to bypass retry_on_failure's structured handling and
+        surface as an uncaught error in callers that only wrapped func().
+        """
         if isinstance(response, dict):
             try:
                 code = response.get("code", 0)
-                # Check for token expiry codes
-                if str(code) in ["-8", "-15", "-16", "-17", "-100", "-101", "-102"]:
-                    raise TokenExpiredError(f"Fyers auth error: {code}")
                 return int(code)
             except (ValueError, TypeError):
                 return 0
@@ -905,19 +917,47 @@ class FyersBroker(BaseBroker):
                     return response
 
                 error_code = self._get_error_code(response)
-
                 if error_code in self.TOKEN_EXPIRY_CODES:
-                    raise TokenExpiredError(f"Fyers auth error", error_code)
+                    logger.critical(
+                        f"[{context}] Token expired (code={error_code}). "
+                        "Re-authentication required."
+                    )
+                    raise TokenExpiredError(
+                        f"Fyers token expired (code {error_code}) in {context}"
+                    )
 
                 if error_code in self.RETRYABLE_CODES:
                     delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
+                    logger.warning(
+                        f"[{context}] Retryable error {error_code}, "
+                        f"attempt {attempt + 1}/{max_retries}. Retry in {delay:.1f}s"
+                    )
                     time.sleep(delay)
                     continue
 
                 response_str = str(response) if response else ""
-                for pattern in ["-8", "-15", "-16", "Token expired", "Invalid Access Token"]:
+                _token_patterns = [
+                    '"code": -8', '"code":-8',
+                    '"code": -15', '"code":-15',
+                    '"code": -16', '"code":-16',
+                    '"code": -17', '"code":-17',
+                    '"code": -100', '"code":-100',
+                    '"code": -101', '"code":-101',
+                    '"code": -102', '"code":-102',
+                    "Token expired",
+                    "Invalid Access Token",
+                    "token expired",
+                    "invalid token",
+                ]
+                for pattern in _token_patterns:
                     if pattern in response_str:
-                        raise TokenExpiredError(f"Token error: {pattern}")
+                        logger.critical(
+                            f"[{context}] Token expiry detected via string scan "
+                            f"(pattern={pattern!r}). Re-authentication required."
+                        )
+                        raise TokenExpiredError(
+                            f"Fyers token expired (pattern {pattern!r}) in {context}"
+                        )
 
                 if "Market is in closed state" in response_str:
                     return None

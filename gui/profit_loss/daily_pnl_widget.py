@@ -557,21 +557,69 @@ class DailyPnLWidget(QWidget):
             logger.error(f"[DailyPnLWidget._save_last_reset_date] {e}")
 
     def _load_daily_data(self):
+        """BUG-G fix: Load today's PnL from DB first; fall back to daily_pnl table."""
         try:
-            from db.crud import daily_pnl as daily_pnl_crud
-            today_str = datetime.now().date().isoformat()
-            row = daily_pnl_crud.get(today_str)
-            if row:
-                self._realized = float(row['realized_pnl'])
-                self._unrealized = float(row['unrealized_pnl'])
-                self._trades = int(row['trades_count'])
-                self._winners = int(row['winners_count'])
-                self._max_dd = float(row['max_drawdown'])
-                self._peak = float(row['peak'])
-            else:
-                self._calculate_from_orders()
+            # Primary: query today's closed orders directly to survive GUI restarts
+            self._load_today_pnl_from_orders()
+            # If that returns nothing, try the daily_pnl summary table
+            if self._trades == 0:
+                from db.crud import daily_pnl as daily_pnl_crud
+                today_str = datetime.now().date().isoformat()
+                row = daily_pnl_crud.get(today_str)
+                if row:
+                    self._realized = float(row['realized_pnl'])
+                    self._unrealized = float(row['unrealized_pnl'])
+                    self._trades = int(row['trades_count'])
+                    self._winners = int(row['winners_count'])
+                    self._max_dd = float(row['max_drawdown'])
+                    self._peak = float(row['peak'])
         except Exception as e:
             logger.error(f"[DailyPnLWidget._load_daily_data] {e}", exc_info=True)
+
+    def _load_today_pnl_from_orders(self):
+        """
+        BUG-G fix: Query closed orders for today and populate PnL metrics.
+        Called on __init__ and refresh_settings() so GUI restarts don't reset the guard.
+        """
+        try:
+            from db.connector import get_db
+            today = datetime.now().strftime("%Y-%m-%d")
+            db = get_db()
+            rows = db.fetchall(
+                "SELECT pnl FROM orders WHERE status='CLOSED' AND DATE(exited_at)=?",
+                (today,)
+            )
+            if not rows:
+                return
+            realized = 0.0
+            trades = 0
+            winners = 0
+            max_dd = 0.0
+            peak = 0.0
+            running = 0.0
+            for r in rows:
+                pnl = float(r["pnl"] or 0.0)
+                realized += pnl
+                trades += 1
+                if pnl > 0:
+                    winners += 1
+                running += pnl
+                if running > peak:
+                    peak = running
+                dd = peak - running
+                if dd > max_dd:
+                    max_dd = dd
+            self._realized = realized
+            self._trades = trades
+            self._winners = winners
+            self._max_dd = max_dd
+            self._peak = peak
+            logger.info(
+                f"[DailyPnLWidget._load_today_pnl_from_orders] "
+                f"Loaded ₹{realized:.2f} from {trades} closed orders today"
+            )
+        except Exception as e:
+            logger.error(f"[DailyPnLWidget._load_today_pnl_from_orders] {e}", exc_info=True)
 
     def _calculate_from_orders(self):
         try:
@@ -709,6 +757,9 @@ class DailyPnLWidget(QWidget):
         try:
             if daily_setting is not None:
                 self.daily_setting = daily_setting
+            # BUG-G fix: Re-sync realized PnL from DB so mid-session restart
+            # shows the correct accumulated P&L instead of resetting to zero.
+            self._load_today_pnl_from_orders()
             self._refresh_ui()
             logger.info(
                 f"[DailyPnLWidget.refresh_settings] target=₹{self._get_daily_target():,.0f} "

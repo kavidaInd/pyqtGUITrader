@@ -390,6 +390,63 @@ def migrate_mtf_settings(db=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# DATA-1: Ensure orders table has all required columns (idempotent ALTER TABLE)
+# ---------------------------------------------------------------------------
+
+def migrate_orders_schema(db=None) -> bool:
+    """
+    DATA-1 fix: Add any columns that were added to the orders table spec but
+    may be absent in older databases.  Uses ALTER TABLE … ADD COLUMN which is
+    a no-op if the column already exists (SQLite ignores duplicate-column errors).
+
+    Required columns not in the original CREATE TABLE:
+        side          TEXT  (BUY / SELL)
+        fill_price    REAL
+        order_type    TEXT  (MARKET / LIMIT)
+        option_type   TEXT  (CALL / PUT)
+        error         TEXT
+        realized_pnl  REAL  (alias for pnl column; stored separately for clarity)
+    """
+    db = db or get_db()
+    required_columns = [
+        ("side",         "TEXT"),
+        ("fill_price",   "REAL"),
+        ("order_type",   "TEXT DEFAULT 'MARKET'"),
+        ("option_type",  "TEXT"),
+        ("error",        "TEXT"),
+        ("realized_pnl", "REAL DEFAULT 0.0"),
+    ]
+    try:
+        existing_cols_rows = db.fetchall("PRAGMA table_info(orders)")
+        existing_cols = {row["name"] for row in existing_cols_rows} if existing_cols_rows else set()
+
+        for col_name, col_def in required_columns:
+            if col_name not in existing_cols:
+                try:
+                    db.execute(f"ALTER TABLE orders ADD COLUMN {col_name} {col_def}")
+                    logger.info(f"[migrate_orders_schema] Added column: orders.{col_name}")
+                except Exception as alter_err:
+                    # SQLite may raise if column already exists in some edge cases
+                    logger.warning(f"[migrate_orders_schema] Could not add {col_name}: {alter_err}")
+
+        # Also ensure trade_sessions has last_seen_at for crash detection
+        session_cols_rows = db.fetchall("PRAGMA table_info(trade_sessions)")
+        session_cols = {row["name"] for row in session_cols_rows} if session_cols_rows else set()
+        if "last_seen_at" not in session_cols:
+            try:
+                db.execute("ALTER TABLE trade_sessions ADD COLUMN last_seen_at TEXT")
+                logger.info("[migrate_orders_schema] Added column: trade_sessions.last_seen_at")
+            except Exception as e:
+                logger.warning(f"[migrate_orders_schema] Could not add last_seen_at: {e}")
+
+        logger.info("[migrate_orders_schema] Orders schema migration complete")
+        return True
+    except Exception as e:
+        logger.error(f"[migrate_orders_schema] Failed: {e}", exc_info=True)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Master migration runner
 # ---------------------------------------------------------------------------
 
@@ -422,6 +479,7 @@ def migrate_all(db=None, stop_on_error: bool = False) -> bool:
     logger.info("Starting JSON → SQLite migration")
     logger.info("=" * 60)
     steps = [
+        ("schema_orders_v2",  migrate_orders_schema),   # DATA-1: ensure all required columns exist
         ("brokerage",        migrate_brokerage),
         ("daily_trade",      migrate_daily_trade),
         ("profit_stoploss",  migrate_profit_stoploss),

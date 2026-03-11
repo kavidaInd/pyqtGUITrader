@@ -121,6 +121,9 @@ class TradingGUI(QMainWindow):
     trade_closed = pyqtSignal(float, bool)       # pnl, is_winner
     unrealized_pnl_updated = pyqtSignal(float)   # unrealized P&L
 
+    # ENHANCEMENT-1: Per-tick live price signal (emitted from WS thread via callback)
+    _price_updated = pyqtSignal(str, float)      # symbol, ltp
+
     # BUG-1 FIX: Signal used to marshal chart data from background thread → main thread.
     # Never emit this directly; use _fetch_chart_data_bg instead.
     _chart_data_ready = pyqtSignal(dict)
@@ -228,6 +231,7 @@ class TradingGUI(QMainWindow):
             self._log_handler = None
             self._trade_file_mtime = 0
             self._last_loaded_trade_data = None
+            self._last_trade_count = 0  # BUG-E fix: DB-based trade count tracker
             self.strategy_manager = None
             self.strategy_editor = None
             self.strategy_picker = None
@@ -240,6 +244,10 @@ class TradingGUI(QMainWindow):
             # BUG-4 FIX: this flag is now also reset inside the background thread's
             # finally block, so initialise it here as before.
             self._chart_update_pending = False
+            # Guard: set to True when token expiry is detected during a chart fetch.
+            # Prevents _update_chart_if_needed from scheduling endless retries until
+            # the user has successfully re-authenticated (_reload_broker clears it).
+            self._chart_fetch_blocked = False
             self.chart_widget = None
             self.status_panel = None
             self.app_status_bar = None
@@ -261,6 +269,7 @@ class TradingGUI(QMainWindow):
             self._connection_status = "Disconnected"
             self._last_heartbeat = None
             self._market_status = "UNKNOWN"
+            self._tick_age_seconds = float('inf')  # ENHANCEMENT-2: WS tick freshness
             self._market_status_check_timer = None
             self._theme_action = None
             self._density_menu = None
@@ -390,8 +399,8 @@ class TradingGUI(QMainWindow):
                 return
 
             if self._connection_status == "Connected":
-                self.btn_connection.setText("🔗 Connected")
-                self.btn_connection.setToolTip("Connected to broker - click for details")
+                self.btn_connection.setText("🔗 WebSocket Connected")
+                self.btn_connection.setToolTip("Connected to broker Live data fetching- click for details")
                 # Use object name so global stylesheet handles all theme variants
                 self.btn_connection.setObjectName("connectionBtnConnected")
                 # Force stylesheet refresh by re-polishing
@@ -399,7 +408,7 @@ class TradingGUI(QMainWindow):
                 self.btn_connection.style().polish(self.btn_connection)
             else:
                 self.btn_connection.setText("🔌 Disconnected")
-                self.btn_connection.setToolTip("Disconnected from broker - click for details")
+                self.btn_connection.setToolTip("Disconnected from broker Live data fetching - click for details")
                 self.btn_connection.setObjectName("connectionBtnDisconnected")
                 self.btn_connection.style().unpolish(self.btn_connection)
                 self.btn_connection.style().polish(self.btn_connection)
@@ -584,6 +593,41 @@ class TradingGUI(QMainWindow):
                 self.daily_pnl_widget.on_unrealized_update(pnl)
         except Exception as e:
             logger.error(f"[TradingGUI._on_unrealized_pnl_updated] Failed: {e}", exc_info=True)
+
+    @pyqtSlot(str, float)
+    def _on_price_tick(self, symbol: str, ltp: float):
+        """
+        ENHANCEMENT-1: Receive every WS tick via pyqtSignal so the status panel
+        updates within one Qt event-loop cycle rather than waiting for the 500 ms timer.
+        """
+        try:
+            if self._closing:
+                return
+            if self.status_panel and safe_hasattr(self.status_panel, 'update_live_price'):
+                self.status_panel.update_live_price(symbol, ltp)
+            if self.app_status_bar and safe_hasattr(self.app_status_bar, 'update_live_price'):
+                self.app_status_bar.update_live_price(ltp)
+        except RuntimeError:
+            self._closing = True
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_price_tick] {e}", exc_info=True)
+
+    def _schedule_button_update(self):
+        """
+        GUI-1 fix: Debounce button state updates to prevent flicker during
+        fast start/stop cycles.  Only the last call within 200 ms takes effect.
+        """
+        try:
+            if not safe_hasattr(self, '_btn_update_timer') or self._btn_update_timer is None:
+                self._btn_update_timer = QTimer(self)
+                self._btn_update_timer.setSingleShot(True)
+                self._btn_update_timer.timeout.connect(self._update_button_states)
+            self._btn_update_timer.start(200)
+        except Exception as e:
+            logger.error(f"[TradingGUI._schedule_button_update] {e}", exc_info=True)
+            self._update_button_states()
+
+
 
     def _setup_log_handler(self):
         """Setup Qt log handler with buffering"""
@@ -963,10 +1007,52 @@ class TradingGUI(QMainWindow):
             self.timer_market_status.timeout.connect(self._update_market_status)
             self.timer_market_status.start(2000)
 
+            # Additional timers per audit requirements
+            self._timer_db_flush = QTimer(self)
+            self._timer_db_flush.timeout.connect(self._on_db_flush_tick)
+            self._timer_db_flush.start(60_000)   # every 60 s
+
+            self._timer_candle_cleanup = QTimer(self)
+            self._timer_candle_cleanup.timeout.connect(self._on_candle_cleanup_tick)
+            self._timer_candle_cleanup.start(3_600_000)  # every 1 h
+
             QTimer.singleShot(100, self._update_market_status)
 
         except Exception as e:
             logger.error(f"[TradingGUI._setup_timers] Failed: {e}", exc_info=True)
+
+    @pyqtSlot()
+    def _on_db_flush_tick(self):
+        """Heartbeat DB update — marks session as alive for crash detection."""
+        try:
+            if self._closing or self.trading_app is None:
+                return
+            state = state_manager.get_state()
+            session_id = getattr(state, 'session_id', None)
+            if session_id:
+                from db.connector import get_db
+                db = get_db()
+                db.execute(
+                    "UPDATE trade_sessions SET last_seen_at=? WHERE id=?",
+                    (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), session_id),
+                )
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_db_flush_tick] {e}", exc_info=True)
+
+    @pyqtSlot()
+    def _on_candle_cleanup_tick(self):
+        """Release CandleStore memory for symbols idle > 60 minutes."""
+        try:
+            if self._closing:
+                return
+            from data.candle_store_manager import candle_store_manager
+            released = candle_store_manager.cleanup_unused(max_idle_minutes=60)
+            if released:
+                logger.info(f"[TradingGUI._on_candle_cleanup_tick] Released {released} unused CandleStores")
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_candle_cleanup_tick] {e}", exc_info=True)
+
+
 
     @pyqtSlot()
     def _tick_fast(self):
@@ -975,7 +1061,8 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
 
-            if self.status_panel is not None:
+            # GUI-7 fix: Only refresh status_panel when it is actually visible
+            if self.status_panel is not None and self.status_panel.isVisible():
                 self.status_panel.refresh(self.config)
 
             if self.trading_app is None:
@@ -990,7 +1077,8 @@ class TradingGUI(QMainWindow):
             if self.connection_monitor_popup is not None and self.connection_monitor_popup.isVisible():
                 self.connection_monitor_popup.refresh()
 
-            self._update_button_states()
+            # GUI-1 fix: Use debounced button update to prevent flicker
+            self._schedule_button_update()
 
             self._update_count += 1
             now = datetime.now()
@@ -1104,7 +1192,7 @@ class TradingGUI(QMainWindow):
             self._market_status = "UNKNOWN"
 
     def _check_connection(self):
-        """Check connection status"""
+        """Check connection status and compute WS tick age for heartbeat indicator."""
         try:
             if self._closing:
                 return
@@ -1116,6 +1204,21 @@ class TradingGUI(QMainWindow):
                     self._connection_status = "Unknown"
             else:
                 self._connection_status = "Disconnected"
+
+            # ENHANCEMENT-2: Compute tick age for heartbeat indicator
+            last_tick = getattr(self.trading_app, '_last_tick_received', None) if self.trading_app else None
+            if last_tick:
+                self._tick_age_seconds = (datetime.now() - last_tick).total_seconds()
+            else:
+                self._tick_age_seconds = float('inf')
+
+            # Push tick-age into status bar for the pulsing heartbeat indicator
+            if self.app_status_bar and safe_hasattr(self.app_status_bar, 'update_tick_age'):
+                try:
+                    self.app_status_bar.update_tick_age(self._tick_age_seconds)
+                except Exception:
+                    pass
+
             self._update_connection_button()
         except Exception as e:
             logger.error(f"[TradingGUI._check_connection] Failed: {e}", exc_info=True)
@@ -1130,6 +1233,11 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             if self._chart_update_pending:
+                return
+            # Do not attempt broker fetches while we are waiting for the user
+            # to re-authenticate after a token expiry.  _reload_broker() clears
+            # this flag once a fresh token has been obtained.
+            if self._chart_fetch_blocked:
                 return
 
             symbol = self.daily_setting.derivative if self.daily_setting else None
@@ -1204,6 +1312,13 @@ class TradingGUI(QMainWindow):
             daemon=True,
             name="ChartFetchThread"
         ).start()
+
+        # ENHANCEMENT-3: Show loading overlay while fetch is in progress
+        if self.chart_widget and safe_hasattr(self.chart_widget, 'show_loading'):
+            try:
+                self.chart_widget.show_loading()
+            except Exception:
+                pass
 
     def _fetch_chart_data_bg(self, symbol: str, tf_minutes: int, broker_type):
         """
@@ -1300,6 +1415,13 @@ class TradingGUI(QMainWindow):
             except Exception as seed_err:
                 logger.debug(f"[ChartFetch] Could not seed derivative_current_price: {seed_err}")
 
+        except TokenExpiredError as e:
+            # Token is expired — do NOT let the chart timer retry this indefinitely.
+            # Block further chart fetches until re-authentication completes, then
+            # emit _broker_failed so the GUI thread opens the re-login dialog.
+            self._chart_fetch_blocked = True
+            logger.critical(f"[ChartFetch] Token expired during chart fetch: {e}")
+            self._broker_failed.emit(str(e), True)
         except Exception as e:
             logger.error(f"[ChartFetch] Background fetch failed: {e}", exc_info=True)
         finally:
@@ -1315,6 +1437,12 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing or not self.chart_widget:
                 return
+            # ENHANCEMENT-3: Hide loading overlay before updating chart
+            if safe_hasattr(self.chart_widget, 'hide_loading'):
+                try:
+                    self.chart_widget.hide_loading()
+                except Exception:
+                    pass
             self.chart_widget.update_charts(spot_data=chart_data)
         except Exception as e:
             logger.error(f"[TradingGUI._on_chart_data_ready] Failed: {e}", exc_info=True)
@@ -1578,6 +1706,17 @@ class TradingGUI(QMainWindow):
             )
             self._update_button_states()
 
+            # ENHANCEMENT-1: Register real-time price callback on TradingApp
+            if safe_hasattr(self.trading_app, 'set_price_callback'):
+                try:
+                    self.trading_app.set_price_callback(
+                        lambda sym, p: self._price_updated.emit(sym, p)
+                    )
+                    if not self._price_updated.receivers(self._price_updated):
+                        self._price_updated.connect(self._on_price_tick)
+                except Exception as _pcb_err:
+                    logger.warning(f"[_start_app] Price callback setup failed: {_pcb_err}")
+
             if is_backtest:
                 self.status_updated.emit("Starting backtest...")
             else:
@@ -1725,6 +1864,28 @@ class TradingGUI(QMainWindow):
             # Allow _tick_chart to proceed (broker is now in candle_store_manager)
             # and kick off an immediate fetch without waiting for the 5-s timer.
             self._do_chart_update()
+
+            # ENHANCEMENT-4: Pre-build 5m, 15m, 1h resample caches in the background
+            # so timeframe switches are instant after the first 1-min data load.
+            _symbol = self.daily_setting.derivative if self.daily_setting else None
+            if _symbol:
+                def _warmup_resample_cache():
+                    try:
+                        import time as _time
+                        _time.sleep(3)  # wait for the initial fetch to complete
+                        from data.candle_store_manager import candle_store_manager as _csm
+                        store = _csm.get_store(_symbol)
+                        if store and not store.is_empty():
+                            for tf in [5, 15, 60]:
+                                store.resample(tf)
+                            logger.info(f"[CacheWarmup] Pre-built resample cache for {_symbol}: 5m, 15m, 1h")
+                    except Exception as _wu_err:
+                        logger.debug(f"[CacheWarmup] {_wu_err}")
+                threading.Thread(
+                    target=_warmup_resample_cache,
+                    daemon=True,
+                    name="CacheWarmupThread"
+                ).start()
 
             # Fetch live account balance in the background — mirrors how
             # historical candles are loaded: broker work on a daemon thread,
@@ -2461,12 +2622,41 @@ class TradingGUI(QMainWindow):
                 except Exception as e:
                     logger.warning(f"[_on_settings_saved] Reload daily_setting failed: {e}")
 
+            # FIX: Also reload profit_loss and reentry settings from DB so we push
+            # freshly-saved values rather than the in-memory state before the save.
+            if self.profit_loss_setting is not None:
+                try:
+                    self.profit_loss_setting.load()
+                except Exception as e:
+                    logger.warning(f"[_on_settings_saved] Reload profit_loss_setting failed: {e}")
+
+            if self.reentry_setting is not None:
+                try:
+                    self.reentry_setting.load()
+                except Exception as e:
+                    logger.warning(f"[_on_settings_saved] Reload reentry_setting failed: {e}")
+
             # Push updated limits to the P&L widget's progress bar
             if self.daily_pnl_widget is not None:
                 try:
                     self.daily_pnl_widget.refresh_settings(daily_setting=self.daily_setting)
                 except Exception as e:
                     logger.warning(f"[_on_settings_saved] DailyPnLWidget refresh failed: {e}")
+
+            # GUI-5 fix: Push new settings into the running engine so they take
+            # effect immediately without a restart.  Stage-2 reads these on the next tick.
+            if self.trading_app is not None:
+                try:
+                    if self.daily_setting:
+                        self.trading_app.trade_config = self.daily_setting
+                    if self.profit_loss_setting:
+                        self.trading_app.profit_loss_config = self.profit_loss_setting
+                    if self.reentry_setting:
+                        self.trading_app.reentry_setting = self.reentry_setting
+                        self.reentry_setting._apply_to_state()
+                    logger.info("[TradingGUI._on_settings_saved] Settings pushed to running engine")
+                except Exception as e:
+                    logger.warning(f"[_on_settings_saved] Could not push settings to running engine: {e}")
 
         except Exception as e:
             logger.error(f"[TradingGUI._on_settings_saved] Failed: {e}", exc_info=True)
@@ -2519,6 +2709,12 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
+
+            # Unblock chart fetches now that a fresh token is available.
+            # _fetch_chart_data_bg set this to True when the expired token was
+            # detected; clearing it here allows _update_chart_if_needed to
+            # schedule the first fetch once _on_broker_ready fires.
+            self._chart_fetch_blocked = False
 
             # ── Teardown ──────────────────────────────────────────────────────
             if self.trading_app is not None:
@@ -2693,21 +2889,27 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._clear_cache] Failed: {e}", exc_info=True)
 
     def _update_trade_history(self):
-        """Refresh trade history table only if file changed"""
+        """BUG-E fix: Refresh trade history popup based on DB order count, not CSV file mtime."""
         try:
             if self._closing:
                 return
-            today_file = f"logs/trades_{to_date_str(datetime.now())}.csv"
-            if not os.path.exists(today_file):
-                self.history_popup = None
-                return
-            current_mtime = os.path.getmtime(today_file)
-            if current_mtime != self._trade_file_mtime:
-                self._trade_file_mtime = current_mtime
+            from db.connector import get_db
+            db = get_db()
+            today = datetime.now().strftime("%Y-%m-%d")
+            row = db.fetchone(
+                "SELECT COUNT(*) as cnt FROM orders WHERE DATE(created_at)=?", (today,)
+            )
+            current_count = row["cnt"] if row else 0
+            if current_count != self._last_trade_count:
+                self._last_trade_count = current_count
                 if self.history_popup is not None and self.history_popup.isVisible():
-                    self.history_popup.load_trades_for_date()
-        except (OSError, IOError) as e:
-            logger.error(f"[TradingGUI._update_trade_history] File error: {e}")
+                    try:
+                        self.history_popup.load_trades()
+                    except Exception:
+                        try:
+                            self.history_popup.load_trades_for_date()
+                        except Exception:
+                            pass
         except Exception as e:
             logger.error(f"[TradingGUI._update_trade_history] Failed: {e}", exc_info=True)
 
@@ -2879,7 +3081,10 @@ class TradingGUI(QMainWindow):
             self._reset_mode_to_paper()
 
             for timer in [self.timer_fast, self.timer_chart, self.timer_app_status,
-                          self.timer_connection_check, self.timer_market_status]:
+                          self.timer_connection_check, self.timer_market_status,
+                          getattr(self, '_timer_db_flush', None),
+                          getattr(self, '_timer_candle_cleanup', None),
+                          getattr(self, '_btn_update_timer', None)]:
                 if timer is not None:
                     try:
                         timer.stop()
@@ -2935,7 +3140,10 @@ class TradingGUI(QMainWindow):
             self._closing = True
 
             for timer in [self.timer_fast, self.timer_chart, self.timer_app_status,
-                          self.timer_connection_check, self.timer_market_status]:
+                          self.timer_connection_check, self.timer_market_status,
+                          getattr(self, '_timer_db_flush', None),
+                          getattr(self, '_timer_candle_cleanup', None),
+                          getattr(self, '_btn_update_timer', None)]:
                 if timer is not None:
                     try:
                         timer.stop()

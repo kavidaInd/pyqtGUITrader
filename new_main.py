@@ -155,6 +155,10 @@ class TradingApp:
         self._indicator_cache = {}
         self._last_bar_times = {}
 
+        # BUG-A / ENHANCEMENT-1: Tick heartbeat and GUI price callback
+        self._last_tick_received: Optional[datetime] = None
+        self._price_cb_ref = None  # weakref to GUI price callback
+
         # Re-entry guard runtime state
         self._reentry_exit_time: Optional[datetime] = None        # wall-clock time of last exit
         self._reentry_exit_bars: int = 0                          # closed bars since last exit
@@ -239,6 +243,38 @@ class TradingApp:
             self.ws.on_reconnect_callback = lambda: self.notifier.notify_ws_reconnected()
 
             self._backtest_mode = self._is_backtest_mode()
+
+            # DATA-3 fix: Create a trade session row in the DB so order history
+            # and stats popups have a valid session to query against.
+            try:
+                from db.connector import get_db
+                from db.crud import sessions as sessions_crud
+                state = state_manager.get_state()
+                mode_str = "PAPER"
+                if self.trading_mode_setting:
+                    import BaseEnums as _BE
+                    from gui.trading_mode.TradingModeSetting import TradingMode as _TM
+                    _mode = getattr(self.trading_mode_setting, 'mode', None)
+                    if _mode == _TM.LIVE:
+                        mode_str = "LIVE"
+                    elif _mode == _TM.BACKTEST:
+                        mode_str = "BACKTEST"
+                active_slug = None
+                if self.strategy_manager:
+                    try:
+                        active_slug = self.strategy_manager.get_active_slug()
+                    except Exception:
+                        pass
+                session_id = sessions_crud.create(
+                    mode=mode_str,
+                    derivative=getattr(state, 'derivative', None),
+                    strategy_slug=active_slug,
+                    db=get_db(),
+                )
+                state.session_id = session_id
+                logger.info(f"[TradingApp.initialize] Created trade session id={session_id} mode={mode_str}")
+            except Exception as _sess_err:
+                logger.error(f"[TradingApp.initialize] Session creation failed: {_sess_err}", exc_info=True)
 
             logger.info("TradingApp.initialize() completed successfully")
             return True
@@ -485,7 +521,7 @@ class TradingApp:
             # Keep the trading thread alive while WebSocket runs in background.
             logger.info("Trading thread entering keep-alive loop (WebSocket running in background)")
             while not self.should_stop:
-                self._stop_event.wait(timeout=1.0)
+                self._stop_event.wait(timeout=.1)
 
             logger.info("Trading thread keep-alive loop exited (should_stop=True)")
 
@@ -505,6 +541,19 @@ class TradingApp:
         self.should_stop = True
         self._stop_event.set()
         logger.info("TradingApp stop requested")
+
+    def set_price_callback(self, cb) -> None:
+        """
+        ENHANCEMENT-1: Register a GUI callback to receive real-time price updates.
+        Stored as a weakref so this does not prevent GUI garbage-collection.
+        Safe to call from the GUI thread before or after the engine starts.
+        """
+        import weakref
+        try:
+            self._price_cb_ref = weakref.ref(cb)
+            logger.debug("[TradingApp.set_price_callback] Price callback registered")
+        except Exception as e:
+            logger.error(f"[TradingApp.set_price_callback] {e}", exc_info=True)
 
     def initialize_market_state(self) -> None:
         try:
@@ -815,6 +864,19 @@ class TradingApp:
                 return
 
             self.update_market_state(symbol, ltp, ask_price, bid_price, volume, sequence)
+
+            # BUG-A fix: Record tick heartbeat timestamp for connection monitoring
+            self._last_tick_received = datetime.now()
+
+            # ENHANCEMENT-1: Propagate price to GUI immediately via callback
+            cb_ref = getattr(self, '_price_cb_ref', None)
+            if cb_ref is not None:
+                try:
+                    cb = cb_ref()
+                    if cb is not None and callable(cb):
+                        cb(symbol, ltp)
+                except Exception:
+                    pass  # Never let GUI callback crash the WS thread
 
             # Push to queue for Stage 2 processing (non-blocking)
             try:
@@ -1904,7 +1966,19 @@ class TradingApp:
             state = state_manager.get_state()
 
             index_stop_loss = snapshot.get('index_stop_loss')
-            current_derivative_price = snapshot.get('derivative_current_price')
+
+            # BUG-I fix: Use candle_store_manager as primary price source,
+            # fall back to state.derivative_current_price when WS drops
+            derivative = snapshot.get('derivative') or getattr(state, 'derivative', None)
+            current_derivative_price = None
+            if derivative:
+                try:
+                    current_derivative_price = candle_store_manager.get_current_price(derivative)
+                except Exception:
+                    pass
+            if not current_derivative_price:
+                current_derivative_price = snapshot.get('derivative_current_price')
+
             current_position = snapshot.get('current_position')
             current_trade_confirmed = snapshot.get('current_trade_confirmed', False)
 
@@ -2347,6 +2421,12 @@ class TradingApp:
                         f"[apply_settings_to_state] Could not read strategy timeframe "
                         f"(using trade_config value): {_tf_e}"
                     )
+
+            # FIX: lower_percentage/cancel_after/sideway_zone_trade must always run
+            # under the trade_config guard — NOT inside if self.strategy_manager: block.
+            # Previously they were inside strategy_manager block so when trading started
+            # with no active strategy these critical values were never set.
+            if self.trade_config:
                 # lower_percentage is stored in DailyTradeSetting as a whole-number
                 # percentage (e.g. 5 = 5%).  The engine (order_executor,
                 # position_monitor) expects it as a decimal fraction (e.g. 0.05 = 5%).
@@ -2480,6 +2560,31 @@ class TradingApp:
                 logger.info("CandleStoreManager cleared")
             except Exception as e:
                 logger.error(f"CandleStoreManager cleanup error: {e}", exc_info=True)
+
+            # DATA-3 fix: Close the trade session row in the DB
+            try:
+                state = state_manager.get_state()
+                session_id = getattr(state, 'session_id', None)
+                if session_id:
+                    from db.connector import get_db
+                    from db.crud import sessions as sessions_crud, orders as orders_crud
+                    db = get_db()
+                    today_orders = orders_crud.get_by_period('today', db=db)
+                    total_pnl = sum(float(o.get('pnl') or 0) for o in today_orders)
+                    total_trades = len(today_orders)
+                    winning = sum(1 for o in today_orders if float(o.get('pnl') or 0) > 0)
+                    losing = total_trades - winning
+                    sessions_crud.close(
+                        session_id=session_id,
+                        total_pnl=total_pnl,
+                        total_trades=total_trades,
+                        winning_trades=winning,
+                        losing_trades=losing,
+                        db=db,
+                    )
+                    logger.info(f"[TradingApp.cleanup] Closed session id={session_id} pnl={total_pnl:.2f}")
+            except Exception as _sess_err:
+                logger.error(f"[TradingApp.cleanup] Session close failed: {_sess_err}", exc_info=True)
 
             # Clear caches
             self._indicator_cache.clear()

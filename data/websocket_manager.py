@@ -341,18 +341,24 @@ class WebSocketManager:
         """Called by the broker's WebSocket when connection is established."""
         with self._connection_lock:
             try:
-                logger.info("WebSocket connected")
+                was_reconnecting = self._state == ConnectionState.RECONNECTING
+                logger.info(f"WebSocket connected (was_reconnecting={was_reconnecting})")
                 self._state = ConnectionState.CONNECTED
                 self._retries = 0
+                prev_reconnect_attempts = self._reconnect_attempts
                 self._reconnect_attempts = 0
                 self._last_message_time = time.time()
 
+                # Always re-subscribe to symbols on (re)connect — BUG-F fix
                 if self._ws_obj and self.symbols:
                     try:
                         self.broker.ws_subscribe(self._ws_obj, self.symbols)
-                        logger.info(f"Re-subscribed {len(self.symbols)} symbols")
+                        logger.info(
+                            f"[WebSocketManager._on_connect] Re-subscribed to "
+                            f"{len(self.symbols)} symbols: {self.symbols}"
+                        )
                     except Exception as e:
-                        logger.error(f"Re-subscribe failed: {e}", exc_info=True)
+                        logger.error(f"[WebSocketManager._on_connect] Re-subscribe failed: {e}", exc_info=True)
 
                 if self.on_connected_callback:
                     try:
@@ -360,18 +366,20 @@ class WebSocketManager:
                     except Exception as e:
                         logger.error(f"on_connected_callback error: {e}", exc_info=True)
 
-                if self.on_reconnect_callback:
-                    try:
-                        self.on_reconnect_callback()
-                    except Exception as e:
-                        logger.error(f"on_reconnect_callback error: {e}", exc_info=True)
+                # Only fire reconnect callbacks if this was actually a reconnect
+                if was_reconnecting or prev_reconnect_attempts > 0:
+                    logger.info("[WebSocketManager._on_connect] Firing reconnect callbacks")
+                    if self.on_reconnect_callback:
+                        try:
+                            self.on_reconnect_callback()
+                        except Exception as e:
+                            logger.error(f"on_reconnect_callback error: {e}", exc_info=True)
 
-                # Call reconnected callback
-                if self.on_reconnected_callback:
-                    try:
-                        self.on_reconnected_callback()
-                    except Exception as e:
-                        logger.error(f"on_reconnected_callback error: {e}", exc_info=True)
+                    if self.on_reconnected_callback:
+                        try:
+                            self.on_reconnected_callback()
+                        except Exception as e:
+                            logger.error(f"on_reconnected_callback error: {e}", exc_info=True)
 
             except Exception as e:
                 logger.error(f"[WebSocketManager._on_connect] {e}", exc_info=True)

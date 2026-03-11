@@ -118,6 +118,7 @@ class ShoonyaBroker(BaseBroker):
     # Shoonya tokens expire at the end of the trading day
     SESSION_DURATION_HOURS = 8
 
+    MAX_REQUESTS_PER_SECOND = 5  # Per broker API rate-limit docs
     def __init__(self, state, broker_setting=None):
         self._safe_defaults_init()
         try:
@@ -206,6 +207,7 @@ class ShoonyaBroker(BaseBroker):
         self.totp_secret = None
         self.api = None
         self._last_request_time = 0
+        self._rate_lock = threading.Lock()
         self._request_count = 0
         self._token_expiry = None
         self._token_issued_at = None
@@ -363,17 +365,23 @@ class ShoonyaBroker(BaseBroker):
     # ── Rate limiting ─────────────────────────────────────────────────────────
 
     def _check_rate_limit(self):
-        current = time.time()
-        diff = current - self._last_request_time
-        if diff < 1.0:
-            self._request_count += 1
-            if self._request_count > self.MAX_REQUESTS_PER_SECOND:
-                time.sleep(1.0 - diff + 0.1)
-                self._request_count = 0
-                self._last_request_time = time.time()
-        else:
-            self._request_count = 1
-            self._last_request_time = current
+        with self._rate_lock:
+            current = time.time()
+            diff = current - self._last_request_time
+            if diff < 1.0:
+                self._request_count += 1
+                if self._request_count > self.MAX_REQUESTS_PER_SECOND:
+                    sleep_time = 1.0 - diff + 0.1
+                    self._rate_lock.release()
+                    try:
+                        time.sleep(sleep_time)
+                    finally:
+                        self._rate_lock.acquire()
+                    self._request_count = 0
+                    self._last_request_time = time.time()
+            else:
+                self._request_count = 1
+                self._last_request_time = current
 
     # ── Symbol helpers ────────────────────────────────────────────────────────
 
@@ -925,6 +933,7 @@ class ShoonyaBroker(BaseBroker):
               max_retries: int = 3, base_delay: int = 1):
         for attempt in range(max_retries):
             try:
+                self._check_token_before_request()
                 self._check_rate_limit()
                 response = func()
                 if isinstance(response, dict):

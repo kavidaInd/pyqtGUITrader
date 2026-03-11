@@ -2176,6 +2176,54 @@ class SimpleChartWidget(QWidget, ThemedMixin):
         self._signal_engine = signal_engine
         self.spot_chart.set_config(config, signal_engine)
 
+    def show_loading(self, message: str = "Fetching historical data…") -> None:
+        """
+        ENHANCEMENT-3: Show a loading overlay while historical data is fetched.
+        Creates the overlay widget lazily on first call.
+        """
+        try:
+            if not safe_hasattr(self, '_loading_overlay') or self._loading_overlay is None:
+                from PyQt5.QtWidgets import QLabel, QVBoxLayout, QProgressBar
+                from PyQt5.QtCore import Qt
+                self._loading_overlay = QWidget(self)
+                self._loading_overlay.setObjectName("chartLoadingOverlay")
+                overlay_layout = QVBoxLayout(self._loading_overlay)
+                overlay_layout.setAlignment(Qt.AlignCenter)
+                self._loading_label = QLabel(message)
+                self._loading_label.setAlignment(Qt.AlignCenter)
+                self._loading_progress = QProgressBar()
+                self._loading_progress.setRange(0, 0)  # indeterminate
+                self._loading_progress.setFixedWidth(200)
+                overlay_layout.addWidget(self._loading_label)
+                overlay_layout.addWidget(self._loading_progress)
+                c = theme_manager.palette
+                self._loading_overlay.setStyleSheet(
+                    f"background:rgba(0,0,0,0.6); border-radius:8px; color:{c.TEXT_MAIN};"
+                )
+            self._loading_overlay.resize(self.size())
+            self._loading_overlay.raise_()
+            self._loading_overlay.show()
+        except Exception as e:
+            logger.error(f"[SimpleChartWidget.show_loading] {e}", exc_info=True)
+
+    def hide_loading(self) -> None:
+        """ENHANCEMENT-3: Hide the loading overlay."""
+        try:
+            if safe_hasattr(self, '_loading_overlay') and self._loading_overlay is not None:
+                self._loading_overlay.hide()
+        except Exception as e:
+            logger.error(f"[SimpleChartWidget.hide_loading] {e}", exc_info=True)
+
+    def resizeEvent(self, event):
+        """Keep loading overlay sized to this widget."""
+        super().resizeEvent(event)
+        try:
+            if safe_hasattr(self, '_loading_overlay') and self._loading_overlay is not None:
+                if self._loading_overlay.isVisible():
+                    self._loading_overlay.resize(self.size())
+        except Exception:
+            pass
+
     def update_charts(self, spot_data: dict):
         """
         Update chart from external data dict (e.g. derivative_trend).

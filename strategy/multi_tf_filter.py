@@ -21,6 +21,7 @@ import pandas as pd
 import pandas_ta as ta
 
 from Utils.Utils import Utils
+from broker.BaseBroker import TokenExpiredError
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +370,8 @@ class MultiTimeframeFilter:
 
                 logger.debug(f"Fetched {len(df)} 1-minute bars for {symbol}")
                 return df
-
+            except TokenExpiredError:
+                raise
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"Attempt {attempt + 1}/{max_retries} failed for {symbol}: {e}")

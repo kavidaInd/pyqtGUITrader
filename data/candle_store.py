@@ -163,6 +163,8 @@ class CandleStore:
         self._tick_close: Optional[float] = None
         self._tick_volume: float = 0.0
         self._tick_bar_start: Optional[datetime] = None
+        # BUG-C fix: track last flush timestamp to invalidate stale cache entries
+        self._last_flush_ts: Optional[datetime] = None
 
     # ── Timezone helpers ───────────────────────────────────────────────────
 
@@ -352,8 +354,10 @@ class CandleStore:
             now = datetime.now()
             if minutes in self._resample_cache:
                 cached_df, cached_time = self._resample_cache[minutes]
-                # Cache valid for 5 seconds
-                if (now - cached_time).total_seconds() < 5:
+                # BUG-C fix: invalidate cache immediately if a bar was flushed after cache was built
+                last_flush = self._last_flush_ts
+                cache_is_stale = (last_flush is not None and last_flush > cached_time)
+                if not cache_is_stale and (now - cached_time).total_seconds() < 5:
                     return cached_df.copy()
 
             resampled = self._do_resample(self._df, minutes)
@@ -536,6 +540,8 @@ class CandleStore:
 
         # Invalidate resample cache — new data arrived
         self._resample_cache.clear()
+        # BUG-C fix: record flush timestamp so resample() can detect stale cache entries
+        self._last_flush_ts = datetime.now()
 
         # Reset tick accumulators (bar_start reset handled by push_tick)
         self._tick_open = None

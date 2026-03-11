@@ -640,9 +640,11 @@ class OrderExecutor:
             return existing_order_id
 
         try:
+            side_buy = safe_getattr(self.api, 'SIDE_BUY', 1)
             broker_order_id = self.api.place_order(
                 symbol=symbol,
                 qty=quantity,
+                side=side_buy,
                 limitPrice=price,
             )
 
@@ -1201,12 +1203,6 @@ class OrderExecutor:
                 except Exception as e:
                     logger.error(f"[EXIT] Telegram notify failed: {e}", exc_info=True)
 
-            if self.on_trade_closed_callback and total_qty > 0:
-                try:
-                    self.on_trade_closed_callback(total_pnl, total_pnl > 0)
-                except Exception as e:
-                    logger.error(f"[EXIT] Trade closed callback failed: {e}", exc_info=True)
-
             if is_live and self.api:
                 try:
                     state.account_balance = self.api.get_balance(state.capital_reserve)
@@ -1218,6 +1214,14 @@ class OrderExecutor:
             # BUG 2 FIX: pass the captured position directly
             state.reset_trade_attributes(current_position=closed_position)
 
+            # BUG-D fix: Fire on_trade_closed_callback AFTER state reset so the
+            # GUI and DailyPnLWidget see current_position=None and final PnL.
+            if self.on_trade_closed_callback and total_qty > 0:
+                try:
+                    self.on_trade_closed_callback(total_pnl, total_pnl > 0)
+                except Exception as e:
+                    logger.error(f"[EXIT] Trade closed callback failed: {e}", exc_info=True)
+
             # Invalidate risk manager cache so the next should_allow_trade() call
             # immediately re-queries the DB for updated daily PnL and trade count.
             if self.risk_manager:
@@ -1227,7 +1231,6 @@ class OrderExecutor:
                     logger.warning(f"[EXIT] Risk manager cache invalidation failed: {e}")
 
             _exit_succeeded = True
-            self._exit_in_progress = False  # position fully closed — allow future entries/exits
             return True
 
         except Exception as e:

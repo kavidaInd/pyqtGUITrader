@@ -190,6 +190,8 @@ class HistoryManager(QObject):
                     interval=target_interval,
                     limit=1000,
                 )
+            except TokenExpiredError:
+                raise
             except Exception:
                 df = None
 
