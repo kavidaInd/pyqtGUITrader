@@ -66,14 +66,11 @@ logger = logging.getLogger(__name__)
 ACTIVATION_SERVER_URL: str = "http://localhost/wordpress"  # ← set this
 APP_VERSION: str = "1.0.0"
 REQUEST_TIMEOUT: int = 15
-OFFLINE_GRACE_DAYS: int = 3  # paid plans only
+OFFLINE_GRACE_DAYS: int = 3
 TRIAL_DURATION_DAYS: int = 7
-HEARTBEAT_INTERVAL_H: int = 4  # background re-verify interval
+HEARTBEAT_INTERVAL_H: int = 4
 
-# Shared secret — must match `ATP_SHARED_SECRET` in the WordPress plugin.
-# Store this in an environment variable or embed via build-time obfuscation.
-# _APP_SECRET: str = os.environ.get("ATP_APP_SECRET", "CHANGE_ME_BEFORE_RELEASE_32BYTES!")
-_APP_SECRET= "1b7e0b8f37c53f3e6c43d4a38e6bad5cb5e4ba8dd10a697cd14092609c92e9f0"
+_APP_SECRET = "1b7e0b8f37c53f3e6c43d4a38e6bad5cb5e4ba8dd10a697cd14092609c92e9f0"
 # Plan constants
 PLAN_TRIAL = "trial"
 PLAN_STANDARD = "standard"
