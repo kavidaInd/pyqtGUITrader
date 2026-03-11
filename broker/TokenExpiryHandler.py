@@ -156,28 +156,53 @@ class TokenExpiryHandler(QObject):
 
     def _check_token_expiry(self) -> None:
         """
-        Periodic check for token expiry.
-        Queries all active brokers for token status.
+        Periodic check for token expiry and broker configuration status.
+
+        Detects:
+          • Broker credentials deleted/cleared mid-session → triggers setup flow
+          • Token expired → triggers re-authentication flow
+
+        NOT_CONFIGURED is only reported after the application has been fully
+        launched (i.e. the main window is visible), so we never interrupt
+        onboarding or the startup splash with a spurious popup.
         """
         try:
-            from broker.BrokerFactory import BrokerFactory
-            from data.trade_state_manager import state_manager
+            from broker.broker_config_guard import (
+                detect_broker_config_state,
+                BrokerConfigState,
+            )
 
-            # Get current broker from state
-            state = state_manager.get_state()
-            if not state or not state.token:
-                return
+            state, bs = detect_broker_config_state()
 
-            # Check token expiry if broker provides it
-            from broker.BaseBroker import BaseBroker
-            broker = getattr(state, '_broker', None)
-            if isinstance(broker, BaseBroker):
-                expiry = broker.token_expiry
-                if expiry and expiry < datetime.now():
-                    self.handle_token_expired(
-                        source="periodic_check",
-                        error_msg=f"Token expired at {expiry}"
+            if state == BrokerConfigState.NOT_CONFIGURED:
+                # Only trigger the setup flow if the main window is already open.
+                # This prevents the periodic check from interrupting onboarding
+                # or the startup token-gate before credentials have been saved.
+                app = QApplication.instance()
+                main_window_open = any(
+                    w.isVisible() and w.windowTitle() == "Algo Trading Dashboard"
+                    for w in (app.topLevelWidgets() if app else [])
+                )
+                if not main_window_open:
+                    logger.debug(
+                        "[TokenExpiryHandler] Broker not configured but main window "
+                        "not yet open — skipping periodic NOT_CONFIGURED trigger"
                     )
+                    return
+
+                # Credentials were removed from the settings panel mid-session
+                self.handle_token_expired(
+                    source="periodic_check",
+                    error_msg="Broker is not configured. Please set up your broker credentials."
+                )
+
+            elif state == BrokerConfigState.TOKEN_EXPIRED:
+                self.handle_token_expired(
+                    source="periodic_check",
+                    error_msg="Broker access token has expired."
+                )
+            # CONFIGURED_NO_TOKEN is not an error during periodic checks
+
         except Exception as e:
             logger.debug(f"Token check failed: {e}")
 
@@ -190,32 +215,81 @@ class TokenExpiryHandler(QObject):
 
         logger.info("Starting token recovery process")
 
-        # Notify UI to show re-authentication dialog
-        # self._show_auth_dialog()
+        # Show the appropriate dialog in the UI thread (must run on GUI thread)
+        QTimer.singleShot(0, self._show_auth_dialog)
 
     def _show_auth_dialog(self) -> None:
-        """Show re-authentication dialog in UI thread."""
+        """
+        Show the appropriate re-authentication dialog in the UI thread.
+
+        Uses broker_config_guard to determine whether the broker is not
+        configured at all (show settings dialog first), or simply needs
+        a fresh login (show login popup directly).
+        """
         try:
-            from PyQt5.QtWidgets import QMessageBox, QDialog
-            from gui.brokerage_settings.Brokerloginpopup import BrokerLoginPopup
+            from PyQt5.QtWidgets import QDialog
+            from broker.broker_config_guard import (
+                detect_broker_config_state,
+                BrokerConfigState,
+                _show_broker_settings_dialog,
+                _show_broker_login_popup,
+            )
 
             # Get main window
             app = QApplication.instance()
             main_window = None
-            for widget in app.topLevelWidgets():
-                if widget.windowTitle() == "Algo Trading Dashboard":
-                    main_window = widget
-                    break
+            if app:
+                for widget in app.topLevelWidgets():
+                    if widget.windowTitle() == "Algo Trading Dashboard":
+                        main_window = widget
+                        break
 
-            # Show login popup
-            from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
-            broker_setting = BrokerageSetting()
-            broker_setting.load()
+            # Detect current state
+            state, broker_setting = detect_broker_config_state()
+
+            if state == BrokerConfigState.TOKEN_VALID:
+                # Token became valid in between — nothing to do
+                self._on_login_completed(True)
+                return
+
+            # ── Broker NOT configured at all ──────────────────────────────
+            if state == BrokerConfigState.NOT_CONFIGURED:
+                logger.info(
+                    "[TokenExpiryHandler] Broker not configured — showing settings dialog"
+                )
+                saved = _show_broker_settings_dialog(main_window, broker_setting)
+                if not saved:
+                    self._on_login_cancelled()
+                    return
+
+                # Re-evaluate after settings saved
+                from broker.broker_config_guard import detect_broker_config_state as _detect
+                state, broker_setting = _detect()
+
+                if state == BrokerConfigState.TOKEN_VALID:
+                    self._on_login_completed(True)
+                    return
+
+                if state == BrokerConfigState.NOT_CONFIGURED:
+                    # Still incomplete
+                    self._on_login_cancelled()
+                    return
+
+                # Fall through: now need login
+
+            # ── Need login (fresh or expired) ─────────────────────────────
+            reason = (
+                "Your broker session has expired. Please re-authenticate to resume trading."
+                if state == BrokerConfigState.TOKEN_EXPIRED
+                else None
+            )
+
+            from gui.brokerage_settings.Brokerloginpopup import BrokerLoginPopup
 
             dlg = BrokerLoginPopup(
                 parent=main_window,
                 brokerage_setting=broker_setting,
-                reason="Your broker session has expired. Please re-authenticate."
+                reason=reason,
             )
 
             # Connect signals

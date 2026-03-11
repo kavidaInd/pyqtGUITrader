@@ -301,18 +301,18 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
             button_layout.setSpacing(self._sp.GAP_MD)
 
             # Left side buttons
-            self.login_url_btn = self._create_modern_button("🌐 Open Login URL", primary=False, icon="🌐")
+            self.login_url_btn = self._create_modern_button("Open Login URL", primary=False, icon="🌐")
             self.login_url_btn.clicked.connect(self._open_login_url)
             button_layout.addWidget(self.login_url_btn)
 
-            self.test_btn = self._create_modern_button("🔌 Test Connection", primary=False, icon="🔌")
+            self.test_btn = self._create_modern_button("Test Connection", primary=False, icon="🔌")
             self.test_btn.clicked.connect(self._test_connection)
             button_layout.addWidget(self.test_btn)
 
             button_layout.addStretch()
 
             # Right side buttons
-            self.save_btn = self._create_modern_button("💾 Save Settings", primary=True, icon="💾")
+            self.save_btn = self._create_modern_button("Save Settings", primary=True, icon="💾")
             self.save_btn.clicked.connect(self._save)
             self.save_btn.setDefault(True)
             button_layout.addWidget(self.save_btn)
@@ -1046,7 +1046,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
         tg_layout.addLayout(form_layout)
 
         # Test Telegram button
-        test_tg_btn = self._create_modern_button("📱 Test Telegram", primary=False, icon="📱")
+        test_tg_btn = self._create_modern_button("Test Telegram", primary=False, icon="📱")
         test_tg_btn.clicked.connect(self._test_telegram)
         test_tg_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1435,7 +1435,7 @@ class BrokerageSettingDialog(QDialog, ThemedMixin):
                 }}
             """)
             self.save_btn.setEnabled(True)
-            self.save_btn.setText("💾 Save Settings")
+            self.save_btn.setText("Save Settings")
             self.save_btn.setStyleSheet(self._create_modern_button("", primary=True).styleSheet())
             self._save_in_progress = False
             self.operation_finished.emit()

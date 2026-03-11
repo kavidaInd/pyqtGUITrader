@@ -503,77 +503,69 @@ def _reload_all_settings():
 
 def _run_token_gate(qt_app, splash=None) -> bool:
     """
-    Verify the stored broker token before opening the main window.
+    Verify broker configuration and token before opening the main window.
 
-    - If a valid, non-expired token exists  → return True immediately.
-    - If the token is absent or expired     → close the splash, show the
-      BrokerLoginPopup modally, and return True only after the user completes
-      authentication.  If the user cancels, return False (app exits).
+    Uses broker_config_guard to detect the exact state and show the
+    right dialog:
 
-    This guarantees the main GUI always opens with a live broker session so
-    historical chart data can be fetched immediately on startup.
+        • Broker not configured (skipped setup or credentials deleted)
+          → BrokerageSettingDialog  so the user can pick a broker + enter creds
+          → Followed by BrokerLoginPopup if a login step is needed
+
+        • Broker configured but no token yet (first run after setup)
+          → BrokerLoginPopup  (no expiry banner)
+
+        • Broker configured, token present but expired
+          → BrokerLoginPopup  (with "session expired" banner)
+
+        • Valid token
+          → Nothing shown; returns True immediately.
+
+    Returns True only when the app can safely proceed.
     """
     try:
-        from datetime import datetime, timezone, timedelta
-        from db.crud import tokens
-        from gui.brokerage_settings.BrokerageSetting import BrokerageSetting
-        from gui.brokerage_settings.Brokerloginpopup import BrokerLoginPopup
-        from PyQt5.QtWidgets import QDialog, QMessageBox
+        from broker.broker_config_guard import (
+            detect_broker_config_state,
+            BrokerConfigState,
+            show_broker_setup_flow,
+        )
+        from PyQt5.QtWidgets import QMessageBox
 
-        # ── Check stored token ────────────────────────────────────────────────
-        token_data = tokens.get()
-        token_ok = False
-
-        if token_data:
-            access_token = token_data.get('access_token', '')
-            expires_at = token_data.get('expires_at')
-
-            if access_token:
-                if not expires_at:
-                    # No expiry recorded — assume valid (some brokers don't set it)
-                    token_ok = True
-                else:
-                    try:
-                        exp_str = str(expires_at)
-                        if exp_str.endswith('Z'):
-                            exp_str = exp_str.replace('Z', '+00:00')
-                        expiry = datetime.fromisoformat(exp_str)
-                        if expiry.tzinfo is None:
-                            expiry = expiry.replace(tzinfo=timezone.utc)
-                        # 5-minute buffer — treat nearly-expired as expired
-                        token_ok = datetime.now(timezone.utc) < (expiry - timedelta(minutes=5))
-                    except Exception:
-                        token_ok = False  # Can't parse → treat as expired
-
-        if token_ok:
+        # ── Fast path: valid token ─────────────────────────────────────────
+        state, _ = detect_broker_config_state()
+        if state == BrokerConfigState.TOKEN_VALID:
             logger.info("[main._run_token_gate] Token valid — proceeding to main window")
             return True
 
-        # ── Token missing or expired — force login ────────────────────────────
-        logger.warning("[main._run_token_gate] Token absent or expired — showing login dialog")
-
+        # ── Need interaction — close splash first ──────────────────────────
         if splash:
             try:
                 splash.close()
             except Exception:
                 pass
 
-        brokerage_setting = BrokerageSetting()
-        brokerage_setting.load()
-        brokerage_setting._load_token_info()
-
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
+        # ── Determine user-friendly reason string ─────────────────────────
+        if state == BrokerConfigState.NOT_CONFIGURED:
+            reason = None   # settings dialog shown first; no "expired" banner
+        elif state == BrokerConfigState.TOKEN_EXPIRED:
             reason = (
                 "Your broker access token has expired or has not been generated yet. "
                 "Please login to continue."
             )
-            dlg = BrokerLoginPopup(None, brokerage_setting, reason=reason)
-            result = dlg.exec_()
+        else:
+            reason = None   # CONFIGURED_NO_TOKEN — fresh login, no banner
 
-            if result == QDialog.Accepted:
+        logger.warning(
+            f"[main._run_token_gate] Broker state={state.name} — showing setup flow"
+        )
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            success = show_broker_setup_flow(parent=None, reason=reason)
+
+            if success:
                 logger.info(
-                    f"[main._run_token_gate] Login succeeded on attempt {attempt}"
+                    f"[main._run_token_gate] Setup flow completed on attempt {attempt}"
                 )
                 return True
 
@@ -581,21 +573,23 @@ def _run_token_gate(qt_app, splash=None) -> bool:
             if attempt < max_attempts:
                 reply = QMessageBox.question(
                     None,
-                    "Login Required",
-                    "A valid broker token is required to use this application.\n\n"                    "Would you like to try again?",
+                    "Broker Setup Required",
+                    "A valid broker configuration and access token are required to use this application.\n\n"
+                    "Would you like to try again?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.Yes,
                 )
                 if reply != QMessageBox.Yes:
-                    logger.info("[main._run_token_gate] User chose not to retry login — exiting")
+                    logger.info("[main._run_token_gate] User chose not to retry — exiting")
                     return False
             else:
                 QMessageBox.critical(
                     None,
-                    "Login Required",
-                    "Login was not completed.\nThe application cannot start without a valid broker token.",
+                    "Broker Setup Required",
+                    "Broker setup was not completed.\n"
+                    "The application cannot start without a valid broker configuration.",
                 )
-                logger.warning("[main._run_token_gate] Max login attempts reached — exiting")
+                logger.warning("[main._run_token_gate] Max attempts reached — exiting")
                 return False
 
         return False
@@ -604,6 +598,7 @@ def _run_token_gate(qt_app, splash=None) -> bool:
         logger.error(f"[main._run_token_gate] Unexpected error: {e}", exc_info=True)
         # Don't block startup on unexpected error — let TradingGUI handle it
         return True
+
 
 
 # ── Main Window ────────────────────────────────────────────────────────────
