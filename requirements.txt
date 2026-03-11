@@ -1,43 +1,53 @@
+# ============================================================
+# TradingAssistant — Python dependencies
+# Python 3.13 compatible (tested with Python 3.13.x)
+# Install: pip install -r requirements.txt
+# ============================================================
+
 # Core data processing
-pandas~=2.2.3
-numpy~=1.26.4
+pandas>=2.2.3
+numpy>=1.26.4
+
+sqlalchemy>=2.0.37
 
 # PyQt5 GUI framework
-PyQt5~=5.15.10
-PyQtWebEngine~=5.15.6
-PyQtChart~=5.15.6
+PyQt5>=5.15.10
+PyQtWebEngine>=5.15.6
+PyQtChart>=5.15.6
 
 # Visualization
-plotly~=5.18.0
+plotly>=5.18.0
 
-# Broker API
-fyers_apiv3~=3.1.7
-
-# Technical indicators
-pandas_ta~=0.3.14b0
-
-# Async support
-asyncio~=3.4.3
-
-# Date/time handling
-python-dateutil~=2.9.0.post0
-pytz~=2025.2
-
-# HTTP requests (for network checks)
-requests~=2.31.0
-
-# Type hints support (optional, for development)
-typing-extensions~=4.8.0
-
-# Additional utilities
-# (Add any other dependencies as needed)
-psutil
+# Broker APIs
+fyers_apiv3>=3.1.7
 kiteconnect
 dhanhq
-pyotp
 smartapi-python
 pya3
 NorenRestApiPy
 neo_api_client
 upstox-python-sdk
+breeze-connect
+
+# Technical indicators
+pandas_ta>=0.3.14b0
+
+# Date/time handling
+python-dateutil>=2.9.0
+pytz>=2024.1
+
+# HTTP / networking
+requests>=2.31.0
+websocket-client>=1.6
+
+# Security / auth
+pyotp>=2.9
+cryptography>=42.0
+
+# Type hints / utilities
+typing-extensions>=4.8.0
+packaging>=24.0
+psutil
+
+# Dev / testing (not included in the built exe)
 pytest

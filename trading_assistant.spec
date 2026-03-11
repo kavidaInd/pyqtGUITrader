@@ -1,45 +1,15 @@
 # trading_assistant.spec
-# ======================
-# PyInstaller spec for building a single-folder native executable.
-#
-# Usage:
-#   pip install pyinstaller
-#   pyinstaller trading_assistant.spec
-#
-# Output: dist/TradingAssistant/   (folder you can zip and distribute)
-#
-# Platform notes:
-#   Windows : produces TradingAssistant.exe  (no console window)
-#   macOS   : produces TradingAssistant.app  (run `open dist/TradingAssistant.app`)
-#   Linux   : produces TradingAssistant      (ELF binary, requires libQt5 on PATH)
-#
-# To create a macOS .dmg:
-#   brew install create-dmg
-#   create-dmg dist/TradingAssistant.app
-#
-# To create a Windows installer with NSIS:
-#   See scripts/make_installer_win.nsi
-
 import sys
 import os
 from pathlib import Path
 
-ROOT = Path(SPECPATH)       # directory containing this .spec file
+ROOT = Path(SPECPATH)
 
-# ── Hidden imports needed because PyInstaller cannot see dynamic imports ──────
+# --------------------------------------------------------------------------
+# Hidden imports
+# --------------------------------------------------------------------------
 hidden_imports = [
-    # Broker SDKs (only the ones you've installed will be available)
-    "fyers_apiv3",
-    "fyers_apiv3.FyersWebsocket",
-    "kiteconnect",
-    "dhanhq",
-    "SmartApi",
-    "upstox_client",
-    "NorenRestApiPy.NorenApi",
-    "breeze_connect",
-    "pya3",
-    "neo_api_client",
-    # Internal modules that use importlib.import_module
+    # Internal broker modules (loaded dynamically via importlib)
     "broker.FyersBroker",
     "broker.ZerodhaBroker",
     "broker.DhanBroker",
@@ -50,63 +20,111 @@ hidden_imports = [
     "broker.IciciBroker",
     "broker.AliceBlueBroker",
     "broker.FlattradeBroker",
-    # PyQt5 plugins
+    # PyQt5
     "PyQt5.QtPrintSupport",
     "PyQt5.QtSvg",
-    # SQLAlchemy dialects
+    "PyQt5.QtCore",
+    "PyQt5.QtGui",
+    "PyQt5.QtWidgets",
+    # SQLAlchemy (sqlite only - no postgres/mysql needed)
     "sqlalchemy.dialects.sqlite",
-    # pandas backends
+    "sqlalchemy.dialects.sqlite.pysqlite",
+    "sqlalchemy.orm",
+    "sqlalchemy.ext.declarative",
+    # pandas internals
     "pandas._libs.tslibs.base",
-    # pyotp
+    "pandas._libs.tslibs.np_datetime",
+    "pandas._libs.tslibs.nattype",
+    "pandas._libs.tslibs.timestamps",
+    # Auth / crypto
     "pyotp",
-    # cryptography
     "cryptography.hazmat.primitives.kdf.pbkdf2",
+    "cryptography.hazmat.backends.openssl",
+    # Networking
+    "requests",
+    "urllib3",
+    "certifi",
+    # Broker SDKs (included regardless - missing ones are ignored at runtime)
+    "fyers_apiv3",
+    "fyers_apiv3.FyersWebsocket",
+    "kiteconnect",
+    "dhanhq",
+    "SmartApi",
+    "SmartApi.smartConnect",
+    "logzero",
+    "upstox_client",
+    "NorenRestApiPy",
+    "NorenRestApiPy.NorenApi",
+    "pkg_resources",
+    "packaging",
+    "packaging.version",
 ]
 
-# ── Data files to bundle ───────────────────────────────────────────────────────
+# --------------------------------------------------------------------------
+# Data files
+# --------------------------------------------------------------------------
 datas = []
 
-# Include all .json config templates
 for p in ROOT.rglob("*.json"):
-    if "backups" in str(p) or "__pycache__" in str(p):
+    if any(x in str(p) for x in ["backups", "__pycache__", "dist", "build"]):
         continue
-    datas.append((str(p), str(p.parent.relative_to(ROOT))))
+    rel = str(p.parent.relative_to(ROOT))
+    datas.append((str(p), rel))
 
-# Include icon assets
-for ext in ("*.png", "*.ico", "*.svg"):
+for ext in ("*.png", "*.ico", "*.svg", "*.icns"):
     for p in ROOT.rglob(ext):
-        if "__pycache__" in str(p):
+        if any(x in str(p) for x in ["__pycache__", "dist", "build"]):
             continue
-        datas.append((str(p), str(p.parent.relative_to(ROOT))))
+        rel = str(p.parent.relative_to(ROOT))
+        datas.append((str(p), rel))
 
-# ── Platform-specific windowing ────────────────────────────────────────────────
+# --------------------------------------------------------------------------
+# Platform settings
+# --------------------------------------------------------------------------
 is_windows = sys.platform == "win32"
-is_mac = sys.platform == "darwin"
+is_mac     = sys.platform == "darwin"
 
-# On Windows use the .ico file if present; on macOS use the .icns
-icon_win = str(ROOT / "assets" / "icon.ico") if (ROOT / "assets" / "icon.ico").exists() else None
-icon_mac = str(ROOT / "assets" / "icon.icns") if (ROOT / "assets" / "icon.icns").exists() else None
-icon = icon_win if is_windows else (icon_mac if is_mac else None)
+icon_path = None
+if is_windows and (ROOT / "assets" / "icon.ico").exists():
+    icon_path = str(ROOT / "assets" / "icon.ico")
+elif is_mac and (ROOT / "assets" / "icon.icns").exists():
+    icon_path = str(ROOT / "assets" / "icon.icns")
 
-# ── Analysis ───────────────────────────────────────────────────────────────────
+# --------------------------------------------------------------------------
+# Analysis
+# --------------------------------------------------------------------------
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hidden_imports,
-    hookspath=[str(ROOT / "hooks")],   # custom hooks directory (optional)
+    hookspath=[str(ROOT / "hooks")],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(ROOT / "hooks" / "rthook_appdata.py")],
     excludes=[
-        # Exclude heavy packages not needed at runtime
         "matplotlib",
         "scipy",
         "tkinter",
+        "_tkinter",
         "test",
         "unittest",
         "IPython",
         "jupyter",
+        "notebook",
+        "statsmodels",
+        "sklearn",
+        "scikit_learn",
+        "twisted",
+        "boto3",
+        "botocore",
+        "awscrt",
+        "wx",
+        "gi",
+        # Exclude breeze_connect from analysis entirely - it makes network
+        # calls at module level (urlopen in __init__) which crash PyInstaller.
+        # It is bundled separately via the hooks/rthook approach below.
+        "breeze_connect",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -126,13 +144,13 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,           # no black terminal window
+    console=False,
     disable_windowed_traceback=False,
-    argv_emulation=is_mac,   # macOS: emulate argv for open-with support
+    argv_emulation=is_mac,
     target_arch=None,
-    codesign_identity=None,  # set to your Apple Developer ID for notarization
+    codesign_identity=None,
     entitlements_file=None,
-    icon=icon,
+    icon=icon_path,
 )
 
 coll = COLLECT(
@@ -146,18 +164,16 @@ coll = COLLECT(
     name="TradingAssistant",
 )
 
-# macOS: wrap in an .app bundle
 if is_mac:
     app = BUNDLE(
         coll,
         name="TradingAssistant.app",
-        icon=icon_mac,
+        icon=icon_path,
         bundle_identifier="com.tradingassistant.app",
         info_plist={
             "CFBundleDisplayName": "Trading Assistant",
             "CFBundleVersion": "1.0.0",
             "CFBundleShortVersionString": "1.0.0",
             "NSHighResolutionCapable": True,
-            "LSMinimumSystemVersion": "11.0",
         },
     )
