@@ -85,6 +85,7 @@ from gui.log_handler import QtLogHandler
 from gui.popups.connection_monitor_popup import ConnectionMonitorPopup
 from gui.popups.dynamic_signal_debug_popup import DynamicSignalDebugPopup
 from gui.popups.logs_popup import LogPopup
+from gui.popups.modify_sl_tp_popup import ExitConfirmDialog, ModifySLDialog, ModifyTPDialog
 from gui.popups.stats_popup import StatsPopup
 from gui.popups.system_monitor_popup import SystemMonitorPopup
 from gui.popups.trade_history_popup import TradeHistoryPopup
@@ -814,6 +815,9 @@ class TradingGUI(QMainWindow):
             self.status_panel = StatusPanel()
             self.status_panel.setMinimumWidth(260)
             self.status_panel.setMaximumWidth(420)
+            self.status_panel.exit_position_clicked.connect(self._on_sidebar_exit)
+            self.status_panel.modify_sl_clicked.connect(self._on_sidebar_modify_sl)
+            self.status_panel.modify_tp_clicked.connect(self._on_sidebar_modify_tp)
             self._splitter.addWidget(self.status_panel)
 
             self._splitter.setStretchFactor(0, 3)
@@ -950,7 +954,7 @@ class TradingGUI(QMainWindow):
 
             self.btn_call.setToolTip("Buy a CALL option (manual mode only)")
             self.btn_put.setToolTip("Buy a PUT option (manual mode only)")
-            self.btn_exit.setToolTip("Exit current position (manual mode only)")
+            self.btn_exit.setToolTip("Exit current position")
 
             self.btn_stop.setDisabled(True)
             self.btn_call.setDisabled(True)
@@ -2225,12 +2229,9 @@ class TradingGUI(QMainWindow):
             QTimer.singleShot(0, lambda: self.error_occurred.emit(f"Order failed: {e}"))
 
     def _manual_exit(self):
-        """Manual exit in background thread"""
+        """Manual exit in background thread — works in both algo and manual modes"""
         try:
             if self._closing:
-                return
-            if self.trading_mode != "manual":
-                QMessageBox.information(self, "Mode", "Switch to Manual mode first.")
                 return
             if not self.trading_app:
                 return
@@ -2253,6 +2254,52 @@ class TradingGUI(QMainWindow):
         except Exception as e:
             logger.error(f"[TradingGUI._threaded_manual_exit] Error: {e}", exc_info=True)
             QTimer.singleShot(0, lambda: self.error_occurred.emit(f"Exit failed: {e}"))
+
+    # ── Sidebar button handlers ───────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _on_sidebar_exit(self):
+        """Exit Position button in the status panel sidebar."""
+        try:
+            if self._closing:
+                return
+            if not self.trading_app:
+                return
+            if self._market_status != "OPEN":
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Market Closed", "Cannot exit positions when market is closed.")
+                return
+            dlg = ExitConfirmDialog(self)
+            if dlg.exec_() == ExitConfirmDialog.Accepted:
+                self.app_status_bar.update_status({'status': 'Exiting position...'}, self.trading_mode, True)
+                threading.Thread(target=self._threaded_manual_exit, daemon=True).start()
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_sidebar_exit] {e}", exc_info=True)
+            self.error_occurred.emit(f"Exit failed: {e}")
+
+    @pyqtSlot()
+    def _on_sidebar_modify_sl(self):
+        """SL button in the status panel sidebar — opens ModifySLDialog."""
+        try:
+            if self._closing:
+                return
+            dlg = ModifySLDialog(self)
+            dlg.exec_()
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_sidebar_modify_sl] {e}", exc_info=True)
+            self.error_occurred.emit(f"Modify SL failed: {e}")
+
+    @pyqtSlot()
+    def _on_sidebar_modify_tp(self):
+        """TP button in the status panel sidebar — opens ModifyTPDialog."""
+        try:
+            if self._closing:
+                return
+            dlg = ModifyTPDialog(self)
+            dlg.exec_()
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_sidebar_modify_tp] {e}", exc_info=True)
+            self.error_occurred.emit(f"Modify TP failed: {e}")
 
     @pyqtSlot()
     def _on_mode_change(self):

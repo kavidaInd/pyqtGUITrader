@@ -433,6 +433,136 @@ class OptionUtils:
             return symbol if symbol else ""
 
     @classmethod
+    def canonical_symbol(cls, symbol: str) -> str:
+        """
+        Resolve any broker-prefixed or aliased symbol to a stable canonical form
+        suitable for equality comparison across brokers.
+
+        INDEX SYMBOLS  →  canonical exchange name  (e.g. "NIFTY", "BANKNIFTY")
+        -------------------------------------------------------------------------
+        Input (any format)              Output
+        "NIFTY50"                    →  "NIFTY"    (SYMBOL_MAP alias)
+        "NIFTY50-INDEX"              →  "NIFTY"    (SYMBOL_MAP alias)
+        "NSE:NIFTY50-INDEX"          →  "NIFTY"    (Fyers)
+        "NSE:NIFTY 50"               →  "NIFTY"    (Zerodha)
+        "NSE_INDEX|Nifty 50"         →  "NIFTY"    (Upstox)
+        "NSE|NIFTY-INDEX"            →  "NIFTY"    (Shoonya / Flattrade)
+
+        OPTION / FUTURES SYMBOLS  →  bare core string (exchange prefix stripped)
+        -------------------------------------------------------------------------
+        Option symbols are NOT in any index map, so the function strips the
+        exchange-specific prefix and returns the bare contract name.  Two symbols
+        for the same contract are equal after this stripping regardless of which
+        exchange prefix their broker attached:
+
+        Input (any format)                  Output (bare)
+        "NSE:NIFTY2531825000CE"          ->  "NIFTY2531825000CE"   (Fyers option)
+        "NFO:NIFTY2531825000CE"          ->  "NIFTY2531825000CE"   (Zerodha option)
+        "NSE_FO|NIFTY2531825000CE"       ->  "NIFTY2531825000CE"   (Upstox/Dhan F&O)
+        "NFO|NIFTY2531825000CE"          ->  "NIFTY2531825000CE"   (Shoonya/Flattrade)
+        "NIFTY2531825000CE"              ->  "NIFTY2531825000CE"   (bare, AngelOne)
+
+        TOKEN-BASED OPTION SYMBOLS (Dhan, AngelOne, Shoonya, Flattrade):
+        For brokers that use numeric security/scrip tokens the comparison relies
+        on WebSocketManager remapping the tick symbol to the SUBSCRIBED format
+        before it reaches any comparison site.  canonical_symbol("12345") simply
+        returns "12345"; a compact-core "NIFTY2531825000CE" will NOT match that
+        token - but this cross-broker comparison never occurs in practice because
+        state.call_option / state.put_option are always in the format emitted by
+        the ACTIVE broker's build_option_symbol().
+
+        Returns the original symbol unchanged on any error.
+        """
+        if not symbol:
+            return ""
+        try:
+            # Step 1: strip known exchange/segment prefixes (longest first so
+            # "NSE_INDEX|" is matched before the shorter "NSE|").
+            known_prefixes = (
+                "NSE_INDEX|", "NSE_FO|", "NSE_EQ|",
+                "BSE_INDEX|", "BSE_FO|", "BSE_EQ|",
+                "MCX_FO|",
+                "NSE|", "NFO|", "BSE|", "MCX|",
+                "NSE:", "NFO:", "BSE:", "MCX:", "CDS:",
+            )
+            bare = symbol
+            for pfx in known_prefixes:
+                if symbol.startswith(pfx):
+                    bare = symbol[len(pfx):]
+                    break
+
+            # Step 2: SYMBOL_MAP look-up (index aliases like NIFTY50 -> NIFTY)
+            if symbol in cls.SYMBOL_MAP:
+                return cls.SYMBOL_MAP[symbol]
+            if bare in cls.SYMBOL_MAP:
+                return cls.SYMBOL_MAP[bare]
+
+            # Step 3: Reverse look-up in _INDEX_SYMBOL_MAP
+            # Structure: {broker_type: {canonical_key: broker_specific_string}}
+            # If full symbol or bare name matches any broker-specific index string
+            # return the canonical key (e.g. "NIFTY").
+            for _broker_type, idx_map in cls._INDEX_SYMBOL_MAP.items():
+                for canonical_key, broker_sym in idx_map.items():
+                    if symbol == broker_sym or bare == broker_sym:
+                        return canonical_key
+                    # Handle Upstox format "Nifty 50" inside "NSE_INDEX|Nifty 50"
+                    broker_bare = broker_sym.split("|")[-1] if "|" in broker_sym else (
+                                  broker_sym.split(":")[-1] if ":" in broker_sym else broker_sym)
+                    if bare == broker_bare:
+                        return canonical_key
+
+            # Step 4: Not an index symbol -> return bare contract name.
+            # For compact-core options ("NIFTY2531825000CE") both sides strip to
+            # the same bare string so cross-prefix comparison works correctly.
+            # For token-based options ("12345") the bare IS the token; same-broker
+            # tokens are always identical strings, so comparison is still correct.
+            return bare
+
+        except Exception as e:
+            logger.error(f"[canonical_symbol] Failed for {symbol!r}: {e}", exc_info=True)
+            return symbol
+
+    @classmethod
+    def symbols_match(cls, sym_a: str, sym_b: str) -> bool:
+        """
+        Return True if two symbol strings refer to the same instrument,
+        regardless of broker-specific prefix or alias format.
+
+        INDEX symbol examples (all True):
+          "NIFTY50"  vs "NSE:NIFTY50-INDEX"      Fyers derivative tick
+          "NIFTY50"  vs "NSE:Nifty 50"            Zerodha derivative tick
+          "NIFTY50"  vs "NSE_INDEX|Nifty 50"      Upstox derivative tick
+          "NIFTY50"  vs "NSE|NIFTY-INDEX"          Shoonya derivative tick
+
+        OPTION symbol examples - same contract, different prefix (True):
+          "NSE:NIFTY2531825000CE" vs "NFO:NIFTY2531825000CE"
+          "NSE:NIFTY2531825000CE" vs "NFO|NIFTY2531825000CE"
+          "NSE:NIFTY2531825000CE" vs "NIFTY2531825000CE"
+
+        OPTION symbol examples - different contracts (False):
+          "NSE:NIFTY2531825000CE" vs "NSE:NIFTY2531825000PE"  (CE vs PE)
+          "NSE:NIFTY2531825000CE" vs "NSE:NIFTY2531824950CE"  (different strike)
+
+        TOKEN-BASED options (Dhan / AngelOne / Shoonya / Flattrade):
+          Token symbols ("12345") only match their exact token.  Cross-format
+          comparison (token vs compact-core) is NOT supported and is instead
+          resolved upstream by WebSocketManager remapping ticks to the subscribed
+          symbol format before any downstream comparison occurs.
+
+        Empty strings never match anything.
+        """
+        if not sym_a or not sym_b:
+            return False
+        if sym_a == sym_b:
+            return True  # fast path - exact match
+        try:
+            return cls.canonical_symbol(sym_a) == cls.canonical_symbol(sym_b)
+        except Exception as e:
+            logger.error(f"[symbols_match] Failed for {sym_a!r}/{sym_b!r}: {e}", exc_info=True)
+            return False  # safe default - don't silently misidentify symbols
+
+
+    @classmethod
     def get_multiplier(cls, symbol: str) -> int:
         """Get strike multiplier for symbol"""
         try:

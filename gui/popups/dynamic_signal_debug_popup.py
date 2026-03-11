@@ -233,7 +233,7 @@ class _FiredPill(QLabel, _TM):
         self._label = meta["label"]
         self.setAlignment(Qt.AlignCenter)
         self.setFixedHeight(40)
-        self.setMinimumWidth(80)
+        self.setMinimumWidth(90)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._paint(False)
         try:
@@ -342,7 +342,7 @@ class _ConfGauge(QWidget, _TM):
 
         # Signal label
         sig_lbl = QLabel(f"{meta['icon']}  {meta['label']}")
-        sig_lbl.setFixedWidth(90)
+        sig_lbl.setFixedWidth(100)
         sig_lbl.setStyleSheet(f"""
             color: {_tok(meta['attr'])};
             font-size: {_ty().SIZE_XS}pt;
@@ -446,10 +446,10 @@ class _IndicatorTable(QWidget, _TM):
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(["Indicator", "Output", "Latest", "Previous"])
         hv = self._table.horizontalHeader()
-        hv.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hv.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hv.setSectionResizeMode(2, QHeaderView.Stretch)
-        hv.setSectionResizeMode(3, QHeaderView.Stretch)
+        hv.setSectionResizeMode(0, QHeaderView.Fixed);  hv.resizeSection(0, 80)   # Indicator
+        hv.setSectionResizeMode(1, QHeaderView.Fixed);  hv.resizeSection(1, 80)   # Output
+        hv.setSectionResizeMode(2, QHeaderView.Stretch)                            # Latest
+        hv.setSectionResizeMode(3, QHeaderView.Stretch)                            # Previous
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
@@ -580,9 +580,11 @@ class _RightPanel(QWidget, _TM):
 
         self._expl_lbl = QLabel("No evaluation yet.")
         self._expl_lbl.setWordWrap(True)
+        self._expl_lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self._expl_lbl.setMaximumWidth(460)
         self._expl_lbl.setStyleSheet(
             f"color:{c.TEXT_DIM}; font-size:{ty.SIZE_XS}pt; "
-            f"line-height:140%; background:transparent;"
+            f"line-height:150%; background:transparent; padding-top:4px;"
         )
         cf_lay.addWidget(self._expl_lbl)
 
@@ -590,6 +592,7 @@ class _RightPanel(QWidget, _TM):
 
         # ── Indicator values ───────────────────────────────────────────────
         self._ind_table = _IndicatorTable()
+        self._ind_table.setMinimumHeight(120)
         lay.addWidget(self._ind_table, 1)
 
         self._restyle()
@@ -720,20 +723,22 @@ class _GroupCard(QFrame, _TM):
         self._table = QTableWidget(0, len(self._RULE_COLS))
         self._table.setHorizontalHeaderLabels(self._RULE_COLS)
         hv = self._table.horizontalHeader()
-        hv.setSectionResizeMode(0, QHeaderView.Fixed);         hv.resizeSection(0, 28)    # #
-        hv.setSectionResizeMode(1, QHeaderView.Stretch)                                    # Expression
-        hv.setSectionResizeMode(2, QHeaderView.ResizeToContents)                           # LHS Ind.
-        hv.setSectionResizeMode(3, QHeaderView.ResizeToContents)                           # Sub-col
-        hv.setSectionResizeMode(4, QHeaderView.ResizeToContents)                           # LHS Value
+        hv.setSectionResizeMode(0, QHeaderView.Fixed);         hv.resizeSection(0, 30)    # #
+        hv.setSectionResizeMode(1, QHeaderView.Interactive);   hv.resizeSection(1, 180)   # Expression
+        hv.setSectionResizeMode(2, QHeaderView.Fixed);         hv.resizeSection(2, 70)    # LHS Ind.
+        hv.setSectionResizeMode(3, QHeaderView.Fixed);         hv.resizeSection(3, 70)    # Sub-col
+        hv.setSectionResizeMode(4, QHeaderView.Fixed);         hv.resizeSection(4, 80)    # LHS Value
         hv.setSectionResizeMode(5, QHeaderView.Fixed);         hv.resizeSection(5, 36)    # Op
-        hv.setSectionResizeMode(6, QHeaderView.ResizeToContents)                           # RHS
-        hv.setSectionResizeMode(7, QHeaderView.ResizeToContents)                           # Result
+        hv.setSectionResizeMode(6, QHeaderView.Fixed);         hv.resizeSection(6, 80)    # RHS
+        hv.setSectionResizeMode(7, QHeaderView.Stretch)                                    # Result
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setAlternatingRowColors(True)
         self._table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._table.setMinimumHeight(36)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root.addWidget(self._table)
 
         self._empty_lbl = QLabel("  No rules configured for this signal group.")
@@ -800,7 +805,7 @@ class _GroupCard(QFrame, _TM):
                 QTableCornerButton::section {{ background: {c.BG_PANEL}; border: none; }}
                 {_scrollbar_ss()}
             """)
-            row_h = 26
+            row_h = 28
             self._table.verticalHeader().setDefaultSectionSize(row_h)
 
     def _apply_conf_bar(self, col: str):
@@ -872,7 +877,8 @@ class _GroupCard(QFrame, _TM):
             if not rule_results:
                 if self._table: self._table.hide(); self._table.setRowCount(0)
                 if self._empty_lbl: self._empty_lbl.show()
-                self.setFixedHeight(self._table_header_h() + 2)
+                self.setMinimumHeight(0)
+                self.setMaximumHeight(16777215)  # restore from any prior setFixedHeight
                 return
 
             if self._empty_lbl: self._empty_lbl.hide()
@@ -963,11 +969,13 @@ class _GroupCard(QFrame, _TM):
                 except Exception as ex:
                     logger.warning(f"[_GroupCard.update_data] row {i}: {ex}")
 
-            # Size the table to fit exactly — no truncation, no extra scroll
-            row_h   = 26
+            # Size the table to fit rows exactly without internal scrollbar
+            row_h   = 28
             hdr_h   = self._table.horizontalHeader().height()
-            total_h = hdr_h + row_h * len(rule_results) + 2
-            self._table.setFixedHeight(total_h)
+            total_h = hdr_h + row_h * len(rule_results) + 4
+            self._table.setMinimumHeight(total_h)
+            self._table.setMaximumHeight(total_h)
+            self._table.verticalHeader().setDefaultSectionSize(row_h)
 
         except Exception as e:
             logger.error(f"[_GroupCard.update_data] {e}", exc_info=True)
@@ -1087,8 +1095,8 @@ class DynamicSignalDebugPopup(QDialog, _TM):
             self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
             self.setAttribute(Qt.WA_TranslucentBackground)
             self.trading_app = trading_app
-            self.resize(1280, 860)
-            self.setMinimumSize(960, 640)
+            self.resize(1400, 920)
+            self.setMinimumSize(1100, 700)
             self._drag_pos = None
 
             try:
@@ -1159,7 +1167,7 @@ class DynamicSignalDebugPopup(QDialog, _TM):
     def _build_title_bar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("titleBar")
-        bar.setFixedHeight(42)
+        bar.setFixedHeight(44)
         bar.mousePressEvent   = self._drag_start
         bar.mouseMoveEvent    = self._drag_move
         bar.mouseReleaseEvent = lambda e: setattr(self, "_drag_pos", None)
@@ -1220,7 +1228,7 @@ class DynamicSignalDebugPopup(QDialog, _TM):
         hdr = QWidget()
         hdr.setObjectName("mainHdr")
         lay = QHBoxLayout(hdr)
-        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setContentsMargins(16, 10, 16, 10)
         lay.setSpacing(20)
 
         # Signal badge
@@ -1315,7 +1323,7 @@ class DynamicSignalDebugPopup(QDialog, _TM):
         groups_scroll = QScrollArea()
         groups_scroll.setWidgetResizable(True)
         groups_scroll.setFrameShape(QFrame.NoFrame)
-        groups_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        groups_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         groups_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         groups_scroll.setStyleSheet(f"QScrollArea {{ background:{_p().BG_MAIN}; border:none; }} {_scrollbar_ss()}")
 
@@ -1338,7 +1346,7 @@ class DynamicSignalDebugPopup(QDialog, _TM):
         self._json_panel = _RawJsonPanel()
         tabs.addTab(self._json_panel, "{ }  Raw JSON")
 
-        body_lay.addWidget(tabs, 60)
+        body_lay.addWidget(tabs, 62)
 
         # Thin separator
         sep = QFrame()
@@ -1352,9 +1360,10 @@ class DynamicSignalDebugPopup(QDialog, _TM):
         right_scroll.setFrameShape(QFrame.NoFrame)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         right_scroll.setStyleSheet(f"QScrollArea {{ background:{_p().BG_MAIN}; border:none; }} {_scrollbar_ss()}")
+        right_scroll.setMinimumWidth(340)
         self._right_panel = _RightPanel()
         right_scroll.setWidget(self._right_panel)
-        body_lay.addWidget(right_scroll, 40)
+        body_lay.addWidget(right_scroll, 38)
 
         self._apply_tab_style()
         return body

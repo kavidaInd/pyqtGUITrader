@@ -674,6 +674,28 @@ class StatusPanel(QWidget):
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    def update_live_price(self, symbol: str, ltp: float) -> None:
+        """
+        Fast-path update for the index price card on every WS tick.
+        Called by TradingGUI._on_price_tick before the 1-second timer fires.
+        Only updates the derivative card when the tick is for the index symbol.
+        """
+        try:
+            if self._closing or not self._refresh_enabled:
+                return
+            state = state_manager.get_state()
+            derivative = getattr(state, 'derivative', None)
+            if not derivative:
+                return
+            sym_upper = (symbol or "").upper()
+            deriv_upper = derivative.upper()
+            if sym_upper != deriv_upper and deriv_upper not in sym_upper and sym_upper not in deriv_upper:
+                return
+            c = self._c
+            self._set_card("derivative", self._fmt(ltp) if ltp else "—", c.BLUE)
+        except Exception:
+            pass  # Never crash the WS thread
+
     def refresh(self, config=None) -> None:
         """Refresh all tiles from state_manager. Call at ~1-2 Hz from TradingGUI."""
         if self._closing or not self._refresh_enabled:

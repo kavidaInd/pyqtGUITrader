@@ -18,6 +18,7 @@ from functools import wraps
 from typing import Callable, List, Optional, Dict, Any
 
 from broker.BaseBroker import BaseBroker
+from Utils.OptionUtils import OptionUtils
 
 logger = logging.getLogger(__name__)
 
@@ -693,6 +694,17 @@ class WebSocketManager:
 
                 if normalized is None:
                     return  # heartbeat / unparseable frame — silently skip
+
+                tick_sym = normalized.get("symbol", "")
+                if tick_sym and self.symbols:
+                    for subscribed_sym in self.symbols:
+                        if subscribed_sym != tick_sym and OptionUtils.symbols_match(tick_sym, subscribed_sym):
+                            normalized = dict(normalized)  # shallow copy – don't mutate original
+                            normalized["symbol"] = subscribed_sym
+                            logger.debug(
+                                f"[WSManager] Symbol remapped: {tick_sym!r} → {subscribed_sym!r}"
+                            )
+                            break
 
                 self._message_count += 1
                 callback(normalized)

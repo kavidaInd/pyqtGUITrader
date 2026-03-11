@@ -569,7 +569,9 @@ class OrderExecutor:
         if not orders:
             return False
 
-        live_orders = [o for o in orders if o.get('broker_id')]
+        # Paper orders have PAPER_* broker_id — treat them as instantly filled
+        is_paper = self._is_paper_mode()
+        live_orders = [o for o in orders if o.get('broker_id') and not is_paper]
         if not live_orders:
             if not state.current_buy_price:
                 state.current_buy_price = orders[0].get('price')
@@ -612,11 +614,12 @@ class OrderExecutor:
     def _cancel_unconfirmed_orders(self, orders, state):
         if not orders or not self.api:
             return
+        is_paper = self._is_paper_mode()
         for order in orders:
             try:
                 broker_id = order.get('broker_id')
                 order_id = order.get('id')
-                if broker_id:
+                if broker_id and not is_paper:
                     self.api.cancel_order(order_id=broker_id)
                     logger.info(f"[CANCEL] Cancelled order {broker_id}")
                 if order_id:
@@ -754,14 +757,13 @@ class OrderExecutor:
             else:
                 # Paper / simulation — single DB record, no broker call
                 try:
+                    paper_order_id = f"PAPER_{random.randint(10000, 99999)}_{Utils.get_epoch()}"
                     oid = orders_crud.create(
                         session_id=session_id,
                         symbol=symbol,
                         position_type=position_type,
                         quantity=shares,
-                        broker_order_id=(
-                            f"paper_{random.randint(10000, 99999)}_{Utils.get_epoch()}"
-                        ),
+                        broker_order_id=paper_order_id,
                         entry_price=price,
                         stop_loss=state.stop_loss,
                         take_profit=state.tp_point,
@@ -770,7 +772,7 @@ class OrderExecutor:
                     if oid > 0:
                         orders.append({
                             "id": oid,
-                            "broker_id": None,
+                            "broker_id": paper_order_id,
                             "qty": shares,
                             "symbol": symbol,
                             "price": price,

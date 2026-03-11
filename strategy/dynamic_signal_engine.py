@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import pandas_ta as ta
+
     _TA_AVAILABLE = True
 except ImportError:
     ta = None
@@ -85,12 +86,12 @@ SIGNAL_COLORS: Dict[str, str] = {
 
 # Signal priorities for resolution (lower number = higher priority)
 SIGNAL_PRIORITY = {
-    "EXIT_CALL": 1,   # Highest priority when in CALL position
-    "EXIT_PUT": 1,    # Highest priority when in PUT position
-    "HOLD": 2,        # Hold has medium priority
-    "BUY_CALL": 3,    # Entry signals have lowest priority when in position
-    "BUY_PUT": 3,     # Entry signals have lowest priority when in position
-    "WAIT": 4,        # Wait is lowest priority
+    "EXIT_CALL": 1,  # Highest priority when in CALL position
+    "EXIT_PUT": 1,  # Highest priority when in PUT position
+    "HOLD": 2,  # Hold has medium priority
+    "BUY_CALL": 3,  # Entry signals have lowest priority when in position
+    "BUY_PUT": 3,  # Entry signals have lowest priority when in position
+    "WAIT": 4,  # Wait is lowest priority
 }
 
 # Supported operators for rule conditions
@@ -120,63 +121,63 @@ INDICATOR_DEFAULTS: Dict[str, Dict[str, Any]] = {
     # Each entry must include ALL params the UI exposes so that the
     # type-coercion pass in _compute_indicator has a reference type.
     # Missing entries cause string params to slip through as-is → TypeError.
-    "rsi":       {"length": 14, "scalar": 100.0, "drift": 1},
-    "ema":       {"length": 20, "offset": 0},
-    "sma":       {"length": 20, "offset": 0},
-    "wma":       {"length": 20, "offset": 0},
-    "hma":       {"length": 20, "offset": 0},
-    "dema":      {"length": 20, "offset": 0},
-    "tema":      {"length": 20, "offset": 0},
-    "zlma":      {"length": 20, "offset": 0},
-    "macd":      {"fast": 12, "slow": 26, "signal": 9},
-    "bbands":    {"length": 20, "std": 2.0, "ddof": 0, "offset": 0},
-    "atr":       {"length": 14, "drift": 1, "offset": 0},
-    "natr":      {"length": 14, "drift": 1, "offset": 0},
-    "adx":       {"length": 14, "drift": 1},
-    "cci":       {"length": 20, "c": 0.015, "drift": 1},
-    "stoch":     {"k": 14, "d": 3, "smooth_k": 3, "drift": 1},
-    "stochrsi":  {"length": 14, "rsi_length": 14, "k": 3, "d": 3},
-    "roc":       {"length": 10},
-    "mom":       {"length": 10, "drift": 1},
-    "willr":     {"length": 14},
-    "obv":       {},
-    "vwap":      {},
-    "supertrend":{"length": 7, "multiplier": 3.0, "drift": 1},
-    "kc":        {"length": 20, "scalar": 1.5, "tr": True, "offset": 0},
-    "donchian":  {"lower_length": 20, "upper_length": 20, "offset": 0},
-    "psar":      {"af0": 0.02, "af": 0.02, "max_af": 0.2},
-    "slope":     {"length": 1, "offset": 0},
-    "linreg":    {"length": 14, "offset": 0},
-    "aroon":     {"length": 14, "offset": 0},
-    "adosc":     {"fast": 3, "slow": 10, "offset": 0},
-    "kvo":       {"fast": 34, "slow": 55, "signal": 13},
-    "mfi":       {"length": 14, "drift": 1},
-    "tsi":       {"fast": 13, "slow": 25, "drift": 1},
-    "uo":        {"fast": 7, "medium": 14, "slow": 28, "fast_w": 4.0, "medium_w": 2.0, "slow_w": 1.0, "drift": 1},
-    "ao":        {"fast": 5, "slow": 34},
-    "kama":      {"length": 10, "fast": 2, "slow": 30, "drift": 1},
-    "rvi":       {"length": 14, "scalar": 100.0, "drift": 1, "offset": 0},
-    "trix":      {"length": 15, "scalar": 100.0, "drift": 1},
-    "dm":        {"length": 14, "drift": 1},
-    "psl":       {"length": 12, "drift": 1},
-    "true_range":{},
-    "massi":     {"fast": 9, "slow": 25},
-    "cmf":       {"length": 20, "offset": 0},
-    "efi":       {"length": 13, "drift": 1, "offset": 0},
-    "eom":       {"length": 14, "divisor": 100000000, "drift": 1, "offset": 0},
-    "nvi":       {"length": 1, "initial": 1000, "offset": 0},
-    "pvi":       {"length": 1, "initial": 1000, "offset": 0},
-    "pvt":       {"drift": 1, "offset": 0},
-    "entropy":   {"length": 10, "offset": 0},
-    "kurtosis":  {"length": 30, "offset": 0},
-    "mad":       {"length": 30, "offset": 0},
-    "median":    {"length": 30, "offset": 0},
-    "quantile":  {"length": 30, "q": 0.5, "offset": 0},
-    "skew":      {"length": 30, "offset": 0},
-    "stdev":     {"length": 30, "ddof": 1, "offset": 0},
-    "variance":  {"length": 30, "ddof": 1, "offset": 0},
-    "zscore":    {"length": 30, "ddof": 1, "offset": 0},
-    "ichimoku":  {"tenkan": 9, "kijun": 26, "senkou": 52},
+    "rsi": {"length": 14, "scalar": 100.0, "drift": 1},
+    "ema": {"length": 20, "offset": 0},
+    "sma": {"length": 20, "offset": 0},
+    "wma": {"length": 20, "offset": 0},
+    "hma": {"length": 20, "offset": 0},
+    "dema": {"length": 20, "offset": 0},
+    "tema": {"length": 20, "offset": 0},
+    "zlma": {"length": 20, "offset": 0},
+    "macd": {"fast": 12, "slow": 26, "signal": 9},
+    "bbands": {"length": 20, "std": 2.0, "ddof": 0, "offset": 0},
+    "atr": {"length": 14, "drift": 1, "offset": 0},
+    "natr": {"length": 14, "drift": 1, "offset": 0},
+    "adx": {"length": 14, "drift": 1},
+    "cci": {"length": 20, "c": 0.015, "drift": 1},
+    "stoch": {"k": 14, "d": 3, "smooth_k": 3, "drift": 1},
+    "stochrsi": {"length": 14, "rsi_length": 14, "k": 3, "d": 3},
+    "roc": {"length": 10},
+    "mom": {"length": 10, "drift": 1},
+    "willr": {"length": 14},
+    "obv": {},
+    "vwap": {},
+    "supertrend": {"length": 7, "multiplier": 3.0, "drift": 1},
+    "kc": {"length": 20, "scalar": 1.5, "tr": True, "offset": 0},
+    "donchian": {"lower_length": 20, "upper_length": 20, "offset": 0},
+    "psar": {"af0": 0.02, "af": 0.02, "max_af": 0.2},
+    "slope": {"length": 1, "offset": 0},
+    "linreg": {"length": 14, "offset": 0},
+    "aroon": {"length": 14, "offset": 0},
+    "adosc": {"fast": 3, "slow": 10, "offset": 0},
+    "kvo": {"fast": 34, "slow": 55, "signal": 13},
+    "mfi": {"length": 14, "drift": 1},
+    "tsi": {"fast": 13, "slow": 25, "drift": 1},
+    "uo": {"fast": 7, "medium": 14, "slow": 28, "fast_w": 4.0, "medium_w": 2.0, "slow_w": 1.0, "drift": 1},
+    "ao": {"fast": 5, "slow": 34},
+    "kama": {"length": 10, "fast": 2, "slow": 30, "drift": 1},
+    "rvi": {"length": 14, "scalar": 100.0, "drift": 1, "offset": 0},
+    "trix": {"length": 15, "scalar": 100.0, "drift": 1},
+    "dm": {"length": 14, "drift": 1},
+    "psl": {"length": 12, "drift": 1},
+    "true_range": {},
+    "massi": {"fast": 9, "slow": 25},
+    "cmf": {"length": 20, "offset": 0},
+    "efi": {"length": 13, "drift": 1, "offset": 0},
+    "eom": {"length": 14, "divisor": 100000000, "drift": 1, "offset": 0},
+    "nvi": {"length": 1, "initial": 1000, "offset": 0},
+    "pvi": {"length": 1, "initial": 1000, "offset": 0},
+    "pvt": {"drift": 1, "offset": 0},
+    "entropy": {"length": 10, "offset": 0},
+    "kurtosis": {"length": 30, "offset": 0},
+    "mad": {"length": 30, "offset": 0},
+    "median": {"length": 30, "offset": 0},
+    "quantile": {"length": 30, "q": 0.5, "offset": 0},
+    "skew": {"length": 30, "offset": 0},
+    "stdev": {"length": 30, "ddof": 1, "offset": 0},
+    "variance": {"length": 30, "ddof": 1, "offset": 0},
+    "zscore": {"length": 30, "ddof": 1, "offset": 0},
+    "ichimoku": {"tenkan": 9, "kijun": 26, "senkou": 52},
 }
 
 # Minimum required data points for each indicator type
@@ -289,9 +290,9 @@ def _get_min_periods(indicator: str, params: Dict[str, Any]) -> int:
 
 
 def _normalise_indicator_result(
-    result: Union[pd.DataFrame, pd.Series],
-    indicator: str,
-    params: Dict[str, Any],
+        result: Union[pd.DataFrame, pd.Series],
+        indicator: str,
+        params: Dict[str, Any],
 ) -> Dict[str, pd.Series]:
     """
     Post-computation normaliser.
@@ -499,25 +500,25 @@ def _normalise_indicator_result(
 # exists in the normalised dict.  For single-output indicators the dict always
 # contains only "MAIN", so the fallback at the end handles them automatically.
 _DEFAULT_SUB_COL: Dict[str, List[str]] = {
-    "macd":       ["MACD", "SIGNAL", "HIST"],
-    "stoch":      ["K", "D"],
-    "stochrsi":   ["K", "D"],
-    "kvo":        ["KVO", "SIGNAL"],
-    "adx":        ["ADX", "PLUS_DI", "MINUS_DI"],
-    "dm":         ["PLUS_DM", "MINUS_DM"],
-    "aroon":      ["AROON_UP", "AROON_DOWN"],
+    "macd": ["MACD", "SIGNAL", "HIST"],
+    "stoch": ["K", "D"],
+    "stochrsi": ["K", "D"],
+    "kvo": ["KVO", "SIGNAL"],
+    "adx": ["ADX", "PLUS_DI", "MINUS_DI"],
+    "dm": ["PLUS_DM", "MINUS_DM"],
+    "aroon": ["AROON_UP", "AROON_DOWN"],
     "supertrend": ["TREND", "DIRECTION", "LONG", "SHORT"],
-    "ichimoku":   ["ISA", "ISB", "ITS", "IKS", "ICS"],
-    "bbands":     ["MIDDLE", "UPPER", "LOWER", "BANDWIDTH", "PERCENT"],
-    "kc":         ["MIDDLE", "UPPER", "LOWER"],
-    "donchian":   ["MIDDLE", "UPPER", "LOWER"],
-    "adosc":      ["ADOSC", "AD"],
+    "ichimoku": ["ISA", "ISB", "ITS", "IKS", "ICS"],
+    "bbands": ["MIDDLE", "UPPER", "LOWER", "BANDWIDTH", "PERCENT"],
+    "kc": ["MIDDLE", "UPPER", "LOWER"],
+    "donchian": ["MIDDLE", "UPPER", "LOWER"],
+    "adosc": ["ADOSC", "AD"],
 }
 
 
 def _pick_default_series(
-    normalised: Dict[str, pd.Series],
-    indicator: str,
+        normalised: Dict[str, pd.Series],
+        indicator: str,
 ) -> Optional[pd.Series]:
     """
     Pick the default (first-preference) series from a normalised dict when
@@ -621,7 +622,8 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
         # Check if we have enough data for this indicator
         min_periods = _get_min_periods(indicator, params)
         if len(df) < min_periods:
-            logger.debug(f"Insufficient data for {indicator}: need {min_periods}, have {len(df)} - returning None during warmup")
+            logger.debug(
+                f"Insufficient data for {indicator}: need {min_periods}, have {len(df)} - returning None during warmup")
             return None
 
         ind_name = INDICATOR_MAP.get(indicator.lower(), indicator.lower())
@@ -684,7 +686,9 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
             logger.error(f"Attribute error computing '{indicator}': {e}", exc_info=True)
             return None
         except TypeError as e:
-            logger.error(f"Type error computing '{indicator}': {e}. This often indicates missing required price data or NaN values.", exc_info=True)
+            logger.error(
+                f"Type error computing '{indicator}': {e}. This often indicates missing required price data or NaN values.",
+                exc_info=True)
             return None
         except ValueError as e:
             logger.error(f"Value error computing '{indicator}': {e}", exc_info=True)
@@ -699,9 +703,9 @@ def _compute_indicator(df: pd.DataFrame, indicator: str, params: Dict[str, Any])
 
 
 def _compute_indicator_normalised(
-    df: pd.DataFrame,
-    indicator: str,
-    params: Dict[str, Any],
+        df: pd.DataFrame,
+        indicator: str,
+        params: Dict[str, Any],
 ) -> Dict[str, pd.Series]:
     """
     Compute an indicator and return the full normalised dict of stable-key →
@@ -914,7 +918,7 @@ def _resolve_side(df: pd.DataFrame, side_def: Dict[str, Any], cache: Dict[str, A
             return None
 
         _saved = side_def.get("params", {})
-        _defs  = INDICATOR_DEFAULTS.get(indicator, {})
+        _defs = INDICATOR_DEFAULTS.get(indicator, {})
         params = {**_defs, **_saved} if _saved else dict(_defs)
         shift = side_def.get("shift", 0)
         sub_col = side_def.get("sub_col", None)
@@ -1006,7 +1010,8 @@ def _has_day_gap(df_index, bar_index: int = -1) -> bool:
         return False
 
 
-def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series, df_index=None) -> Tuple[bool, Optional[float], Optional[float]]:
+def _apply_operator(lhs: pd.Series, op: str, rhs: pd.Series, df_index=None) -> Tuple[
+    bool, Optional[float], Optional[float]]:
     """
     Apply comparison operator to two series with NaN handling and day-gap awareness.
 
@@ -1660,8 +1665,8 @@ class DynamicSignalEngine:
             # AND/OR outcome. group_result still uses correct AND/OR logic.
             # Confidence = (weight of truly-passed rules) / all_weights_total.
             # This gives a meaningful "how close are we to a signal" reading.
-            _and_failed = False   # tracks whether AND logic has already failed
-            _or_passed  = False   # tracks whether OR logic has already passed
+            _and_failed = False  # tracks whether AND logic has already failed
+            _or_passed = False  # tracks whether OR logic has already passed
 
             for rule in rules:
                 try:
@@ -1903,19 +1908,31 @@ class DynamicSignalEngine:
             fired_after_threshold = {}
             for sig in SIGNAL_GROUPS:
                 sig_val = sig.value
+                conf = confidences.get(sig_val, 0.0)
+
                 # Apply lower threshold for exit signals
                 if "EXIT" in sig_val:
                     effective_threshold = self.min_confidence * 0.8  # 80% of normal threshold
                 else:
                     effective_threshold = self.min_confidence
 
-                if fired.get(sig_val, False) and confidences.get(sig_val, 0) >= effective_threshold:
+                hard_fired = fired.get(sig_val, False)  # pure AND/OR result
+
+                if conf >= effective_threshold:
                     fired_after_threshold[sig_val] = True
-                    logger.debug(f"Signal {sig_val} passed threshold: {confidences[sig_val]:.2f} >= {effective_threshold:.2f}")
+                    mode = "AND/OR" if hard_fired else "confidence"
+                    logger.debug(
+                        f"Signal {sig_val} fired ({mode}): "
+                        f"conf={conf:.2f} >= thr={effective_threshold:.2f}, "
+                        f"hard_fired={hard_fired}"
+                    )
                 else:
                     fired_after_threshold[sig_val] = False
-                    if fired.get(sig_val, False):
-                        logger.debug(f"Signal {sig_val} suppressed - confidence {confidences[sig_val]:.2f} < {effective_threshold:.2f}")
+                    logger.debug(
+                        f"Signal {sig_val} suppressed: "
+                        f"conf={conf:.2f} < thr={effective_threshold:.2f}, "
+                        f"hard_fired={hard_fired}"
+                    )
 
             # Now resolve the final signal based on position context
             resolved = self._resolve_with_position(fired_after_threshold, pos)
@@ -1930,7 +1947,8 @@ class DynamicSignalEngine:
                 "raw_fired": fired,  # Include raw firing status for debugging
                 "rule_results": rule_results,
                 "indicator_values": indicator_values,
-                "conflict": fired_after_threshold.get("BUY_CALL", False) and fired_after_threshold.get("BUY_PUT", False),
+                "conflict": fired_after_threshold.get("BUY_CALL", False) and fired_after_threshold.get("BUY_PUT",
+                                                                                                       False),
                 "available": True,
                 "confidence": confidences,
                 "threshold": self.min_confidence,
@@ -1942,7 +1960,8 @@ class DynamicSignalEngine:
             logger.error(f"[evaluate] Failed: {e}", exc_info=True)
             return neutral
 
-    def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float], position: Optional[str] = None) -> str:
+    def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float],
+                              position: Optional[str] = None) -> str:
         """
         FEATURE 3: Generate human-readable explanation of last evaluation.
 
@@ -1962,16 +1981,19 @@ class DynamicSignalEngine:
             for sig, is_fired in fired.items():
                 conf = confidences.get(sig, 0)
                 conf_ok = conf >= self.min_confidence
-                if is_fired and conf_ok:
+                if is_fired:
                     status = "✅ FIRED"
-                elif not is_fired and conf_ok:
+                elif conf_ok:
+                    # conf >= threshold but still not fired — should not happen
+                    # with the new confidence-based firing, but keep as safety label
                     status = "❌ DID_NOT_FIRE"
                 else:
                     status = "⚠️ LOW_CONF"
                 parts.append(f"{sig}: {conf:.0%} {status}")
 
             # Add conflict info if both BUY signals are high
-            if confidences.get("BUY_CALL", 0) >= self.min_confidence and confidences.get("BUY_PUT", 0) >= self.min_confidence:
+            if confidences.get("BUY_CALL", 0) >= self.min_confidence and confidences.get("BUY_PUT",
+                                                                                         0) >= self.min_confidence:
                 parts.append("⚖️ Conflict: Both BUY signals high - waiting for resolution")
 
             return " | ".join(parts)
@@ -2033,7 +2055,8 @@ class DynamicSignalEngine:
 
                 # If both entry signals fire
                 if bc and bp:
-                    logger.debug(f"Flat position: Both BUY signals fired - using conflict_resolution={self.conflict_resolution}")
+                    logger.debug(
+                        f"Flat position: Both BUY signals fired - using conflict_resolution={self.conflict_resolution}")
                     if self.conflict_resolution == "PRIORITY":
                         # In PRIORITY mode, default to BUY_CALL
                         return OptionSignal.BUY_CALL

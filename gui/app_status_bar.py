@@ -506,6 +506,14 @@ class AppStatusBar(QFrame):
         self._market_status = status
         self._mkt_badge.set_status(status)
 
+    def update_live_price(self, ltp: float) -> None:
+        """
+        Fast-path called by TradingGUI._on_price_tick on every WS tick.
+        app_status_bar does not currently display the index price inline,
+        so this is a no-op stub to prevent AttributeError from safe_hasattr checks.
+        """
+        pass
+
     def show_progress(self, value: int = -1, *, text: str = "") -> None:
         """value=-1 → indeterminate; 0-100 → determinate."""
         self._progress.setVisible(True)

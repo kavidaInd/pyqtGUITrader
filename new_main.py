@@ -83,8 +83,8 @@ class TradingApp:
                     state.option_chain = {}
 
             # Number of ITM and OTM strikes to subscribe on each side of ATM
-            self._chain_itm = 3
-            self._chain_otm = 3
+            self._chain_itm = 2
+            self._chain_otm = 2
 
             # Add should_stop flag and event for graceful shutdown
             self.should_stop = False
@@ -917,7 +917,7 @@ class TradingApp:
 
             # Price sanity check (can't move >20% in one tick)
             state = state_manager.get_state()
-            if symbol == self.symbol_full(state.derivative):
+            if OptionUtils.symbols_match(symbol, self.symbol_full(state.derivative)):
                 last_price = state.derivative_current_price
                 if last_price > 0 and abs(ltp - last_price) / last_price > 0.2:
                     logger.warning(f"Price spike detected: {last_price:.2f} -> {ltp:.2f}")
@@ -1295,8 +1295,13 @@ class TradingApp:
             logger.debug(f"Tick received - Symbol: {full_symbol}, LTP: {ltp}, Ask: {ask_price}, Bid: {bid_price}")
 
             # ── Derivative (index) tick ────────────────────────────────────────
-            deriv_full = self.symbol_full(state.derivative)
-            if full_symbol == deriv_full:
+            # Use OptionUtils.symbols_match() which normalises both sides to a
+            # canonical form, handling all broker prefix variants across Fyers,
+            # Zerodha, Upstox, Dhan, AngelOne, Shoonya, Flattrade, etc.
+            # After WebSocketManager remaps tick symbols, this will be a plain ==
+            # in the common case; symbols_match() is the safety net for any tick
+            # that bypasses the WebSocket remapping path.
+            if OptionUtils.symbols_match(full_symbol, self.symbol_full(state.derivative)):
                 derivative = state.derivative
                 if derivative:
                     try:
@@ -1331,13 +1336,21 @@ class TradingApp:
             # ── Option chain tick ──────────────────────────────────────────────
             if self._option_chain_lock and safe_hasattr(state, "option_chain"):
                 with self._option_chain_lock:
-                    if full_symbol in state.option_chain:
-                        state.update_option_chain_symbol(full_symbol, {
+                    # Fast path: exact key match (works after WebSocketManager remapping)
+                    chain_key = full_symbol if full_symbol in state.option_chain else None
+                    # Fallback: broker-format mismatch — scan using symbols_match()
+                    if chain_key is None:
+                        for k in state.option_chain:
+                            if OptionUtils.symbols_match(full_symbol, k):
+                                chain_key = k
+                                break
+                    if chain_key is not None:
+                        state.update_option_chain_symbol(chain_key, {
                             "ltp": ltp,
                             "ask": ask_price,
                             "bid": bid_price,
                         })
-                        logger.debug(f"✅ Updated option chain for {full_symbol}: LTP={ltp}")
+                        logger.debug(f"✅ Updated option chain for {chain_key}: LTP={ltp}")
                     else:
                         logger.debug(
                             f"Symbol {full_symbol} not in option chain. "
@@ -1351,7 +1364,7 @@ class TradingApp:
 
             option_price = ask_price if use_ask else bid_price
 
-            if full_symbol == atm_put_sym and state.put_option:
+            if OptionUtils.symbols_match(full_symbol, atm_put_sym) and state.put_option:
                 try:
                     tick_price = option_price if option_price is not None else ltp
                     candle_store_manager.push_tick(state.put_option, tick_price, volume=volume)
@@ -1372,7 +1385,7 @@ class TradingApp:
                         if option_price is not None:
                             state.put_current_close = option_price
 
-            elif full_symbol == atm_call_sym and state.call_option:
+            elif OptionUtils.symbols_match(full_symbol, atm_call_sym) and state.call_option:
                 try:
                     tick_price = option_price if option_price is not None else ltp
                     candle_store_manager.push_tick(state.call_option, tick_price, volume=volume)
@@ -1827,7 +1840,7 @@ class TradingApp:
                     # of position context mismatch.
                     _exit_signals = ('EXIT_CALL', 'EXIT_PUT')
                     if signal_value not in _exit_signals:
-                        logger.info(
+                        logger.debug(
                             f"[SignalGuard] Skipping stale entry signal '{signal_value}' — "
                             f"computed for pos={signal_pos_ctx!r}, "
                             f"live pos={live_pos_str!r}. "
@@ -1882,14 +1895,25 @@ class TradingApp:
                     trend = BaseEnums.RESET_PREVIOUS_TRADE
                     logger.info("Reset previous PUT trade flag - opposite/reversal signal detected")
 
-                # Same-direction signal continues → also reset so re-entry is allowed
+                # Same-direction BUY signal: mark fresh signal seen so require_new_signal
+                # is satisfied, then check if the candle wait has elapsed.
+                # Only enter (unblock) if the re-entry guard allows it; otherwise keep
+                # previous_pos set so this branch runs again on the next tick.
                 elif previous_pos == BaseEnums.CALL and signal_value == 'BUY_CALL':
-                    trend = BaseEnums.RESET_PREVIOUS_TRADE
-                    logger.info("Reset previous CALL trade flag - same-direction BUY_CALL signal (re-entry allowed)")
+                    self._reentry_signal_seen = True
+                    if self._check_reentry_allowed(BaseEnums.CALL, state):
+                        trend = BaseEnums.ENTER_CALL
+                        logger.info("Re-entry CALL allowed - same-direction BUY_CALL after wait")
+                    else:
+                        logger.info("Re-entry CALL blocked - candle wait not yet elapsed")
 
                 elif previous_pos == BaseEnums.PUT and signal_value == 'BUY_PUT':
-                    trend = BaseEnums.RESET_PREVIOUS_TRADE
-                    logger.info("Reset previous PUT trade flag - same-direction BUY_PUT signal (re-entry allowed)")
+                    self._reentry_signal_seen = True
+                    if self._check_reentry_allowed(BaseEnums.PUT, state):
+                        trend = BaseEnums.ENTER_PUT
+                        logger.info("Re-entry PUT allowed - same-direction BUY_PUT after wait")
+                    else:
+                        logger.info("Re-entry PUT blocked - candle wait not yet elapsed")
 
                 # EXIT signal matching the previous position: the market may still be trending
                 # against re-entry — reset the block so the next BUY_* can trigger fresh entry.
@@ -2169,7 +2193,8 @@ class TradingApp:
                     logger.info("🎯 ENTER_CALL confirmed by BUY_CALL")
 
                     # ── Re-entry guard ────────────────────────────────────────
-                    if not self._check_reentry_allowed(BaseEnums.CALL, state):
+                    _was_reentry = getattr(self, '_reentry_exit_time', None) is None
+                    if not _was_reentry and not self._check_reentry_allowed(BaseEnums.CALL, state):
                         return
                     # ─────────────────────────────────────────────────────────
 
@@ -2189,7 +2214,9 @@ class TradingApp:
                         success = self.executor.buy_option(option_type=BaseEnums.CALL)
                         if success:
                             self.ensure_symbol_subscribed(state.call_option)
-                            self._reentry_count_today += 1  # record re-entry if applicable
+                            # Only count as re-entry if there was a prior exit this session
+                            if self._reentry_exit_time is not None:
+                                self._reentry_count_today += 1
                     except TokenExpiredError:
                         raise
                     except Exception as e:
@@ -2199,7 +2226,8 @@ class TradingApp:
                     logger.info("🎯 ENTER_PUT confirmed by BUY_PUT")
 
                     # ── Re-entry guard ────────────────────────────────────────
-                    if not self._check_reentry_allowed(BaseEnums.PUT, state):
+                    _was_reentry = getattr(self, '_reentry_exit_time', None) is None
+                    if not _was_reentry and not self._check_reentry_allowed(BaseEnums.PUT, state):
                         return
                     # ─────────────────────────────────────────────────────────
 
@@ -2219,7 +2247,8 @@ class TradingApp:
                         success = self.executor.buy_option(option_type=BaseEnums.PUT)
                         if success:
                             self.ensure_symbol_subscribed(state.put_option)
-                            self._reentry_count_today += 1  # record re-entry if applicable
+                            if self._reentry_exit_time is not None:
+                                self._reentry_count_today += 1
                     except TokenExpiredError:
                         raise
                     except Exception as e:

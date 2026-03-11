@@ -445,7 +445,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
 
         # Auto-refresh timer
         self._refresh_timer = QTimer(self)
-        self._refresh_timer.timeout.connect(lambda: self.load_trades(self._period_combo.currentData()))
+        self._refresh_timer.timeout.connect(lambda: self.load_trades(self._period_combo.currentData() if self._period_combo else 'today'))
         self._refresh_timer.start(30000)  # Refresh every 30 seconds
 
     def _create_title_bar(self):
@@ -563,7 +563,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
 
         # Action buttons
         self._refresh_btn = self._create_modern_button("Refresh", primary=False, icon="⟳")
-        self._refresh_btn.clicked.connect(lambda: self.load_trades(self._period_combo.currentData()))
+        self._refresh_btn.clicked.connect(lambda: self.load_trades(self._period_combo.currentData() if self._period_combo else 'today'))
         controls.addWidget(self._refresh_btn)
 
         self._export_btn = self._create_modern_button("Export CSV", primary=False, icon="📥")
@@ -694,10 +694,13 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         Auto-refresh if auto-refresh is enabled.
         """
         try:
+            if self._cleanup_done or self._period_combo is None:
+                return  # popup already cleaned up — ignore residual signal
             if self._auto_refresh:
                 logger.debug(f"Trade closed (P&L: {pnl:.2f}), auto-refreshing")
                 # Use QTimer.singleShot to avoid blocking the signal
-                QTimer.singleShot(500, lambda: self.load_trades(self._period_combo.currentData()))
+                QTimer.singleShot(500, lambda: self.load_trades(
+                    self._period_combo.currentData() if self._period_combo else 'today'))
         except Exception as e:
             logger.error(f"[TradeHistoryPopup._on_trade_closed] Failed: {e}", exc_info=True)
 
@@ -706,6 +709,8 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         UPDATED: Toggle auto-refresh on trade closed events.
         """
         try:
+            if self._cleanup_done or self._auto_refresh_btn is None:
+                return  # popup already cleaned up — ignore residual signal
             self._auto_refresh = checked
             if checked:
                 self._auto_refresh_btn.setText("🔄 Auto-refresh On")
@@ -755,6 +760,10 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             period: 'today', 'this_week', or 'all'
         """
         try:
+            # Guard: if cleanup() has already run, all widget refs are None — bail out
+            if self._cleanup_done:
+                return
+
             # Validate period
             if period not in ['today', 'this_week', 'all']:
                 logger.warning(f"Invalid period: {period}, using 'today'")
@@ -902,6 +911,13 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             max_win = max(wins) if wins else 0
             max_loss = min(losses) if losses else 0
             profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 0
+
+            # Guard: if cleanup() ran first, all labels are gone — bail out silently
+            _expected = {'total_trades','winners','losers','win_rate','avg_win',
+                         'avg_loss','max_win','max_loss','profit_factor','total_pnl'}
+            if not _expected.issubset(self._stats_labels.keys()):
+                logger.debug("[_update_statistics] stats_labels not ready (cleanup ran?), skipping")
+                return
 
             # Update labels
             self._stats_labels['total_trades'].setText(str(total_trades))
@@ -1054,6 +1070,14 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
                 return
 
             logger.info("[TradeHistoryPopup] Starting cleanup")
+
+            # Disconnect state_manager trade_closed signal to prevent
+            # _on_trade_closed from firing after cleanup via QTimer.singleShot
+            try:
+                if safe_hasattr(state_manager, 'trade_closed'):
+                    state_manager.trade_closed.disconnect(self._on_trade_closed)
+            except Exception:
+                pass  # already disconnected or never connected
 
             # Stop timer
             if self._refresh_timer:

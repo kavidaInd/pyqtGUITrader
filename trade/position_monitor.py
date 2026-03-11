@@ -99,15 +99,14 @@ class PositionMonitor:
             take_profit_type = safe_getattr(state, "take_profit_type", None)
 
             if take_profit_type != TRAILING:
-                # ── Non-trailing modes: recompute SL/TP from new peak ─────────
                 sl_pct = safe_getattr(state, "stoploss_percentage", 7.0)
                 tp_pct = safe_getattr(state, "tp_percentage", 15.0)
 
                 new_sl = Utils.percentage_above_or_below(
-                    price=state.highest_current_price, side=NEGATIVE, percentage=sl_pct
+                    price=buy_price, side=NEGATIVE, percentage=sl_pct
                 )
                 new_tp = Utils.percentage_above_or_below(
-                    price=state.highest_current_price, side=POSITIVE, percentage=tp_pct
+                    price=buy_price, side=POSITIVE, percentage=tp_pct
                 )
 
                 # Never lower SL
@@ -116,10 +115,11 @@ class PositionMonitor:
                     state.stop_loss = new_sl
                     self._update_orders_stop_loss(state.stop_loss)
 
-                state.tp_point = new_tp
+                if safe_getattr(state, "tp_point", None) is None:
+                    state.tp_point = new_tp
 
                 logger.info(
-                    f"SL/TP update (non-trailing): peak={state.highest_current_price:.2f}, "
+                    f"SL/TP update (non-trailing): entry={buy_price:.2f}, "
                     f"sl={state.stop_loss:.2f}, tp={state.tp_point:.2f}"
                 )
                 return
@@ -300,15 +300,15 @@ class PositionMonitor:
             take_profit_type = snapshot.get('take_profit_type') or safe_getattr(state, 'take_profit_type', None)
 
             if take_profit_type != TRAILING:
-                # Non-trailing: trail SL/TP off the new peak
+                # Non-trailing: SL/TP anchored to entry price, not peak
                 sl_pct = snapshot.get('stoploss_percentage') or safe_getattr(state, 'stoploss_percentage', 7.0)
                 tp_pct = snapshot.get('tp_percentage') or safe_getattr(state, 'tp_percentage', 15.0)
 
                 new_sl = Utils.percentage_above_or_below(
-                    price=state.highest_current_price, side=NEGATIVE, percentage=sl_pct
+                    price=buy_price, side=NEGATIVE, percentage=sl_pct
                 )
                 new_tp = Utils.percentage_above_or_below(
-                    price=state.highest_current_price, side=POSITIVE, percentage=tp_pct
+                    price=buy_price, side=POSITIVE, percentage=tp_pct
                 )
 
                 old_sl = safe_getattr(state, 'stop_loss', None)
@@ -316,9 +316,11 @@ class PositionMonitor:
                     state.stop_loss = new_sl
                     self._update_orders_stop_loss(state.stop_loss)
 
-                state.tp_point = new_tp
+                if safe_getattr(state, 'tp_point', None) is None:
+                    state.tp_point = new_tp
+
                 logger.info(
-                    f"SL/TP update (non-trailing, snapshot): peak={state.highest_current_price:.2f}, "
+                    f"SL/TP update (non-trailing, snapshot): entry={buy_price:.2f}, "
                     f"sl={state.stop_loss:.2f}, tp={state.tp_point:.2f}"
                 )
                 return
@@ -567,13 +569,14 @@ class PositionMonitor:
                 )
                 order_list = safe_getattr(state, "orders", [])
                 any_broker_filled = False
-                if trading is not None:
+                is_paper = safe_getattr(state, "is_paper_mode", True)
+                if trading is not None and not is_paper:
                     for _ord in order_list:
                         if not isinstance(_ord, dict):
                             continue
                         _bid = _ord.get("broker_id")
                         if not _bid:
-                            continue  # paper order — not filled via broker
+                            continue  # no broker id
                         try:
                             _status = trading.get_current_order_status(_bid)
                             if _status == ORDER_STATUS_EXECUTED:
@@ -649,7 +652,8 @@ class PositionMonitor:
 
                     # ── BUG #7 FIX: cancel at broker using broker_id ───────────
                     broker_cancelled = True
-                    if broker_id and safe_hasattr(trading, "cancel_order") and callable(trading.cancel_order):
+                    is_paper = safe_getattr(state, "is_paper_mode", True)
+                    if broker_id and not is_paper and safe_hasattr(trading, "cancel_order") and callable(trading.cancel_order):
                         try:
                             trading.cancel_order(order_id=broker_id)  # broker-side ID
                             logger.info(f"Broker cancel sent for broker_id={broker_id} (db_id={order_id})")
@@ -659,7 +663,7 @@ class PositionMonitor:
                                 exc_info=True,
                             )
                             broker_cancelled = False
-                    elif broker_id is None:
+                    elif broker_id is None or is_paper:
                         # Paper order — no broker call needed
                         logger.debug(f"Paper order {order_id} — skipping broker cancel.")
                     else:
