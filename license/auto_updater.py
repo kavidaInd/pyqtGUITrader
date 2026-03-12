@@ -64,7 +64,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-ACTIVATION_SERVER_URL: str = "https://your-activation-server.com"  # ← change this
+ACTIVATION_SERVER_URL: str = "https://optionpilot.in"  # ← change this
 REQUEST_TIMEOUT: int = 15
 OFFLINE_GRACE_DAYS: int = 3  # paid plans only — trials must verify online
 TRIAL_DURATION_DAYS: int = 7
@@ -258,7 +258,7 @@ class LicenseManager:
             friendly = {
                 "trial_already_used": (
                     "A free trial has already been used on this machine.\n\n"
-                    "Purchase a license to continue using Algo Trading Pro."
+                    "Purchase a license to continue using OptionPilot."
                 ),
                 "invalid_email": "Please enter a valid email address.",
             }.get(reason, data.get("message") or "Trial activation failed. Please try again.")

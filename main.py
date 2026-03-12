@@ -185,7 +185,7 @@ def _show_splash():
         from gui.splash_screen import AnimatedSplashScreen
 
         # Check if logo exists, use default if not
-        logo_path = "resources/logo.png"
+        logo_path = "assets/logo.png"
         if not os.path.exists(logo_path):
             logo_path = None
             logger.warning("[main._show_splash] Logo file not found, using default")

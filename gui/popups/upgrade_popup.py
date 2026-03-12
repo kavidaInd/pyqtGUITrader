@@ -19,7 +19,7 @@ from gui.theme_manager import theme_manager
 logger = logging.getLogger(__name__)
 
 # ── Customise these ───────────────────────────────────────────────────────────
-WEBSITE_SUBSCRIPTION_URL = "https://your-website.com/pricing"
+WEBSITE_SUBSCRIPTION_URL = "https://optionpilot.in/pricing"
 
 PLAN_PRICE = "₹4,999"
 PLAN_PERIOD = "/ month"

@@ -138,7 +138,7 @@ class TradingGUI(QMainWindow):
 
         try:
             super().__init__()
-            self.setWindowTitle("Algo Trading Dashboard")
+            self.setWindowTitle("OptionPilot")
 
             screen = QApplication.primaryScreen()
             if screen:
@@ -448,7 +448,7 @@ class TradingGUI(QMainWindow):
         """Create error window if initialization fails"""
         try:
             super().__init__()
-            self.setWindowTitle("Algo Trading Dashboard - ERROR")
+            self.setWindowTitle("OptionPilot - ERROR")
 
             screen = QApplication.primaryScreen()
             if screen:
@@ -530,6 +530,10 @@ class TradingGUI(QMainWindow):
             self.trade_closed.connect(self._on_trade_closed)
             self.unrealized_pnl_updated.connect(self._on_unrealized_pnl_updated)
 
+            # Fix #4: _price_updated connected once here so repeated Start/Stop
+            # cycles cannot accumulate duplicate handlers.
+            self._price_updated.connect(self._on_price_tick)
+
             # BUG-1 FIX: connect background-fetch → main-thread chart render
             self._chart_data_ready.connect(self._on_chart_data_ready)
             self._broker_ready.connect(self._on_broker_ready)
@@ -565,7 +569,7 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             logger.info(f"[TradingGUI._on_status_updated] Status update: {message}")
-            self.setWindowTitle(f"Algo Trading Dashboard - {message}")
+            self.setWindowTitle(f"OptionPilot - {message}")
         except Exception as e:
             logger.error(f"[TradingGUI._on_status_updated] Failed: {e}", exc_info=True)
 
@@ -1695,6 +1699,9 @@ class TradingGUI(QMainWindow):
                 lambda sym, pnl: self.trade_closed.emit(pnl, pnl > 0)
             )
 
+            # Fix #3: Connect risk_breach so the GUI surfaces limit-breach events.
+            self.trading_thread.risk_breach.connect(self._on_risk_breach)
+
             # Wire the executor callback so that every in-session trade close
             # (live OR paper) reaches the P&L widget in real time.
             # The callback fires on the trading thread, so we emit the Qt signal
@@ -1729,14 +1736,14 @@ class TradingGUI(QMainWindow):
             )
             self._update_button_states()
 
-            # ENHANCEMENT-1: Register real-time price callback on TradingApp
+            # ENHANCEMENT-1: Register real-time price callback on TradingApp.
+            # _price_updated is already connected to _on_price_tick once in
+            # _setup_internal_signals; only register the callback here.
             if safe_hasattr(self.trading_app, 'set_price_callback'):
                 try:
                     self.trading_app.set_price_callback(
                         lambda sym, p: self._price_updated.emit(sym, p)
                     )
-                    if not self._price_updated.receivers(self._price_updated):
-                        self._price_updated.connect(self._on_price_tick)
                 except Exception as _pcb_err:
                     logger.warning(f"[_start_app] Price callback setup failed: {_pcb_err}")
 
@@ -2195,6 +2202,16 @@ class TradingGUI(QMainWindow):
             )
             self._update_button_states()
             logger.warning(f"[TradingGUI._on_token_expired] Token expired signal received: {message}")
+
+            # Fix #5: Fire Telegram notification so the user is alerted even when
+            # away from the screen. Previously notify_token_expired() was never called.
+            try:
+                notifier = getattr(getattr(self, 'trading_app', None), 'notifier', None)
+                if notifier and hasattr(notifier, 'notify_token_expired'):
+                    notifier.notify_token_expired()
+            except Exception as _ne:
+                logger.warning(f"[TradingGUI._on_token_expired] Telegram notify failed: {_ne}")
+
             self._open_login_for_token_expiry(message)
         except Exception as e:
             logger.error(f"[TradingGUI._on_token_expired] Failed: {e}", exc_info=True)
@@ -2216,6 +2233,25 @@ class TradingGUI(QMainWindow):
             self.error_occurred.emit(message)
         except Exception as e:
             logger.error(f"[TradingGUI._on_engine_error] Failed to handle error: {e}", exc_info=True)
+
+    @pyqtSlot(str)
+    def _on_risk_breach(self, reason: str):
+        """Handle risk limit breach — updates status bar with a warning.
+
+        The engine already stops itself and exits any open position before
+        emitting this signal. No further trading action is needed here.
+        """
+        try:
+            if self._closing:
+                return
+            logger.warning(f"[TradingGUI._on_risk_breach] Risk breach: {reason}")
+            self.status_updated.emit(f"⚠️ Risk limit breached: {reason}")
+            self.app_status_bar.update_status(
+                {'status': f'⚠️ Risk breach: {reason[:60]}', 'error': True},
+                self.trading_mode, self.app_running
+            )
+        except Exception as e:
+            logger.error(f"[TradingGUI._on_risk_breach] Failed: {e}", exc_info=True)
 
     def _manual_buy(self, option_type):
         """Manual buy in background thread"""
@@ -2741,7 +2777,11 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             reason_msg = reason or "Your Broker access token has expired or is invalid."
-            dlg = BrokerLoginPopup(self, self.brokerage_setting, reason=reason_msg)
+            # Fix #6: Pass notifier so BrokerLoginPopup can send token-refresh
+            # Telegram alerts. Previously notifier was never passed → always None.
+            _notifier = getattr(getattr(self, 'trading_app', None), 'notifier', None)
+            dlg = BrokerLoginPopup(self, self.brokerage_setting,
+                                   reason=reason_msg, notifier=_notifier)
             dlg.login_completed.connect(lambda _: self._reload_broker())
             result = dlg.exec_()
             if result == BrokerLoginPopup.Accepted:
@@ -2759,7 +2799,9 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
-            dlg = BrokerLoginPopup(self, self.brokerage_setting)
+            # Fix #6: Pass notifier here too so manual re-login also sends alerts.
+            _notifier = getattr(getattr(self, 'trading_app', None), 'notifier', None)
+            dlg = BrokerLoginPopup(self, self.brokerage_setting, notifier=_notifier)
             dlg.exec_()
             self._reload_broker()
         except Exception as e:
@@ -2847,11 +2889,13 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
-            QMessageBox.about(self, "About",
-                              "Algo Trading Dashboard\nVersion 2.0 (PyQt5)\n\n"
-                              "© 2025 Your Company. All rights reserved.\n\n"
-                              "A professional algorithmic trading platform\n"
-                              "supporting LIVE, PAPER, and BACKTEST modes.")
+            QMessageBox.about(self, "About OptionPilot",
+                              "OptionPilot  —  Autopilot for Options Trading\n"
+                              "Version 2.0\n\n"
+                              "© 2025 OptionPilot. All rights reserved.\n"
+                              "https://optionpilot.in\n\n"
+                              "Supports LIVE, PAPER, and BACKTEST modes\n"
+                              "across 8 Indian brokers.")
         except Exception as e:
             logger.error(f"[TradingGUI._show_about] Failed: {e}", exc_info=True)
 

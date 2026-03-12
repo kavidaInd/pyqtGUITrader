@@ -44,12 +44,18 @@ class Notifier:
             logger.info("Telegram Notifier initialized (disabled - missing credentials)")
 
     def _is_configured(self) -> bool:
-        """Check if Telegram is properly configured."""
+        """Check if Telegram is properly configured and enabled."""
         try:
             if not self.config:
                 return False
 
-            token = self.config.get('telegram_bot_token', '')
+            # Respect the explicit enable/disable toggle stored in the DB.
+            # If the key is absent we treat it as enabled (backwards compat).
+            enabled_str = self.config.get('telegram_enabled', 'true')
+            if str(enabled_str).lower() in ('false', '0', 'no', 'off'):
+                return False
+
+            token   = self.config.get('telegram_bot_token', '')
             chat_id = self.config.get('telegram_chat_id', '')
 
             return bool(token and chat_id)
@@ -173,11 +179,38 @@ class Notifier:
     def notify_token_expired(self):
         """Send token expired notification."""
         try:
-            msg = '⚠️ *TOKEN EXPIRED*\nFyers session expired. Please re-login.'
+            msg = '⚠️ *TOKEN EXPIRED*\nBroker session expired. Please re-login via OptionPilot.'
             self._pool.submit(self._send, msg)
             logger.debug("Token expired notification queued")
         except Exception as e:
             logger.error(f"[Notifier.notify_token_expired] Failed: {e}", exc_info=True)
+
+    def notify_token_refreshed(self, detail: str = ""):
+        """Send token-refreshed-successfully notification.
+
+        Called by BrokerLoginPopup after a successful token exchange.
+        Previously this method was missing, causing an AttributeError on every
+        successful token refresh when Telegram was configured.
+        """
+        try:
+            msg = detail if detail else "✅ *TOKEN REFRESHED*\nBroker access token renewed successfully."
+            self._pool.submit(self._send, msg)
+            logger.debug("Token refreshed notification queued")
+        except Exception as e:
+            logger.error(f"[Notifier.notify_token_refreshed] Failed: {e}", exc_info=True)
+
+    def notify_token_refresh_failed(self, detail: str = ""):
+        """Send token-refresh-failed notification.
+
+        Called by BrokerLoginPopup when the token exchange fails.
+        Previously this method was missing, causing an AttributeError.
+        """
+        try:
+            msg = detail if detail else "❌ *TOKEN REFRESH FAILED*\nCould not renew broker token. Please re-login manually."
+            self._pool.submit(self._send, msg)
+            logger.debug("Token refresh failure notification queued")
+        except Exception as e:
+            logger.error(f"[Notifier.notify_token_refresh_failed] Failed: {e}", exc_info=True)
 
     def notify_ws_disconnect(self):
         """Send WebSocket disconnect notification."""

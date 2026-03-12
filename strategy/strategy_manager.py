@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from Utils.safe_getattr import safe_getattr
 from db.connector import get_db
+from db.crud import strategies as _strategies_kv  # for set_active(None) — StrategyCRUD lacks this method
 from db.strategy_crud import strategy_crud
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,9 @@ class StrategyManager:
                         f"— the strategy was deleted. Clearing active slug."
                     )
                     try:
-                        strategy_crud.set_active(None, db)
+                        # StrategyCRUD has no set_active(); use the StrategiesCRUD
+                        # instance from crud.py which does have set_active(slug, db).
+                        _strategies_kv.set_active(None, db)
                     except Exception as clear_err:
                         logger.error(f"[StrategyManager.get_active_slug] Failed to clear stale slug: {clear_err}")
                     return None

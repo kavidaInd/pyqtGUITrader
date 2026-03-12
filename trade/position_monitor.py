@@ -319,10 +319,10 @@ class PositionMonitor:
                 if safe_getattr(state, 'tp_point', None) is None:
                     state.tp_point = new_tp
 
-                logger.info(
-                    f"SL/TP update (non-trailing, snapshot): entry={buy_price:.2f}, "
-                    f"sl={state.stop_loss:.2f}, tp={state.tp_point:.2f}"
-                )
+                # logger.info(
+                #     f"SL/TP update (non-trailing, snapshot): entry={buy_price:.2f}, "
+                #     f"sl={state.stop_loss:.2f}, tp={state.tp_point:.2f}"
+                # )
                 return
 
             # ══════════════════════════════════════════════════════════════════

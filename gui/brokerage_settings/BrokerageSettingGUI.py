@@ -1237,27 +1237,60 @@ class BrokerageSettingDialog(ThemedDialog):
             QMessageBox.critical(self, "Connection Failed", str(e))
 
     def _test_telegram(self):
-        """Test Telegram notification with current settings."""
+        """Test Telegram notification — actually sends a message to verify credentials."""
         try:
-            token = self.tg_token_entry.text().strip()
+            token   = self.tg_token_entry.text().strip()
             chat_id = self.tg_chat_entry.text().strip()
 
             if not token or not chat_id:
                 QMessageBox.warning(
-                    self, "Missing",
-                    "Please enter both Bot Token and Chat ID."
+                    self, "Missing Credentials",
+                    "Please enter both Bot Token and Chat ID before testing."
                 )
                 return
 
-            # In a real implementation, this would send a test message
-            QMessageBox.information(
-                self, "Test Telegram",
-                "Telegram test initiated.\n\n"
-                "This would send a test message to your Telegram bot."
-            )
+            import requests
+            url     = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": (
+                    "✅ *OptionPilot Test Message*\n"
+                    "Telegram integration is working correctly.\n"
+                    "You will receive trade alerts here."
+                ),
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            try:
+                resp = requests.post(url, json=payload, timeout=8)
+                if resp.status_code == 200:
+                    QMessageBox.information(
+                        self, "Telegram Test Passed ✅",
+                        "A test message was sent successfully to your Telegram chat.\n"
+                        "Check your Telegram app to confirm."
+                    )
+                    logger.info("[_test_telegram] Test message sent OK")
+                else:
+                    data = resp.json()
+                    err  = data.get("description", resp.text)
+                    QMessageBox.critical(
+                        self, "Telegram Test Failed ❌",
+                        f"Telegram returned an error:\n\n{err}\n\n"
+                        "Common causes:\n"
+                        "• Bot Token is wrong or revoked\n"
+                        "• Chat ID is incorrect (use a negative number for groups)\n"
+                        "• Bot was never started — send /start to your bot first"
+                    )
+                    logger.warning(f"[_test_telegram] HTTP {resp.status_code}: {err}")
+            except requests.Timeout:
+                QMessageBox.critical(self, "Telegram Test Failed ❌",
+                                     "Request timed out. Check your internet connection.")
+            except requests.ConnectionError as ce:
+                QMessageBox.critical(self, "Telegram Test Failed ❌",
+                                     f"Connection error:\n{ce}")
         except Exception as e:
-            logger.error(f"Telegram test failed: {e}")
-            QMessageBox.critical(self, "Telegram Test Failed", str(e))
+            logger.error(f"[_test_telegram] Unexpected error: {e}", exc_info=True)
+            QMessageBox.critical(self, "Telegram Test Failed ❌", str(e))
 
     def _save(self):
         """Save the settings with validation and feedback."""

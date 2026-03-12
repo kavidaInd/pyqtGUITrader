@@ -22,6 +22,7 @@ from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
 from Utils.notifier import Notifier
 from Utils.safe_getattr import safe_getattr, safe_hasattr
+from Utils.time_utils import ist_now
 from broker.BaseBroker import TokenExpiredError
 from broker.BrokerFactory import BrokerFactory
 from data.candle_store_manager import candle_store_manager
@@ -866,7 +867,7 @@ class TradingApp:
             self.update_market_state(symbol, ltp, ask_price, bid_price, volume, sequence)
 
             # BUG-A fix: Record tick heartbeat timestamp for connection monitoring
-            self._last_tick_received = datetime.now()
+            self._last_tick_received = ist_now()
 
             # ENHANCEMENT-1: Propagate price to GUI immediately via callback
             cb_ref = getattr(self, '_price_cb_ref', None)

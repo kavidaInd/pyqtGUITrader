@@ -243,7 +243,7 @@ class BacktestHelpTab(QWidget, ThemedMixin):
 
         report_issue = QPushButton("🐛 Report Issue")
         report_issue.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://github.com/yourusername/TradingGUI/issues/new")))
+            QUrl("https://optionpilot.in/support")))
         links_layout.addWidget(report_issue)
 
         layout.addWidget(quick_links)
@@ -1206,7 +1206,7 @@ class BacktestHelpTab(QWidget, ThemedMixin):
         # Walkthrough steps
         steps = [
             ("Step 1: Strategy Selection",
-             "1. Open Strategy Editor (from main TradingGUI)\n"
+             "1. Open Strategy Editor (from main OptionPilot window)\n"
              "2. Create a new strategy or select an existing one\n"
              "3. Verify the strategy has rules and is enabled\n"
              "4. Note the min confidence threshold (default 60%)"),
@@ -3939,7 +3939,7 @@ no_signal=800 | in_trade=120 | entries=11 | trades=8 | signals={{'BUY_CALL':8, '
             <h3>Step-by-Step Setup</h3>
 
             <h4>1. Verify Broker Connection</h4>
-            <p>Ensure you're connected to your broker in the main TradingGUI. The backtester uses the same broker for spot data.</p>
+            <p>Ensure you're connected to your broker in the main OptionPilot window. The backtester uses the same broker for spot data.</p>
 
             <h4>2. Create/Select a Strategy</h4>
             <ul>

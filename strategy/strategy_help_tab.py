@@ -534,7 +534,7 @@ class StrategyHelpTab(QWidget, ThemedMixin):
 
         report_issue = QPushButton("🐛 Report Issue")
         report_issue.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://github.com/yourusername/TradingGUI/issues/new")))
+            QUrl("https://optionpilot.in/support")))
         links_layout.addWidget(report_issue)
 
         layout.addWidget(quick_links)
