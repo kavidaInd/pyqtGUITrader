@@ -11,9 +11,11 @@ FULLY INTEGRATED with ThemeManager for dynamic theming.
 import logging
 import csv
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import List, Dict, Any, Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -50,7 +52,7 @@ COLUMNS = [
 ]
 
 
-class TradeHistoryViewer(QDialog):
+class TradeHistoryViewer(ThemedDialog):
     """
     FEATURE 7: Pure PyQt5 trade history viewer.
 
@@ -70,11 +72,9 @@ class TradeHistoryViewer(QDialog):
         self._safe_defaults_init()
 
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="TRADE HISTORY VIEWER", icon="TH", size=(1200, 800))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self.session_id = session_id
             self.setWindowTitle(f"📊 Trade History" + (f" - Session {session_id}" if session_id else ""))
@@ -564,7 +564,6 @@ class TradeHistoryViewer(QDialog):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("Trade History - ERROR")
             self.resize(400, 300)
 
             layout = QVBoxLayout(self)
@@ -661,7 +660,7 @@ class TradeHistoryViewer(QDialog):
             orders = orders_crud.get_by_period(period, db)
 
             self._current_orders = orders
-            self._last_load_time = datetime.now()
+            self._last_load_time = ist_now()
 
             if not orders:
                 logger.info(f"No orders found for period: {period}")
@@ -698,7 +697,7 @@ class TradeHistoryViewer(QDialog):
             orders = orders_crud.list_for_session(session_id, db)
 
             self._current_orders = orders
-            self._last_load_time = datetime.now()
+            self._last_load_time = ist_now()
 
             if not orders:
                 logger.info(f"No orders found for session: {session_id}")
@@ -971,10 +970,10 @@ class TradeHistoryViewer(QDialog):
 
             # Generate default filename
             if self.session_id:
-                default_filename = f"trade_history_session_{self.session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                default_filename = f"trade_history_session_{self.session_id}_{ist_now().strftime('%Y%m%d_%H%M%S')}.csv"
             else:
                 period = self._period_combo.currentText().lower().replace(' ', '_')
-                default_filename = f"trade_history_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                default_filename = f"trade_history_{period}_{ist_now().strftime('%Y%m%d_%H%M%S')}.csv"
 
             file_path, _ = QFileDialog.getSaveFileName(
                 self,

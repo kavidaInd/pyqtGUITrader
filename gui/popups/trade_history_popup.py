@@ -13,9 +13,11 @@ import csv
 import logging
 import os
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, List, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -51,7 +53,6 @@ COLUMNS = [
     ('Exit Time',   'exited_at',       130),
 ]
 
-
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
 
@@ -66,41 +67,6 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
-
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
 
 class ModernHeader(QLabel):
     """Modern header with underline accent."""
@@ -125,7 +91,6 @@ class ModernHeader(QLabel):
                 margin-bottom: {sp.PAD_MD}px;
             }}
         """)
-
 
 class ValueLabel(QLabel):
     """Value label with consistent styling."""
@@ -153,8 +118,7 @@ class ValueLabel(QLabel):
             }}
         """)
 
-
-class TradeHistoryPopup(QDialog, ThemedMixin):
+class TradeHistoryPopup(ThemedDialog):
     """
     FEATURE 7: Pure PyQt5 trade history viewer.
 
@@ -174,18 +138,11 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         self._safe_defaults_init()
 
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="TRADE HISTORY", icon="TH", size=(1300, 750))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.setWindowTitle('📊 Trade History')
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             self.setMinimumSize(1200, 700)
             self.resize(1300, 750)
 
@@ -280,7 +237,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             sp = self._sp
 
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
             # Update table header styles
@@ -386,7 +343,6 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
                                          self._sp.PAD_XL, self._sp.PAD_XL)
         content_layout.setSpacing(self._sp.GAP_LG)
 
-
         # Top controls
         controls = self._build_controls()
         content_layout.addLayout(controls)
@@ -446,75 +402,14 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         self._refresh_timer.start(30000)  # Refresh every 30 seconds
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        c  = self._c
-        ty = self._ty
-        sp = self._sp
-
-        title_bar = QWidget()
-        title_bar.setObjectName("dialogTitleBar")
-        title_bar.setFixedHeight(46)
-        title_bar.setStyleSheet(f"""
-            QWidget#dialogTitleBar {{
-                background: {c.BG_CARD};
-                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
-            }}
-        """)
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
-        layout.setSpacing(8)
-
-        # Blue accent bar on left
-        accent = QFrame()
-        accent.setFixedSize(3, 20)
-        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
-        layout.addWidget(accent)
-
-        title = QLabel("📊  Trade History")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_BRIGHT};
-                font-size: {ty.SIZE_LG}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setToolTip("Close")
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-radius: {sp.RADIUS_SM}px;
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {c.RED};
-                color: white;
-            }}
-            QPushButton:pressed {{
-                background: {c.RED_BRIGHT};
-            }}
-        """)
-        close_btn.clicked.connect(self.accept)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        self._drag_pos = None
-        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="TRADE HISTORY",
+            icon="TH",
+            on_close=self.close,
+            on_refresh=lambda: self.load_trades(self._period_combo.currentData() if self._period_combo else 'today'),
+        )
 
     def _build_controls(self):
         """Build top control bar"""
@@ -672,13 +567,9 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("Trade History - ERROR")
             self.setMinimumSize(400, 300)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 
@@ -803,7 +694,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
             orders = orders_crud.get_by_period(period, db)
 
             self._current_orders = orders
-            self._last_load_time = datetime.now()
+            self._last_load_time = ist_now()
 
             if not orders:
                 logger.info(f"No orders found for period: {period}")
@@ -1010,7 +901,7 @@ class TradeHistoryPopup(QDialog, ThemedMixin):
 
             # Generate default filename
             period = self._period_combo.currentText().lower().replace(' ', '_')
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            timestamp = ist_now().strftime('%Y%m%d_%H%M%S')
             default_filename = f"trade_history_{period}_{timestamp}.csv"
 
             file_path, _ = QFileDialog.getSaveFileName(

@@ -19,6 +19,7 @@ import logging
 from typing import Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot, QTimer
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -181,7 +182,7 @@ class _ActivationWorker(QThread):
 
 # ── ActivationDialog ───────────────────────────────────────────────────────────
 
-class ActivationDialog(QDialog):
+class ActivationDialog(ThemedDialog):
     """
     Two-tab gate dialog shown whenever a valid license is required.
 
@@ -202,14 +203,13 @@ class ActivationDialog(QDialog):
             prefill_email: str = "",
             start_on_tab: str = "trial",
     ):
-        super().__init__(parent)
+        super().__init__(parent, title="ACTIVATION", icon="AC", size=(560, 480))
         self._reason = reason
         self._manager = manager or license_manager
         self._prefill_email = prefill_email
         self._start_on_tab = start_on_tab
         self._worker: Optional[QThread] = None
 
-        self.setWindowTitle("Algo Trading Pro")
         self.setModal(True)
         self.setFixedWidth(500)
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
@@ -667,7 +667,7 @@ class UpdateBanner(QFrame):
 
 # ── LiveTradingUpgradeDialog ──────────────────────────────────────────────────
 
-class LiveTradingUpgradeDialog(QDialog):
+class LiveTradingUpgradeDialog(ThemedDialog):
     """
     Focused, in-context upsell shown the moment a free/trial user tries to
     start live trading.  Unlike the generic ActivationDialog this one is
@@ -689,11 +689,10 @@ class LiveTradingUpgradeDialog(QDialog):
     switch_to_paper = pyqtSignal()
 
     def __init__(self, parent=None, manager: LicenseManager = None):
-        super().__init__(parent)
+        super().__init__(parent, title="LIVE TRADING UPGRADE", icon="LT", size=(520, 440))
         self._manager = manager or license_manager
         self._worker: Optional[QThread] = None
 
-        self.setWindowTitle("Live Trading — Upgrade Required")
         self.setModal(True)
         self.setFixedWidth(480)
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
@@ -900,15 +899,14 @@ class LiveTradingUpgradeDialog(QDialog):
 
 # ── MandatoryUpdateDialog ──────────────────────────────────────────────────────
 
-class MandatoryUpdateDialog(QDialog):
+class MandatoryUpdateDialog(ThemedDialog):
     """Blocking dialog shown when is_mandatory=True for an app update."""
 
     update_requested = pyqtSignal()
 
     def __init__(self, info, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, title="UPDATE REQUIRED", icon="UD", size=(480, 380))
         self._info = info
-        self.setWindowTitle("Update Required")
         self.setModal(True)
         self.setFixedWidth(440)
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint)

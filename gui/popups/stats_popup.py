@@ -16,6 +16,8 @@ from datetime import datetime
 from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QSize, QEvent
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, \
+    create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QPushButton, QLabel,
                              QTabWidget, QHBoxLayout, QWidget, QFrame,
                              QScrollArea, QGridLayout, QGroupBox, QProgressBar,
@@ -31,7 +33,6 @@ from gui.theme_manager import theme_manager
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
-
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
 
@@ -46,41 +47,6 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
-
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
 
 class ModernHeader(QLabel):
     """Modern header with underline accent."""
@@ -106,7 +72,6 @@ class ModernHeader(QLabel):
             }}
         """)
 
-
 class StatsWidget(QWidget, ThemedMixin):
     """
     Main statistics widget that can be embedded in any parent.
@@ -123,8 +88,6 @@ class StatsWidget(QWidget, ThemedMixin):
             super().__init__(parent)
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             # Initialize attributes
             self._is_small_window = False
@@ -1333,7 +1296,7 @@ class StatsWidget(QWidget, ThemedMixin):
 
     def _get_cached_snapshot(self) -> Dict[str, Any]:
         """Get cached snapshot"""
-        now = datetime.now()
+        now = ist_now()
         if (self._last_snapshot_time is None or
             (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration):
             self._last_snapshot = state_manager.get_snapshot()
@@ -1453,7 +1416,7 @@ class StatsWidget(QWidget, ThemedMixin):
                     self._update_label("current_trade_started_time", str(start_time))
 
                 if pos_snap.get('current_price'):
-                    duration = datetime.now() - start_time
+                    duration = ist_now().replace(tzinfo=None) - start_time.replace(tzinfo=None) if start_time.tzinfo else ist_now().replace(tzinfo=None) - start_time
                     hours = duration.seconds // 3600
                     minutes = (duration.seconds % 3600) // 60
 
@@ -1715,7 +1678,7 @@ class StatsWidget(QWidget, ThemedMixin):
             if start_time and isinstance(start_time, datetime):
                 self._update_label("adv_session_start", fmt_display(start_time, time_only=True))
 
-                duration = datetime.now() - start_time
+                duration = ist_now().replace(tzinfo=None) - start_time.replace(tzinfo=None) if start_time.tzinfo else ist_now().replace(tzinfo=None) - start_time
                 hours = duration.seconds // 3600
                 minutes = (duration.seconds % 3600) // 60
                 self._update_label("adv_active_time", f"{hours}h {minutes}m")
@@ -1797,8 +1760,7 @@ class StatsWidget(QWidget, ThemedMixin):
         except Exception as e:
             logger.error(f"[StatsWidget.cleanup] Error: {e}", exc_info=True)
 
-
-class StatsPopup(QDialog, ThemedMixin):
+class StatsPopup(ThemedDialog):
     """
     Popup window for displaying statistics.
     Wraps StatsWidget in a dialog with close button.
@@ -1807,19 +1769,12 @@ class StatsPopup(QDialog, ThemedMixin):
 
     def __init__(self, parent=None):
         self._safe_defaults_init()
-        super().__init__(parent)
+        super().__init__(parent, title="TRADING DASHBOARD", icon="TD", size=(1100, 800))
 
         try:
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
-
-            self.setWindowTitle("📊 Trading Statistics Dashboard")
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             self.resize(1100, 800)
             self.setMinimumSize(500, 600)
 
@@ -1851,7 +1806,6 @@ class StatsPopup(QDialog, ThemedMixin):
                                              self._sp.PAD_XL, self._sp.PAD_XL)
             content_layout.setSpacing(self._sp.GAP_LG)
 
-
             # Add the main stats widget (embedded=False to show header)
             self.stats_widget = StatsWidget(self, embedded=True)  # Set embedded=True to hide duplicate header
             content_layout.addWidget(self.stats_widget, 1)
@@ -1882,75 +1836,13 @@ class StatsPopup(QDialog, ThemedMixin):
         self.main_card = None
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        c  = self._c
-        ty = self._ty
-        sp = self._sp
-
-        title_bar = QWidget()
-        title_bar.setObjectName("dialogTitleBar")
-        title_bar.setFixedHeight(46)
-        title_bar.setStyleSheet(f"""
-            QWidget#dialogTitleBar {{
-                background: {c.BG_CARD};
-                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
-            }}
-        """)
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
-        layout.setSpacing(8)
-
-        # Blue accent bar on left
-        accent = QFrame()
-        accent.setFixedSize(3, 20)
-        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
-        layout.addWidget(accent)
-
-        title = QLabel("📊  Trading Statistics Dashboard")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_BRIGHT};
-                font-size: {ty.SIZE_LG}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setToolTip("Close")
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-radius: {sp.RADIUS_SM}px;
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {c.RED};
-                color: white;
-            }}
-            QPushButton:pressed {{
-                background: {c.RED_BRIGHT};
-            }}
-        """)
-        close_btn.clicked.connect(self.accept)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        self._drag_pos = None
-        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="TRADING DASHBOARD",
+            icon="TD",
+            on_close=self.accept,
+        )
 
     def _create_modern_button(self, text, primary=False, icon=""):
         """Create a modern styled button."""
@@ -2002,13 +1894,9 @@ class StatsPopup(QDialog, ThemedMixin):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("Statistics Dashboard - ERROR")
             self.setMinimumSize(400, 300)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 
@@ -2037,7 +1925,7 @@ class StatsPopup(QDialog, ThemedMixin):
             c = self._c
 
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
             if self.stats_widget and safe_hasattr(self.stats_widget, 'apply_theme'):

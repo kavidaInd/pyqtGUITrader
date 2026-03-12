@@ -36,6 +36,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtGui import QColor, QFont, QStandardItem, QStandardItemModel
 from PyQt5.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFrame, QGridLayout,
@@ -292,7 +293,7 @@ def _filter_combo(name: str, options: List[str]) -> QComboBox:
 # ─────────────────────────────────────────────────────────────────────────────
 # CandleDetailPopup — shown when user clicks "🔍 Detail"
 # ─────────────────────────────────────────────────────────────────────────────
-class CandleDetailPopup(QDialog, ThemedMixin):
+class CandleDetailPopup(ThemedDialog):
     """
     Full-detail popup for a single candle record.
     Organised into tabbed sections: Overview, Signals, Indicators, Position, TP/SL.
@@ -301,11 +302,9 @@ class CandleDetailPopup(QDialog, ThemedMixin):
     def __init__(self, entry: Dict[str, Any], parent=None):
         self._safe_defaults_init()
         try:
-            super().__init__(parent, Qt.Window)
+            super().__init__(parent, title="CANDLE DETAIL", icon="CD", size=(700, 500))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self._entry = entry
             self._build_ui()
@@ -340,7 +339,6 @@ class CandleDetailPopup(QDialog, ThemedMixin):
         sig_color = signal_colors.get(sig, c.TEXT_DIM)
         act_color = action_colors.get(act, c.TEXT_DIM)
 
-        self.setWindowTitle(f"🔍 Candle #{bar}  —  {time}")
         self.setMinimumSize(820, 640)
 
         root = QVBoxLayout(self)
@@ -796,8 +794,6 @@ class CandleDebugTab(QWidget, ThemedMixin):
             super().__init__(parent)
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self._entries: List[Dict] = []
             self._filtered: List[Dict] = []

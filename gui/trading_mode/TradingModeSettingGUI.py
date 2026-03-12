@@ -9,6 +9,7 @@ FULLY INTEGRATED with ThemeManager for dynamic theming.
 import logging.handlers
 
 from PyQt5.QtCore import Qt, QTimer
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
@@ -25,7 +26,6 @@ from gui.popups.upgrade_popup import UpgradePopup
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
 
-
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
 
@@ -41,52 +41,15 @@ class ThemedMixin:
     def _sp(self):
         return theme_manager.spacing
 
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
-
-class TradingModeSettingGUI(QDialog, ThemedMixin):
+class TradingModeSettingGUI(ThemedDialog):
     def __init__(self, parent=None, trading_mode_setting=None, app=None):
         # Rule 2: Safe defaults first
         self._safe_defaults_init()
 
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="TRADING MODE", icon="TM", size=(860, 700))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self.trading_mode_setting = trading_mode_setting or TradingModeSetting()
             self.app = app
@@ -95,15 +58,11 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             if trading_mode_setting is None:
                 logger.warning("TradingModeSettingGUI initialized with None trading_mode_setting, using default")
 
-            self.setWindowTitle("Trading Mode Settings")
             self.setModal(True)
             self.setMinimumSize(850, 750)
             self.resize(850, 750)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
@@ -177,47 +136,13 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self._create_error_dialog(parent)
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        title_bar = QWidget()
-        title_bar.setFixedHeight(40)
-        title_bar.setStyleSheet(f"background: {self._c.BG_PANEL}; border-top-left-radius: {self._sp.RADIUS_LG}px; border-top-right-radius: {self._sp.RADIUS_LG}px;")
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(self._sp.PAD_MD, 0, self._sp.PAD_MD, 0)
-
-        title = QLabel("🎮 Trading Mode Settings")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {self._c.BG_HOVER};
-                color: {self._c.TEXT_DIM};
-                border: none;
-                border-radius: {self._sp.RADIUS_SM}px;
-                font-size: {self._ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {self._c.RED};
-                color: white;
-            }}
-        """)
-        close_btn.clicked.connect(self.reject)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="TRADING MODE",
+            icon="TM",
+            on_close=self.reject,
+        )
 
     def _create_tabs(self):
         """Create tabs with consistent styling matching other dialogs."""
@@ -342,12 +267,12 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         """
         try:
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
             # Update title bar
-            if hasattr(self, 'title_bar'):
-                self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
+            # if self.title_bar:
+            #     self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
 
             # Update status label
             if self.status_label:
@@ -455,13 +380,9 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("Trading Mode Settings - ERROR")
             self.setMinimumSize(400, 200)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 

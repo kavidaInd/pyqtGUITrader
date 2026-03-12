@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                              QScrollArea, QComboBox, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QLocale
 from PyQt5.QtGui import QFont, QDoubleValidator
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from BaseEnums import STOP, TRAILING, logger
 import threading
 
@@ -13,7 +14,6 @@ from gui.profit_loss import ProfitStoplossSetting
 
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
-
 
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
@@ -29,41 +29,6 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
-
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
 
 class ModernHeader(QLabel):
     """Modern header with underline accent."""
@@ -89,8 +54,7 @@ class ModernHeader(QLabel):
             }}
         """)
 
-
-class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
+class ProfitStoplossSettingGUI(ThemedDialog):
     save_completed = pyqtSignal(bool, str)
     # Emitted after a successful save so TradingGUI can refresh dependent widgets
     settings_saved = pyqtSignal()
@@ -114,23 +78,17 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         self._safe_defaults_init()
 
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="PROFIT & STOPLOSS", icon="PS", size=(900, 750))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self.profit_stoploss_setting = profit_stoploss_setting
             self.app = app
-            self.setWindowTitle("Profit & Stoploss Settings")
             self.setModal(True)
             self.setMinimumSize(800, 700)
             self.resize(800, 700)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             # Root layout with margins for shadow effect
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
@@ -158,7 +116,6 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             content_layout.setContentsMargins(self._sp.PAD_XL, self._sp.PAD_XL,
                                              self._sp.PAD_XL, self._sp.PAD_XL)
             content_layout.setSpacing(self._sp.GAP_LG)
-
 
             # Tabs with consistent styling
             self.tabs = self._create_tabs()
@@ -215,75 +172,13 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
             self._create_error_dialog(parent)
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        c  = self._c
-        ty = self._ty
-        sp = self._sp
-
-        title_bar = QWidget()
-        title_bar.setObjectName("dialogTitleBar")
-        title_bar.setFixedHeight(46)
-        title_bar.setStyleSheet(f"""
-            QWidget#dialogTitleBar {{
-                background: {c.BG_CARD};
-                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
-            }}
-        """)
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
-        layout.setSpacing(8)
-
-        # Blue accent bar on left
-        accent = QFrame()
-        accent.setFixedSize(3, 20)
-        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
-        layout.addWidget(accent)
-
-        title = QLabel("💹  Profit & Stoploss Settings")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_BRIGHT};
-                font-size: {ty.SIZE_LG}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setToolTip("Close")
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-radius: {sp.RADIUS_SM}px;
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {c.RED};
-                color: white;
-            }}
-            QPushButton:pressed {{
-                background: {c.RED_BRIGHT};
-            }}
-        """)
-        close_btn.clicked.connect(self.reject)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        self._drag_pos = None
-        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="PROFIT & STOPLOSS",
+            icon="PS",
+            on_close=self.reject,
+        )
 
     def _create_tabs(self):
         """Create tabs with consistent styling matching other dialogs."""
@@ -398,12 +293,12 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         """
         try:
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
-            # Update title bar
-            if hasattr(self, 'title_bar'):
-                self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
+            # # Update title bar
+            # if self.title_bar:
+            #     self.title_bar.setStyleSheet(f"background: {self._c.BG_PANEL};")
 
             # Update status label
             if self.status_label:
@@ -548,13 +443,9 @@ class ProfitStoplossSettingGUI(QDialog, ThemedMixin):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("Profit & Stoploss Settings - ERROR")
             self.setMinimumSize(400, 200)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 

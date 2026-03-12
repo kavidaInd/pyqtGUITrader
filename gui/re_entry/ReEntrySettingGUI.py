@@ -14,6 +14,7 @@ import logging
 from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QWidget, QTabWidget, QFrame, QScrollArea, QCheckBox,
@@ -195,7 +196,7 @@ class _CandleTimelineWidget(QWidget, _ThemeMixin):
 # Main Dialog
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ReEntrySettingGUI(QDialog, _ThemeMixin):
+class ReEntrySettingGUI(ThemedDialog):
     """
     Modal dialog for configuring re-entry guard settings.
 
@@ -210,9 +211,8 @@ class ReEntrySettingGUI(QDialog, _ThemeMixin):
     def __init__(self, setting: Optional[ReEntrySetting] = None, parent=None):
         self._safe_defaults()
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="RE-ENTRY SETTINGS", icon="RE", size=(900, 700))
             self.setting = setting or ReEntrySetting()
-            self.setWindowTitle("Re-Entry Guard Settings")
             self.setMinimumSize(640, 580)
             self.setModal(True)
             self._build_ui()
@@ -291,45 +291,13 @@ class ReEntrySettingGUI(QDialog, _ThemeMixin):
         root.addLayout(bottom)
 
     def _make_title_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("dialogTitleBar")
-        bar.setFixedHeight(46)
-        bar.setStyleSheet(f"""QWidget#dialogTitleBar {{ background: {self._c.BG_CARD}; border-radius: {self._sp.RADIUS_LG}px {self._sp.RADIUS_LG}px 0 0; }}""")
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(0, 0, 0, 0)
-
-        title = QLabel("🔄 Re-Entry Guard Settings")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {self._c.TEXT_BRIGHT};
-                font-size: {self._ty.SIZE_LG}pt;
-                font-weight: {self._ty.WEIGHT_BOLD};
-                background: transparent;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {self._c.BG_HOVER}; color: {self._c.TEXT_DIM};
-                border: none; border-radius: 4px; font-weight: bold;
-            }}
-            QPushButton:hover {{ background: {self._c.RED}; color: white; }}
-        """)
-        close_btn.clicked.connect(self.reject)
-
-        lay.addWidget(title)
-        lay.addStretch()
-        lay.addWidget(close_btn)
-
-        self._drag_pos = None
-        bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost close button."""
+        return build_title_bar(
+            self,
+            title="RE-ENTRY SETTINGS",
+            icon="RE",
+            on_close=self.reject,
+        )
 
     def _make_tabs(self) -> QTabWidget:
         tabs = QTabWidget()

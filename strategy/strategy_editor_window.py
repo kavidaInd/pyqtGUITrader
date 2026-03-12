@@ -34,8 +34,12 @@ from __future__ import annotations
 
 import json
 import logging
+import sip
+
+from gui.dialog_base import ThemedDialog
 from strategy.strategy_presets import get_preset_names, get_preset_rules
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import (
@@ -712,10 +716,7 @@ class StrategyListPanel(QWidget):
 
         # ── Action buttons row ────────────────────────────────────────────────
         btn_widget = QWidget()
-        btn_widget.setStyleSheet(f"""
-                    background: {c().BG_PANEL};
-                    border-bottom: 1px solid {c().BORDER};
-                """)
+        btn_widget.setStyleSheet(f"background: {c().BG_PANEL};")
         btn_lay = QHBoxLayout(btn_widget)
         btn_lay.setContentsMargins(sp().PAD_MD, sp().PAD_SM, sp().PAD_MD, sp().PAD_SM)
         btn_lay.setSpacing(sp().GAP_SM)
@@ -794,12 +795,13 @@ class StrategyListPanel(QWidget):
         self.search_edit.textChanged.connect(self._filter_list)
         search_lay.addWidget(self.search_edit)
         root.addWidget(search_widget)
-        root.addWidget(make_separator())
 
         # ── Strategy List ─────────────────────────────────────────────────────
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list_widget.setUniformItemSizes(True)
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.list_widget.currentItemChanged.connect(self._on_item_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         self._restyle_list()
@@ -837,7 +839,8 @@ class StrategyListPanel(QWidget):
                 outline: none;
             }}
             QListWidget::item {{
-                padding: {sp().PAD_MD}px {sp().PAD_LG}px;
+                min-height: {self._ROW_H}px;
+                padding: 0px;
                 border-bottom: 1px solid {c().BORDER};
                 border-left: 3px solid transparent;
             }}
@@ -862,6 +865,9 @@ class StrategyListPanel(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         """)
 
+    # Row height constant used by both refresh() and _make_list_item_widget()
+    _ROW_H = 52
+
     def refresh(self):
         """Reload all strategies from manager."""
         try:
@@ -879,7 +885,9 @@ class StrategyListPanel(QWidget):
 
                 # Custom widget for richer display
                 item_widget = self._make_list_item_widget(name, slug, is_active, accent)
-                item.setSizeHint(item_widget.sizeHint())
+                # Use fixed row height - sizeHint() is unreliable before widget is laid out
+                from PyQt5.QtCore import QSize
+                item.setSizeHint(QSize(self.list_widget.width() or 230, self._ROW_H))
                 item.setData(Qt.UserRole, slug)
 
                 self.list_widget.addItem(item)
@@ -899,16 +907,19 @@ class StrategyListPanel(QWidget):
     def _make_list_item_widget(self, name: str, slug: str, is_active: bool, accent: str) -> QWidget:
         """Rich list item with name + metadata row."""
         w = QWidget()
+        w.setFixedHeight(self._ROW_H)
         w.setStyleSheet("background: transparent;")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(2)
 
         name_row = QHBoxLayout()
-        name_row.setSpacing(6)
+        name_row.setSpacing(4)
+        name_row.setContentsMargins(0, 0, 0, 0)
         if is_active:
             bolt = QLabel("⚡")
-            bolt.setStyleSheet(f"color: {accent}; font-size: {ty().SIZE_BODY}pt; background: transparent;")
+            bolt.setFixedWidth(16)
+            bolt.setStyleSheet(f"color: {accent}; font-size: {ty().SIZE_SM}pt; background: transparent;")
             name_row.addWidget(bolt)
 
         name_lbl = QLabel(name)
@@ -918,31 +929,33 @@ class StrategyListPanel(QWidget):
             font-size: {ty().SIZE_BODY}pt;
             background: transparent;
         """)
-        name_row.addWidget(name_lbl)
-        name_row.addStretch()
+        name_lbl.setMaximumWidth(220)
+        name_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        name_row.addWidget(name_lbl, 1)
         lay.addLayout(name_row)
 
         sub_row = QHBoxLayout()
-        sub_row.setSpacing(8)
-        slug_lbl = QLabel(slug[:24])
+        sub_row.setSpacing(6)
+        sub_row.setContentsMargins(0, 0, 0, 0)
+        slug_lbl = QLabel(slug[:22])
         slug_lbl.setStyleSheet(f"color: {c().TEXT_DIM}; font-size: {ty().SIZE_XS}pt; background: transparent;")
-        sub_row.addWidget(slug_lbl)
+        slug_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        sub_row.addWidget(slug_lbl, 1)
         if is_active:
             active_badge = QLabel("ACTIVE")
+            active_badge.setFixedHeight(16)
             active_badge.setStyleSheet(f"""
                 color: {accent};
                 background: {accent}22;
                 border: 1px solid {accent}55;
-                border-radius: 4px;
-                padding: 0px 5px;
+                border-radius: 3px;
+                padding: 0px 4px;
                 font-size: {ty().SIZE_XS}pt;
                 font-weight: bold;
             """)
             sub_row.addWidget(active_badge)
-        sub_row.addStretch()
         lay.addLayout(sub_row)
 
-        w.setMinimumHeight(48)
         return w
 
     def _filter_list(self, text: str):
@@ -1975,7 +1988,13 @@ class SignalGroupPanel(QWidget):
             self._rule_rows.append(row)
             self._update_count()
 
-            QTimer.singleShot(80, lambda: self._scroll.ensureWidgetVisible(row))
+            def _scroll_to_row(r=row):
+                try:
+                    if self._scroll and not sip.isdeleted(r):
+                        self._scroll.ensureWidgetVisible(r)
+                except RuntimeError:
+                    pass
+            QTimer.singleShot(80, _scroll_to_row)
         except Exception as e:
             logger.error(f"[SignalGroupPanel.add_rule] {e}", exc_info=True)
 
@@ -2638,16 +2657,14 @@ class HelpTab(QScrollArea):
 # IMPORT / EXPORT DIALOG
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ImportExportDialog(QDialog):
+class ImportExportDialog(ThemedDialog):
     """Frameless JSON import/export dialog."""
 
     def __init__(self, mode: str, strategy_data: Dict = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, title="IMPORT / EXPORT", icon="IE", size=(600, 480))
         self.mode = mode
         self.strategy_data = strategy_data
         self._imported_data: Dict = {}
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(720, 540)
         self._build_ui()
 
@@ -2817,7 +2834,7 @@ class ImportExportDialog(QDialog):
 # MAIN STRATEGY EDITOR WINDOW
 # ─────────────────────────────────────────────────────────────────────────────
 
-class StrategyEditorWindow(QDialog):
+class StrategyEditorWindow(ThemedDialog):
     """
     Full-page Strategy Editor with Theme Manager integration.
 
@@ -2835,14 +2852,12 @@ class StrategyEditorWindow(QDialog):
     strategy_saved     = pyqtSignal(str)   # NEW: fires on every successful save
 
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.Window)
+        super().__init__(parent, title="STRATEGY EDITOR", icon="SE", size=(1200, 850))
         self._current_slug: Optional[str] = None
         self._dirty = False
         self._theme_panel: Optional[ThemeManagerPanel] = None
 
         # Frameless window for full custom chrome
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(1560, 940)
         self.setMinimumSize(1280, 720)
 
@@ -3351,7 +3366,7 @@ class StrategyEditorWindow(QDialog):
             strategy = strategy_manager.get(self._current_slug) or {}
             strategy["name"] = name
             strategy["description"] = info["description"]
-            strategy["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            strategy["updated_at"] = fmt_display(ist_now())
 
             engine = self._rules_tab.collect()
             engine["conflict_resolution"] = info.get("conflict_resolution", "WAIT")

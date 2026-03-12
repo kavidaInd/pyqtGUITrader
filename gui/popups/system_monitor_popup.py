@@ -13,6 +13,7 @@ from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QProgressBar, QTabWidget, QFrame, QWidget, QScrollArea
 from PyQt5.QtGui import QFont
 
@@ -24,7 +25,6 @@ from data.trade_state_manager import state_manager
 from gui.theme_manager import theme_manager
 
 logger = logging.getLogger(__name__)
-
 
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
@@ -40,41 +40,6 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
-
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
 
 class ModernHeader(QLabel):
     """Modern header with underline accent."""
@@ -99,7 +64,6 @@ class ModernHeader(QLabel):
                 margin-bottom: {sp.PAD_MD}px;
             }}
         """)
-
 
 class StatusBadge(QLabel):
     """Status badge with color-coded background."""
@@ -145,7 +109,6 @@ class StatusBadge(QLabel):
             }}
         """)
 
-
 class ValueLabel(QLabel):
     """Value label with consistent styling."""
 
@@ -172,7 +135,6 @@ class ValueLabel(QLabel):
                 font-weight: {ty.WEIGHT_BOLD};
             }}
         """)
-
 
 class ScrollableTabWidget(QWidget):
     """Tab widget with scrollable content area."""
@@ -207,8 +169,7 @@ class ScrollableTabWidget(QWidget):
         """Add stretch to the scrollable area."""
         self.container_layout.addStretch()
 
-
-class SystemMonitorPopup(QDialog, ThemedMixin):
+class SystemMonitorPopup(ThemedDialog):
     """Popup window for monitoring system resources and trading app performance"""
 
     def __init__(self, trading_app=None, parent=None):
@@ -216,19 +177,12 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
         self._safe_defaults_init()
 
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="SYSTEM MONITOR", icon="SM", size=(700, 700))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self.trading_app = trading_app
-            self.setWindowTitle("System Monitor")
-
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             self.resize(700, 700)
             self.setMinimumSize(600, 600)
 
@@ -317,13 +271,9 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("System Monitor - ERROR")
             self.setMinimumSize(400, 300)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 
@@ -402,7 +352,7 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
             sp = self._sp
 
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
             # Update button styles
@@ -535,7 +485,6 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
                                          self._sp.PAD_XL, self._sp.PAD_XL)
         content_layout.setSpacing(self._sp.GAP_LG)
 
-
         # Create tab widget
         self.tab_widget = self._create_modern_tabs()
         content_layout.addWidget(self.tab_widget, 1)
@@ -564,78 +513,17 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
         root.addWidget(self.main_card)
 
         # Store process start time
-        self.process_start_time = datetime.now()
+        self.process_start_time = ist_now()
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        c  = self._c
-        ty = self._ty
-        sp = self._sp
-
-        title_bar = QWidget()
-        title_bar.setObjectName("dialogTitleBar")
-        title_bar.setFixedHeight(46)
-        title_bar.setStyleSheet(f"""
-            QWidget#dialogTitleBar {{
-                background: {c.BG_CARD};
-                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
-            }}
-        """)
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
-        layout.setSpacing(8)
-
-        # Blue accent bar on left
-        accent = QFrame()
-        accent.setFixedSize(3, 20)
-        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
-        layout.addWidget(accent)
-
-        title = QLabel("📊  System Monitor")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_BRIGHT};
-                font-size: {ty.SIZE_LG}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setToolTip("Close")
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-radius: {sp.RADIUS_SM}px;
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {c.RED};
-                color: white;
-            }}
-            QPushButton:pressed {{
-                background: {c.RED_BRIGHT};
-            }}
-        """)
-        close_btn.clicked.connect(self.accept)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        self._drag_pos = None
-        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="SYSTEM MONITOR",
+            icon="SM",
+            on_close=self.close,
+            on_refresh=self.refresh,
+        )
 
     def _create_modern_tabs(self):
         """Create modern-styled tab widget."""
@@ -1042,7 +930,7 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
 
     def _get_cached_snapshot(self) -> Dict[str, Any]:
         """Get cached snapshot to avoid excessive state_manager calls"""
-        now = datetime.now()
+        now = ist_now()
         if (self._last_snapshot_time is None or
             (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_duration):
             self._last_snapshot = state_manager.get_snapshot()
@@ -1250,7 +1138,7 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
 
             # Uptime
             create_time = datetime.fromtimestamp(process.create_time())
-            uptime = datetime.now() - create_time
+            uptime = ist_now().replace(tzinfo=None) - create_time
             hours = uptime.seconds // 3600
             minutes = (uptime.seconds % 3600) // 60
             seconds = uptime.seconds % 60

@@ -9,6 +9,7 @@ from datetime import datetime
 from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtCore import Qt, QTimer
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QTabWidget, \
     QFrame, QWidget, QScrollArea
 from PyQt5.QtGui import QFont
@@ -20,7 +21,6 @@ from data.trade_state_manager import state_manager
 from gui.theme_manager import theme_manager
 
 logger = logging.getLogger(__name__)
-
 
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
@@ -36,41 +36,6 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
-
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
 
 class ModernHeader(QLabel):
     """Modern header with underline accent."""
@@ -95,7 +60,6 @@ class ModernHeader(QLabel):
                 margin-bottom: {sp.PAD_MD}px;
             }}
         """)
-
 
 class StatusBadge(QLabel):
     """Status badge with color-coded background."""
@@ -138,7 +102,6 @@ class StatusBadge(QLabel):
             }}
         """)
 
-
 class ScrollableTabWidget(QWidget):
     """Tab widget with scrollable content area."""
 
@@ -171,8 +134,7 @@ class ScrollableTabWidget(QWidget):
         """Add stretch to the scrollable area."""
         self.container_layout.addStretch()
 
-
-class ConnectionMonitorPopup(QDialog, ThemedMixin):
+class ConnectionMonitorPopup(ThemedDialog):
     """Popup window for monitoring connection status with modern design"""
 
     def __init__(self, trading_app=None, parent=None):
@@ -180,21 +142,15 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
         self._safe_defaults_init()
 
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="CONNECTION MONITOR", icon="CM", size=(800, 700))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self.trading_app = trading_app
-            self.setWindowTitle("Connection Monitor")
             self.resize(800, 700)
             self.setMinimumSize(750, 600)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             # Build UI
             self._init_ui()
 
@@ -249,13 +205,9 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
         """Create error dialog if initialization fails"""
         try:
             super().__init__(parent)
-            self.setWindowTitle("Connection Monitor - ERROR")
             self.setMinimumSize(400, 200)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 
@@ -285,7 +237,7 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
         """
         try:
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
             # Update button styles
@@ -378,7 +330,6 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
                                          self._sp.PAD_XL, self._sp.PAD_XL)
         content_layout.setSpacing(self._sp.GAP_LG)
 
-
         # Create tab widget with modern styling
         tabs = self._create_modern_tabs()
         content_layout.addWidget(tabs, 1)  # Give tabs stretch factor
@@ -387,13 +338,13 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(self._sp.GAP_MD)
 
-        self.reconnect_btn = self._create_modern_button("🔄 Reconnect WebSocket", primary=False, icon="🔄")
+        self.reconnect_btn = self._create_modern_button("Reconnect WebSocket", primary=False, icon="🔄")
         self.reconnect_btn.clicked.connect(self._reconnect)
 
-        self.test_btn = self._create_modern_button("🧪 Test Connection", primary=False, icon="🧪")
+        self.test_btn = self._create_modern_button("Test Connection", primary=False, icon="🧪")
         self.test_btn.clicked.connect(self._test_connection)
 
-        self.refresh_btn = self._create_modern_button("⟳ Refresh", primary=False, icon="⟳")
+        self.refresh_btn = self._create_modern_button("Refresh", primary=False, icon="⟳")
         self.refresh_btn.clicked.connect(self.refresh)
 
         close_btn = self._create_modern_button("✕ Close", primary=False)
@@ -411,75 +362,14 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
         root.addWidget(self.main_card)
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        c  = self._c
-        ty = self._ty
-        sp = self._sp
-
-        title_bar = QWidget()
-        title_bar.setObjectName("dialogTitleBar")
-        title_bar.setFixedHeight(46)
-        title_bar.setStyleSheet(f"""
-            QWidget#dialogTitleBar {{
-                background: {c.BG_CARD};
-                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
-            }}
-        """)
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
-        layout.setSpacing(8)
-
-        # Blue accent bar on left
-        accent = QFrame()
-        accent.setFixedSize(3, 20)
-        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
-        layout.addWidget(accent)
-
-        title = QLabel("🔌  Connection Monitor")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_BRIGHT};
-                font-size: {ty.SIZE_LG}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setToolTip("Close")
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-radius: {sp.RADIUS_SM}px;
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {c.RED};
-                color: white;
-            }}
-            QPushButton:pressed {{
-                background: {c.RED_BRIGHT};
-            }}
-        """)
-        close_btn.clicked.connect(self.accept)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        self._drag_pos = None
-        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="CONNECTION MONITOR",
+            icon="CM",
+            on_close=self.close,
+            on_refresh=self.refresh,
+        )
 
     def _create_modern_tabs(self):
         """Create modern-styled tab widget."""
@@ -1001,7 +891,7 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
 
             # Calculate uptime
             if safe_hasattr(ws, '_connected_since') and ws._connected_since:
-                uptime = datetime.now() - ws._connected_since
+                uptime = ist_now().replace(tzinfo=None) - ws._connected_since.replace(tzinfo=None) if hasattr(ws._connected_since, 'replace') else ist_now() - ws._connected_since
                 seconds = int(uptime.total_seconds())
                 hours = seconds // 3600
                 minutes = (seconds % 3600) // 60
@@ -1013,7 +903,7 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
             # Message rate
             msg_count = stats.get('message_count', 0)
             if safe_hasattr(ws, '_connected_since') and ws._connected_since:
-                uptime_seconds = max(1, (datetime.now() - ws._connected_since).total_seconds())
+                uptime_seconds = max(1, (ist_now().replace(tzinfo=None) - (ws._connected_since.replace(tzinfo=None) if ws._connected_since.tzinfo else ws._connected_since)).total_seconds())
                 rate = msg_count / uptime_seconds
                 self.msg_rate.setText(f"{rate:.1f}/s")
             else:

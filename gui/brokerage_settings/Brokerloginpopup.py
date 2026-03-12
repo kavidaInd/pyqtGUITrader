@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
+from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
 from gui.brokerage_settings.BrokerLoginHelper import BrokerLoginHelper
@@ -46,7 +47,6 @@ from gui.brokerage_settings.BrokerLoginHelper import BrokerLoginHelper
 from gui.theme_manager import theme_manager
 
 logger = logging.getLogger(__name__)
-
 
 class ThemedMixin:
     """Mixin class to provide theme token shortcuts."""
@@ -62,41 +62,6 @@ class ThemedMixin:
     @property
     def _sp(self):
         return theme_manager.spacing
-
-
-class ModernCard(QFrame):
-    """Modern card widget with consistent styling."""
-
-    def __init__(self, parent=None, elevated=False):
-        super().__init__(parent)
-        self.setObjectName("modernCard")
-        self.elevated = elevated
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        sp = theme_manager.spacing
-
-        base_style = f"""
-            QFrame#modernCard {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_LG}px;
-            }}
-        """
-
-        if self.elevated:
-            base_style += f"""
-                QFrame#modernCard {{
-                    border: 1px solid {c.BORDER_FOCUS};
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                               stop:0 {c.BG_PANEL}, stop:1 {c.BG_HOVER});
-                }}
-            """
-
-        self.setStyleSheet(base_style)
-
 
 class StepCard(QFrame):
     """Step card with number indicator."""
@@ -121,7 +86,6 @@ class StepCard(QFrame):
             }}
         """)
 
-
 class ModernHeader(QLabel):
     """Modern header with underline accent."""
 
@@ -145,7 +109,6 @@ class ModernHeader(QLabel):
                 margin-bottom: {sp.PAD_MD}px;
             }}
         """)
-
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
@@ -193,10 +156,9 @@ class TokenExchangeWorker(QThread):
     def stop(self):
         self._is_stopping = True
 
-
 # ── Main popup ────────────────────────────────────────────────────────────────
 
-class BrokerLoginPopup(QDialog, ThemedMixin):
+class BrokerLoginPopup(ThemedDialog):
     login_completed = pyqtSignal(object)  # access token
     error_occurred = pyqtSignal(str)
     operation_started = pyqtSignal()
@@ -206,11 +168,9 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
     def __init__(self, parent, brokerage_setting, reason: str = None, notifier=None):
         self._safe_defaults_init()
         try:
-            super().__init__(parent)
+            super().__init__(parent, title="BROKER LOGIN", icon="BL", size=(760, 680))
 
             # Rule 13.2: Connect to theme and density signals
-            theme_manager.theme_changed.connect(self.apply_theme)
-            theme_manager.density_changed.connect(self.apply_theme)
 
             self.brokerage_setting = brokerage_setting
             self._reason = reason
@@ -227,15 +187,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
             )
 
             broker_name = self._helper.broker_display_name
-            self.setWindowTitle(
-                f"{broker_name} — Re-authentication Required" if reason
-                else f"{broker_name} — Login"
-            )
-
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             self.setMinimumSize(800, 750 if reason else 700)
             self.resize(800, 750 if reason else 700)
             self.setModal(True)
@@ -285,7 +237,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         """
         try:
             # Update main card style
-            if hasattr(self, 'main_card'):
+            if self.main_card:
                 self.main_card._apply_style()
 
             # Update step cards
@@ -499,7 +451,6 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         content_layout.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
         content_layout.setSpacing(sp.GAP_LG)
 
-
         # Warning banner (token-expiry reason)
         if self._reason:
             banner = self._create_warning_banner()
@@ -573,76 +524,13 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         self._update_button_styles()
 
     def _create_title_bar(self):
-        """Create custom title bar with close button."""
-        c  = self._c
-        ty = self._ty
-        sp = self._sp
-
-        title_bar = QWidget()
-        title_bar.setObjectName("dialogTitleBar")
-        title_bar.setFixedHeight(46)
-        title_bar.setStyleSheet(f"""
-            QWidget#dialogTitleBar {{
-                background: {c.BG_CARD};
-                border-radius: {sp.RADIUS_LG}px {sp.RADIUS_LG}px 0 0;
-            }}
-        """)
-
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(sp.PAD_LG, 0, sp.PAD_MD, 0)
-        layout.setSpacing(8)
-
-        # Blue accent bar on left
-        accent = QFrame()
-        accent.setFixedSize(3, 20)
-        accent.setStyleSheet(f"background: {c.BLUE}; border-radius: 2px;")
-        layout.addWidget(accent)
-
-        broker_name = self._helper.broker_display_name if self._helper else "Broker"
-        title = QLabel(f"🔐 {broker_name} Login")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_BRIGHT};
-                font-size: {ty.SIZE_LG}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setToolTip("Close")
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {c.BG_HOVER};
-                color: {c.TEXT_DIM};
-                border: none;
-                border-radius: {sp.RADIUS_SM}px;
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {c.RED};
-                color: white;
-            }}
-            QPushButton:pressed {{
-                background: {c.RED_BRIGHT};
-            }}
-        """)
-        close_btn.clicked.connect(self.reject)
-
-        layout.addWidget(title)
-        layout.addStretch()
-        layout.addWidget(close_btn)
-
-        self._drag_pos = None
-        title_bar.mousePressEvent   = lambda e: setattr(self,'_drag_pos', e.globalPos()-self.frameGeometry().topLeft()) if e.button()==1 else None
-        title_bar.mouseMoveEvent    = lambda e: self.move(e.globalPos()-self._drag_pos) if e.buttons()==1 and self._drag_pos else None
-        title_bar.mouseReleaseEvent = lambda e: setattr(self,'_drag_pos',None)
-
-        return title_bar
+        """Build new-design title bar: monogram badge + CAPS title + ghost buttons."""
+        return build_title_bar(
+            self,
+            title="BROKER LOGIN",
+            icon="BL",
+            on_close=self.reject,
+        )
 
     def _create_warning_banner(self) -> QFrame:
         """Create a warning banner for token expiry reasons"""
@@ -1094,13 +982,9 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
     def _create_error_dialog(self, parent):
         try:
             super().__init__(parent)
-            self.setWindowTitle("Login — ERROR")
             self.setMinimumSize(400, 200)
 
             # Set window flags for modern look
-            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 20)
 
@@ -1471,7 +1355,6 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
         except Exception as e:
             logger.error(f"[BrokerLoginPopup.closeEvent] {e}", exc_info=True)
             super().closeEvent(event)
-
 
 # ── Backward-compatibility alias ─────────────────────────────────────────────
 FyersManualLoginPopup = BrokerLoginPopup
