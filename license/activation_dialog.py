@@ -230,13 +230,13 @@ class ActivationDialog(ThemedDialog):
         root.setSpacing(0)
 
         # Header
-        title = QLabel("🚀  Algo Trading Pro")
+        title = QLabel("🚀 Option Pilot")
         title.setFont(QFont(ty.FONT_UI, ty.SIZE_2XL, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         root.addWidget(title)
 
         root.addSpacing(sp.GAP_SM)
-        tagline = QLabel("Professional algorithmic trading — start free, upgrade anytime")
+        tagline = QLabel("Autopilot for Options Trading — start free, upgrade anytime")
         tagline.setAlignment(Qt.AlignCenter)
         tagline.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt;")
         root.addWidget(tagline)

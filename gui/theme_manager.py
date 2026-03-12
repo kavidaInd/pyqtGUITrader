@@ -614,7 +614,7 @@ class ThemeManager(QObject):
     def load_preference(self) -> None:
         try:
             from PyQt5.QtCore import QSettings
-            s = QSettings("YourCompany", "AlgoTradingPro")
+            s = QSettings("YourCompany", "OptionPilot")
             theme   = s.value("theme",   "dark")
             density = s.value("density", "normal")
             self.set_density(density)

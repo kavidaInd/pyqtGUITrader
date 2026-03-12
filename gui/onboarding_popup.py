@@ -537,7 +537,7 @@ class WelcomePage(QWizardPage, ThemedPageMixin):
             theme_manager.theme_changed.connect(self.apply_theme)
             theme_manager.density_changed.connect(self.apply_theme)
 
-            self.setTitle("Welcome to Algo Trading Pro")
+            self.setTitle("Welcome to Option Pilot")
             self.setSubTitle("Let's get you started with your first-time setup")
 
             self._build_ui()
@@ -613,7 +613,7 @@ class WelcomePage(QWizardPage, ThemedPageMixin):
             )
             welcome_layout.setSpacing(self._sp.PAD_MD)
 
-            welcome_title = QLabel("<h2>Welcome to Algo Trading Pro!</h2>")
+            welcome_title = QLabel("<h2>Welcome to Option Pilot !</h2>")
             welcome_title.setStyleSheet(f"""
                 color: {self._c.TEXT_MAIN}; 
                 font-size: {self._ty.SIZE_XL}pt; 
@@ -625,7 +625,7 @@ class WelcomePage(QWizardPage, ThemedPageMixin):
             welcome_layout.addWidget(welcome_title)
 
             welcome_text = QLabel(
-                "Thank you for choosing Algo Trading Pro. This quick setup wizard will help you configure "
+                "Thank you for choosing Option Pilot. This quick setup wizard will help you configure "
                 "the basic settings to get started with automated trading.\n\n"
                 "In the next few steps, you'll configure:\n"
                 "• Your broker connection\n"

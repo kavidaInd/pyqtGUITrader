@@ -104,9 +104,9 @@ def _qt_app():
         from PyQt5.QtCore import Qt
 
         app = QApplication.instance() or QApplication(sys.argv)
-        app.setApplicationName("Algo Trading Pro")
-        app.setOrganizationName("YourCompany")
-        app.setOrganizationDomain("yourcompany.com")
+        app.setApplicationName("OptionPilot")
+        app.setOrganizationName("Option Pilot Pvt Ltd")
+        app.setOrganizationDomain("optionpilot.in")
 
         return app
     except Exception as e:
@@ -752,7 +752,7 @@ def _inject_trial_banner(window):
 def main() -> int:
     """Main application entry point."""
     logger.info("=" * 60)
-    logger.info("  Algo Trading Pro — starting up")
+    logger.info("  Option Pilot — starting up")
     logger.info("=" * 60)
 
     # Global variable to store database session ID for use throughout the app

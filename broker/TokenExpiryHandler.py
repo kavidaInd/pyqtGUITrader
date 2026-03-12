@@ -180,7 +180,7 @@ class TokenExpiryHandler(QObject):
                 # or the startup token-gate before credentials have been saved.
                 app = QApplication.instance()
                 main_window_open = any(
-                    w.isVisible() and w.windowTitle() == "Algo Trading Dashboard"
+                    w.isVisible() and w.windowTitle() == "Option Pilot Dashboard"
                     for w in (app.topLevelWidgets() if app else [])
                 )
                 if not main_window_open:
@@ -240,7 +240,7 @@ class TokenExpiryHandler(QObject):
             main_window = None
             if app:
                 for widget in app.topLevelWidgets():
-                    if widget.windowTitle() == "Algo Trading Dashboard":
+                    if widget.windowTitle() == "Option Pilot Dashboard":
                         main_window = widget
                         break
 

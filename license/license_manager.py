@@ -63,15 +63,15 @@ from requests.adapters import HTTPAdapter
 logger = logging.getLogger(__name__)
 
 # ── App constants ──────────────────────────────────────────────────────────────
-ACTIVATION_SERVER_URL: str = "http://localhost/wordpress"  # ← set this
+ACTIVATION_SERVER_URL: str = "https://optionpilot.in/"
 APP_VERSION: str = "1.0.0"
 REQUEST_TIMEOUT: int = 15
 OFFLINE_GRACE_DAYS: int = 3
 TRIAL_DURATION_DAYS: int = 7
 HEARTBEAT_INTERVAL_H: int = 4
 
-_APP_SECRET = "1b7e0b8f37c53f3e6c43d4a38e6bad5cb5e4ba8dd10a697cd14092609c92e9f0"
-# Plan constants
+_APP_SECRET = "cbf015914727b524c1227379871ba623c3a59036f1c3bd0dc883b92c22cb483d"
+
 PLAN_TRIAL = "trial"
 PLAN_STANDARD = "standard"
 PLAN_PRO = "pro"
@@ -720,7 +720,7 @@ class LicenseManager:
         return {
             "trial_already_used": (
                 "A free trial has already been used on this machine.\n\n"
-                "Purchase a license to continue using Algo Trading Pro."
+                "Purchase a license to continue using Option Pilot."
             ),
             "invalid_email": "Please enter a valid email address.",
             "replay_detected": "Request replay detected. Please check your system clock.",
