@@ -28,6 +28,7 @@ import logging
 import os
 from collections import deque
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from enum import Enum
 from typing import Any, Deque, Dict, List, Optional
 
@@ -121,7 +122,7 @@ class CandleDebugger:
                     {
                         "meta": {
                             "total_candles": len(entries),
-                            "generated_at": datetime.now().isoformat(timespec="seconds"),
+                            "generated_at": ist_now().isoformat(timespec="seconds"),
                         },
                         "candles": entries,
                     },

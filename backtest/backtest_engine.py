@@ -41,6 +41,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Callable, Dict, List, NamedTuple, Optional
 
 import pandas as pd
@@ -732,7 +733,7 @@ class BacktestEngine:
             import tempfile
             dbg_path = cfg.debug_output_path or os.path.join(
                 tempfile.gettempdir(),
-                f"backtest_debug_{datetime.now():%Y%m%d_%H%M%S}.json"
+                f"backtest_debug_{fmt_stamp()}.json"
             )
             if debugger.save(dbg_path):
                 result.debug_log_path = dbg_path

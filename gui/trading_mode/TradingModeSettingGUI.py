@@ -76,31 +76,6 @@ class ModernCard(QFrame):
         self.setStyleSheet(base_style)
 
 
-class ModernHeader(QLabel):
-    """Modern header with underline accent."""
-
-    def __init__(self, text, parent=None):
-        super().__init__(text, parent)
-        self.setObjectName("modernHeader")
-        self._apply_style()
-
-    def _apply_style(self):
-        c = theme_manager.palette
-        ty = theme_manager.typography
-        sp = theme_manager.spacing
-
-        self.setStyleSheet(f"""
-            QLabel#modernHeader {{
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_XL}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                padding-bottom: {sp.PAD_SM}px;
-                border-bottom: 2px solid {c.BLUE};
-                margin-bottom: {sp.PAD_MD}px;
-            }}
-        """)
-
-
 class TradingModeSettingGUI(QDialog, ThemedMixin):
     def __init__(self, parent=None, trading_mode_setting=None, app=None):
         # Rule 2: Safe defaults first
@@ -157,15 +132,14 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                                              self._sp.PAD_XL, self._sp.PAD_XL)
             content_layout.setSpacing(self._sp.GAP_LG)
 
-            # Header
-            header = ModernHeader("Trading Mode Configuration")
-            content_layout.addWidget(header)
-
             # Tabs with consistent styling
             self.tabs = self._create_tabs()
             content_layout.addWidget(self.tabs)
 
-            # Status label
+            # Status + save row (matches DailyTradeSettingGUI layout)
+            status_save_layout = QHBoxLayout()
+            status_save_layout.setSpacing(self._sp.GAP_MD)
+
             self.status_label = QLabel("")
             self.status_label.setAlignment(Qt.AlignLeft)
             self.status_label.setStyleSheet(f"""
@@ -177,27 +151,17 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                     border-radius: {self._sp.RADIUS_MD}px;
                 }}
             """)
-            content_layout.addWidget(self.status_label)
-
-            # Buttons
-            button_layout = QHBoxLayout()
-            button_layout.setSpacing(self._sp.GAP_MD)
-            button_layout.addStretch()
-
-            self.save_btn = self._create_modern_button("Save Settings", primary=True, icon="💾")
-            self.save_btn.clicked.connect(self._save_settings)
+            status_save_layout.addWidget(self.status_label, 1)
 
             self.apply_btn = self._create_modern_button("Apply", primary=False, icon="✅")
             self.apply_btn.clicked.connect(self._apply_settings)
+            status_save_layout.addWidget(self.apply_btn)
 
-            self.cancel_btn = self._create_modern_button("✕ Cancel", primary=False)
-            self.cancel_btn.clicked.connect(self.reject)
+            self.save_btn = self._create_modern_button("Save Settings", primary=True, icon="💾")
+            self.save_btn.clicked.connect(self._save_settings)
+            status_save_layout.addWidget(self.save_btn)
 
-            button_layout.addWidget(self.save_btn)
-            button_layout.addWidget(self.apply_btn)
-            button_layout.addWidget(self.cancel_btn)
-
-            content_layout.addLayout(button_layout)
+            content_layout.addLayout(status_save_layout)
 
             main_layout.addWidget(content)
             root.addWidget(self.main_card)
@@ -366,7 +330,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
         # Note: MTF / Risk / Signal widgets removed — those tabs were merged
         # into DailyTradeSettingGUI to have a single authoritative settings place.
         self.save_btn = None
-        self.cancel_btn = None
         self.apply_btn = None
         self.status_label = None
         self._save_in_progress = False
@@ -485,24 +448,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
                 QPushButton:hover {{
                     background: {self._c.BORDER};
                     border-color: {self._c.BORDER_FOCUS};
-                }}
-            """)
-
-        # Cancel button
-        if self.cancel_btn:
-            self.cancel_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {self._c.BG_HOVER};
-                    color: {self._c.TEXT_MAIN};
-                    border: 1px solid {self._c.BORDER};
-                    border-radius: {self._sp.RADIUS_MD}px;
-                    padding: {self._sp.PAD_SM}px {self._sp.PAD_XL}px;
-                    font-size: {self._ty.SIZE_BODY}pt;
-                    min-width: 120px;
-                    min-height: 36px;
-                }}
-                QPushButton:hover {{
-                    background: {self._c.BORDER};
                 }}
             """)
 
@@ -1647,7 +1592,6 @@ class TradingModeSettingGUI(QDialog, ThemedMixin):
             self.delay_check = None
             self.delay_spin = None
             self.save_btn = None
-            self.cancel_btn = None
             self.apply_btn = None
             self.status_label = None
             self.main_card = None

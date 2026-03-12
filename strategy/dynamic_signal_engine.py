@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from Utils.safe_getattr import safe_hasattr, safe_getattr
+from gui.theme_manager import theme_manager
 
 # Rule 4: Structured logging
 logger = logging.getLogger(__name__)
@@ -78,11 +79,19 @@ SIGNAL_LABELS: Dict[str, str] = {
     "EXIT_CALL": "🔴  Exit Call", "EXIT_PUT": "🔵  Exit Put", "HOLD": "⏸   Hold",
 }
 
-# Color codes for UI theming
-SIGNAL_COLORS: Dict[str, str] = {
-    "BUY_CALL": "#a6e3a1", "BUY_PUT": "#89b4fa", "EXIT_CALL": "#f38ba8",
-    "EXIT_PUT": "#fab387", "HOLD": "#f9e2af", "WAIT": "#585b70",
-}
+# Color codes for UI theming — sourced from theme_manager so they follow dark/light switching
+def _signal_colors() -> Dict[str, str]:
+    c = theme_manager.palette
+    return {
+        "BUY_CALL":  c.GREEN,
+        "BUY_PUT":   c.BLUE,
+        "EXIT_CALL": c.RED,
+        "EXIT_PUT":  c.ORANGE,
+        "HOLD":      c.YELLOW,
+        "WAIT":      c.TEXT_DIM,
+    }
+
+SIGNAL_COLORS: Dict[str, str] = _signal_colors()
 
 # Signal priorities for resolution (lower number = higher priority)
 SIGNAL_PRIORITY = {

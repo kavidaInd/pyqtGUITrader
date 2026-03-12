@@ -22,6 +22,7 @@ Features:
 
 import logging
 from datetime import datetime, date
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtWidgets import (
@@ -549,7 +550,7 @@ class DailyPnLWidget(QWidget):
                 return datetime.strptime(last_reset, "%Y-%m-%d").date()
         except Exception as e:
             logger.error(f"[DailyPnLWidget._get_last_reset_date] {e}")
-        return datetime.now().date()
+        return ist_now().date()
 
     def _save_last_reset_date(self):
         try:
@@ -565,7 +566,7 @@ class DailyPnLWidget(QWidget):
             # If that returns nothing, try the daily_pnl summary table
             if self._trades == 0:
                 from db.crud import daily_pnl as daily_pnl_crud
-                today_str = datetime.now().date().isoformat()
+                today_str = ist_now().date().isoformat()
                 row = daily_pnl_crud.get(today_str)
                 if row:
                     self._realized = float(row['realized_pnl'])
@@ -584,7 +585,7 @@ class DailyPnLWidget(QWidget):
         """
         try:
             from db.connector import get_db
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = ist_now().strftime("%Y-%m-%d")
             db = get_db()
             rows = db.fetchall(
                 "SELECT pnl FROM orders WHERE status='CLOSED' AND DATE(exited_at)=?",
@@ -655,7 +656,7 @@ class DailyPnLWidget(QWidget):
     def _save_daily_data(self):
         try:
             from db.crud import daily_pnl as daily_pnl_crud
-            today_str = datetime.now().date().isoformat()
+            today_str = ist_now().date().isoformat()
             daily_pnl_crud.upsert(
                 date_str=today_str,
                 realized_pnl=self._realized,
@@ -812,8 +813,8 @@ class DailyPnLWidget(QWidget):
         try:
             if self._closing:
                 return
-            today = datetime.now().date()
-            now_time = datetime.now().time()
+            today = ist_now().date()
+            now_time = ist_now().time()
             if today != self._last_reset_date and now_time.hour == 9 and now_time.minute >= 15:
                 self.reset()
                 self._last_reset_date = today

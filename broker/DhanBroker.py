@@ -25,6 +25,7 @@ import time
 import random
 import threading
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from Utils.common import to_date_str
 from typing import Optional, Dict, List, Any, Callable
 
@@ -139,7 +140,7 @@ class DhanBroker(BaseBroker):
 
             if not self._token_expiry and access_token:
                 # If no expiry in DB, assume token is valid for TOKEN_VALIDITY_DAYS from now
-                self._token_issued_at = datetime.now()
+                self._token_issued_at = ist_now()
                 self._token_expiry = self._token_issued_at + timedelta(days=self.TOKEN_VALIDITY_DAYS)
 
             if self.is_token_expired:
@@ -216,7 +217,7 @@ class DhanBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(expiry_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -236,7 +237,7 @@ class DhanBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(issued_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -427,8 +428,8 @@ class DhanBroker(BaseBroker):
             dhan_interval = self._to_dhan_interval(interval)
 
             # Dhan requires date range for intraday data
-            to_date = to_date_str(datetime.now())
-            from_date = to_date_str(datetime.now() - timedelta(days=4))
+            to_date = to_date_str(ist_now())
+            from_date = to_date_str(ist_now() - timedelta(days=4))
 
             result = self._call(
                 lambda: self.dhan.intraday_minute_data(
@@ -464,8 +465,8 @@ class DhanBroker(BaseBroker):
             fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
                 max(days, 120) if interval in ["120", "240"] else days
             )
-            to_date = to_date_str(datetime.now())
-            from_date = to_date_str(datetime.now() - timedelta(days=fetch_days))
+            to_date = to_date_str(ist_now())
+            from_date = to_date_str(ist_now() - timedelta(days=fetch_days))
             result = self._call(
                 lambda: self.dhan.historical_daily_data(
                     security_id=security_id,

@@ -561,9 +561,10 @@ class ConfigCRUD:
         """
         try:
             from datetime import datetime, time
+            from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
             if current_time is None:
-                current_time = datetime.now()
+                current_time = ist_now()
 
             # Get market hours from config
             open_str = self.get('market_open_time', '09:15', db)

@@ -41,6 +41,7 @@ import random
 import math
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, Any, Dict, List, Callable, Union
 
 from broker.TokenExpiryHandler import token_expiry_handler
@@ -56,7 +57,7 @@ class TokenExpiredError(RuntimeError):
             message = f"{message} (code: {code})"
         super().__init__(message)
         self.code = code
-        self.timestamp = datetime.now()
+        self.timestamp = ist_now()
 
 
 class BaseBroker(ABC):
@@ -183,19 +184,16 @@ class BaseBroker(ABC):
         expiry = self.token_expiry
         if expiry is None:
             return None
-        remaining = (expiry - datetime.now()).total_seconds()
+        remaining = (expiry - ist_now()).total_seconds()
         return max(0.0, remaining)
 
     @property
     def is_token_expired(self) -> bool:
-        import pytz
-        IST = pytz.timezone("Asia/Kolkata")
-
         expiry = self.token_expiry
         if expiry is None:
             return False
 
-        now = datetime.now(IST)
+        now = ist_now()
 
         if expiry.tzinfo is None:
             expiry = IST.localize(expiry)
@@ -1068,11 +1066,11 @@ class BaseBroker(ABC):
         """Return today's market open time (9:15 AM)."""
         try:
             from Utils.common import get_time_of_day
-            dt_obj = dt_obj or datetime.now()
+            dt_obj = dt_obj or ist_now()
             return get_time_of_day(9, 15, 0, dt_obj)
         except Exception as e:
             logger.error(f"[BaseBroker.get_market_start_time] {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @staticmethod
     def get_market_end_time(dt_obj: Optional[datetime] = None) -> datetime:
@@ -1082,7 +1080,7 @@ class BaseBroker(ABC):
             return get_market_end_time(dt_obj)
         except Exception as e:
             logger.error(f"[BaseBroker.get_market_end_time] {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     # =========================================================================
     # Shared P&L utility  (class-level, broker-agnostic)

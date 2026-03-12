@@ -13,6 +13,7 @@ import logging
 import traceback
 from typing import Optional, Dict, Any
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QSize, QEvent
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QPushButton, QLabel,
@@ -379,7 +380,7 @@ class StatsWidget(QWidget, ThemedMixin):
     def _update_time(self):
         """Update the time label"""
         if safe_hasattr(self, 'time_label') and self.time_label:
-            current_time = datetime.now().strftime("%H:%M:%S")
+            current_time = fmt_display(ist_now(), time_only=True)
             self.time_label.setText(f"🕒 {current_time}")
 
     def _add_label(self, key: str, label: QLabel):
@@ -1447,7 +1448,7 @@ class StatsWidget(QWidget, ThemedMixin):
             start_time = snap.get('current_trade_started_time')
             if start_time:
                 if isinstance(start_time, datetime):
-                    self._update_label("current_trade_started_time", start_time.strftime("%H:%M"))
+                    self._update_label("current_trade_started_time", fmt_display(start_time, time_only=True))
                 else:
                     self._update_label("current_trade_started_time", str(start_time))
 
@@ -1712,7 +1713,7 @@ class StatsWidget(QWidget, ThemedMixin):
 
             start_time = snap.get('current_trade_started_time')
             if start_time and isinstance(start_time, datetime):
-                self._update_label("adv_session_start", start_time.strftime("%H:%M"))
+                self._update_label("adv_session_start", fmt_display(start_time, time_only=True))
 
                 duration = datetime.now() - start_time
                 hours = duration.seconds // 3600

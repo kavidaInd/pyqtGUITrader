@@ -31,6 +31,7 @@ import time
 import random
 import threading
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from Utils.common import to_date_str, timedelta
 from typing import Optional, Dict, List, Any, Callable
 
@@ -213,7 +214,7 @@ class UpstoxBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(expiry_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -233,7 +234,7 @@ class UpstoxBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(issued_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -303,7 +304,7 @@ class UpstoxBroker(BaseBroker):
                 self.state.token = access_token
 
                 # Update token timestamps
-                issued_at = datetime.now()
+                issued_at = ist_now()
                 expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
                 self._token_issued_at = issued_at
                 self._token_expiry = expires_at
@@ -484,8 +485,8 @@ class UpstoxBroker(BaseBroker):
             fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
                 max(days, 120) if interval in ["120", "240"] else days
             )
-            to_date = to_date_str(datetime.now())
-            from_date = to_date_str(datetime.now() - timedelta(days=fetch_days))
+            to_date = to_date_str(ist_now())
+            from_date = to_date_str(ist_now() - timedelta(days=fetch_days))
             upstox_interval = self._to_upstox_interval(interval)
             self._check_rate_limit()
             result = self._call(

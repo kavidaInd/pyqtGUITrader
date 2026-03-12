@@ -41,6 +41,7 @@ import random
 import hashlib
 import threading
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
@@ -249,7 +250,7 @@ class FlattradeBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(expiry_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -269,7 +270,7 @@ class FlattradeBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(issued_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -333,7 +334,7 @@ class FlattradeBroker(BaseBroker):
                 self.state.token = app_sha256
 
                 # Update token timestamps
-                issued_at = datetime.now()
+                issued_at = ist_now()
                 expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
                 self._token_issued_at = issued_at
                 self._token_expiry = expires_at
@@ -358,7 +359,7 @@ class FlattradeBroker(BaseBroker):
                 self.state.token = token
 
                 # Update token timestamps
-                issued_at = datetime.now()
+                issued_at = ist_now()
                 expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
                 self._token_issued_at = issued_at
                 self._token_expiry = expires_at

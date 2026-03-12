@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Any, Dict, List, Optional, Set
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -417,7 +418,7 @@ class StatusPanel(QWidget):
         )
         lay.addWidget(self.conn_status)
 
-        self.timestamp = QLabel(datetime.now().strftime("%H:%M:%S"))
+        self.timestamp = QLabel(fmt_display(ist_now(), time_only=True))
         self.timestamp.setStyleSheet(
             f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; "
             f"background: transparent; border: none;"
@@ -716,7 +717,7 @@ class StatusPanel(QWidget):
             return
         try:
             c = self._c
-            self.timestamp.setText(datetime.now().strftime("%H:%M:%S"))
+            self.timestamp.setText(fmt_display(ist_now(), time_only=True))
 
             snap = self._get_cached_snapshot()
             pos = self._get_cached_position_snapshot()

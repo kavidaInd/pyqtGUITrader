@@ -30,6 +30,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
@@ -1599,7 +1600,7 @@ class DynamicSignalDebugPopup(QDialog, _TM):
                 (self._lbl_symbol,     str(symbol)),
                 (self._lbl_last_close, str(last_close)),
                 (self._lbl_bars,       str(len(close_list))),
-                (self._lbl_timestamp,  datetime.now().strftime("%H:%M:%S")),
+                (self._lbl_timestamp,  fmt_display(ist_now(), time_only=True)),
             ]:
                 if lbl:
                     lbl.setText(val)
@@ -1678,7 +1679,7 @@ class DynamicSignalDebugPopup(QDialog, _TM):
                 self._json_panel.update_result(option_signal)
 
             self._set_status(
-                f"✓  {datetime.now().strftime('%H:%M:%S')}",
+                f"✓  {fmt_display(ist_now(), time_only=True)}",
                 color=_tok("GREEN_BRIGHT")
             )
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -265,7 +266,7 @@ class BarAnalysis:
     def to_dict(self) -> Dict:
         result = {
             "timeframe":   self.timeframe,
-            "timestamp":   self.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp":   fmt_display(self.timestamp),
             "spot_price":  self.spot_price,
             "signal":      self.signal,
         }
@@ -513,7 +514,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         self.tree.clear()
         for bar in self.analysis_data.get(tf, []):
             item = QTreeWidgetItem()
-            item.setText(0, bar.timestamp.strftime("%H:%M:%S"))
+            item.setText(0, fmt_display(bar.timestamp, time_only=True))
             item.setData(0, Qt.UserRole, bar.timestamp)
             item.setText(1, f"{bar.spot_price:.2f}")
             item.setText(2, bar.signal)
@@ -546,7 +547,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         signal_colors = get_signal_colors()
 
         lines = [
-            f"📊  {bar.timeframe}  —  {bar.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"📊  {bar.timeframe}  —  {fmt_display(bar.timestamp)}",
             f"Spot: ₹{bar.spot_price:.2f}   Signal: {bar.signal}",
             "",
             "📈 Confidence Scores:",
@@ -2289,8 +2290,8 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             cells = [
                 (str(t.trade_no),                                         c.TEXT_MAIN),
                 (f"{'📈 CE' if t.direction in ('CE','CALL') else '📉 PE'}", dir_clr),
-                (t.entry_time.strftime("%d-%b %H:%M"),                    c.TEXT_MAIN),
-                (t.exit_time.strftime("%d-%b %H:%M"),                     c.TEXT_MAIN),
+                (fmt_display(t.entry_time),                    c.TEXT_MAIN),
+                (fmt_display(t.exit_time),                     c.TEXT_MAIN),
                 (f"{t.spot_entry:,.0f}",                                  c.TEXT_MAIN),
                 (f"{t.spot_exit:,.0f}",                                   c.TEXT_MAIN),
                 (f"{t.strike:,}",                                         c.TEXT_MAIN),

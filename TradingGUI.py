@@ -59,6 +59,7 @@ import os
 import sys
 import threading
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 import pandas as pd
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal
@@ -1056,7 +1057,7 @@ class TradingGUI(QMainWindow):
                 db = get_db()
                 db.execute(
                     "UPDATE trade_sessions SET last_seen_at=? WHERE id=?",
-                    (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), session_id),
+                    (fmt_display(ist_now()), session_id),
                 )
         except Exception as e:
             logger.error(f"[TradingGUI._on_db_flush_tick] {e}", exc_info=True)
@@ -1103,7 +1104,7 @@ class TradingGUI(QMainWindow):
             self._schedule_button_update()
 
             self._update_count += 1
-            now = datetime.now()
+            now = ist_now()
             if self._last_update_time and (now - self._last_update_time).seconds >= 60:
                 logger.debug(f"[TradingGUI._tick_fast] UI Update rate: {self._update_count / 60:.1f} Hz")
                 self._update_count = 0
@@ -1230,7 +1231,7 @@ class TradingGUI(QMainWindow):
             # ENHANCEMENT-2: Compute tick age for heartbeat indicator
             last_tick = getattr(self.trading_app, '_last_tick_received', None) if self.trading_app else None
             if last_tick:
-                self._tick_age_seconds = (datetime.now() - last_tick).total_seconds()
+                self._tick_age_seconds = (ist_now() - last_tick).total_seconds()
             else:
                 self._tick_age_seconds = float('inf')
 
@@ -1404,9 +1405,9 @@ class TradingGUI(QMainWindow):
 
             # Human-readable labels for x-axis display (not used by _to_epoch)
             if tf_minutes >= 60:
-                time_labels = [t.strftime("%Y-%m-%d %H:%M") for t in time_col]
+                time_labels = [fmt_display(t) for t in time_col]
             else:
-                time_labels = [t.strftime("%H:%M") for t in time_col]
+                time_labels = [fmt_display(t, time_only=True) for t in time_col]
 
             chart_data = {
                 "open":        df["open"].tolist(),
@@ -2893,7 +2894,7 @@ class TradingGUI(QMainWindow):
             import json
             backup_dir = "backups"
             os.makedirs(backup_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = ist_now().strftime("%Y%m%d_%H%M%S")
             backup_file = f"{backup_dir}/config_backup_{timestamp}.json"
             config_data = {
                 'brokerage': self.brokerage_setting.to_dict() if safe_hasattr(self.brokerage_setting, 'to_dict') else {},
@@ -2960,7 +2961,7 @@ class TradingGUI(QMainWindow):
                 return
             from db.connector import get_db
             db = get_db()
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = ist_now().strftime("%Y-%m-%d")
             row = db.fetchone(
                 "SELECT COUNT(*) as cnt FROM orders WHERE DATE(created_at)=?", (today,)
             )

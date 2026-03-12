@@ -11,6 +11,7 @@ import json
 import os
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QFont, QPixmap, QPalette, QColor, QLinearGradient, QBrush
@@ -2956,7 +2957,7 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
                 },
                 'quick_setup': self.welcome_page.isQuickSetup(),
                 'disclaimer_acknowledged': self.disclaimer_page.acknowledge_check.isChecked() if self.disclaimer_page else False,
-                'completed_at': datetime.now().isoformat()
+                'completed_at': ist_now().isoformat()
             }
         except Exception as e:
             logger.error(f"[OnboardingWizard._collect_config] Failed: {e}", exc_info=True)
@@ -3066,7 +3067,7 @@ class OnboardingWizard(QWizard, ThemedPageMixin):
             db = get_db()
             kv.set(ONBOARDING_COMPLETED_KEY, {
                 'completed': True,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': ist_now().isoformat(),
                 'version': '2.0.0',
                 'disclaimer_acknowledged': True
             }, db)
@@ -3169,7 +3170,7 @@ def mark_onboarding_completed():
         db = get_db()
         kv.set(ONBOARDING_COMPLETED_KEY, {
             'completed': True,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': ist_now().isoformat(),
             'version': '2.0.0',
             'manual': True
         }, db)

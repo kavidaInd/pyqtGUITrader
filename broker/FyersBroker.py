@@ -38,7 +38,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Timezone constants
-IST = pytz.timezone('Asia/Kolkata')
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 
 class FyersBroker(BaseBroker):
@@ -417,8 +417,8 @@ class FyersBroker(BaseBroker):
             broker_symbol = OptionUtils.get_index_symbol_for_broker(symbol, "fyers")
             broker_interval = OptionUtils.translate_interval(interval, "fyers")
 
-            today = datetime.today().strftime("%Y-%m-%d")
-            from_date = (datetime.today() - relativedelta(
+            today = ist_now().strftime("%Y-%m-%d")
+            from_date = (ist_now() - relativedelta(
                 days=6 if date.today().weekday() == 6 else 4
             )).strftime("%Y-%m-%d")
 

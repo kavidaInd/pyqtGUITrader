@@ -14,6 +14,7 @@ import logging
 import logging.handlers
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from Utils.safe_getattr import safe_hasattr
 from db.connector import get_db
@@ -140,7 +141,7 @@ class BrokerageSetting:
                         datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
                         if isinstance(expires_at, str) else expires_at
                     )
-                    if datetime.now() > (expiry_time - timedelta(minutes=5)):
+                    if ist_now().replace(tzinfo=None) > (expiry_time - timedelta(minutes=5)):
                         return False
                 except Exception:
                     pass

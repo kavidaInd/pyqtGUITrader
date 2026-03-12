@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 )
 
 from Utils.safe_getattr import safe_hasattr
+from Utils.time_utils import ist_now
 # Rule 13.1: Import theme manager
 from gui.theme_manager import theme_manager
 
@@ -1283,7 +1284,7 @@ class LogPopup(QDialog, ThemedMixin):
             filename, _ = QFileDialog.getSaveFileName(
                 self,
                 "Export Logs",
-                f"logs_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                f"logs_export_{ist_now().strftime('%Y%m%d_%H%M%S')}.txt",
                 "Text Files (*.txt);;All Files (*)"
             )
 

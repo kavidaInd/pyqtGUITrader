@@ -9,6 +9,7 @@ import logging
 import psutil
 import os
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer
@@ -1349,7 +1350,7 @@ class SystemMonitorPopup(QDialog, ThemedMixin):
                 if safe_hasattr(ws, '_last_message_time') and ws._last_message_time:
                     from datetime import datetime
                     dt = datetime.fromtimestamp(ws._last_message_time)
-                    self.ws_last_msg.setText(dt.strftime("%H:%M:%S"))
+                    self.ws_last_msg.setText(fmt_display(dt, time_only=True))
             else:
                 self.ws_status.setText("No WebSocket")
                 if self.ws_status_badge:

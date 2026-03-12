@@ -61,6 +61,7 @@ import logging.handlers
 from typing import Dict, List, Any, Optional
 
 from Utils.safe_getattr import safe_getattr
+from gui.theme_manager import theme_manager
 
 try:
     import pandas_ta as ta
@@ -808,33 +809,34 @@ def get_confidence_display_info(confidence: float, threshold: float) -> Dict[str
 
     Example:
         info = get_confidence_display_info(0.75, 0.6)
-        # Returns {"color": "#3fb950", "label": "PASS", "status": "passed", "percent": "75%"}
+        # Returns {"color": GREEN, "label": "PASS", "status": "passed", "percent": "75%"}
     """
     try:
+        c = theme_manager.palette
         if confidence >= threshold:
             return {
-                "color": "#3fb950",  # Green
+                "color": c.GREEN,
                 "label": "PASS",
                 "status": "passed",
                 "percent": f"{confidence * 100:.0f}%"
             }
         elif confidence >= threshold * 0.7:
             return {
-                "color": "#d29922",  # Yellow
+                "color": c.YELLOW,
                 "label": "NEAR",
                 "status": "near",
                 "percent": f"{confidence * 100:.0f}%"
             }
         else:
             return {
-                "color": "#f85149",  # Red
+                "color": c.RED,
                 "label": "FAIL",
                 "status": "failed",
                 "percent": f"{confidence * 100:.0f}%"
             }
     except Exception as e:
         logger.error(f"[get_confidence_display_info] Failed: {e}", exc_info=True)
-        return {"color": "#8b949e", "label": "UNKNOWN", "status": "unknown", "percent": "0%"}
+        return {"color": theme_manager.palette.TEXT_DIM, "label": "UNKNOWN", "status": "unknown", "percent": "0%"}
 
 
 # ── Sub-column definitions for multi-output indicators ────────────────────────

@@ -14,6 +14,7 @@ import time
 import random
 import threading
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
@@ -191,7 +192,7 @@ class ZerodhaBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(expiry_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -211,7 +212,7 @@ class ZerodhaBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(issued_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -268,8 +269,8 @@ class ZerodhaBroker(BaseBroker):
                 self.kite.set_access_token(access_token)
                 self.state.token = access_token
                 # Persist in DB (expires end-of-day for Zerodha)
-                expires_at = (datetime.now() + timedelta(hours=8)).isoformat()
-                issued_at = datetime.now().isoformat()
+                expires_at = (ist_now() + timedelta(hours=8)).isoformat()
+                issued_at = ist_now().isoformat()
                 db = get_db()
                 tokens.save_token(access_token, "", issued_at=issued_at, expires_at=expires_at, db=db)
                 self._token_expiry = self._parse_token_expiry()
@@ -375,7 +376,7 @@ class ZerodhaBroker(BaseBroker):
             if not instrument_token:
                 logger.warning(f"ZerodhaBroker: instrument token not found for {symbol}")
                 return None
-            to_date = datetime.now()
+            to_date = ist_now()
             from_date = to_date - timedelta(days=4)
             kite_interval = self._to_kite_interval(interval)
             self._check_rate_limit()
@@ -408,7 +409,7 @@ class ZerodhaBroker(BaseBroker):
             fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
                 max(days, 120) if interval in ["120", "240"] else days
             )
-            to_date = datetime.now()
+            to_date = ist_now()
             from_date = to_date - timedelta(days=fetch_days)
             kite_interval = self._to_kite_interval(interval)
             self._check_rate_limit()

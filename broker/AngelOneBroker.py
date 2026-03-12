@@ -35,6 +35,7 @@ from typing import Optional, Dict, List, Any, Callable
 
 import pandas as pd
 import pytz
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from requests.exceptions import Timeout, ConnectionError
 
 from Utils.safe_getattr import safe_getattr, safe_hasattr
@@ -51,7 +52,6 @@ except ImportError:
     ANGEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-IST = pytz.timezone('Asia/Kolkata')
 
 # ── AngelOne product / order constants ───────────────────────────────────────
 ANGEL_PRODUCT_INTRADAY = "INTRADAY"
@@ -213,7 +213,7 @@ class AngelOneBroker(BaseBroker):
                     try:
                         dt = datetime.strptime(expiry_str, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            dt = IST.localize(dt)
                         return dt
                     except ValueError:
                         continue
@@ -303,7 +303,7 @@ class AngelOneBroker(BaseBroker):
             self._feed_token = self.smart.getfeedToken()
 
             # Update token timestamps
-            issued_at = datetime.now()
+            issued_at = ist_now()
             expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
 
             # Refresh SmartConnect with the new token
@@ -480,7 +480,7 @@ class AngelOneBroker(BaseBroker):
             token = self._get_scrip_token(symbol)
             if not token:
                 return None
-            to_dt = datetime.now()
+            to_dt = ist_now()
             from_dt = to_dt - timedelta(days=4)
             angel_interval = self._to_angel_interval(interval)
             params = {
@@ -515,7 +515,7 @@ class AngelOneBroker(BaseBroker):
             fetch_days = max(days, 60) if interval in ["15", "30", "60"] else (
                 max(days, 120) if interval in ["120", "240"] else days
             )
-            to_dt = datetime.now()
+            to_dt = ist_now()
             from_dt = to_dt - timedelta(days=fetch_days)
             angel_interval = self._to_angel_interval(interval)
             params = {

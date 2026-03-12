@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Any, Dict, Optional
 
 import psutil
@@ -624,7 +625,7 @@ class AppStatusBar(QFrame):
     def _tick(self) -> None:
         """Update clock and dynamic system/trading metrics once per second."""
         try:
-            self._time_label.setText(datetime.now().strftime("%H:%M:%S"))
+            self._time_label.setText(fmt_display(ist_now(), time_only=True))
 
             if not self._app_running:
                 return

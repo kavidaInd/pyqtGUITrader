@@ -29,6 +29,7 @@ from urllib.parse import urlparse, parse_qs
 import re
 import webbrowser
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QLineEdit,
@@ -1364,7 +1365,7 @@ class BrokerLoginPopup(QDialog, ThemedMixin):
                 # Save token to brokerage_setting if possible
                 if self.brokerage_setting and safe_hasattr(self.brokerage_setting, 'save_token'):
                     try:
-                        now = datetime.now()
+                        now = ist_now()
                         self.brokerage_setting.save_token(
                             access_token=token,
                             refresh_token="",

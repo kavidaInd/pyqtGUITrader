@@ -100,7 +100,7 @@ class UpgradePopup(QDialog):
             QFrame#upgradeCard {{
                 background: {c.BG_PANEL};
                 border: 1px solid {c.BORDER_STRONG};
-                border-top: 3px solid #F0A500;
+                border-top: 3px solid {c.YELLOW};
                 border-radius: {sp.RADIUS_LG}px;
             }}
         """)
@@ -156,7 +156,7 @@ class UpgradePopup(QDialog):
         pricing.setStyleSheet(f"""
             QFrame {{
                 background: {c.BG_ROW_A};
-                border: 1px solid #F0A500;
+                border: 1px solid {c.YELLOW};
                 border-radius: {sp.RADIUS_MD}px;
             }}
         """)
@@ -170,7 +170,7 @@ class UpgradePopup(QDialog):
 
         amount = QLabel(PLAN_PRICE)
         amount.setStyleSheet(
-            f"color: #F0A500; font-size: {ty.SIZE_2XL}pt; "
+            f"color: {c.YELLOW}; font-size: {ty.SIZE_2XL}pt; "
             f"font-weight: {ty.WEIGHT_HEAVY}; background: transparent; border: none;"
         )
         period = QLabel(PLAN_PERIOD)
@@ -206,9 +206,9 @@ class UpgradePopup(QDialog):
             QPushButton {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #D4900A, stop:1 #F0A500
+                    stop:0 {c.YELLOW}, stop:1 {c.YELLOW_BRIGHT}
                 );
-                color: #0d1117;
+                color: {c.TEXT_INVERSE};
                 border: none;
                 border-radius: {sp.RADIUS_MD}px;
                 font-size: {ty.SIZE_BODY}pt;
@@ -219,10 +219,10 @@ class UpgradePopup(QDialog):
             QPushButton:hover {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #E8A010, stop:1 #FFBA20
+                    stop:0 {c.YELLOW_BRIGHT}, stop:1 {c.YELLOW_BRIGHT}
                 );
             }}
-            QPushButton:pressed {{ background: #C08008; }}
+            QPushButton:pressed {{ background: {c.YELLOW}; }}
         """)
         cta.clicked.connect(self._on_subscribe)
         lay.addWidget(cta)

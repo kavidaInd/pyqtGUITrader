@@ -38,6 +38,7 @@ import logging
 import urllib.parse
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, Dict, Any
 
 from db.connector import get_db
@@ -175,8 +176,8 @@ class BrokerLoginHelper(ABC):
     def _save_token(self, access_token: str, refresh_token: str = "",
                     hours_valid: int = 8) -> bool:
         try:
-            issued = datetime.now().isoformat()
-            expires = (datetime.now() + timedelta(hours=hours_valid)).isoformat()
+            issued = ist_now().isoformat()
+            expires = (ist_now() + timedelta(hours=hours_valid)).isoformat()
             self.access_token = access_token
             self.refresh_token = refresh_token
             self.token_issued_at = issued
@@ -222,7 +223,7 @@ class BrokerLoginHelper(ABC):
                 return {"is_valid": True, "expires_at": str(exp),
                         "expires_in_seconds": -1, "expires_in_hours": -1, "status": "unknown"}
 
-            secs = (expiry_time - datetime.now()).total_seconds()
+            secs = (expiry_time - ist_now()).total_seconds()
             hrs = secs / 3600
             if secs <= 0:
                 status, valid = "expired", False

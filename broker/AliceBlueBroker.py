@@ -57,7 +57,7 @@ except ImportError:
         ALICE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-IST = pytz.timezone('Asia/Kolkata')
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 # ── Alice Blue exchange / product / order constants ───────────────────────────
 ALICE_NSE = "NSE"
@@ -303,7 +303,7 @@ class AliceBlueBroker(BaseBroker):
             self.state.token = session_id
 
             # Update token timestamps
-            issued_at = datetime.now()
+            issued_at = ist_now()
             expires_at = issued_at + timedelta(hours=self.SESSION_DURATION_HOURS)
             self._token_issued_at = issued_at
             self._token_expiry = expires_at

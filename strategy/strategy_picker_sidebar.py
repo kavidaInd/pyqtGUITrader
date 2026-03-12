@@ -529,17 +529,26 @@ class _StratRow(QWidget, _TM):
     Active row has an amber left stripe.
     """
 
+    _ROW_H = 44  # fixed row height so sizeHint is always correct
+
     def __init__(self, name: str, timeframe: str, rule_count: int,
                  is_active: bool, parent=None):
         super().__init__(parent)
         self._is_active = is_active
+        self.setFixedHeight(self._ROW_H)
         self._build(name, timeframe, rule_count, is_active)
+
+    def sizeHint(self):
+        from PyQt5.QtCore import QSize
+        return QSize(self.width() or 400, self._ROW_H)
 
     def _build(self, name, timeframe, rule_count, is_active):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 10, 0)
         lay.setSpacing(0)
-        self.setStyleSheet("background: transparent;")
+        # Do NOT set background on the row itself — let the list item bg show through
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAutoFillBackground(True)
 
         c = self._c
         ty = self._ty
@@ -548,11 +557,11 @@ class _StratRow(QWidget, _TM):
         # Left accent stripe (4 px)
         stripe = QFrame()
         stripe.setFixedWidth(4)
-        stripe.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        stripe.setFixedHeight(self._ROW_H)
         stripe.setStyleSheet(
-            f"background: {accent}; border-radius: 0px;"
+            f"background: {accent}; border: none;"
             if is_active else
-            "background: transparent;"
+            f"background: {c.BG_MAIN}; border: none;"
         )
         lay.addWidget(stripe)
 
@@ -570,6 +579,7 @@ class _StratRow(QWidget, _TM):
         # Timeframe pill
         tf_lbl = QLabel(timeframe.upper())
         tf_lbl.setAlignment(Qt.AlignCenter)
+        tf_lbl.setFixedHeight(20)
         tf_lbl.setStyleSheet(f"""
             color: {_tok('PURPLE')};
             background: {_tok('PURPLE')}1A;
@@ -586,6 +596,7 @@ class _StratRow(QWidget, _TM):
         # Rule count pill
         r_lbl = QLabel(f"{rule_count}r")
         r_lbl.setAlignment(Qt.AlignCenter)
+        r_lbl.setFixedHeight(20)
         dim = c.TEXT_DISABLED
         r_lbl.setStyleSheet(f"""
             color: {dim};
@@ -893,8 +904,11 @@ class StrategyPickerSidebar(QDialog, _TM):
         self._list = QListWidget()
         self._list.setSelectionMode(QAbstractItemView.SingleSelection)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._list.itemDoubleClicked.connect(self._on_double_click)
         self._list.setMinimumHeight(140)
+        self._list.setUniformItemSizes(True)
+        self._list.setSpacing(0)
         self._restyle_list()
         return self._list
 
@@ -1011,7 +1025,6 @@ class StrategyPickerSidebar(QDialog, _TM):
     def _restyle_list(self):
         c = _p()
         ty = _ty()
-        accent = _tok("YELLOW_BRIGHT")
         self._list.setStyleSheet(f"""
             QListWidget {{
                 background: {c.BG_MAIN};
@@ -1022,10 +1035,13 @@ class StrategyPickerSidebar(QDialog, _TM):
             }}
             QListWidget::item {{
                 border-bottom: 1px solid {c.BORDER};
-                padding: 0;
+                padding: 0px;
+                min-height: 44px;
+                background: {c.BG_MAIN};
             }}
             QListWidget::item:selected {{
                 background: {c.BG_SELECTED};
+                border-bottom: 1px solid {c.BORDER_STRONG};
             }}
             QListWidget::item:hover:!selected {{
                 background: {c.BG_HOVER};
@@ -1100,7 +1116,8 @@ class StrategyPickerSidebar(QDialog, _TM):
                         rule_count=rule_count,
                         is_active=is_active,
                     )
-                    item.setSizeHint(row_w.sizeHint())
+                    from PyQt5.QtCore import QSize
+                    item.setSizeHint(QSize(self._list.width() or 400, _StratRow._ROW_H))
                     self._list.addItem(item)
                     self._list.setItemWidget(item, row_w)
 
@@ -1129,7 +1146,8 @@ class StrategyPickerSidebar(QDialog, _TM):
 
     def _get_cached_snapshot(self) -> dict:
         from datetime import datetime
-        now = datetime.now()
+        from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
+        now = ist_now()
         if (self._last_snapshot_time is None or
                 (now - self._last_snapshot_time).total_seconds() > self._snapshot_cache_secs):
             self._last_snapshot = state_manager.get_snapshot()

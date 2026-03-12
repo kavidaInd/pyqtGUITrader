@@ -55,150 +55,10 @@ from PyQt5.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-# ── Try to import project modules; fall back to stubs for standalone use ──────
+# ── Import project modules ────────────────────────────────────────────────────
 
-try:
-    from gui.theme_manager import theme_manager
-except ImportError:
-    class _FakePalette:
-        BG_MAIN = "#0a0e17";
-        BG_PANEL = "#0f1520";
-        BG_CARD = "#141c2b"
-        BG_HOVER = "#1a2438";
-        BG_INPUT = "#0d1320";
-        BG_SELECTED = "#1e3a5f"
-        BORDER = "#1e2d45";
-        BORDER_FOCUS = "#3b82f6";
-        BORDER_STRONG = "#2d4068"
-        TEXT_MAIN = "#e2e8f0";
-        TEXT_DIM = "#64748b";
-        TEXT_DISABLED = "#334155"
-        TEXT_INVERSE = "#0a0e17";
-        TEXT_LINK = "#3b82f6"
-        ACCENT = "#f59e0b";
-        ACCENT_DIM = "#92400e"
-        GREEN = "#10b981";
-        GREEN_BRIGHT = "#34d399"
-        RED = "#ef4444";
-        RED_BRIGHT = "#f87171"
-        YELLOW = "#f59e0b";
-        YELLOW_BRIGHT = "#fbbf24"
-        BLUE = "#3b82f6";
-        BLUE_DARK = "#1d4ed8"
-        ORANGE = "#f97316";
-        PURPLE = "#a78bfa";
-        CYAN = "#06b6d4"
-        BAR_BG = "#0f1520";
-        BAR_BORDER = "#1e2d45"
-        CHART_BG = "#0a0e17";
-        CHART_GRID = "#1a2438"
-        PNL_CARD_BG = "#141c2b";
-        PNL_ACCENT = "#1d4ed8";
-        PNL_DIVIDER = "#1e2d45"
+from gui.theme_manager import theme_manager
 
-        def get(self, name, default="#000000"): return getattr(self, name, default)
-
-
-    class _FakeTypography:
-        FONT_UI = "Segoe UI";
-        FONT_MONO = "Consolas"
-        SIZE_XS = 8;
-        SIZE_SM = 9;
-        SIZE_BODY = 10;
-        SIZE_MD = 11
-        SIZE_LG = 12;
-        SIZE_XL = 14;
-        SIZE_2XL = 16;
-        SIZE_3XL = 20;
-        SIZE_DISPLAY = 24
-        SIZE_MONO = 10;
-        SIZE_NUMERIC = 11
-        WEIGHT_NORMAL = "normal";
-        WEIGHT_MEDIUM = "500"
-        WEIGHT_BOLD = "bold";
-        WEIGHT_HEAVY = "800"
-        LETTER_TIGHT = "-0.3px";
-        LETTER_NORMAL = "0px";
-        LETTER_WIDE = "0.5px"
-        LINE_HEIGHT_TIGHT = 1.2;
-        LINE_HEIGHT_NORMAL = 1.4
-        LINE_HEIGHT_RELAXED = 1.6;
-        LINE_HEIGHT_LOG = 1.3
-
-        def get(self, name, default=None): return getattr(self, name, default)
-
-
-    class _FakeSpacing:
-        PAD_XS = 2;
-        PAD_SM = 4;
-        PAD_MD = 8;
-        PAD_LG = 12;
-        PAD_XL = 16;
-        PAD_2XL = 24
-        GAP_XS = 2;
-        GAP_SM = 4;
-        GAP_MD = 8;
-        GAP_LG = 12;
-        GAP_XL = 16
-        RADIUS_SM = 3;
-        RADIUS_MD = 5;
-        RADIUS_LG = 8;
-        RADIUS_XL = 12;
-        RADIUS_PILL = 999
-        ROW_HEIGHT = 24;
-        BTN_HEIGHT_SM = 28;
-        BTN_HEIGHT_MD = 36;
-        BTN_HEIGHT_LG = 44
-        INPUT_HEIGHT = 32;
-        STATUS_BAR_H = 44;
-        BUTTON_PANEL_H = 68;
-        HEADER_H = 40
-        TAB_H = 36;
-        PNL_WIDGET_H = 100
-        ICON_SM = 12;
-        ICON_MD = 16;
-        ICON_LG = 20;
-        ICON_XL = 24
-        SEPARATOR = 1;
-        SPLITTER = 2;
-        PROGRESS_SM = 4;
-        PROGRESS_MD = 8;
-        PROGRESS_LG = 12
-
-        def get(self, name, default=0): return getattr(self, name, default)
-
-
-    class _FakeThemeManager:
-        palette = _FakePalette()
-        typography = _FakeTypography()
-        spacing = _FakeSpacing()
-        _current_theme = "dark"
-        _current_density = "normal"
-
-        def is_dark(self): return True
-
-        def is_compact(self): return False
-
-        class _Signal:
-            def connect(self, *a): pass
-
-            def emit(self, *a): pass
-
-            def disconnect(self, *a): pass
-
-        theme_changed = _Signal()
-        density_changed = _Signal()
-
-        def set_theme(self, t): self._current_theme = t
-
-        def set_density(self, d): self._current_density = d
-
-        def toggle(self): pass
-
-        def save_preference(self): pass
-
-
-    theme_manager = _FakeThemeManager()
 
 try:
     from strategy.strategy_manager import strategy_manager
@@ -867,7 +727,7 @@ class StrategyListPanel(QWidget):
         self.new_btn.setStyleSheet(f"""
                     QPushButton {{
                         background: {c().GREEN};
-                        color: #000000;
+                        color: {c().TEXT_INVERSE};
                         border: none;
                         border-radius: {sp().RADIUS_MD}px;
                         padding: 0px {sp().PAD_MD}px;

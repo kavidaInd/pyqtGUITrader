@@ -13,6 +13,7 @@ import subprocess
 import time
 import urllib.request
 from datetime import datetime, time as dt_time, timezone, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from pathlib import Path
 from sys import platform
 from typing import Optional, Union, List, Dict, Tuple, Any
@@ -126,7 +127,7 @@ class Utils:
     def is_today_holiday(cls) -> bool:
         """Check if today is a holiday."""
         try:
-            return cls.is_holiday(datetime.now())
+            return cls.is_holiday(ist_now())
         except Exception as e:
             logger.error(f"[is_today_holiday] Failed: {e}", exc_info=True)
             return False
@@ -137,7 +138,7 @@ class Utils:
         try:
             if cls.is_today_holiday():
                 return False
-            now = datetime.now()
+            now = ist_now()
             return cls.get_market_start_time() <= now <= cls.get_market_end_time()
         except Exception as e:
             logger.error(f"Error checking if market is open: {e}", exc_info=True)
@@ -152,7 +153,7 @@ class Utils:
     def wait_till_market_opens(cls, wait: Optional[int] = None):
         """Sleep until market opens. If `wait` is set, sleep for that many seconds instead."""
         try:
-            now = datetime.now()
+            now = ist_now()
             start_epoch = cls.get_epoch(cls.get_market_start_time())
             now_epoch = cls.get_epoch(now)
 
@@ -179,7 +180,7 @@ class Utils:
         """
         try:
             if dt_obj is None:
-                dt_obj = datetime.now()
+                dt_obj = ist_now()
 
             if not cls.is_market_closed_for_the_day():
                 return get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, dt_obj)
@@ -195,7 +196,7 @@ class Utils:
             return get_time_of_day(cls.MARKET_OPEN_HOUR, cls.MARKET_OPEN_MINUTE, 0, next_day)
         except Exception as e:
             logger.error(f"[get_market_start_time] Failed: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @staticmethod
     def get_market_end_time(dt_obj: Optional[datetime] = None) -> datetime:
@@ -208,7 +209,7 @@ class Utils:
         Returns True if current time is within `buffer_minutes` of market close.
         """
         try:
-            now = datetime.now().time()
+            now = ist_now().time()
             close_time = dt_time(15, 30)
             buffer_time = (close_time.hour * 60 + close_time.minute - buffer_minutes)
             buffer_hour = buffer_time // 60
@@ -235,15 +236,15 @@ class Utils:
         try:
             if not date_str:
                 logger.warning("to_datetime called with empty date_str")
-                return datetime.now()
+                return ist_now()
 
             return datetime.strptime(f"{date_str} {time_str}", f"{Utils.DATE_FORMAT} {Utils.TIME_FORMAT}")
         except ValueError as e:
             logger.error(f"Invalid date/time format: date={date_str}, time={time_str}: {e}")
-            return datetime.now()
+            return ist_now()
         except Exception as e:
             logger.error(f"Error converting to datetime: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @staticmethod
     def is_debug() -> bool:
@@ -315,7 +316,7 @@ class Utils:
                 file_name = "default.log"
 
             LOG_DIR.mkdir(parents=True, exist_ok=True)
-            today_folder = LOG_DIR / datetime.today().strftime('%Y-%m-%d')
+            today_folder = LOG_DIR / ist_now().strftime('%Y-%m-%d')
             today_folder.mkdir(parents=True, exist_ok=True)
             log_file_name = f"{datetime.now().strftime('%H')}-{file_name}.log"
             return today_folder / log_file_name
@@ -574,7 +575,7 @@ class Utils:
                 return False
 
             current_date = latest_date + timedelta(minutes=minutes)
-            now = datetime.now(pytz.timezone('Asia/Kolkata'))
+            now = ist_now()
             return current_date >= now - timedelta(minutes=minutes)
         except Exception as e:
             logger.error(f"[is_latest_date] Failed: {e}", exc_info=True)
@@ -638,7 +639,7 @@ class Utils:
         Check if the current time is between 12:00 and 14:00.
         """
         try:
-            now = datetime.now().time()
+            now = ist_now().time()
             start_time = dt_time(12, 0, 0)
             end_time = dt_time(14, 0, 0)
             return start_time <= now <= end_time
@@ -804,7 +805,7 @@ class Utils:
             if start_time is None:
                 return "0m"
 
-            end = end_time or datetime.now()
+            end = end_time or ist_now()
             duration = end - start_time
 
             hours = duration.seconds // 3600

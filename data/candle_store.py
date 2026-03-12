@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, time as dt_time, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
@@ -347,11 +348,11 @@ class CandleStore:
                     df_1min = self._df.reset_index().copy()
                     if df_1min["time"].dt.tz is None:
                         df_1min["time"] = df_1min["time"].dt.tz_localize(IST)
-                    self._resample_cache[1] = (df_1min, datetime.now())
+                    self._resample_cache[1] = (df_1min, ist_now())
                 return self._resample_cache[1][0].copy()
 
             # Check cache with timestamp validation
-            now = datetime.now()
+            now = ist_now()
             if minutes in self._resample_cache:
                 cached_df, cached_time = self._resample_cache[minutes]
                 # BUG-C fix: invalidate cache immediately if a bar was flushed after cache was built
@@ -541,7 +542,7 @@ class CandleStore:
         # Invalidate resample cache — new data arrived
         self._resample_cache.clear()
         # BUG-C fix: record flush timestamp so resample() can detect stale cache entries
-        self._last_flush_ts = datetime.now()
+        self._last_flush_ts = ist_now()
 
         # Reset tick accumulators (bar_start reset handled by push_tick)
         self._tick_open = None

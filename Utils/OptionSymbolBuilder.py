@@ -52,6 +52,7 @@ import calendar
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
@@ -276,7 +277,7 @@ class OptionSymbolBuilder:
     @classmethod
     def _next_monthly_expiry(cls, underlying: str, ref: Optional[datetime] = None) -> datetime:
         """Return the next upcoming monthly expiry on or after *ref*."""
-        ref = ref or datetime.now()
+        ref = ref or ist_now()
         sym = cls.canonical(underlying)
         exp = cls.monthly_expiry(ref.year, ref.month, sym)
         if exp.date() < ref.date():
@@ -290,7 +291,7 @@ class OptionSymbolBuilder:
     @classmethod
     def _next_weekly_expiry(cls, underlying: str, ref: Optional[datetime] = None) -> datetime:
         """Return the next upcoming weekly expiry on or after *ref*."""
-        ref = ref or datetime.now()
+        ref = ref or ist_now()
         sym = cls.canonical(underlying)
         weekday = EXPIRY_WEEKDAY_MAP.get(sym, 1)
         days_ahead = (weekday - ref.weekday() + 7) % 7
@@ -321,7 +322,7 @@ class OptionSymbolBuilder:
         sym = cls.canonical(underlying)
         if not cls.has_weekly_expiry(sym):
             # Monthly-only index
-            ref = datetime.now()
+            ref = ist_now()
             target_month = ref.month + weeks_offset
             target_year = ref.year + (target_month - 1) // 12
             target_month = ((target_month - 1) % 12) + 1

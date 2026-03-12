@@ -6,6 +6,7 @@ FULLY INTEGRATED with ThemeManager for dynamic theming.
 """
 import logging
 from datetime import datetime
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QGridLayout, QTabWidget, \
@@ -941,11 +942,11 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
                 if safe_hasattr(ws, '_last_message_time') and ws._last_message_time:
                     from datetime import datetime
                     dt = datetime.fromtimestamp(ws._last_message_time)
-                    self.ws_last_message.setText(dt.strftime("%H:%M:%S"))
+                    self.ws_last_message.setText(fmt_display(dt, time_only=True))
 
                 # Connected since
                 if safe_hasattr(ws, '_connected_since') and ws._connected_since:
-                    self.ws_connected_since.setText(ws._connected_since.strftime("%H:%M:%S"))
+                    self.ws_connected_since.setText(fmt_display(ws._connected_since, time_only=True))
 
             # Check broker connection
             if safe_hasattr(self.trading_app, 'broker') and self.trading_app.broker:
@@ -959,7 +960,7 @@ class ConnectionMonitorPopup(QDialog, ThemedMixin):
 
                 # Token expiry
                 if safe_hasattr(broker, 'token_expiry') and broker.token_expiry:
-                    self.token_expiry_label.setText(broker.token_expiry.strftime("%Y-%m-%d %H:%M"))
+                    self.token_expiry_label.setText(fmt_display(broker.token_expiry))
 
             # Get symbol counts from state manager
             snapshot = state_manager.get_snapshot()

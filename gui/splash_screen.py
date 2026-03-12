@@ -197,66 +197,80 @@ class AnimatedSplashScreen(QSplashScreen):
             painter.setPen(QPen(QBrush(div_grad), 1))
             painter.drawLine(80, div_y, self.width - 80, div_y)
 
-            # ── Status text ─────────────────────────────────────────────────
-            status_y = div_y + 20
+            # ── Bottom section: anchored from bottom up ──────────────────────
+            # copyright  → bottom 18px, height 16px  (y = height-34 .. height-18)
+            # pct label  → above bar, right-aligned
+            # bar        → above copyright with 28px gap
+            # status     → above bar with 12px gap, capped to 1 line
+
+            copy_h    = 16
+            copy_y    = self.height - 18 - copy_h          # = 386
+
+            bar_h     = 6
+            bar_margin_x = 56
+            bar_pct_w = 38                                  # reserved right of bar for "100%"
+            bar_x     = bar_margin_x
+            bar_w     = self.width - bar_margin_x * 2 - bar_pct_w - 6
+            bar_y     = copy_y - 28 - bar_h                # = 336
+
+            status_h  = 20
+            status_y  = bar_y - 12 - status_h              # = 304
+
+            # ── Status text (single line, elided) ──────────────────────────
             status_font = QFont(ty.FONT_UI, ty.SIZE_BODY)
             painter.setFont(status_font)
             painter.setPen(QColor(c.BLUE))
             status_text = self.current_status + "." * self.dot_count
+            # Elide long text so it never overflows
+            fm = painter.fontMetrics()
+            elided = fm.elidedText(status_text, Qt.ElideRight, self.width - 80)
             painter.drawText(
-                QRect(0, status_y, self.width, 22),
+                QRect(40, status_y, self.width - 80, status_h),
                 Qt.AlignCenter,
-                status_text
+                elided
             )
 
-            # ── Progress bar ────────────────────────────────────────────────
-            bar_margin = 64
-            bar_x = bar_margin
-            bar_y = status_y + 32
-            bar_w = self.width - bar_margin * 2
-            bar_h = 4
-
-            # Track
+            # ── Progress bar track ─────────────────────────────────────────
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(c.BG_HOVER))
             track_path = QPainterPath()
-            track_path.addRoundedRect(bar_x, bar_y, bar_w, bar_h, 2, 2)
+            track_path.addRoundedRect(bar_x, bar_y, bar_w, bar_h, 3, 3)
             painter.fillPath(track_path, QColor(c.BG_HOVER))
 
             # Fill
             if self.current_progress > 0:
-                fill_w = int(bar_w * self.current_progress / 100)
+                fill_w = max(bar_h, int(bar_w * self.current_progress / 100))
                 fill_grad = QLinearGradient(bar_x, bar_y, bar_x + fill_w, bar_y)
                 fill_grad.setColorAt(0.0, QColor(c.GREEN))
                 fill_grad.setColorAt(1.0, QColor(c.GREEN_BRIGHT))
                 fill_path = QPainterPath()
-                fill_path.addRoundedRect(bar_x, bar_y, fill_w, bar_h, 2, 2)
+                fill_path.addRoundedRect(bar_x, bar_y, fill_w, bar_h, 3, 3)
                 painter.fillPath(fill_path, fill_grad)
 
-                # Glow on fill end
-                if fill_w > 4:
-                    glow_x = bar_x + fill_w - 8
-                    glow_r = QRadialGradient(glow_x, bar_y + bar_h / 2, 12)
-                    glow_r.setColorAt(0.0, QColor(c.GREEN_BRIGHT + "80"))
+                # Glow at fill tip
+                if fill_w > 6:
+                    glow_x = bar_x + fill_w
+                    glow_r = QRadialGradient(glow_x, bar_y + bar_h / 2, 14)
+                    glow_r.setColorAt(0.0, QColor(c.GREEN_BRIGHT + "70"))
                     glow_r.setColorAt(1.0, QColor(c.GREEN_BRIGHT + "00"))
-                    painter.fillRect(glow_x - 12, bar_y - 8, 24, bar_h + 16, glow_r)
+                    painter.fillRect(glow_x - 14, bar_y - 8, 28, bar_h + 16, glow_r)
 
-            # Progress % label
+            # ── Progress % — right of bar, vertically centred on bar ───────
             pct_font = QFont(ty.FONT_MONO, ty.SIZE_XS)
             painter.setFont(pct_font)
             painter.setPen(QColor(c.TEXT_MUTED))
+            pct_x = bar_x + bar_w + 6
             painter.drawText(
-                QRect(bar_x + bar_w + 8, bar_y - 2, 40, bar_h + 4),
+                QRect(pct_x, bar_y - 2, bar_pct_w, bar_h + 4),
                 Qt.AlignLeft | Qt.AlignVCenter,
                 f"{self.current_progress}%"
             )
 
-            # ── Copyright ──────────────────────────────────────────────────
+            # ── Copyright ─────────────────────────────────────────────────
             copy_font = QFont(ty.FONT_UI, ty.SIZE_XS)
             painter.setFont(copy_font)
             painter.setPen(QColor(c.TEXT_DISABLED))
             painter.drawText(
-                QRect(0, self.height - 24, self.width, 16),
+                QRect(0, copy_y, self.width, copy_h),
                 Qt.AlignCenter,
                 "© 2025 Your Company. All rights reserved."
             )

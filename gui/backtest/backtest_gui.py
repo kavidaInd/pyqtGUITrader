@@ -3,6 +3,7 @@ Backtest GUI window for running and viewing backtest results.
 """
 import logging
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Optional
 
 from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis
@@ -553,7 +554,7 @@ class BacktestGUI(QDialog):
 ╔══════════════════════════════════════════════════════════════╗
 ║                    BACKTEST SUMMARY                          ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Period:     {result.start_date.strftime('%Y-%m-%d')} to {result.end_date.strftime('%Y-%m-%d')}
+║  Period:     {fmt_display(result.start_date, date_only=True)} to {fmt_display(result.end_date, date_only=True)}
 ║  Duration:   {(result.end_date - result.start_date).days} days
 ╠══════════════════════════════════════════════════════════════╣
 ║  Initial Capital:  ₹ {result.initial_capital:,.2f}
@@ -576,9 +577,9 @@ class BacktestGUI(QDialog):
         # Trades tab
         self.trades_table.setRowCount(len(result.trades))
         for i, trade in enumerate(result.trades):
-            self.trades_table.setItem(i, 0, QTableWidgetItem(trade.entry_time.strftime('%Y-%m-%d %H:%M')))
+            self.trades_table.setItem(i, 0, QTableWidgetItem(fmt_display(trade.entry_time)))
             self.trades_table.setItem(i, 1, QTableWidgetItem(
-                trade.exit_time.strftime('%Y-%m-%d %H:%M') if trade.exit_time else "Open"
+                fmt_display(trade.exit_time) if trade.exit_time else "Open"
             ))
             self.trades_table.setItem(i, 2, QTableWidgetItem(trade.position or ""))
             self.trades_table.setItem(i, 3, QTableWidgetItem(str(trade.qty)))

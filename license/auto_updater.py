@@ -56,6 +56,7 @@ import logging
 import platform
 import uuid
 from datetime import datetime, timedelta
+from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Dict
 
 import requests
@@ -63,25 +64,25 @@ import requests
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-ACTIVATION_SERVER_URL: str = "https://your-activation-server.com"   # ← change this
-REQUEST_TIMEOUT: int        = 15
-OFFLINE_GRACE_DAYS: int     = 3      # paid plans only — trials must verify online
-TRIAL_DURATION_DAYS: int    = 7
-APP_VERSION: str            = "1.0.0"
+ACTIVATION_SERVER_URL: str = "https://your-activation-server.com"  # ← change this
+REQUEST_TIMEOUT: int = 15
+OFFLINE_GRACE_DAYS: int = 3  # paid plans only — trials must verify online
+TRIAL_DURATION_DAYS: int = 7
+APP_VERSION: str = "1.0.0"
 
 # Plan name constants
-PLAN_TRIAL    = "trial"
+PLAN_TRIAL = "trial"
 PLAN_STANDARD = "standard"
-PLAN_PRO      = "pro"
+PLAN_PRO = "pro"
 
 # KV store keys
-_KV_LICENSE_KEY    = "license:license_key"
-_KV_ORDER_ID       = "license:order_id"
-_KV_EMAIL          = "license:email"
-_KV_MACHINE_ID     = "license:machine_id"
-_KV_EXPIRES_AT     = "license:expires_at"
-_KV_PLAN           = "license:plan"
-_KV_CUSTOMER_NAME  = "license:customer_name"
+_KV_LICENSE_KEY = "license:license_key"
+_KV_ORDER_ID = "license:order_id"
+_KV_EMAIL = "license:email"
+_KV_MACHINE_ID = "license:machine_id"
+_KV_EXPIRES_AT = "license:expires_at"
+_KV_PLAN = "license:plan"
+_KV_CUSTOMER_NAME = "license:customer_name"
 _KV_LAST_VERIFY_AT = "license:last_verify_at"
 _KV_LAST_VERIFY_OK = "license:last_verify_ok"
 _KV_DAYS_REMAINING = "license:days_remaining"
@@ -106,7 +107,7 @@ def _get_machine_id() -> str:
             platform.node(),
             platform.processor(),
             platform.machine(),
-            str(uuid.getnode()),   # MAC-address-derived integer
+            str(uuid.getnode()),  # MAC-address-derived integer
         ]
         fingerprint = hashlib.sha256("|".join(filter(None, parts)).encode()).hexdigest()[:32]
         kv.set(_KV_MACHINE_ID, fingerprint)
@@ -122,24 +123,24 @@ class LicenseResult:
     """Returned by start_trial(), activate(), and verify_on_startup()."""
 
     def __init__(
-        self,
-        ok: bool,
-        reason: str = "",
-        license_key: str = "",
-        expires_at: str = "",
-        plan: str = "",
-        customer_name: str = "",
-        days_remaining: int = 0,
-        offline: bool = False,
+            self,
+            ok: bool,
+            reason: str = "",
+            license_key: str = "",
+            expires_at: str = "",
+            plan: str = "",
+            customer_name: str = "",
+            days_remaining: int = 0,
+            offline: bool = False,
     ):
-        self.ok             = ok
-        self.reason         = reason
-        self.license_key    = license_key
-        self.expires_at     = expires_at
-        self.plan           = plan
-        self.customer_name  = customer_name
+        self.ok = ok
+        self.reason = reason
+        self.license_key = license_key
+        self.expires_at = expires_at
+        self.plan = plan
+        self.customer_name = customer_name
         self.days_remaining = days_remaining
-        self.offline        = offline
+        self.offline = offline
 
     @property
     def is_trial(self) -> bool:
@@ -199,13 +200,13 @@ class LicenseManager:
         try:
             from db.crud import kv
             return {
-                "order_id":       kv.get(_KV_ORDER_ID, ""),
-                "email":          kv.get(_KV_EMAIL, ""),
-                "plan":           kv.get(_KV_PLAN, ""),
-                "expires_at":     kv.get(_KV_EXPIRES_AT, ""),
-                "customer_name":  kv.get(_KV_CUSTOMER_NAME, ""),
-                "machine_id":     self.machine_id,
-                "last_verify":    kv.get(_KV_LAST_VERIFY_AT, ""),
+                "order_id": kv.get(_KV_ORDER_ID, ""),
+                "email": kv.get(_KV_EMAIL, ""),
+                "plan": kv.get(_KV_PLAN, ""),
+                "expires_at": kv.get(_KV_EXPIRES_AT, ""),
+                "customer_name": kv.get(_KV_CUSTOMER_NAME, ""),
+                "machine_id": self.machine_id,
+                "last_verify": kv.get(_KV_LAST_VERIFY_AT, ""),
                 "days_remaining": kv.get(_KV_DAYS_REMAINING, 0),
             }
         except Exception:
@@ -229,8 +230,8 @@ class LicenseManager:
             resp = requests.post(
                 f"{self.server_url}/api/v1/trial",
                 json={
-                    "email":       email,
-                    "machine_id":  self.machine_id,
+                    "email": email,
+                    "machine_id": self.machine_id,
                     "app_version": APP_VERSION,
                 },
                 timeout=REQUEST_TIMEOUT,
@@ -239,12 +240,12 @@ class LicenseManager:
 
             if resp.status_code == 200 and data.get("status") == "trial_activated":
                 result = LicenseResult(
-                    ok             = True,
-                    license_key    = data["license_key"],
-                    expires_at     = data["expires_at"],
-                    plan           = PLAN_TRIAL,
-                    customer_name  = email,
-                    days_remaining = int(data.get("days_remaining", TRIAL_DURATION_DAYS)),
+                    ok=True,
+                    license_key=data["license_key"],
+                    expires_at=data["expires_at"],
+                    plan=PLAN_TRIAL,
+                    customer_name=email,
+                    days_remaining=int(data.get("days_remaining", TRIAL_DURATION_DAYS)),
                 )
                 self._persist("TRIAL", email, result)
                 logger.info(
@@ -285,7 +286,7 @@ class LicenseManager:
         Seamlessly upgrades a machine that previously had a trial.
         """
         order_id = order_id.strip()
-        email    = email.strip().lower()
+        email = email.strip().lower()
 
         if not order_id or not email:
             return LicenseResult(ok=False, reason="Order ID and email are required.")
@@ -294,9 +295,9 @@ class LicenseManager:
             resp = requests.post(
                 f"{self.server_url}/api/v1/activate",
                 json={
-                    "order_id":    order_id,
-                    "email":       email,
-                    "machine_id":  self.machine_id,
+                    "order_id": order_id,
+                    "email": email,
+                    "machine_id": self.machine_id,
                     "app_version": APP_VERSION,
                 },
                 timeout=REQUEST_TIMEOUT,
@@ -305,12 +306,12 @@ class LicenseManager:
 
             if resp.status_code == 200 and data.get("status") == "activated":
                 result = LicenseResult(
-                    ok             = True,
-                    license_key    = data["license_key"],
-                    expires_at     = data["expires_at"],
-                    plan           = data.get("plan", PLAN_STANDARD),
-                    customer_name  = data.get("customer_name", ""),
-                    days_remaining = int(data.get("days_remaining", 365)),
+                    ok=True,
+                    license_key=data["license_key"],
+                    expires_at=data["expires_at"],
+                    plan=data.get("plan", PLAN_STANDARD),
+                    customer_name=data.get("customer_name", ""),
+                    days_remaining=int(data.get("days_remaining", 365)),
                 )
                 self._persist(order_id, email, result)
                 logger.info(f"License activated: plan={result.plan}, expires={result.expires_at}")
@@ -340,7 +341,7 @@ class LicenseManager:
         """
         from db.crud import kv
 
-        license_key  = kv.get(_KV_LICENSE_KEY, "")
+        license_key = kv.get(_KV_LICENSE_KEY, "")
         current_plan = kv.get(_KV_PLAN, "")
 
         if not license_key:
@@ -351,7 +352,7 @@ class LicenseManager:
                 f"{self.server_url}/api/v1/verify",
                 json={
                     "license_key": license_key,
-                    "machine_id":  self.machine_id,
+                    "machine_id": self.machine_id,
                     "app_version": APP_VERSION,
                 },
                 timeout=REQUEST_TIMEOUT,
@@ -359,20 +360,20 @@ class LicenseManager:
             data = resp.json()
 
             if data.get("valid"):
-                plan           = data.get("plan", current_plan)
+                plan = data.get("plan", current_plan)
                 days_remaining = int(data.get("days_remaining", 0))
                 result = LicenseResult(
-                    ok             = True,
-                    license_key    = license_key,
-                    expires_at     = data.get("expires_at", ""),
-                    plan           = plan,
-                    customer_name  = data.get("customer_name", ""),
-                    days_remaining = days_remaining,
+                    ok=True,
+                    license_key=license_key,
+                    expires_at=data.get("expires_at", ""),
+                    plan=plan,
+                    customer_name=data.get("customer_name", ""),
+                    days_remaining=days_remaining,
                 )
                 kv.update_many({
-                    _KV_LAST_VERIFY_AT: datetime.now().isoformat(),
+                    _KV_LAST_VERIFY_AT: ist_now().isoformat(),
                     _KV_LAST_VERIFY_OK: True,
-                    _KV_PLAN:           plan,
+                    _KV_PLAN: plan,
                     _KV_DAYS_REMAINING: days_remaining,
                 })
                 if data.get("expires_at"):
@@ -434,13 +435,13 @@ class LicenseManager:
         try:
             from db.crud import kv
             kv.update_many({
-                _KV_LICENSE_KEY:    result.license_key,
-                _KV_ORDER_ID:       order_id,
-                _KV_EMAIL:          email,
-                _KV_EXPIRES_AT:     result.expires_at,
-                _KV_PLAN:           result.plan,
-                _KV_CUSTOMER_NAME:  result.customer_name,
-                _KV_LAST_VERIFY_AT: datetime.now().isoformat(),
+                _KV_LICENSE_KEY: result.license_key,
+                _KV_ORDER_ID: order_id,
+                _KV_EMAIL: email,
+                _KV_EXPIRES_AT: result.expires_at,
+                _KV_PLAN: result.plan,
+                _KV_CUSTOMER_NAME: result.customer_name,
+                _KV_LAST_VERIFY_AT: ist_now().isoformat(),
                 _KV_LAST_VERIFY_OK: True,
                 _KV_DAYS_REMAINING: result.days_remaining,
             })
@@ -452,9 +453,9 @@ class LicenseManager:
         try:
             from db.crud import kv
             for key in (
-                _KV_LICENSE_KEY, _KV_ORDER_ID, _KV_EMAIL, _KV_EXPIRES_AT,
-                _KV_PLAN, _KV_CUSTOMER_NAME, _KV_LAST_VERIFY_AT,
-                _KV_LAST_VERIFY_OK, _KV_DAYS_REMAINING,
+                    _KV_LICENSE_KEY, _KV_ORDER_ID, _KV_EMAIL, _KV_EXPIRES_AT,
+                    _KV_PLAN, _KV_CUSTOMER_NAME, _KV_LAST_VERIFY_AT,
+                    _KV_LAST_VERIFY_OK, _KV_DAYS_REMAINING,
             ):
                 kv.delete(key)
         except Exception as e:
@@ -468,8 +469,8 @@ class LicenseManager:
         try:
             from db.crud import kv
             for key in (
-                _KV_LICENSE_KEY, _KV_EXPIRES_AT, _KV_PLAN,
-                _KV_LAST_VERIFY_AT, _KV_LAST_VERIFY_OK, _KV_DAYS_REMAINING,
+                    _KV_LICENSE_KEY, _KV_EXPIRES_AT, _KV_PLAN,
+                    _KV_LAST_VERIFY_AT, _KV_LAST_VERIFY_OK, _KV_DAYS_REMAINING,
             ):
                 kv.delete(key)
         except Exception as e:
@@ -483,7 +484,7 @@ class LicenseManager:
         try:
             from db.crud import kv
             last_ok_raw = kv.get(_KV_LAST_VERIFY_AT)
-            last_ok     = kv.get(_KV_LAST_VERIFY_OK, False)
+            last_ok = kv.get(_KV_LAST_VERIFY_OK, False)
             expires_raw = kv.get(_KV_EXPIRES_AT, "")
 
             if not last_ok or not last_ok_raw:
@@ -497,17 +498,17 @@ class LicenseManager:
 
             if expires_raw:
                 try:
-                    if datetime.now() > datetime.fromisoformat(expires_raw):
+                    if ist_now().replace(tzinfo=None) > datetime.fromisoformat(expires_raw).replace(tzinfo=None):
                         return LicenseResult(ok=False, reason="expired")
                 except ValueError:
                     pass
 
             try:
-                last_dt   = datetime.fromisoformat(last_ok_raw)
+                last_dt = datetime.fromisoformat(last_ok_raw)
                 grace_end = last_dt + timedelta(days=OFFLINE_GRACE_DAYS)
-                days_left = max(0, (grace_end - datetime.now()).days)
+                days_left = max(0, (grace_end - ist_now().replace(tzinfo=None)).days)
 
-                if datetime.now() > grace_end:
+                if ist_now().replace(tzinfo=None) > grace_end:
                     return LicenseResult(
                         ok=False,
                         reason=(
@@ -518,14 +519,14 @@ class LicenseManager:
 
                 logger.warning(f"Offline grace active: {days_left} day(s) remaining")
                 return LicenseResult(
-                    ok             = True,
-                    license_key    = kv.get(_KV_LICENSE_KEY, ""),
-                    expires_at     = expires_raw,
-                    plan           = kv.get(_KV_PLAN, ""),
-                    customer_name  = kv.get(_KV_CUSTOMER_NAME, ""),
-                    days_remaining = kv.get(_KV_DAYS_REMAINING, 0),
-                    offline        = True,
-                    reason         = f"Offline mode — {days_left} day(s) of grace remaining.",
+                    ok=True,
+                    license_key=kv.get(_KV_LICENSE_KEY, ""),
+                    expires_at=expires_raw,
+                    plan=kv.get(_KV_PLAN, ""),
+                    customer_name=kv.get(_KV_CUSTOMER_NAME, ""),
+                    days_remaining=kv.get(_KV_DAYS_REMAINING, 0),
+                    offline=True,
+                    reason=f"Offline mode — {days_left} day(s) of grace remaining.",
                 )
             except ValueError:
                 return LicenseResult(ok=False, reason="Invalid cached verification timestamp.")
