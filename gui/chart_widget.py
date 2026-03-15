@@ -1219,24 +1219,24 @@ class SpotChartWidget(QWebEngineView, ThemedMixin):
                 # Color based on structure
                 if p.structure == "HH":
                     pcol_list.append(colors["hh"])
-                    ptext_list.append(f"HH")
+                    ptext_list.append("HH")
                     psize_list.append(10 + p.strength * 3)
                 elif p.structure == "HL":
                     pcol_list.append(colors["hl"])
-                    ptext_list.append(f"HL")
+                    ptext_list.append("HL")
                     psize_list.append(10 + p.strength * 3)
                 elif p.structure == "LH":
                     pcol_list.append(colors["lh"])
-                    ptext_list.append(f"LH")
+                    ptext_list.append("LH")
                     psize_list.append(10 + p.strength * 3)
                 elif p.structure == "LL":
                     pcol_list.append(colors["ll"])
-                    ptext_list.append(f"LL")
+                    ptext_list.append("LL")
                     psize_list.append(10 + p.strength * 3)
                 else:
                     color = colors["pivot_high"] if p.type == 'high' else colors["pivot_low"]
                     pcol_list.append(color)
-                    ptext_list.append(f"Pivot")
+                    ptext_list.append("Pivot")
                     psize_list.append(8 + p.strength * 2)
 
             except Exception as e:

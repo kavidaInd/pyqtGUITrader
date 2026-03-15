@@ -359,7 +359,7 @@ class TradingThread(QThread):
     def set_shared_state(self, key: str, value: Any) -> None:
         try:
             if self._mutex:
-                locker = QMutexLocker(self._mutex)
+                _locker = QMutexLocker(self._mutex)  # held for RAII lock duration
                 self._shared_state[key] = value
         except Exception as e:
             logger.error(f"[TradingThread.set_shared_state] key={key}: {e}", exc_info=True)
@@ -367,7 +367,7 @@ class TradingThread(QThread):
     def get_shared_state(self, key: str, default: Any = None) -> Any:
         try:
             if self._mutex:
-                locker = QMutexLocker(self._mutex)
+                _locker = QMutexLocker(self._mutex)  # held for RAII lock duration
                 return self._shared_state.get(key, default)
             return default
         except Exception as e:

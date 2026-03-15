@@ -2266,7 +2266,7 @@ class TradingApp:
                 # Position is open — handle exits driven by state.trend
                 if state.current_position == BaseEnums.CALL:
                     if trend == BaseEnums.EXIT_CALL:
-                        logger.info(f"🚪 EXIT_CALL confirmed — exiting CALL position")
+                        logger.info("🚪 EXIT_CALL confirmed — exiting CALL position")
                         try:
                             success = self.executor.exit_position()
                             if not success:
@@ -2281,7 +2281,7 @@ class TradingApp:
 
                 elif state.current_position == BaseEnums.PUT:
                     if trend == BaseEnums.EXIT_PUT:
-                        logger.info(f"🚪 EXIT_PUT confirmed — exiting PUT position")
+                        logger.info("🚪 EXIT_PUT confirmed — exiting PUT position")
                         try:
                             success = self.executor.exit_position()
                             if not success:

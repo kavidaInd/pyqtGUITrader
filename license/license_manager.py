@@ -63,15 +63,15 @@ from requests.adapters import HTTPAdapter
 logger = logging.getLogger(__name__)
 
 # ── App constants ──────────────────────────────────────────────────────────────
-ACTIVATION_SERVER_URL: str = "https://optionpilot.in/"
+ACTIVATION_SERVER_URL: str = "https://optionpilot.in"
 APP_VERSION: str = "1.0.0"
 REQUEST_TIMEOUT: int = 15
 OFFLINE_GRACE_DAYS: int = 3
 TRIAL_DURATION_DAYS: int = 7
 HEARTBEAT_INTERVAL_H: int = 4
 
-_APP_SECRET = "cbf015914727b524c1227379871ba623c3a59036f1c3bd0dc883b92c22cb483d"
-
+_APP_SECRET = "8ef3776da0c2a8e78bf89918fa32ed39731d5c342463a0f2e3ef8714abb9e1ea"
+# Plan constants
 PLAN_TRIAL = "trial"
 PLAN_STANDARD = "standard"
 PLAN_PRO = "pro"
@@ -110,6 +110,16 @@ def _build_session() -> requests.Session:
     adapter = _TLSAdapter()
     s.mount("https://", adapter)
     s.mount("http://", adapter)
+    # Fix: ModSecurity rule 990012/990901 blocks the default 'python-requests/x.x.x'
+    # User-Agent as a known scanner/tool. Use a neutral browser-like UA so the
+    # WAF passes the request through to WordPress.
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        )
+    })
     return s
 
 
@@ -233,11 +243,19 @@ def _sign_request(payload: dict) -> tuple[dict, dict]:
 
 
 def _verify_response_sig(body_bytes: bytes, sig_header: str) -> bool:
-    """Return True when the server's HMAC-SHA256 signature matches."""
-    print(body_bytes)
-    print(sig_header)
+    """Return True when the server's HMAC-SHA256 signature matches.
+
+    If the response is not JSON (e.g. a ModSecurity / nginx error page),
+    the signature header will be absent — log the first 200 bytes of the
+    body to make diagnosis straightforward.
+    """
     if not sig_header:
-        logger.warning("[license] Response has no X-ATP-Response-Sig header — rejecting.")
+        # Surface what the server actually returned so the log is actionable
+        preview = body_bytes[:200].decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "[license] Response has no X-ATP-Response-Sig header — rejecting. "
+            f"Server returned: {preview!r}"
+        )
         return False
     expected = hmac.new(_APP_SECRET.encode(), body_bytes, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig_header)
@@ -420,7 +438,11 @@ class LicenseManager:
             if not _verify_response_sig(raw, sig):
                 return LicenseResult(ok=False, reason="Server response signature invalid. Please try again.")
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error("[license] start_trial: server returned non-JSON body")
+                return LicenseResult(ok=False, reason="Server returned an unexpected response. Please try again.")
 
             if resp.status_code == 200 and data.get("status") == "trial_activated":
                 result = LicenseResult(
@@ -476,7 +498,11 @@ class LicenseManager:
             if not _verify_response_sig(raw, sig):
                 return LicenseResult(ok=False, reason="Server response signature invalid. Please try again.")
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error("[license] activate: server returned non-JSON body")
+                return LicenseResult(ok=False, reason="Server returned an unexpected response. Please try again.")
 
             if resp.status_code == 200 and data.get("status") == "activated":
                 result = LicenseResult(
@@ -547,7 +573,13 @@ class LicenseManager:
                     return LicenseResult(ok=False, reason="Could not securely verify your trial license.")
                 return self._offline_fallback()
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error("[license] verify_on_startup: server returned non-JSON body")
+                if current_plan == PLAN_TRIAL:
+                    return LicenseResult(ok=False, reason="Could not verify your trial license. Please try again.")
+                return self._offline_fallback()
 
             if data.get("valid"):
                 plan = data.get("plan", current_plan)
@@ -685,7 +717,10 @@ class LicenseManager:
 
             if expires_raw:
                 try:
-                    if datetime.now(timezone.utc) > datetime.fromisoformat(expires_raw):
+                    expires_dt = datetime.fromisoformat(expires_raw)
+                    if expires_dt.tzinfo is None:
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) > expires_dt:
                         return LicenseResult(ok=False, reason="expired")
                 except ValueError:
                     pass
@@ -720,7 +755,7 @@ class LicenseManager:
         return {
             "trial_already_used": (
                 "A free trial has already been used on this machine.\n\n"
-                "Purchase a license to continue using Option Pilot."
+                "Purchase a license to continue using Algo Trading Pro."
             ),
             "invalid_email": "Please enter a valid email address.",
             "replay_detected": "Request replay detected. Please check your system clock.",

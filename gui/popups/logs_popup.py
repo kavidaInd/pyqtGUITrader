@@ -15,6 +15,8 @@ from collections import deque
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+
+from Utils.time_utils import ist_now
 from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtGui import QTextCharFormat, QColor, QFont, QTextCursor, QSyntaxHighlighter
 from PyQt5.QtWidgets import (

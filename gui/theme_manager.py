@@ -607,7 +607,7 @@ class ThemeManager(QObject):
             s = QSettings("YourCompany", "AlgoTradingPro")
             s.setValue("theme",   self._current_theme)
             s.setValue("density", self._current_density)
-            logger.debug(f"[ThemeManager] Preferences saved")
+            logger.debug("[ThemeManager] Preferences saved")
         except Exception as e:
             logger.warning(f"[ThemeManager.save_preference] Failed: {e}")
 
