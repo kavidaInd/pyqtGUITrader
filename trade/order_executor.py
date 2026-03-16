@@ -138,6 +138,7 @@ class OrderExecutor:
             self.notifier = None
             self.risk_manager = None
             self.on_trade_closed_callback = None
+            self.on_trade_opened_callback = None
 
             # FIX: Idempotency tracking
             self._submitted_order_ids: Set[str] = set()
@@ -159,6 +160,7 @@ class OrderExecutor:
         self.notifier = None
         self.risk_manager = None
         self.on_trade_closed_callback = None
+        self.on_trade_opened_callback = None
         self._submitted_order_ids = set()
         self._idempotency_keys = {}
         # Timestamp of the last failed entry attempt — used to enforce a cooldown
@@ -523,12 +525,19 @@ class OrderExecutor:
             return False
 
     def _notify_entry(self, state, option_type, option_name, price=None):
+        fill_price = price or state.current_buy_price
+        # Fire the trade-opened callback (wired by TradingGUI to the sidebar feed)
+        if self.on_trade_opened_callback:
+            try:
+                self.on_trade_opened_callback(str(option_type), float(fill_price or 0))
+            except Exception as _cb_e:
+                logger.debug(f"[_notify_entry] on_trade_opened_callback failed: {_cb_e}")
         if not self.notifier:
             return
         try:
             self.notifier.notify_entry(
                 symbol=option_name, direction=option_type,
-                price=price or state.current_buy_price,
+                price=fill_price,
                 sl=state.stop_loss or 0, tp=state.tp_point or 0,
             )
         except Exception as e:
@@ -1338,6 +1347,7 @@ class OrderExecutor:
             self.notifier = None
             self.risk_manager = None
             self.on_trade_closed_callback = None
+            self.on_trade_opened_callback = None
             self._submitted_order_ids.clear()
             self._idempotency_keys.clear()
             self._exit_in_progress = False

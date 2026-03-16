@@ -727,21 +727,28 @@ class OrderCRUD:
     def get_by_period(self, period: str = "today", db: DatabaseConnector = None) -> List[Dict[str, Any]]:
         db = db or get_db()
         try:
+            open_rows = db.fetchall(
+                f"SELECT * FROM {self.TABLE} WHERE status='OPEN' ORDER BY entered_at DESC"
+            )
+
             if period == "today":
-                rows = db.fetchall(
+                closed_rows = db.fetchall(
                     f"SELECT * FROM {self.TABLE} WHERE status='CLOSED' "
                     "AND DATE(exited_at)=DATE('now','localtime') ORDER BY exited_at DESC"
                 )
             elif period == "this_week":
-                rows = db.fetchall(
+                closed_rows = db.fetchall(
                     f"SELECT * FROM {self.TABLE} WHERE status='CLOSED' "
                     "AND exited_at>=DATE('now','localtime','-7 days') ORDER BY exited_at DESC"
                 )
             else:
-                rows = db.fetchall(
+                closed_rows = db.fetchall(
                     f"SELECT * FROM {self.TABLE} WHERE status='CLOSED' ORDER BY exited_at DESC"
                 )
-            return [_row_to_dict(r) for r in rows]
+
+            # OPEN orders first, then CLOSED (most recent first)
+            all_rows = list(open_rows) + list(closed_rows)
+            return [_row_to_dict(r) for r in all_rows]
         except Exception as e:
             logger.error(f"[OrderCRUD.get_by_period] {e}", exc_info=True)
             return []

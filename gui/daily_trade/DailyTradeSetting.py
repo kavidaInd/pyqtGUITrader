@@ -205,6 +205,16 @@ class DailyTradeSetting:
 
             self._loaded = True
             logger.debug("Daily trade settings loaded from database")
+
+            # Push loaded values to state so risk limits (max_daily_loss,
+            # max_trades_per_day, daily_target) are live from the first tick.
+            # Guard with a try/except because state_manager may not be fully
+            # ready during the very early bootstrap phase.
+            try:
+                self._apply_to_state()
+            except Exception:
+                pass  # Will be applied by apply_settings_to_state() in new_main
+
             return True
 
         except Exception as e:

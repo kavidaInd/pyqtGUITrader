@@ -34,12 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sip
-
-from gui.dialog_base import ThemedDialog
-from strategy.strategy_presets import get_preset_names, get_preset_rules
-from datetime import datetime
-from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import (
@@ -56,6 +50,10 @@ from PyQt5.QtWidgets import (
     QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget
 )
+
+from Utils.time_utils import ist_now, fmt_display
+from gui.dialog_base import ThemedDialog
+from strategy.strategy_presets import get_preset_names, get_preset_rules
 
 logger = logging.getLogger(__name__)
 
@@ -1911,7 +1909,7 @@ class SignalGroupPanel(QWidget):
         # handler, so clicking did nothing and real preset names never showed.
         _preset_names = get_preset_names(self._signal_key)
         self.preset_cb = styled_combo(["📋 Load Preset…"] + _preset_names)
-        self.preset_cb.setFixedWidth(220)
+        self.preset_cb.setFixedWidth(400)
         self.preset_cb.setToolTip("Select a preset to append its rules")
         self.preset_cb.currentIndexChanged.connect(self._on_preset_selected)
         actions_lay.addWidget(self.preset_cb)

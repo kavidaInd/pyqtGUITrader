@@ -478,16 +478,16 @@ class Config:
         """
         try:
             return {
-                'max_daily_loss': self.get('max_daily_loss', -5000),
+                'max_daily_loss': self.get('max_daily_loss', -10000),
                 'max_trades_per_day': self.get('max_trades_per_day', 10),
-                'daily_target': self.get('daily_target', 5000),
+                'daily_target': self.get('daily_target', 10000),
             }
         except Exception as e:
             logger.error(f"[Config.get_risk_config] Failed: {e}", exc_info=True)
             return {
-                'max_daily_loss': -5000,
+                'max_daily_loss': -10000,
                 'max_trades_per_day': 10,
-                'daily_target': 5000,
+                'daily_target': 10000,
             }
 
     def get_telegram_config(self) -> Dict[str, str]:

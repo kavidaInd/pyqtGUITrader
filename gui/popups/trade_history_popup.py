@@ -180,6 +180,7 @@ class TradeHistoryPopup(ThemedDialog):
         self._auto_refresh = True
         self._last_load_time = None
         self.main_card = None
+        self._external_signal = None   # TradingGUI.trade_closed signal ref for cleanup
 
     def _create_modern_button(self, text, primary=False, icon=""):
         """Create a modern styled button."""
@@ -594,15 +595,30 @@ class TradeHistoryPopup(ThemedDialog):
 
     def _connect_state_manager(self):
         """
-        UPDATED: Connect to state manager for trade closed events.
+        Connect to trade-closed events.
+
+        state_manager (TradeStateManager) is NOT a QObject and has no Qt signals.
+        Callers that want the popup to auto-refresh on trade close should call
+        register_trade_closed_callback() after construction instead.
+        The 30-second polling timer created in _build_ui() serves as the
+        fallback so the table stays current even without an explicit callback.
+        """
+        pass  # wired externally via register_trade_closed_callback()
+
+    def register_trade_closed_callback(self, signal):
+        """
+        Connect an external pyqtSignal(float, bool) — typically
+        TradingGUI.trade_closed — so the popup refreshes immediately when
+        a trade closes rather than waiting for the 30-second polling timer.
+
+        Safe to call multiple times; duplicate connections are prevented.
         """
         try:
-            # Try to connect to the state manager's trade_closed signal
-            if safe_hasattr(state_manager, 'trade_closed'):
-                state_manager.trade_closed.connect(self._on_trade_closed)
-                logger.debug("Connected to state_manager.trade_closed signal")
+            signal.connect(self._on_trade_closed)
+            self._external_signal = signal   # keep ref for cleanup
+            logger.debug("[TradeHistoryPopup] Registered trade_closed callback")
         except Exception as e:
-            logger.debug(f"Could not connect to state_manager.trade_closed: {e}")
+            logger.debug(f"[TradeHistoryPopup.register_trade_closed_callback] {e}")
 
     def _on_trade_closed(self, pnl: float, is_winner: bool):
         """
@@ -987,11 +1003,11 @@ class TradeHistoryPopup(ThemedDialog):
 
             logger.info("[TradeHistoryPopup] Starting cleanup")
 
-            # Disconnect state_manager trade_closed signal to prevent
-            # _on_trade_closed from firing after cleanup via QTimer.singleShot
+            # Disconnect external trade_closed signal if we registered one
             try:
-                if safe_hasattr(state_manager, 'trade_closed'):
-                    state_manager.trade_closed.disconnect(self._on_trade_closed)
+                if self._external_signal is not None:
+                    self._external_signal.disconnect(self._on_trade_closed)
+                    self._external_signal = None
             except Exception:
                 pass  # already disconnected or never connected
 

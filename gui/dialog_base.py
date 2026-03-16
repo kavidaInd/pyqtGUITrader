@@ -61,7 +61,7 @@ from typing import Callable, List, Optional, Tuple
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QMessageBox, QSizePolicy,
 )
 
 from gui.theme_manager import theme_manager
@@ -575,3 +575,348 @@ class ThemedDialog(QDialog, ThemedMixin):
             accent_color=accent_color or self._accent_color,
             height=height,
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ThemedMessageBox
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ThemedMessageBox(QDialog):
+    """
+    Drop-in themed replacement for QMessageBox.
+
+    Matches the app design language exactly:
+      • FramelessWindowHint + WA_TranslucentBackground
+      • ModernCard(elevated=True) wrapper (YELLOW_BRIGHT top border)
+      • build_title_bar() with icon badge + ghost close button
+      • create_modern_button() for all action buttons
+      • All colours from theme_manager — live theme-switch aware
+
+    Static API mirrors QMessageBox — existing callers need only
+    swap the class name.  Return values are the same QMessageBox
+    integer constants so all  `if reply == QMessageBox.Yes:`
+    checks keep working unchanged.
+
+    Usage
+    ─────
+        # Replace:  QMessageBox.question(parent, title, text, QMessageBox.Yes | QMessageBox.No)
+        # With:     ThemedMessageBox.question(parent, title, text)
+        reply = ThemedMessageBox.question(self, "Confirm", "Delete this?")
+        if reply == QMessageBox.Yes: ...
+
+        ThemedMessageBox.information(self, "Done", "Saved successfully.")
+        ThemedMessageBox.warning(self, "Oops", "File not found.")
+        ThemedMessageBox.critical(self, "Error", "Connection refused.")
+    """
+
+    # ── level metadata ────────────────────────────────────────────────────────
+    _LEVEL = {
+        "information": ("ℹ", "BLUE", "INFO", False),
+        "warning": ("⚠", "YELLOW_BRIGHT", "WARNING", False),
+        "critical": ("✕", "RED_BRIGHT", "ERROR", True),
+        "question": ("?", "BLUE", "CONFIRM", False),
+    }
+
+    # ── constructor ───────────────────────────────────────────────────────────
+
+    def __init__(
+            self,
+            parent=None,
+            title: str = "",
+            text: str = "",
+            level: str = "information",
+            buttons=None,  # QMessageBox.StandardButton flags
+    ):
+        super().__init__(parent)
+
+        self._result_btn = QMessageBox.Ok
+        self._level = level if level in self._LEVEL else "information"
+
+        self.setModal(True)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self._build(title, text, buttons)
+
+        # Wire theme so the card re-styles if theme changes while open
+        try:
+            theme_manager.theme_changed.connect(self._reapply_card)
+            theme_manager.density_changed.connect(self._reapply_card)
+        except Exception:
+            pass
+
+    # ── build ─────────────────────────────────────────────────────────────────
+
+    def _build(self, title: str, text: str, buttons):
+        c, ty, sp = (
+            theme_manager.palette,
+            theme_manager.typography,
+            theme_manager.spacing,
+        )
+
+        icon_char, color_attr, badge_text, is_danger = self._LEVEL[self._level]
+        accent_color = getattr(c, color_attr, c.BLUE)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(0)
+
+        # ── Card ──────────────────────────────────────────────────────────────
+        self._card = ModernCard(self, elevated=True)
+        card_lay = QVBoxLayout(self._card)
+        card_lay.setContentsMargins(0, 0, 0, 0)
+        card_lay.setSpacing(0)
+
+        # Title bar (badge uses level colour instead of YELLOW_BRIGHT)
+        title_bar = self._build_title_bar(
+            title or badge_text, badge_text, c, ty, accent_color
+        )
+        card_lay.addWidget(title_bar)
+
+        # Body
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(sp.PAD_XL, sp.PAD_LG, sp.PAD_XL, sp.PAD_LG)
+        body_lay.setSpacing(sp.GAP_MD)
+
+        # Icon + message row
+        msg_row = QWidget()
+        msg_row.setStyleSheet("background: transparent;")
+        mr_lay = QHBoxLayout(msg_row)
+        mr_lay.setContentsMargins(0, 0, 0, 0)
+        mr_lay.setSpacing(sp.GAP_MD)
+        mr_lay.setAlignment(Qt.AlignTop)
+
+        # Large icon badge
+        icon_frame = QFrame()
+        icon_frame.setFixedSize(42, 42)
+        icon_frame.setStyleSheet(f"""
+            QFrame {{
+                background:    {accent_color}22;
+                border:        1px solid {accent_color}66;
+                border-radius: 21px;
+            }}
+        """)
+        icon_lay = QVBoxLayout(icon_frame)
+        icon_lay.setContentsMargins(0, 0, 0, 0)
+        icon_lbl = QLabel(icon_char)
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet(
+            f"color: {accent_color}; font-size: {ty.SIZE_XL}pt; "
+            f"font-weight: bold; background: transparent; border: none;"
+        )
+        icon_lay.addWidget(icon_lbl)
+        mr_lay.addWidget(icon_frame, 0, Qt.AlignTop)
+
+        # Message text
+        msg_lbl = QLabel(text)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        msg_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        msg_lbl.setStyleSheet(
+            f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_BODY}pt; "
+            f"line-height: 1.5; background: transparent; border: none;"
+        )
+        mr_lay.addWidget(msg_lbl, 1)
+        body_lay.addWidget(msg_row)
+
+        body_lay.addStretch()
+
+        # ── Button row ────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(sp.GAP_SM)
+        btn_row.addStretch()
+
+        for btn_def in self._resolve_buttons(buttons, is_danger, c, ty, sp):
+            btn = btn_def["widget"]
+            result = btn_def["result"]
+            btn.clicked.connect(lambda _, r=result: self._finish(r))
+            btn_row.addWidget(btn)
+
+        body_lay.addLayout(btn_row)
+        card_lay.addWidget(body, 1)
+        root.addWidget(self._card)
+
+        # Minimum width so message text has room
+        self.setMinimumWidth(380)
+        self.setMaximumWidth(520)
+
+    def _build_title_bar(
+            self, title: str, badge_text: str, c, ty, accent_color: str
+    ) -> QWidget:
+        """Compact title bar reusing build_title_bar's ghost-button design."""
+        bar = QWidget()
+        bar.setObjectName("titleBar")
+        bar.setFixedHeight(40)
+        bar.setStyleSheet(f"""
+            QWidget#titleBar {{
+                background:    {c.BG_PANEL};
+                border-bottom: 1px solid {c.BORDER};
+                border-radius: {theme_manager.spacing.RADIUS_MD}px
+                               {theme_manager.spacing.RADIUS_MD}px 0 0;
+            }}
+        """)
+        # Allow drag
+        bar.mousePressEvent = lambda e: self._drag_press(e)
+        bar.mouseMoveEvent = lambda e: self._drag_move(e)
+        bar.mouseReleaseEvent = lambda e: self._drag_release(e)
+        self._drag_pos = None
+
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(12, 0, 8, 0)
+        lay.setSpacing(10)
+
+        # Badge
+        badge = QLabel(badge_text)
+        badge.setFixedSize(26, 22)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setStyleSheet(f"""
+            color: {c.BG_MAIN}; background: {accent_color};
+            border-radius: 4px; font-size: {ty.SIZE_XS}pt;
+            font-weight: 900; font-family: 'Consolas', monospace;
+        """)
+        lay.addWidget(badge)
+
+        # Title
+        title_lbl = QLabel(title.upper())
+        title_lbl.setStyleSheet(
+            f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XS}pt; "
+            f"font-weight: bold; letter-spacing: 1.6px; "
+            f"background: transparent; border: none;"
+        )
+        lay.addWidget(title_lbl)
+        lay.addStretch()
+
+        # Ghost close button
+        close = QPushButton("✕")
+        close.setFixedSize(26, 26)
+        close.setCursor(Qt.PointingHandCursor)
+        close.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {c.TEXT_DIM};
+                border: none; border-radius: 13px;
+                font-size: {ty.SIZE_BODY}pt; font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: #ef444433; color: #f87171;
+            }}
+        """)
+        close.clicked.connect(lambda: self._finish(QMessageBox.Cancel))
+        lay.addWidget(close)
+        return bar
+
+    def _resolve_buttons(self, buttons, is_danger, c, ty, sp) -> list:
+        """
+        Map QMessageBox.StandardButton flags to themed button definitions.
+        Returns a list of dicts with 'widget' and 'result'.
+        """
+        if self._level == "question":
+            # Default for question: Yes + No
+            if buttons is None:
+                buttons = QMessageBox.Yes | QMessageBox.No
+
+            defs = []
+            if buttons & QMessageBox.Cancel:
+                defs.append({"label": "Cancel", "result": QMessageBox.Cancel,
+                             "primary": False, "danger": False})
+            if buttons & QMessageBox.No:
+                defs.append({"label": "No", "result": QMessageBox.No,
+                             "primary": False, "danger": False})
+            if buttons & QMessageBox.Yes:
+                defs.append({"label": "Yes", "result": QMessageBox.Yes,
+                             "primary": True, "danger": False})
+
+            if not defs:
+                defs = [{"label": "OK", "result": QMessageBox.Ok,
+                         "primary": True, "danger": False}]
+        else:
+            defs = [{"label": "OK", "result": QMessageBox.Ok,
+                     "primary": True, "danger": is_danger}]
+
+        result = []
+        for d in defs:
+            if d.get("danger"):
+                btn = create_modern_button(d["label"], danger=True)
+            elif d.get("primary"):
+                btn = create_modern_button(d["label"], primary=True)
+            else:
+                btn = create_modern_button(d["label"])
+            btn.setMinimumWidth(90)
+            result.append({"widget": btn, "result": d["result"]})
+
+        return result
+
+    # ── drag support ──────────────────────────────────────────────────────────
+
+    def _drag_press(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+
+    def _drag_move(self, event):
+        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
+            self.move(event.globalPos() - self._drag_pos)
+
+    def _drag_release(self, event):
+        self._drag_pos = None
+
+    # ── result handling ───────────────────────────────────────────────────────
+
+    def _finish(self, result: int):
+        self._result_btn = result
+        if result in (QMessageBox.Cancel, QMessageBox.No):
+            self.reject()
+        else:
+            self.accept()
+
+    def _reapply_card(self, _=None):
+        try:
+            if self._card:
+                self._card._apply_style()
+        except Exception:
+            pass
+
+    # ── static convenience API ────────────────────────────────────────────────
+
+    @staticmethod
+    def question(
+            parent,
+            title: str,
+            text: str,
+            buttons=None,
+            default_button=None,
+    ) -> int:
+        """
+        Drop-in for QMessageBox.question().
+        Returns QMessageBox.Yes, QMessageBox.No, or QMessageBox.Cancel.
+        """
+        dlg = ThemedMessageBox(parent, title, text, level="question",
+                               buttons=buttons)
+        dlg.exec_()
+        return dlg._result_btn
+
+    @staticmethod
+    def information(parent, title: str, text: str, *args) -> int:
+        """Drop-in for QMessageBox.information()."""
+        dlg = ThemedMessageBox(parent, title, text, level="information")
+        dlg.exec_()
+        return dlg._result_btn
+
+    @staticmethod
+    def warning(parent, title: str, text: str, *args) -> int:
+        """Drop-in for QMessageBox.warning()."""
+        dlg = ThemedMessageBox(parent, title, text, level="warning")
+        dlg.exec_()
+        return dlg._result_btn
+
+    @staticmethod
+    def critical(parent, title: str, text: str, *args) -> int:
+        """Drop-in for QMessageBox.critical()."""
+        dlg = ThemedMessageBox(parent, title, text, level="critical")
+        dlg.exec_()
+        return dlg._result_btn
+
+    # Keep QMessageBox constant aliases accessible
+    Ok = QMessageBox.Ok
+    Yes = QMessageBox.Yes
+    No = QMessageBox.No
+    Cancel = QMessageBox.Cancel

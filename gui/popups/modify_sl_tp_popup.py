@@ -3,259 +3,274 @@ gui/popups/modify_sl_tp_popup.py
 =================================
 Popups for live-trade modification: Stop-Loss, Take-Profit, and Exit confirmation.
 
-Three dialogs, all sharing the same design language as the existing settings dialogs:
-  • ModifyTPDialog   — update TP % for the current trade
-  • ModifySLDialog   — update SL % for the current trade
-  • ExitConfirmDialog — confirm a manual exit with trade summary
+All three dialogs match the app design language exactly:
+  • ThemedDialog base  (FramelessWindowHint + WA_TranslucentBackground)
+  • ModernCard(elevated=True) wrapper  (YELLOW_BRIGHT top border, BG_MAIN body)
+  • build_title_bar()  (monogram badge + CAPS title + ghost close button)
+  • create_modern_button()  (shared button factory — primary / danger / ghost)
+  • All colours exclusively from theme_manager — live theme-switch aware
 """
 
 import logging
-import threading
 
-from PyQt5.QtCore    import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore    import Qt
 from PyQt5.QtGui     import QDoubleValidator
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QFrame, QWidget
+    QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QFrame, QWidget,
 )
 
 from data.trade_state_manager import state_manager
+from gui.dialog_base import (
+    ThemedDialog, ModernCard, build_title_bar, create_modern_button,
+)
 from gui.theme_manager import theme_manager
 
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared helpers
+# Private helpers  (shared by all three dialogs)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _ThemedDialog(QDialog):
-    """Base dialog with theme tokens and shared styling helpers."""
+def _sep(c) -> QFrame:
+    """1-px horizontal divider."""
+    f = QFrame()
+    f.setFrameShape(QFrame.HLine)
+    f.setFixedHeight(1)
+    f.setStyleSheet(f"background: {c.BORDER}; border: none;")
+    return f
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setModal(True)
-        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint)
-        theme_manager.theme_changed.connect(self._apply_base_theme)
-        theme_manager.density_changed.connect(self._apply_base_theme)
 
-    @property
-    def _c(self):  return theme_manager.palette
-    @property
-    def _ty(self): return theme_manager.typography
-    @property
-    def _sp(self): return theme_manager.spacing
+def _info_row(label: str, value: str, value_color=None, *, c, ty) -> QWidget:
+    """Key  ···  Value row used inside summary cards."""
+    vc = value_color or c.TEXT_MAIN
+    w = QWidget()
+    w.setStyleSheet("background: transparent;")
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(8)
 
-    def _apply_base_theme(self, _=None):
-        c, ty = self._c, self._ty
-        self.setStyleSheet(f"""
-            QDialog {{
-                background: {c.BG_MAIN};
-            }}
-            QLabel {{
-                background: transparent;
-                border: none;
-            }}
-            QLineEdit {{
-                background: {c.BG_INPUT};
-                color: {c.TEXT_MAIN};
-                border: 1px solid {c.BORDER};
-                border-radius: 4px;
-                padding: 6px 10px;
-                font-size: {ty.SIZE_BODY}pt;
-                selection-background-color: {c.BG_SELECTED};
-            }}
-            QLineEdit:focus {{
-                border-color: {c.BORDER_FOCUS};
-            }}
-        """)
+    lbl_w = QLabel(label)
+    lbl_w.setStyleSheet(
+        f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt; "
+        f"background: transparent; border: none;"
+    )
+    lay.addWidget(lbl_w)
+    lay.addStretch()
 
-    def _make_separator(self) -> QFrame:
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"border: none; background: {self._c.BORDER}; max-height: 1px;")
-        return sep
+    val_w = QLabel(value)
+    val_w.setStyleSheet(
+        f"color: {vc}; font-size: {ty.SIZE_SM}pt; "
+        f"font-weight: bold; background: transparent; border: none;"
+    )
+    lay.addWidget(val_w)
+    return w
 
-    def _make_header(self, icon: str, title: str, subtitle: str = "") -> QWidget:
-        c, ty, sp = self._c, self._ty, self._sp
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, sp.GAP_SM)
-        lay.setSpacing(sp.GAP_XS)
 
-        title_lbl = QLabel(f"{icon}  {title}")
-        title_lbl.setStyleSheet(
-            f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_XL}pt; "
-            f"font-weight: {ty.WEIGHT_HEAVY};"
-        )
-        lay.addWidget(title_lbl)
+def _section_label(text: str, *, c, ty) -> QLabel:
+    """All-caps section label placed above an input field."""
+    lbl = QLabel(text.upper())
+    lbl.setStyleSheet(
+        f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; "
+        f"letter-spacing: 0.8px; font-weight: bold; "
+        f"background: transparent; border: none;"
+    )
+    return lbl
 
-        if subtitle:
-            sub_lbl = QLabel(subtitle)
-            sub_lbl.setStyleSheet(
-                f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt;"
-            )
-            lay.addWidget(sub_lbl)
 
-        lay.addWidget(self._make_separator())
-        return w
+def _input_field(placeholder: str, default: str, *, c, ty, sp) -> QLineEdit:
+    """Themed numeric input with focus ring."""
+    h = getattr(sp, "INPUT_HEIGHT", 36)
+    inp = QLineEdit()
+    inp.setPlaceholderText(placeholder)
+    inp.setText(default)
+    inp.setValidator(QDoubleValidator(0.01, 9999.99, 2, inp))
+    inp.setFixedHeight(h)
+    inp.setStyleSheet(f"""
+        QLineEdit {{
+            background:    {c.BG_INPUT};
+            color:         {c.TEXT_MAIN};
+            border:        1px solid {c.BORDER};
+            border-radius: {sp.RADIUS_MD}px;
+            padding:       0 12px;
+            font-size:     {ty.SIZE_BODY}pt;
+            selection-background-color: {c.BG_SELECTED};
+        }}
+        QLineEdit:focus  {{ border-color: {c.BORDER_FOCUS}; }}
+        QLineEdit:hover  {{ border-color: {c.BORDER_STRONG}; }}
+    """)
+    return inp
 
-    def _make_info_row(self, label: str, value: str, value_color: str = None) -> QWidget:
-        c, ty, sp = self._c, self._ty, self._sp
-        vc = value_color or c.TEXT_MAIN
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel(label)
-        lbl.setStyleSheet(f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt;")
-        val = QLabel(value)
-        val.setStyleSheet(
-            f"color: {vc}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
-        )
-        lay.addWidget(lbl)
-        lay.addStretch()
-        lay.addWidget(val)
-        return w
 
-    def _make_btn(self, text: str, primary: bool = False, danger: bool = False) -> QPushButton:
-        c, ty, sp = self._c, self._ty, self._sp
-        btn = QPushButton(text)
-        btn.setMinimumHeight(sp.BTN_HEIGHT_SM + 6)
-        btn.setMinimumWidth(100)
+def _preview_lbl(color: str, *, c, ty) -> QLabel:
+    """Live preview / error label rendered below the input."""
+    lbl = QLabel("")
+    lbl.setWordWrap(True)
+    lbl.setMinimumHeight(20)
+    lbl.setStyleSheet(
+        f"color: {color}; font-size: {ty.SIZE_SM}pt; "
+        f"font-weight: bold; background: transparent; border: none;"
+    )
+    return lbl
 
-        if danger:
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.RED};
-                    color: {c.TEXT_INVERSE};
-                    border: none;
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_LG}px;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-                QPushButton:hover {{ background: {c.RED_BRIGHT}; }}
-                QPushButton:pressed {{ background: {c.RED}; }}
-            """)
-        elif primary:
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BLUE};
-                    color: {c.TEXT_INVERSE};
-                    border: none;
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_LG}px;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-                QPushButton:hover {{ background: {c.BORDER_FOCUS}; }}
-                QPushButton:pressed {{ background: {c.BLUE}; }}
-                QPushButton:disabled {{ background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; }}
-            """)
-        else:
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BG_HOVER};
-                    color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER};
-                    border-radius: {sp.RADIUS_SM}px;
-                    padding: {sp.PAD_XS}px {sp.PAD_LG}px;
-                    font-size: {ty.SIZE_SM}pt;
-                    font-weight: {ty.WEIGHT_BOLD};
-                }}
-                QPushButton:hover {{ background: {c.BORDER}; }}
-            """)
-        return btn
+
+def _summary_card(rows: list, *, c, ty, sp) -> QFrame:
+    """
+    BG_PANEL rounded card containing multiple _info_row widgets.
+    `rows` — list of (label, value) or (label, value, color) tuples.
+    """
+    card = QFrame()
+    card.setStyleSheet(f"""
+        QFrame {{
+            background:    {c.BG_PANEL};
+            border:        1px solid {c.BORDER};
+            border-radius: {sp.RADIUS_MD}px;
+        }}
+    """)
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(sp.PAD_MD, sp.PAD_SM + 2, sp.PAD_MD, sp.PAD_SM + 2)
+    lay.setSpacing(sp.GAP_XS + 2)
+    for row in rows:
+        label, value = row[0], row[1]
+        color = row[2] if len(row) > 2 else None
+        lay.addWidget(_info_row(label, value, color, c=c, ty=ty))
+    return card
+
+
+def _warn_card(text: str, *, c, ty, sp) -> QFrame:
+    """Yellow-accented warning note card."""
+    card = QFrame()
+    card.setStyleSheet(f"""
+        QFrame {{
+            background:    {c.YELLOW_BRIGHT}14;
+            border:        1px solid {c.YELLOW_BRIGHT}55;
+            border-left:   3px solid {c.YELLOW_BRIGHT};
+            border-radius: {sp.RADIUS_SM}px;
+        }}
+    """)
+    lay = QHBoxLayout(card)
+    lay.setContentsMargins(sp.PAD_SM, sp.PAD_XS + 2, sp.PAD_SM, sp.PAD_XS + 2)
+    lay.setSpacing(sp.GAP_SM)
+
+    icon = QLabel("⚠")
+    icon.setStyleSheet(
+        f"color: {c.YELLOW_BRIGHT}; font-size: {ty.SIZE_BODY}pt; "
+        f"background: transparent; border: none;"
+    )
+    lay.addWidget(icon, 0, Qt.AlignTop)
+
+    msg = QLabel(text)
+    msg.setWordWrap(True)
+    msg.setStyleSheet(
+        f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt; "
+        f"background: transparent; border: none;"
+    )
+    lay.addWidget(msg, 1)
+    return card
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ModifyTPDialog
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ModifyTPDialog(_ThemedDialog):
-    """
-    Update Take-Profit % for the current open trade.
-
-    On accept: writes new tp_percentage + recalculates tp_point in TradeState.
-    """
+class ModifyTPDialog(ThemedDialog):
+    """Update Take-Profit % for the current open trade."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Modify Take-Profit")
-        self.setFixedWidth(360)
-
-        self._apply_base_theme()
+        super().__init__(
+            parent,
+            title="MODIFY TAKE-PROFIT",
+            icon="TP",
+            size=(380, 490),
+        )
         self._snapshot = state_manager.get_position_snapshot()
         self._build_ui()
+        self.apply_theme()
+
+    # ── build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        sp = self._sp
-        c  = self._c
-        ty = self._ty
+        c, ty, sp = self._c, self._ty, self._sp
 
+        # Shadow margin → card fills centre
         root = QVBoxLayout(self)
-        root.setContentsMargins(sp.PAD_LG, sp.PAD_LG, sp.PAD_LG, sp.PAD_LG)
-        root.setSpacing(sp.GAP_MD)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
 
-        # Header
-        root.addWidget(self._make_header("🎯", "Modify Take-Profit", "Adjust TP % for the current trade"))
+        self.main_card = ModernCard(self, elevated=True)
+        ml = QVBoxLayout(self.main_card)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+
+        ml.addWidget(build_title_bar(
+            self, "MODIFY TAKE-PROFIT", icon="TP",
+            on_close=self.reject,
+        ))
+
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(sp.PAD_XL, sp.PAD_LG, sp.PAD_XL, sp.PAD_LG)
+        bl.setSpacing(sp.GAP_MD)
 
         # Current trade context
-        entry  = self._snapshot.get("current_buy_price")
-        cur_tp = self._snapshot.get("tp_point")
-        cur_tp_pct = state_manager.get_state().tp_percentage
+        entry      = self._snapshot.get("current_buy_price")
+        cur_tp     = self._snapshot.get("tp_point")
+        cur_tp_pct = float(getattr(state_manager.get_state(), "tp_percentage", 2.0))
 
+        rows = []
         if entry is not None:
-            root.addWidget(self._make_info_row("Entry Price", f"₹{float(entry):.2f}"))
+            rows.append(("Entry Price", f"₹{float(entry):.2f}"))
         if cur_tp is not None:
-            root.addWidget(self._make_info_row("Current TP", f"₹{float(cur_tp):.2f}", c.GREEN))
-        root.addWidget(self._make_info_row("Current TP %", f"{cur_tp_pct:.1f}%", c.GREEN))
+            rows.append(("Current Target", f"₹{float(cur_tp):.2f}", c.GREEN))
+        rows.append(("Current TP %", f"{cur_tp_pct:.1f}%", c.GREEN))
+        bl.addWidget(_summary_card(rows, c=c, ty=ty, sp=sp))
 
-        root.addWidget(self._make_separator())
+        bl.addWidget(_sep(c))
 
-        # Input
-        input_lbl = QLabel("New Take-Profit %")
-        input_lbl.setStyleSheet(
-            f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
+        bl.addWidget(_section_label("New Take-Profit %", c=c, ty=ty))
+
+        self._input = _input_field(
+            f"e.g. {cur_tp_pct:.1f}", f"{cur_tp_pct:.1f}",
+            c=c, ty=ty, sp=sp,
         )
-        root.addWidget(input_lbl)
-
-        self._input = QLineEdit()
-        self._input.setPlaceholderText(f"e.g. {cur_tp_pct:.1f}")
-        self._input.setText(f"{cur_tp_pct:.1f}")
-        self._input.setValidator(QDoubleValidator(0.1, 100.0, 2, self._input))
         self._input.selectAll()
-        root.addWidget(self._input)
+        bl.addWidget(self._input)
 
-        # Preview label — updates as user types
-        self._preview = QLabel("")
-        self._preview.setStyleSheet(
-            f"color: {c.GREEN}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
-        )
-        root.addWidget(self._preview)
+        self._preview = _preview_lbl(c.GREEN, c=c, ty=ty)
+        bl.addWidget(self._preview)
         self._input.textChanged.connect(self._update_preview)
         self._update_preview(self._input.text())
 
-        root.addSpacing(sp.GAP_SM)
+        bl.addStretch()
 
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(sp.GAP_SM)
-        cancel_btn = self._make_btn("Cancel")
-        self._apply_btn = self._make_btn("Apply", primary=True)
+        cancel_btn      = create_modern_button("Cancel")
+        self._apply_btn = create_modern_button("Apply", primary=True, icon="✓")
         cancel_btn.clicked.connect(self.reject)
         self._apply_btn.clicked.connect(self._on_apply)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(self._apply_btn)
-        root.addLayout(btn_row)
+        bl.addLayout(btn_row)
+
+        ml.addWidget(body, 1)
+        root.addWidget(self.main_card)
+
+    # ── logic ─────────────────────────────────────────────────────────────────
 
     def _update_preview(self, text: str):
         try:
-            pct = float(text)
+            pct   = float(text)
             entry = self._snapshot.get("current_buy_price")
             if entry and pct > 0:
                 tp = float(entry) * (1 + pct / 100)
                 self._preview.setText(f"→ New TP target: ₹{tp:.2f}")
+                self._preview.setStyleSheet(
+                    f"color: {self._c.GREEN}; font-size: {self._ty.SIZE_SM}pt; "
+                    f"font-weight: bold; background: transparent; border: none;"
+                )
             else:
                 self._preview.setText("")
         except (ValueError, TypeError):
@@ -267,21 +282,15 @@ class ModifyTPDialog(_ThemedDialog):
             if pct <= 0:
                 self._show_error("TP % must be greater than 0")
                 return
-
             state = state_manager.get_state()
             state.tp_percentage = pct
-
             entry = state.current_buy_price
             if entry is not None:
                 state.tp_point = float(entry) * (1 + pct / 100)
-                logger.info(
-                    f"[ModifyTPDialog] TP updated: {pct:.1f}% → ₹{state.tp_point:.2f}"
-                )
+                logger.info(f"[ModifyTPDialog] TP updated: {pct:.1f}% → ₹{state.tp_point:.2f}")
             else:
                 state.tp_point = None
-
             self.accept()
-
         except (ValueError, TypeError):
             self._show_error("Please enter a valid percentage")
         except Exception as e:
@@ -289,99 +298,114 @@ class ModifyTPDialog(_ThemedDialog):
             self._show_error(f"Failed to update TP: {e}")
 
     def _show_error(self, msg: str):
-        c, ty = self._c, self._ty
         self._preview.setStyleSheet(
-            f"color: {c.RED}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
+            f"color: {self._c.RED_BRIGHT}; font-size: {self._ty.SIZE_SM}pt; "
+            f"font-weight: bold; background: transparent; border: none;"
         )
-        self._preview.setText(f"⚠ {msg}")
+        self._preview.setText(f"⚠  {msg}")
+
+    def apply_theme(self, _=None):
+        try:
+            if hasattr(self, "main_card") and self.main_card:
+                self.main_card._apply_style()
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ModifySLDialog
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ModifySLDialog(_ThemedDialog):
-    """
-    Update Stop-Loss % for the current open trade.
-
-    On accept: writes new stoploss_percentage + recalculates stop_loss in TradeState.
-    """
+class ModifySLDialog(ThemedDialog):
+    """Update Stop-Loss % for the current open trade."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Modify Stop-Loss")
-        self.setFixedWidth(360)
-
-        self._apply_base_theme()
+        super().__init__(
+            parent,
+            title="MODIFY STOP-LOSS",
+            icon="SL",
+            size=(380, 490),
+        )
         self._snapshot = state_manager.get_position_snapshot()
         self._build_ui()
+        self.apply_theme()
 
     def _build_ui(self):
-        sp = self._sp
-        c  = self._c
-        ty = self._ty
+        c, ty, sp = self._c, self._ty, self._sp
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(sp.PAD_LG, sp.PAD_LG, sp.PAD_LG, sp.PAD_LG)
-        root.setSpacing(sp.GAP_MD)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
 
-        # Header
-        root.addWidget(self._make_header("🛑", "Modify Stop-Loss", "Adjust SL % for the current trade"))
+        self.main_card = ModernCard(self, elevated=True)
+        ml = QVBoxLayout(self.main_card)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
 
-        # Current trade context
-        entry   = self._snapshot.get("current_buy_price")
-        cur_sl  = self._snapshot.get("stop_loss")
-        cur_sl_pct = abs(state_manager.get_state().stoploss_percentage)
+        ml.addWidget(build_title_bar(
+            self, "MODIFY STOP-LOSS", icon="SL",
+            on_close=self.reject,
+        ))
 
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(sp.PAD_XL, sp.PAD_LG, sp.PAD_XL, sp.PAD_LG)
+        bl.setSpacing(sp.GAP_MD)
+
+        entry      = self._snapshot.get("current_buy_price")
+        cur_sl     = self._snapshot.get("stop_loss")
+        cur_sl_pct = abs(float(getattr(state_manager.get_state(), "stoploss_percentage", 1.0)))
+
+        rows = []
         if entry is not None:
-            root.addWidget(self._make_info_row("Entry Price", f"₹{float(entry):.2f}"))
+            rows.append(("Entry Price", f"₹{float(entry):.2f}"))
         if cur_sl is not None:
-            root.addWidget(self._make_info_row("Current SL", f"₹{float(cur_sl):.2f}", c.RED))
-        root.addWidget(self._make_info_row("Current SL %", f"{cur_sl_pct:.1f}%", c.RED))
+            rows.append(("Current Stop", f"₹{float(cur_sl):.2f}", c.RED))
+        rows.append(("Current SL %", f"{cur_sl_pct:.1f}%", c.RED))
+        bl.addWidget(_summary_card(rows, c=c, ty=ty, sp=sp))
 
-        root.addWidget(self._make_separator())
+        bl.addWidget(_sep(c))
 
-        # Input
-        input_lbl = QLabel("New Stop-Loss %")
-        input_lbl.setStyleSheet(
-            f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
+        bl.addWidget(_section_label("New Stop-Loss %", c=c, ty=ty))
+
+        self._input = _input_field(
+            f"e.g. {cur_sl_pct:.1f}", f"{cur_sl_pct:.1f}",
+            c=c, ty=ty, sp=sp,
         )
-        root.addWidget(input_lbl)
-
-        self._input = QLineEdit()
-        self._input.setPlaceholderText(f"e.g. {cur_sl_pct:.1f}")
-        self._input.setText(f"{cur_sl_pct:.1f}")
-        self._input.setValidator(QDoubleValidator(0.1, 100.0, 2, self._input))
         self._input.selectAll()
-        root.addWidget(self._input)
+        bl.addWidget(self._input)
 
-        self._preview = QLabel("")
-        self._preview.setStyleSheet(
-            f"color: {c.RED}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
-        )
-        root.addWidget(self._preview)
+        self._preview = _preview_lbl(c.RED, c=c, ty=ty)
+        bl.addWidget(self._preview)
         self._input.textChanged.connect(self._update_preview)
         self._update_preview(self._input.text())
 
-        root.addSpacing(sp.GAP_SM)
+        bl.addStretch()
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(sp.GAP_SM)
-        cancel_btn = self._make_btn("Cancel")
-        self._apply_btn = self._make_btn("Apply", primary=True)
+        cancel_btn      = create_modern_button("Cancel")
+        self._apply_btn = create_modern_button("Apply", primary=True, icon="✓")
         cancel_btn.clicked.connect(self.reject)
         self._apply_btn.clicked.connect(self._on_apply)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(self._apply_btn)
-        root.addLayout(btn_row)
+        bl.addLayout(btn_row)
+
+        ml.addWidget(body, 1)
+        root.addWidget(self.main_card)
 
     def _update_preview(self, text: str):
         try:
-            pct = float(text)
+            pct   = float(text)
             entry = self._snapshot.get("current_buy_price")
             if entry and pct > 0:
                 sl = float(entry) * (1 - pct / 100)
                 self._preview.setText(f"→ New SL trigger: ₹{sl:.2f}")
+                self._preview.setStyleSheet(
+                    f"color: {self._c.RED}; font-size: {self._ty.SIZE_SM}pt; "
+                    f"font-weight: bold; background: transparent; border: none;"
+                )
             else:
                 self._preview.setText("")
         except (ValueError, TypeError):
@@ -393,23 +417,15 @@ class ModifySLDialog(_ThemedDialog):
             if pct <= 0:
                 self._show_error("SL % must be greater than 0")
                 return
-
             state = state_manager.get_state()
-            # stoploss_percentage is stored as a positive value in state;
-            # the negative sign is applied internally when calculating the price
             state.stoploss_percentage = pct
-
             entry = state.current_buy_price
             if entry is not None:
                 state.stop_loss = float(entry) * (1 - pct / 100)
-                logger.info(
-                    f"[ModifySLDialog] SL updated: {pct:.1f}% → ₹{state.stop_loss:.2f}"
-                )
+                logger.info(f"[ModifySLDialog] SL updated: {pct:.1f}% → ₹{state.stop_loss:.2f}")
             else:
                 state.stop_loss = None
-
             self.accept()
-
         except (ValueError, TypeError):
             self._show_error("Please enter a valid percentage")
         except Exception as e:
@@ -417,106 +433,131 @@ class ModifySLDialog(_ThemedDialog):
             self._show_error(f"Failed to update SL: {e}")
 
     def _show_error(self, msg: str):
-        c, ty = self._c, self._ty
         self._preview.setStyleSheet(
-            f"color: {c.RED}; font-size: {ty.SIZE_SM}pt; font-weight: {ty.WEIGHT_BOLD};"
+            f"color: {self._c.RED_BRIGHT}; font-size: {self._ty.SIZE_SM}pt; "
+            f"font-weight: bold; background: transparent; border: none;"
         )
-        self._preview.setText(f"⚠ {msg}")
+        self._preview.setText(f"⚠  {msg}")
+
+    def apply_theme(self, _=None):
+        try:
+            if hasattr(self, "main_card") and self.main_card:
+                self.main_card._apply_style()
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ExitConfirmDialog
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ExitConfirmDialog(_ThemedDialog):
+class ExitConfirmDialog(ThemedDialog):
     """
     Confirmation dialog before manually exiting an open trade.
 
-    Shows the current trade summary (symbol, entry, current price, P&L)
-    and requires explicit confirmation before the exit is executed.
+    Layout
+    ──────
+    Title bar  →  CONFIRM EXIT  [EX badge] [✕]
+    Trade summary card  (Direction / Symbol / Entry / Current / P&L)
+    Warning card  (yellow accent — "executed at market price")
+    Button row  →  [Cancel (primary)]  [Confirm Exit (danger)]
+
+    Cancel is the visually dominant button to prevent accidental exits.
     """
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Confirm Exit")
-        self.setFixedWidth(380)
-
-        self._apply_base_theme()
-        self._snapshot = state_manager.get_position_snapshot()
+        super().__init__(
+            parent,
+            title="CONFIRM EXIT",
+            icon="EX",
+            size=(400, 530),
+        )
+        self._snapshot      = state_manager.get_position_snapshot()
+        self._full_snapshot = state_manager.get_snapshot()
         self._build_ui()
+        self.apply_theme()
 
     def _build_ui(self):
-        sp = self._sp
-        c  = self._c
-        ty = self._ty
+        c, ty, sp = self._c, self._ty, self._sp
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(sp.PAD_LG, sp.PAD_LG, sp.PAD_LG, sp.PAD_LG)
-        root.setSpacing(sp.GAP_MD)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
 
-        # Header
-        root.addWidget(self._make_header(
-            "⚡", "Exit Position",
-            "This will immediately close your current trade."
+        self.main_card = ModernCard(self, elevated=True)
+        ml = QVBoxLayout(self.main_card)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+
+        ml.addWidget(build_title_bar(
+            self, "CONFIRM EXIT", icon="EX",
+            on_close=self.reject,
         ))
 
-        # Trade summary card
-        snap  = self._snapshot
-        full  = state_manager.get_snapshot()
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(sp.PAD_XL, sp.PAD_LG, sp.PAD_XL, sp.PAD_LG)
+        bl.setSpacing(sp.GAP_MD)
 
+        # ── Trade summary card ────────────────────────────────────────────────
+        snap     = self._snapshot
+        full     = self._full_snapshot
         position = full.get("current_position", "—")
         symbol   = full.get("current_trading_symbol", "—")
         entry    = snap.get("current_buy_price")
         current  = snap.get("current_price")
         pnl_pct  = snap.get("percentage_change")
 
-        summary_frame = QFrame()
-        summary_frame.setStyleSheet(f"""
-            QFrame {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-            }}
-        """)
-        sf_lay = QVBoxLayout(summary_frame)
-        sf_lay.setContentsMargins(sp.PAD_MD, sp.PAD_MD, sp.PAD_MD, sp.PAD_MD)
-        sf_lay.setSpacing(sp.GAP_XS)
-
-        pos_color = c.GREEN if str(position).upper() == "CALL" else c.BLUE
-        sf_lay.addWidget(self._make_info_row("Position", str(position), pos_color))
-        sf_lay.addWidget(self._make_info_row("Symbol", str(symbol) if symbol else "—"))
-
-        if entry is not None:
-            sf_lay.addWidget(self._make_info_row("Entry Price", f"₹{float(entry):.2f}"))
-        if current is not None:
-            sf_lay.addWidget(self._make_info_row("Current Price", f"₹{float(current):.2f}"))
-        if pnl_pct is not None:
-            pct_val = float(pnl_pct)
-            pct_color = c.GREEN if pct_val >= 0 else c.RED
-            sf_lay.addWidget(
-                self._make_info_row("Unrealized P&L", f"{pct_val:+.2f}%", pct_color)
-            )
-
-        root.addWidget(summary_frame)
-
-        # Warning note
-        warn = QLabel("⚠  Exit will be executed at market price.")
-        warn.setWordWrap(True)
-        warn.setStyleSheet(
-            f"color: {c.YELLOW}; font-size: {ty.SIZE_XS}pt; "
-            f"background: transparent; border: none;"
+        pos_str   = str(position).upper() if position else "—"
+        pos_color = (
+            c.GREEN if "CALL" in pos_str
+            else c.BLUE if "PUT" in pos_str
+            else c.TEXT_MAIN
         )
-        root.addWidget(warn)
 
-        root.addSpacing(sp.GAP_SM)
+        rows = [("Direction", pos_str, pos_color)]
+        if symbol and str(symbol) not in ("—", "None"):
+            rows.append(("Symbol", str(symbol)))
+        if entry is not None:
+            rows.append(("Entry Price", f"₹{float(entry):.2f}"))
+        if current is not None:
+            rows.append(("Current Price", f"₹{float(current):.2f}"))
+        if pnl_pct is not None:
+            pct_val   = float(pnl_pct)
+            pct_color = c.GREEN if pct_val >= 0 else c.RED
+            rows.append(("Unrealised P&L", f"{pct_val:+.2f}%", pct_color))
 
-        # Buttons — cancel is visually dominant to prevent accidental exits
+        bl.addWidget(_summary_card(rows, c=c, ty=ty, sp=sp))
+
+        # ── Warning note ──────────────────────────────────────────────────────
+        bl.addWidget(_warn_card(
+            "Exit will be executed at market price immediately.",
+            c=c, ty=ty, sp=sp,
+        ))
+
+        bl.addStretch()
+
+        # ── Button row ────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_row.setSpacing(sp.GAP_SM)
-        cancel_btn = self._make_btn("Cancel", primary=True)
-        exit_btn   = self._make_btn("🚪  Confirm Exit", danger=True)
+
+        cancel_btn = create_modern_button("Cancel", primary=True)
+        exit_btn   = create_modern_button("Confirm Exit", danger=True, icon="🚪")
+        cancel_btn.setMinimumWidth(120)
+        exit_btn.setMinimumWidth(120)
         cancel_btn.clicked.connect(self.reject)
         exit_btn.clicked.connect(self.accept)
-        btn_row.addWidget(cancel_btn, 2)
-        btn_row.addWidget(exit_btn, 1)
-        root.addLayout(btn_row)
+
+        btn_row.addWidget(cancel_btn, 3)
+        btn_row.addWidget(exit_btn,   2)
+        bl.addLayout(btn_row)
+
+        ml.addWidget(body, 1)
+        root.addWidget(self.main_card)
+
+    def apply_theme(self, _=None):
+        try:
+            if hasattr(self, "main_card") and self.main_card:
+                self.main_card._apply_style()
+        except Exception:
+            pass

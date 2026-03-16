@@ -179,44 +179,386 @@ class StatusCard(QFrame):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# StatusPanel
+# StatusMessageArea  — pinned message feed between PnL cards and action buttons
 # ─────────────────────────────────────────────────────────────────────────────
+
+class StatusMessageArea(QFrame):
+    """
+    Card-based status message feed.
+
+    Each message is rendered as a rounded card with:
+      • A coloured left accent bar (level colour)
+      • An icon badge in the accent colour
+      • The message text (word-wrapped, bold for newest)
+      • A small timestamp below the text (right-aligned)
+
+    Newest card is at the top, highlighted; older cards are dimmed.
+
+    Public API
+    ──────────
+      post(text, level='info')   — prepend a new card
+      clear()                    — remove all cards
+      Levels: 'info' | 'warning' | 'error' | 'success'
+    """
+
+    _LEVEL_META = {
+        'info':    ('ℹ', 'BLUE'),
+        'success': ('✓', 'GREEN'),
+        'warning': ('⚠', 'YELLOW_BRIGHT'),
+        'error':   ('✕', 'RED_BRIGHT'),
+    }
+    _MAX_MESSAGES = 8
+
+    def __init__(self, parent: QWidget = None) -> None:
+        super().__init__(parent)
+        self._messages: List[Dict] = []
+        self._row_widgets: List[QWidget] = []
+
+        self.setObjectName("msgArea")
+        self._build()
+        theme_manager.theme_changed.connect(self._restyle)
+        theme_manager.density_changed.connect(self._restyle)
+        self._restyle()
+
+    @property
+    def _c(self):  return theme_manager.palette
+    @property
+    def _ty(self): return theme_manager.typography
+    @property
+    def _sp(self): return theme_manager.spacing
+
+    # ── build ─────────────────────────────────────────────────────────────────
+
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Header bar ───────────────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setObjectName("msgHdr")
+        hdr_lay = QHBoxLayout(hdr)
+        hdr_lay.setContentsMargins(10, 5, 8, 5)
+        hdr_lay.setSpacing(6)
+
+        badge = QLabel("📢")
+        badge.setFixedWidth(18)
+        badge.setStyleSheet("background: transparent; border: none;")
+        hdr_lay.addWidget(badge)
+
+        self._hdr_lbl = QLabel("ACTIVITY")
+        hdr_lay.addWidget(self._hdr_lbl)
+        hdr_lay.addStretch()
+
+        self._count_lbl = QLabel("0")
+        self._count_lbl.setObjectName("msgCount")
+        hdr_lay.addWidget(self._count_lbl)
+
+        self._clear_btn = QPushButton("✕")
+        self._clear_btn.setFixedSize(18, 18)
+        self._clear_btn.setCursor(Qt.PointingHandCursor)
+        self._clear_btn.clicked.connect(self.clear)
+        self._clear_btn.setToolTip("Clear all")
+        hdr_lay.addWidget(self._clear_btn)
+
+        root.addWidget(hdr)
+
+        # ── Card scroll area ──────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self._inner = QWidget()
+        self._inner_lay = QVBoxLayout(self._inner)
+        self._inner_lay.setContentsMargins(8, 8, 8, 8)
+        self._inner_lay.setSpacing(6)
+        self._inner_lay.addStretch()
+
+        self._scroll.setWidget(self._inner)
+        root.addWidget(self._scroll, 1)
+
+        self.post("Waiting for trading engine…", level="info")
+
+    # ── styling ───────────────────────────────────────────────────────────────
+
+    def _restyle(self, _=None) -> None:
+        try:
+            c, ty, sp = self._c, self._ty, self._sp
+
+            self.setStyleSheet(f"""
+                QFrame#msgArea {{
+                    background:    {c.BG_PANEL};
+                    border:        1px solid {c.BORDER};
+                    border-radius: {sp.RADIUS_MD}px;
+                }}
+            """)
+
+            hdr = self._hdr_lbl.parent()
+            if hdr:
+                hdr.setStyleSheet(f"""
+                    QWidget#msgHdr {{
+                        background:    {c.BG_HOVER};
+                        border-bottom: 1px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
+                    }}
+                """)
+
+            self._hdr_lbl.setStyleSheet(
+                f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; "
+                f"font-weight: {ty.WEIGHT_BOLD}; letter-spacing: 0.8px; "
+                f"background: transparent;"
+            )
+            self._count_lbl.setStyleSheet(
+                f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS}pt; "
+                f"background: {c.BG_CARD}; border: 1px solid {c.BORDER}; "
+                f"border-radius: 6px; padding: 0px 5px; min-width: 16px;"
+            )
+            self._clear_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {c.TEXT_DISABLED};
+                    border: none; font-size: {ty.SIZE_XS}pt; border-radius: 4px;
+                }}
+                QPushButton:hover {{
+                    background: {c.RED}22; color: {c.RED_BRIGHT};
+                }}
+            """)
+            self._scroll.setStyleSheet(f"""
+                QScrollArea {{ background: {c.BG_PANEL}; border: none; }}
+                QScrollBar:vertical {{
+                    background: transparent; width: 4px; margin: 4px 0;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {c.BORDER}; border-radius: 2px; min-height: 16px;
+                }}
+                QScrollBar::handle:vertical:hover {{ background: {c.BORDER_STRONG}; }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            """)
+            self._inner.setStyleSheet(f"background: {c.BG_PANEL};")
+
+            # Re-apply cards — index 0 = newest (highlighted)
+            for i, w in enumerate(self._row_widgets):
+                try:
+                    level = w.property("msg_level") or "info"
+                    self._style_card(w, level, highlight=(i == 0))
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug(f"[StatusMessageArea._restyle] {exc}")
+
+    def _style_card(self, card: QWidget, level: str, highlight: bool = False) -> None:
+        c, ty, sp = self._c, self._ty, self._sp
+
+        icon_lbl: QLabel = card.property("icon_lbl")
+        text_lbl: QLabel = card.property("text_lbl")
+        time_lbl: QLabel = card.property("time_lbl")
+        bar:      QFrame = card.property("accent_bar")
+
+        _, color_attr = self._LEVEL_META.get(level, ('ℹ', 'BLUE'))
+        color = getattr(c, color_attr, c.BLUE)
+
+        if highlight:
+            card.setStyleSheet(f"""
+                QWidget[role="msgCard"] {{
+                    background:    {color}1e;
+                    border:        1px solid {color}55;
+                    border-left:   3px solid {color};
+                    border-radius: {sp.RADIUS_SM}px;
+                }}
+            """)
+            if bar:
+                bar.setStyleSheet(f"background: {color}; border-radius: 1px;")
+            if icon_lbl:
+                icon_lbl.setStyleSheet(
+                    f"color: {color}; font-size: {ty.SIZE_SM}pt; "
+                    f"font-weight: bold; background: transparent;"
+                )
+            if text_lbl:
+                text_lbl.setStyleSheet(
+                    f"color: {c.TEXT_BRIGHT}; font-size: {ty.SIZE_XS}pt; "
+                    f"font-weight: {ty.WEIGHT_BOLD}; background: transparent;"
+                )
+            if time_lbl:
+                time_lbl.setStyleSheet(
+                    f"color: {color}99; font-size: {ty.SIZE_XS - 1}pt; "
+                    f"background: transparent;"
+                )
+        else:
+            card.setStyleSheet(f"""
+                QWidget[role="msgCard"] {{
+                    background:    {color}0a;
+                    border:        1px solid {c.BORDER};
+                    border-left:   2px solid {color}55;
+                    border-radius: {sp.RADIUS_SM}px;
+                }}
+            """)
+            if bar:
+                bar.setStyleSheet(f"background: {color}55; border-radius: 1px;")
+            if icon_lbl:
+                icon_lbl.setStyleSheet(
+                    f"color: {color}77; font-size: {ty.SIZE_XS}pt; "
+                    f"background: transparent;"
+                )
+            if text_lbl:
+                text_lbl.setStyleSheet(
+                    f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; "
+                    f"background: transparent;"
+                )
+            if time_lbl:
+                time_lbl.setStyleSheet(
+                    f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_XS - 1}pt; "
+                    f"background: transparent;"
+                )
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def post(self, text: str, level: str = 'info') -> None:
+        """
+        Prepend a new card to the feed (newest at top, highlighted).
+        Previous cards are automatically dimmed.
+        """
+        try:
+            if not text:
+                return
+            level = level if level in self._LEVEL_META else 'info'
+            now_str = fmt_display(ist_now(), time_only=True)
+
+            self._messages.insert(0, {'text': text, 'level': level, 'time': now_str})
+            if len(self._messages) > self._MAX_MESSAGES:
+                self._messages.pop()
+
+            icon_char, _ = self._LEVEL_META[level]
+
+            # ── Card widget ───────────────────────────────────────────────────
+            card = QWidget()
+            card.setProperty("role", "msgCard")
+            card.setProperty("msg_level", level)
+
+            card_lay = QHBoxLayout(card)
+            card_lay.setContentsMargins(8, 7, 8, 7)
+            card_lay.setSpacing(8)
+
+            # Icon badge
+            icon_lbl = QLabel(icon_char)
+            icon_lbl.setFixedSize(16, 16)
+            icon_lbl.setAlignment(Qt.AlignCenter)
+            card_lay.addWidget(icon_lbl, 0, Qt.AlignTop)
+
+            # Text block: message + timestamp stacked
+            text_block = QWidget()
+            text_block.setStyleSheet("background: transparent;")
+            tb_lay = QVBoxLayout(text_block)
+            tb_lay.setContentsMargins(0, 0, 0, 0)
+            tb_lay.setSpacing(2)
+
+            txt = QLabel(text)
+            txt.setWordWrap(True)
+            txt.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            tb_lay.addWidget(txt)
+
+            ts = QLabel(now_str)
+            ts.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            tb_lay.addWidget(ts)
+
+            card_lay.addWidget(text_block, 1)
+
+            # Store refs for re-styling
+            card.setProperty("icon_lbl",   icon_lbl)
+            card.setProperty("text_lbl",   txt)
+            card.setProperty("time_lbl",   ts)
+            card.setProperty("accent_bar", None)
+
+            # Demote previous newest
+            if self._row_widgets:
+                prev = self._row_widgets[0]
+                self._style_card(prev, prev.property("msg_level") or "info", highlight=False)
+
+            # Style new card as highlighted newest
+            self._style_card(card, level, highlight=True)
+
+            # Insert at top (above the stretch)
+            self._inner_lay.insertWidget(0, card)
+            self._row_widgets.insert(0, card)
+
+            # Trim oldest beyond cap
+            while len(self._row_widgets) > self._MAX_MESSAGES:
+                old = self._row_widgets.pop()
+                self._inner_lay.removeWidget(old)
+                old.deleteLater()
+
+            # Update count badge
+            self._count_lbl.setText(str(len(self._row_widgets)))
+
+            # Scroll to top — newest card is always visible
+            self._scroll.verticalScrollBar().setValue(0)
+
+        except Exception as exc:
+            logger.debug(f"[StatusMessageArea.post] {exc}")
+
+    def clear(self) -> None:
+        """Remove all message cards from the feed."""
+        try:
+            self._messages.clear()
+            for w in self._row_widgets:
+                self._inner_lay.removeWidget(w)
+                w.deleteLater()
+            self._row_widgets.clear()
+            self._count_lbl.setText("0")
+        except Exception as exc:
+            logger.debug(f"[StatusMessageArea.clear] {exc}")
+            logger.debug(f"[StatusMessageArea.clear] {exc}")
+
+
+
 
 class StatusPanel(QWidget):
     """
-    Right-side status panel.
-    • Single-column card list in a scroll area — never clips any content.
-    • Header (connection dot + clock + market badge) always visible.
-    • Two tabs: Trade (live metrics) and Account (fund summary).
+    Right-side status panel — three-tab layout:
+
+      Tab 1  📡 Status   — signal, position, index, daily P&L, trades
+                           + full-height message feed (no cramping)
+      Tab 2  📊 Trade    — trade summary cards + Exit/SL/TP buttons
+                           (auto-switches in when a trade opens)
+      Tab 3  🏦 Account  — balance, margin, buying power, M2M
     """
 
-    # Cards that only make sense when a position is open
+    # Cards that live on the Trade tab (only meaningful when position is open)
     _TRADE_ONLY: Set[str] = frozenset({
-        "symbol", "buy_price", "current_price",
+        "symbol", "direction", "buy_price", "current_price",
         "target_price", "stoploss_price", "pnl",
     })
 
-    FIELDS: List[tuple] = [
-        # Key         Icon   Label
-        ("position", "🟢", "Position"),
-        ("signal", "📊", "Signal"),
-        ("balance", "🏦", "Balance"),
+    # Cards that always live on the Status tab
+    _STATUS_FIELDS: List[tuple] = [
+        ("position",   "🟢", "Position"),
+        ("signal",     "📊", "Signal"),
         ("derivative", "📈", "Index"),
-        ("daily_pnl", "📉", "Daily P&L"),
-        ("trades_today", "🎯", "Trades"),
-        # Trade-specific
-        ("symbol", "💹", "Symbol"),
-        ("buy_price", "🛒", "Entry"),
-        ("current_price", "💰", "Current"),
-        ("target_price", "🎯", "Target"),
-        ("stoploss_price", "🛑", "Stop"),
-        ("pnl", "💵", "P&L"),
     ]
+
+    # Cards that live on the Trade tab
+    _TRADE_FIELDS: List[tuple] = [
+        ("symbol",         "💹", "Symbol"),
+        ("direction",      "🔀", "Direction"),
+        ("buy_price",      "🛒", "Entry"),
+        ("current_price",  "💰", "Current"),
+        ("target_price",   "🎯", "Target (TP)"),
+        ("stoploss_price", "🛑", "Stop (SL)"),
+        ("pnl",            "💵", "P&L %"),
+    ]
+
+    # Union for any external code that reads FIELDS
+    FIELDS: List[tuple] = _STATUS_FIELDS + _TRADE_FIELDS
+
+    # Tab indices
+    TAB_STATUS  = 0
+    TAB_TRADE   = 1
+    TAB_ACCOUNT = 2
 
     # Signals
     exit_position_clicked = pyqtSignal()
-    modify_sl_clicked = pyqtSignal()
-    modify_tp_clicked = pyqtSignal()
+    modify_sl_clicked     = pyqtSignal()
+    modify_tp_clicked     = pyqtSignal()
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -233,55 +575,52 @@ class StatusPanel(QWidget):
         self._snapshot_ts: Optional[datetime] = None
         self._snapshot: dict = {}
         self._pos_snapshot: dict = {}
+        # Signal-stall detection
+        self._last_signal_seen: Optional[str] = None
+        self._signal_stall_ticks: int = 0
+        self._SIGNAL_STALL_THRESHOLD: int = 60
+        self._stall_warned: bool = False
+        # cards dict populated across all tabs
+        self.cards: Dict[str, StatusCard] = {}
 
-        # Width — wide enough to show all text, constrained to not dominate
-        self.setMinimumWidth(220)
-        self.setMaximumWidth(320)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(340)
         self.setSizePolicy(
             self.sizePolicy().horizontalPolicy(),
             self.sizePolicy().verticalPolicy(),
         )
 
-        # Main layout
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 1. Fixed header (connection, clock, market)
         root.addWidget(self._build_header())
 
-        # 2. Tab widget — fills remaining space
         self._tabs = QTabWidget()
         self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs, 1)
 
+        self._build_status_tab()
         self._build_trade_tab()
         self._build_account_tab()
 
-        # Theme
         theme_manager.theme_changed.connect(self.apply_theme)
         theme_manager.density_changed.connect(self.apply_theme)
         self.apply_theme()
 
-        # Market-status refresh (every minute)
         self._market_timer = QTimer()
         self._market_timer.timeout.connect(self._refresh_market_status)
         self._market_timer.start(60_000)
 
-        logger.info("[StatusPanel] Initialized")
+        logger.info("[StatusPanel] Initialized (3-tab layout)")
 
     # ── theme shortcuts ───────────────────────────────────────────────────────
     @property
-    def _c(self):
-        return theme_manager.palette
-
+    def _c(self):  return theme_manager.palette
     @property
-    def _ty(self):
-        return theme_manager.typography
-
+    def _ty(self): return theme_manager.typography
     @property
-    def _sp(self):
-        return theme_manager.spacing
+    def _sp(self): return theme_manager.spacing
 
     # ── theme application ─────────────────────────────────────────────────────
 
@@ -289,11 +628,7 @@ class StatusPanel(QWidget):
         try:
             c, ty, sp = self._c, self._ty, self._sp
 
-            self.setStyleSheet(f"""
-                QWidget {{
-                    background: {c.BG_MAIN};
-                }}
-            """)
+            self.setStyleSheet(f"QWidget {{ background: {c.BG_MAIN}; }}")
 
             self._tabs.setStyleSheet(f"""
                 QTabWidget::pane {{
@@ -307,10 +642,10 @@ class StatusPanel(QWidget):
                     border:        1px solid {c.BORDER};
                     border-bottom: none;
                     border-radius: {sp.RADIUS_MD}px {sp.RADIUS_MD}px 0 0;
-                    padding:       {sp.PAD_XS}px {sp.PAD_MD}px;
+                    padding:       {sp.PAD_XS}px {sp.PAD_SM}px;
                     font-size:     {ty.SIZE_XS}pt;
                     font-weight:   {ty.WEIGHT_BOLD};
-                    min-width:     80px;
+                    min-width:     60px;
                     margin-right:  2px;
                 }}
                 QTabBar::tab:selected {{
@@ -322,19 +657,17 @@ class StatusPanel(QWidget):
                 QTabBar::tab:hover:!selected {{
                     background: {c.BG_HOVER};
                     color:      {c.TEXT_MAIN};
-                    border-color: {c.BORDER_STRONG};
                 }}
                 QScrollBar:vertical {{
-                    background: {c.BG_PANEL}; width: 6px; border-radius: 3px; margin: 0;
+                    background: {c.BG_PANEL}; width: 5px; border-radius: 3px;
                 }}
                 QScrollBar::handle:vertical {{
-                    background: {c.BORDER}; min-height: 20px; border-radius: 3px;
+                    background: {c.BORDER}; min-height: 16px; border-radius: 3px;
                 }}
                 QScrollBar::handle:vertical:hover {{ background: {c.BORDER_STRONG}; }}
                 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             """)
 
-            # Header labels
             if hasattr(self, "timestamp"):
                 self.timestamp.setStyleSheet(
                     f"color: {c.TEXT_DIM}; font-size: {ty.SIZE_XS}pt; "
@@ -345,12 +678,33 @@ class StatusPanel(QWidget):
                     f"color: {c.RED_BRIGHT}; font-size: {ty.SIZE_XS}pt; "
                     f"background: transparent; border: none;"
                 )
+            if hasattr(self, "_no_trade_lbl") and hasattr(self._no_trade_lbl, "setStyleSheet"):
+                self._no_trade_lbl.setStyleSheet(f"""
+                    QFrame#noTradeCard {{
+                        background:    {c.BG_CARD};
+                        border:        1px solid {c.BORDER};
+                        border-radius: {sp.RADIUS_MD}px;
+                        margin:        {sp.PAD_MD}px;
+                    }}
+                """)
+            if hasattr(self, "_no_trade_title"):
+                self._no_trade_title.setStyleSheet(
+                    f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_MD}pt; "
+                    f"font-weight: {ty.WEIGHT_BOLD}; background: transparent; border: none;"
+                )
+            if hasattr(self, "_no_trade_sub"):
+                self._no_trade_sub.setStyleSheet(
+                    f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_SM}pt; "
+                    f"background: transparent; border: none;"
+                )
+            if hasattr(self, "_no_trade_icon"):
+                self._no_trade_icon.setStyleSheet(
+                    f"font-size: 28pt; background: transparent; border: none;"
+                )
 
-            # Cards
             for card in self.cards.values():
                 card.apply_theme()
 
-            # Buttons
             self._style_action_buttons()
 
         except Exception as exc:
@@ -389,8 +743,8 @@ class StatusPanel(QWidget):
         if hasattr(self, "exit_btn") and self.exit_btn:
             self.exit_btn.setStyleSheet(exit_btn_ss)
         for btn in (
-                getattr(self, "modify_sl_btn", None),
-                getattr(self, "modify_tp_btn", None),
+            getattr(self, "modify_sl_btn", None),
+            getattr(self, "modify_tp_btn", None),
         ):
             if btn:
                 btn.setStyleSheet(base_btn)
@@ -432,9 +786,13 @@ class StatusPanel(QWidget):
 
         return hdr
 
-    # ── trade tab ─────────────────────────────────────────────────────────────
+    # ── Tab 1: Status ─────────────────────────────────────────────────────────
 
-    def _build_trade_tab(self) -> None:
+    def _build_status_tab(self) -> None:
+        """
+        Always-on overview: signal, position, index price
+        + full-height message feed below occupying roughly the lower half.
+        """
         sp = self._sp
 
         tab = QWidget()
@@ -442,7 +800,7 @@ class StatusPanel(QWidget):
         tab_lay.setContentsMargins(0, 0, 0, 0)
         tab_lay.setSpacing(0)
 
-        # Scroll area — cards live inside here
+        # ── Metric cards (3 cards — naturally sized, no artificial height cap) ─
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -455,53 +813,168 @@ class StatusPanel(QWidget):
         inner_lay.setContentsMargins(sp.PAD_SM, sp.PAD_SM, sp.PAD_SM, sp.PAD_SM)
         inner_lay.setSpacing(sp.GAP_SM)
 
-        self.cards: Dict[str, StatusCard] = {}
-        for key, icon, label in self.FIELDS:
+        for key, icon, label in self._STATUS_FIELDS:
             card = StatusCard(icon, label)
             inner_lay.addWidget(card)
             self.cards[key] = card
 
         inner_lay.addStretch()
         scroll.setWidget(inner)
+        # stretch=1 gives cards half the space; message_area below also gets stretch=1
         tab_lay.addWidget(scroll, 1)
 
-        # Conflict indicator (above action buttons, outside scroll)
+        # Signal conflict warning — sits between cards and feed with clear separation
         self.conflict_label = QLabel("")
         self.conflict_label.setAlignment(Qt.AlignCenter)
         self.conflict_label.setVisible(False)
         tab_lay.addWidget(self.conflict_label)
 
-        # Action buttons row
+        # Thin separator so the message area header never visually bleeds into cards
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {self._c.BORDER}; border: none;")
+        tab_lay.addWidget(sep)
+
+        # ── Message feed — stretch=1 → equal share of the remaining height ───
+        self.message_area = StatusMessageArea()
+        self.message_area.setMinimumHeight(80)
+        tab_lay.addWidget(self.message_area, 1)
+
+        self._tabs.addTab(tab, "📡 Status")
+
+    # ── Tab 2: Trade ──────────────────────────────────────────────────────────
+
+    def _build_trade_tab(self) -> None:
+        """
+        Trade summary + action buttons.
+        Auto-switches to this tab when a trade opens, returns to Status on close.
+        """
+        sp = self._sp
+        c  = self._c
+        ty = self._ty
+
+        tab = QWidget()
+        tab_lay = QVBoxLayout(tab)
+        tab_lay.setContentsMargins(0, 0, 0, 0)
+        tab_lay.setSpacing(0)
+
+        # ── Empty-state placeholder (shown when no trade is active) ───────────
+        self._no_trade_container = QWidget()
+        no_trade_lay = QVBoxLayout(self._no_trade_container)
+        no_trade_lay.setContentsMargins(sp.PAD_XL, sp.PAD_XL, sp.PAD_XL, sp.PAD_XL)
+        no_trade_lay.setSpacing(sp.GAP_SM)
+        no_trade_lay.setAlignment(Qt.AlignCenter)
+
+        # Icon
+        icon_lbl = QLabel("📭")
+        icon_lbl.setObjectName("noTradeIcon")
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet(
+            f"font-size: 28pt; background: transparent; border: none;"
+        )
+        no_trade_lay.addWidget(icon_lbl)
+
+        # Title
+        title_lbl = QLabel("No Active Position")
+        title_lbl.setObjectName("noTradeTitle")
+        title_lbl.setAlignment(Qt.AlignCenter)
+        title_lbl.setStyleSheet(
+            f"color: {c.TEXT_MAIN}; font-size: {ty.SIZE_MD}pt; "
+            f"font-weight: {ty.WEIGHT_BOLD}; background: transparent; border: none;"
+        )
+        no_trade_lay.addWidget(title_lbl)
+
+        # Subtitle
+        sub_lbl = QLabel("Waiting for entry signal…")
+        sub_lbl.setObjectName("noTradeSub")
+        sub_lbl.setAlignment(Qt.AlignCenter)
+        sub_lbl.setWordWrap(True)
+        sub_lbl.setStyleSheet(
+            f"color: {c.TEXT_DISABLED}; font-size: {ty.SIZE_SM}pt; "
+            f"background: transparent; border: none;"
+        )
+        no_trade_lay.addWidget(sub_lbl)
+
+        # Store refs so apply_theme can update colours
+        self._no_trade_icon  = icon_lbl
+        self._no_trade_title = title_lbl
+        self._no_trade_sub   = sub_lbl
+
+        # Outer card frame for the empty state
+        self._no_trade_lbl = QFrame()   # kept as attribute name for compat
+        self._no_trade_lbl.setObjectName("noTradeCard")
+        self._no_trade_lbl.setFrameShape(QFrame.NoFrame)
+        self._no_trade_lbl.setStyleSheet(f"""
+            QFrame#noTradeCard {{
+                background:    {c.BG_CARD};
+                border:        1px solid {c.BORDER};
+                border-radius: {sp.RADIUS_MD}px;
+                margin:        {sp.PAD_MD}px;
+            }}
+        """)
+        card_lay = QVBoxLayout(self._no_trade_lbl)
+        card_lay.setContentsMargins(0, 0, 0, 0)
+        card_lay.addWidget(self._no_trade_container)
+        self._no_trade_lbl.setVisible(True)
+        tab_lay.addWidget(self._no_trade_lbl, 1)   # stretch so it fills space
+
+        # ── Trade metric cards (scrollable, hidden until trade opens) ──────────
+        self._trade_scroll = QScrollArea()
+        self._trade_scroll.setWidgetResizable(True)
+        self._trade_scroll.setFrameShape(QFrame.NoFrame)
+        self._trade_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._trade_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._trade_scroll.setStyleSheet("QScrollArea { border: none; }")
+        self._trade_scroll.setVisible(False)
+
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(sp.PAD_SM, sp.PAD_MD, sp.PAD_SM, sp.PAD_SM)
+        inner_lay.setSpacing(sp.GAP_SM)
+
+        for key, icon, label in self._TRADE_FIELDS:
+            card = StatusCard(icon, label)
+            inner_lay.addWidget(card)
+            self.cards[key] = card
+
+        inner_lay.addStretch()
+        self._trade_scroll.setWidget(inner)
+        tab_lay.addWidget(self._trade_scroll, 1)
+
+        # ── Action buttons ────────────────────────────────────────────────────
         btn_row = QWidget()
+        btn_row.setObjectName("tradeBtnRow")
+        btn_row.setStyleSheet(f"""
+            QWidget#tradeBtnRow {{
+                background:    {c.BG_PANEL};
+                border-top:    1px solid {c.BORDER};
+            }}
+        """)
         btn_lay = QHBoxLayout(btn_row)
-        btn_lay.setContentsMargins(sp.PAD_SM, sp.PAD_XS, sp.PAD_SM, sp.PAD_SM)
+        btn_lay.setContentsMargins(sp.PAD_MD, sp.PAD_SM, sp.PAD_MD, sp.PAD_SM)
         btn_lay.setSpacing(sp.GAP_SM)
 
-        self.exit_btn = QPushButton("Exit Position")
+        self.exit_btn = QPushButton("🚪 Exit")
         self.exit_btn.setEnabled(False)
         self.exit_btn.clicked.connect(self.exit_position_clicked.emit)
         btn_lay.addWidget(self.exit_btn, 2)
 
-        self.modify_sl_btn = QPushButton("SL")
+        self.modify_sl_btn = QPushButton("🛑 SL")
         self.modify_sl_btn.setEnabled(False)
         self.modify_sl_btn.clicked.connect(self.modify_sl_clicked.emit)
         btn_lay.addWidget(self.modify_sl_btn, 1)
 
-        self.modify_tp_btn = QPushButton("TP")
+        self.modify_tp_btn = QPushButton("🎯 TP")
         self.modify_tp_btn.setEnabled(False)
         self.modify_tp_btn.clicked.connect(self.modify_tp_clicked.emit)
         btn_lay.addWidget(self.modify_tp_btn, 1)
 
         tab_lay.addWidget(btn_row)
 
-        # Start with trade-only cards dimmed
-        for key in self._TRADE_ONLY:
-            if key in self.cards:
-                self.cards[key].set_dimmed(True)
-
         self._tabs.addTab(tab, "📊 Trade")
 
-    # ── account tab ───────────────────────────────────────────────────────────
+    # ── Tab 3: Account ────────────────────────────────────────────────────────
 
     def _build_account_tab(self) -> None:
         sp = self._sp
@@ -524,12 +997,12 @@ class StatusPanel(QWidget):
         )
 
         fields = [
-            ("Balance", "balance", "₹0"),
-            ("Margin", "margin", "₹0"),
-            ("Buying Power", "buying_power", "₹0"),
-            ("M2M", "m2m", "₹0"),
-            ("Day Trades", "day_trades", "0"),
-            ("Open Pos", "open_positions", "0"),
+            ("Balance",      "balance",        "₹0"),
+            ("Margin",       "margin",         "₹0"),
+            ("Buying Power", "buying_power",   "₹0"),
+            ("M2M",          "m2m",            "₹0"),
+            ("Day Trades",   "day_trades",     "0"),
+            ("Open Pos",     "open_positions", "0"),
         ]
 
         self._account_labels: Dict[str, QLabel] = {}
@@ -546,11 +1019,18 @@ class StatusPanel(QWidget):
     # ── tab interaction feedback ──────────────────────────────────────────────
 
     def _on_tab_changed(self, idx: int) -> None:
-        """Visual feedback when switching tabs."""
         from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QTimer.singleShot(120, QApplication.restoreOverrideCursor)
+
+    def _set_trade_tab_label(self, active: bool) -> None:
+        """Update the Trade tab label with a live dot when a trade is open."""
+        try:
+            label = "📊 Trade  🟢" if active else "📊 Trade"
+            self._tabs.setTabText(self.TAB_TRADE, label)
+        except Exception:
+            pass
+
 
     # ── market status ─────────────────────────────────────────────────────────
 
@@ -726,11 +1206,27 @@ class StatusPanel(QWidget):
             trade_active = self._trade_open(snap)
             if trade_active != self._trade_active:
                 self._trade_active = trade_active
-                for key in self._TRADE_ONLY:
-                    if key in self.cards:
-                        self.cards[key].set_dimmed(not trade_active)
+
+                # Swap empty-state / trade cards
+                if hasattr(self, "_no_trade_lbl"):
+                    self._no_trade_lbl.setVisible(not trade_active)
+                if hasattr(self, "_trade_scroll"):
+                    self._trade_scroll.setVisible(trade_active)
+
+                # Enable/disable action buttons
                 for btn in (self.exit_btn, self.modify_sl_btn, self.modify_tp_btn):
-                    if btn: btn.setEnabled(trade_active)
+                    if btn:
+                        btn.setEnabled(trade_active)
+
+                # Auto-switch to Trade tab when a trade opens,
+                # return to Status tab when it closes
+                if trade_active:
+                    self._tabs.setCurrentIndex(self.TAB_TRADE)
+                else:
+                    self._tabs.setCurrentIndex(self.TAB_STATUS)
+
+                # Update Trade tab label with live-dot indicator
+                self._set_trade_tab_label(trade_active)
 
             # Signal
             signal = self._safe_str(pos, "option_signal", "WAIT")
@@ -740,36 +1236,38 @@ class StatusPanel(QWidget):
             if conflict:
                 self.conflict_label.setText("⚠ Signal Conflict")
 
+            # ── Signal-stall detection ────────────────────────────────────────
+            # Count how many refresh ticks the signal has stayed at WAIT while
+            # the market is open and trading is running.  Warn once per stall event.
+            if self._market_open and signal == "WAIT":
+                self._signal_stall_ticks += 1
+                if self._signal_stall_ticks >= self._SIGNAL_STALL_THRESHOLD and not self._stall_warned:
+                    self._stall_warned = True
+                    self.post_message(
+                        f"Signal stalled — WAIT for {self._signal_stall_ticks}s", level='warning'
+                    )
+            else:
+                if self._stall_warned and signal != "WAIT":
+                    self._stall_warned = False  # reset after signal recovers
+                self._signal_stall_ticks = 0
+
             # Always-on cards
             cur_pos = snap.get("current_position")
             balance = self._safe_float(snap, "account_balance", 0.0)
-            deriv = self._safe_float(snap, "derivative_current_price", 0.0)
-            daily_pnl = self._safe_float(pos, "current_pnl", None)
-            if daily_pnl is None:
-                daily_pnl = self._safe_float(snap, "current_pnl", 0.0)
+            deriv   = self._safe_float(snap, "derivative_current_price", 0.0)
 
-            trades_today_count = 1 if trade_active else 0
-            try:
-                from trade.risk_manager import RiskManager
-                if config is not None and hasattr(config, 'risk_manager') and config.risk_manager:
-                    summary = config.risk_manager.get_risk_summary()
-                    trades_today_count = summary.get("trades_today", trades_today_count)
-            except Exception:
-                pass
-
-            self._set_card("position", str(cur_pos) if cur_pos else "None", self._pos_color(cur_pos))
-            self._set_card("balance", self._fmt_currency(balance), c.TEXT_MAIN)
-            self._set_card("derivative", self._fmt(deriv) if deriv else "—", c.BLUE)
-            self._set_card("daily_pnl", self._fmt_currency(daily_pnl), self._pnl_color(daily_pnl))
-            self._set_card("trades_today", str(trades_today_count), c.TEXT_MAIN)
+            self._set_card("position",   str(cur_pos) if cur_pos else "None", self._pos_color(cur_pos))
+            self._set_card("balance",    self._fmt_currency(balance),          c.TEXT_MAIN)
+            self._set_card("derivative", self._fmt(deriv) if deriv else "—",   c.BLUE)
 
             if trade_active:
-                symbol = snap.get("current_trading_symbol")
-                entry = self._safe_float(pos, "current_buy_price")
-                curr = self._safe_float(pos, "current_price")
-                tp = self._safe_float(pos, "tp_point")
-                sl = self._safe_float(pos, "stop_loss")
-                pnl_pct = self._safe_float(pos, "percentage_change")
+                symbol    = snap.get("current_trading_symbol")
+                cur_pos   = snap.get("current_position")
+                entry     = self._safe_float(pos, "current_buy_price")
+                curr      = self._safe_float(pos, "current_price")
+                tp        = self._safe_float(pos, "tp_point")
+                sl        = self._safe_float(pos, "stop_loss")
+                pnl_pct   = self._safe_float(pos, "percentage_change")
 
                 # Fall back to snap for prices if pos values are None
                 if curr is None or curr == 0:
@@ -781,18 +1279,21 @@ class StatusPanel(QWidget):
                 if pnl_pct is None:
                     pnl_pct = self._safe_float(snap, "percentage_change")
 
-                self._set_card("symbol", str(symbol) if symbol else "—", c.TEXT_MAIN)
-                self._set_card("buy_price", self._fmt(entry), c.TEXT_MAIN)
-                self._set_card("current_price", self._fmt(curr), c.TEXT_MAIN)
-                self._set_card("target_price", self._fmt(tp) if tp else "—", c.GREEN)
-                self._set_card("stoploss_price", self._fmt(sl) if sl else "—", c.RED)
-                self._set_card("pnl", self._fmt_percent(pnl_pct), self._pnl_color(pnl_pct))
+                # Direction card — CALL (green) or PUT (blue)
+                dir_str = str(cur_pos).upper() if cur_pos else "—"
+                dir_col = c.GREEN if "CALL" in dir_str else (c.BLUE if "PUT" in dir_str else c.TEXT_MAIN)
+
+                self._set_card("symbol",        str(symbol) if symbol else "—",        c.TEXT_MAIN)
+                self._set_card("direction",      dir_str,                               dir_col)
+                self._set_card("buy_price",      self._fmt(entry),                      c.TEXT_MAIN)
+                self._set_card("current_price",  self._fmt(curr),                       c.TEXT_MAIN)
+                self._set_card("target_price",   self._fmt(tp)  if tp else "—",         c.GREEN)
+                self._set_card("stoploss_price", self._fmt(sl)  if sl else "—",         c.RED)
+                self._set_card("pnl",            self._fmt_percent(pnl_pct),            self._pnl_color(pnl_pct))
 
             # Account tab
-            self._account_labels.get("balance", _NullLabel()).setText(self._fmt_currency(balance))
-            self._account_labels.get("m2m", _NullLabel()).setText(self._fmt_currency(daily_pnl))
+            self._account_labels.get("balance",        _NullLabel()).setText(self._fmt_currency(balance))
             self._account_labels.get("open_positions", _NullLabel()).setText("1" if trade_active else "0")
-            self._account_labels.get("day_trades", _NullLabel()).setText(str(trades_today_count))
 
         except Exception as exc:
             logger.error(f"[StatusPanel.refresh] {exc}", exc_info=True)
@@ -804,6 +1305,26 @@ class StatusPanel(QWidget):
             f"color: {col}; font-size: {self._ty.SIZE_MD}pt; "
             f"background: transparent; border: none;"
         )
+
+    def post_message(self, text: str, level: str = 'info') -> None:
+        """
+        Post a message to the sidebar message feed.
+
+        Args:
+            text:  Message string shown in the feed.
+            level: 'info' | 'warning' | 'error' | 'success'
+
+        Usage from TradingGUI or any other module:
+            self.status_panel.post_message("Daily loss limit hit", level='error')
+            self.status_panel.post_message("Strategy reloaded", level='success')
+        """
+        try:
+            if self._closing:
+                return
+            if hasattr(self, 'message_area') and self.message_area:
+                self.message_area.post(text, level)
+        except Exception as exc:
+            logger.debug(f"[StatusPanel.post_message] {exc}")
 
     def pause_refresh(self) -> None:
         self._refresh_enabled = False

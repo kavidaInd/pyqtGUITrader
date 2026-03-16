@@ -225,6 +225,7 @@ class ReEntrySettingGUI(ThemedDialog):
 
     def _safe_defaults(self):
         self._closing = False
+        self._outer = None          # outerFrame — provides the visible background
         # widget refs
         self._chk_allow = None
         self._chk_same_dir = None
@@ -246,21 +247,30 @@ class ReEntrySettingGUI(ThemedDialog):
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
+        # ThemedDialog sets WA_TranslucentBackground, making the QDialog itself
+        # fully transparent.  We need a QFrame wrapper (outerFrame) to provide
+        # a solid visible background — the same pattern used by all other popups.
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(0)
+
+        self._outer = QFrame()
+        self._outer.setObjectName("reEntryOuter")
+        ol = QVBoxLayout(self._outer)
+        ol.setContentsMargins(16, 16, 16, 16)
+        ol.setSpacing(12)
 
         # Title bar
-        root.addWidget(self._make_title_bar())
+        ol.addWidget(self._make_title_bar())
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
-        root.addWidget(sep)
+        ol.addWidget(sep)
 
         # Tabs
         self._tabs = self._make_tabs()
-        root.addWidget(self._tabs)
+        ol.addWidget(self._tabs)
 
         # Status + save row
         bottom = QHBoxLayout()
@@ -279,16 +289,19 @@ class ReEntrySettingGUI(ThemedDialog):
         """)
         bottom.addWidget(self._status_lbl, 1)
 
-        reset_btn = self._btn("↺ Defaults", primary=False)
+        reset_btn = self._btn("\u21ba Defaults", primary=False)
         reset_btn.setToolTip("Reset all re-entry settings to factory defaults")
         reset_btn.clicked.connect(self._on_reset)
         bottom.addWidget(reset_btn)
 
-        self._save_btn = self._btn("💾 Save", primary=True)
+        self._save_btn = self._btn("\U0001f4be Save", primary=True)
         self._save_btn.clicked.connect(self._on_save)
         bottom.addWidget(self._save_btn)
 
-        root.addLayout(bottom)
+        ol.addLayout(bottom)
+
+        root.addWidget(self._outer)
+        self._style_outer()
 
     def _make_title_bar(self) -> QWidget:
         """Build new-design title bar: monogram badge + CAPS title + ghost close button."""
@@ -796,17 +809,26 @@ class ReEntrySettingGUI(ThemedDialog):
 
     # ── Theme ─────────────────────────────────────────────────────────────────
 
+    def _style_outer(self):
+        """Style the outerFrame that provides the visible dialog background."""
+        try:
+            if not self._outer:
+                return
+            c = self._c
+            self._outer.setStyleSheet(f"""
+                QFrame#reEntryOuter {{
+                    background:    {c.BG_MAIN};
+                    border:        1px solid {c.BORDER_STRONG};
+                    border-top:    2px solid {c.YELLOW_BRIGHT};
+                    border-radius: 8px;
+                }}
+            """)
+        except Exception as e:
+            logger.debug(f"[ReEntrySettingGUI._style_outer] {e}")
+
     def apply_theme(self, _=None):
         try:
-            c, sp = self._c, self._sp
-            self.setStyleSheet(f"""
-                QDialog {{
-                    background: {c.BG_MAIN};
-                    border-radius: {sp.RADIUS_LG}px;
-                }}
-                QScrollArea {{ border: none; background: transparent; }}
-                QWidget {{ background: transparent; }}
-            """)
+            self._style_outer()
         except Exception as e:
             logger.debug(f"[ReEntrySettingGUI.apply_theme] {e}")
 

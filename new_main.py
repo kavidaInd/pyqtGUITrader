@@ -473,6 +473,10 @@ class TradingApp:
                     f"{sum(len(v.get('rules', [])) for v in new_config.values() if isinstance(v, dict))} "
                     f"rules loaded"
                 )
+                # Force immediate re-evaluation so the dynamic signal debug popup
+                # reflects the new rules within 1 second of saving, without
+                # waiting for the next live market tick.
+                self._force_signal_evaluation()
                 # BUG FIX: Also sync state.interval with the strategy's (possibly
                 # updated) timeframe.  reload_signal_engine() was previously called
                 # only from _on_strategy_saved, which does NOT call
@@ -507,6 +511,57 @@ class TradingApp:
 
         except Exception as e:
             logger.error(f"[TradingApp.reload_signal_engine] Failed: {e}", exc_info=True)
+
+    def _force_signal_evaluation(self):
+        """
+        Re-evaluate the signal engine immediately using the latest candle data.
+
+        Called right after reload_signal_engine() so that state.option_signal_result
+        is updated with the new rules before the next live tick arrives.  Without
+        this, the dynamic signal debug popup would keep showing stale pre-save
+        evaluation results until a real market tick triggers a new evaluation.
+        """
+        try:
+            state = state_manager.get_state()
+            if not state or not self.signal_engine:
+                return
+
+            derivative = getattr(state, 'derivative', None)
+            if not derivative:
+                logger.debug("[_force_signal_evaluation] No derivative in state — skipping")
+                return
+
+            store = candle_store_manager.get_store(derivative)
+            if store is None or store.is_empty():
+                logger.debug("[_force_signal_evaluation] No candle data yet — skipping")
+                return
+
+            try:
+                _raw = str(state.interval or "1").strip().rstrip("mM")
+                target_minutes = int(_raw)
+            except (TypeError, ValueError):
+                target_minutes = 1
+
+            df = store.resample(target_minutes)
+            if df is None or df.empty:
+                logger.debug("[_force_signal_evaluation] Resampled df is empty — skipping")
+                return
+
+            result = self.signal_engine.evaluate(df, state.current_position)
+            if result and result.get('available'):
+                if self.detector and safe_hasattr(self.detector, '_update_state_with_signal_result'):
+                    self.detector._update_state_with_signal_result(result)
+                else:
+                    state.option_signal_result = result
+                logger.info(
+                    f"[TradingApp._force_signal_evaluation] Re-evaluated after reload: "
+                    f"signal={result.get('signal_value')}"
+                )
+            else:
+                logger.debug("[_force_signal_evaluation] Engine returned no result or not available")
+
+        except Exception as e:
+            logger.debug(f"[TradingApp._force_signal_evaluation] {e}", exc_info=True)
 
     def run(self) -> None:
         self._token_expired_error = None  # Reset on each run
@@ -1209,15 +1264,16 @@ class TradingApp:
             require_new = getattr(state, 'reentry_require_new_signal', True)
             if require_new:
                 # Mark seen if the fresh (just-computed) signal matches the
-                # exit direction and the minimum bar wait has already elapsed.
+                # ENTRY direction being requested (not the exit direction).
+                # Using exit direction here was the bug: entering a PUT after
+                # a CALL exit would require 'BUY_CALL' (exit direction match)
+                # which can never be satisfied, permanently blocking re-entry.
                 if not self._reentry_signal_seen:
                     live_signal = getattr(state, 'option_signal', None)
-                    if (self._reentry_exit_direction == BaseEnums.CALL
-                            and live_signal == 'BUY_CALL'):
+                    if direction == BaseEnums.CALL and live_signal == 'BUY_CALL':
                         self._reentry_signal_seen = True
                         logger.debug("[ReEntry] Fresh BUY_CALL confirmed at entry check")
-                    elif (self._reentry_exit_direction == BaseEnums.PUT
-                            and live_signal == 'BUY_PUT'):
+                    elif direction == BaseEnums.PUT and live_signal == 'BUY_PUT':
                         self._reentry_signal_seen = True
                         logger.debug("[ReEntry] Fresh BUY_PUT confirmed at entry check")
                 if not self._reentry_signal_seen:
@@ -2466,6 +2522,14 @@ class TradingApp:
                 state.cancel_after = safe_getattr(self.trade_config, "cancel_after", 0)
                 state.sideway_zone_trade = safe_getattr(self.trade_config, "sideway_zone_trade", False)
 
+                # Risk limits — these are stored in DailyTradeSetting but were
+                # never propagated to state at startup, so RiskManager was always
+                # using the hardcoded TradeState defaults (-5000 / 10 / 5000)
+                # instead of the user's saved values.
+                state.max_daily_loss    = safe_getattr(self.trade_config, "max_daily_loss",    -5000.0)
+                state.max_trades_per_day = safe_getattr(self.trade_config, "max_trades_per_day", 10)
+                state.daily_target      = safe_getattr(self.trade_config, "daily_target",       5000.0)
+
             if self.trading_mode_setting and not self.trading_mode_setting.is_live():
                 # Paper / Simulation / Backtest: use the paper balance from settings
                 paper_bal = safe_getattr(self.trading_mode_setting, 'paper_balance', 100000.0) or 100000.0
@@ -2509,7 +2573,9 @@ class TradingApp:
 
             logger.info(f"[Settings] Applied trade and P/L configs - Capital: {state.capital_reserve}, "
                         f"Lot size: {state.lot_size}, TP: {state.tp_percentage}%, "
-                        f"SL: {state.stoploss_percentage}%")
+                        f"SL: {state.stoploss_percentage}%, "
+                        f"MaxLoss: ₹{state.max_daily_loss:.0f}, MaxTrades: {state.max_trades_per_day}, "
+                        f"Target: ₹{state.daily_target:.0f}")
 
         except TokenExpiredError:
             raise

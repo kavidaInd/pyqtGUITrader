@@ -68,7 +68,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QRadioButton, QAction, QMessageBox, QLabel,
     QFrame, QApplication, QSizePolicy
 )
-
+from gui.dialog_base import ThemedMessageBox
 import BaseEnums
 from Utils.common import to_date_str
 from Utils.safe_getattr import safe_getattr, safe_setattr, safe_hasattr
@@ -120,18 +120,18 @@ class TradingGUI(QMainWindow):
     strategy_changed = pyqtSignal(str)
     log_message_received = pyqtSignal(str)
 
-    trade_closed = pyqtSignal(float, bool)       # pnl, is_winner
-    unrealized_pnl_updated = pyqtSignal(float)   # unrealized P&L
+    trade_closed = pyqtSignal(float, bool)  # pnl, is_winner
+    unrealized_pnl_updated = pyqtSignal(float)  # unrealized P&L
 
     # ENHANCEMENT-1: Per-tick live price signal (emitted from WS thread via callback)
-    _price_updated = pyqtSignal(str, float)      # symbol, ltp
+    _price_updated = pyqtSignal(str, float)  # symbol, ltp
 
     # BUG-1 FIX: Signal used to marshal chart data from background thread → main thread.
     # Never emit this directly; use _fetch_chart_data_bg instead.
     _chart_data_ready = pyqtSignal(dict)
-    _broker_ready     = pyqtSignal()        # emitted by BrokerInitThread on success
-    _broker_failed    = pyqtSignal(str, bool)  # (error_msg, is_token_expired)
-    _balance_fetched  = pyqtSignal(float)      # emitted by BalanceFetchThread on success
+    _broker_ready = pyqtSignal()  # emitted by BrokerInitThread on success
+    _broker_failed = pyqtSignal(str, bool)  # (error_msg, is_token_expired)
+    _balance_fetched = pyqtSignal(float)  # emitted by BalanceFetchThread on success
 
     def __init__(self):
         self._safe_defaults_init()
@@ -558,7 +558,7 @@ class TradingGUI(QMainWindow):
                     self.app_running
                 )
             if any(keyword in message.lower() for keyword in ['critical', 'fatal', 'crash']):
-                QMessageBox.critical(self, "Critical Error", message)
+                ThemedMessageBox.critical(self, "Critical Error", message)
         except Exception as e:
             logger.error(f"[TradingGUI._on_error_signal] Failed to handle error: {e}", exc_info=True)
 
@@ -598,6 +598,22 @@ class TradingGUI(QMainWindow):
             if self.daily_pnl_widget:
                 self.daily_pnl_widget.on_trade_closed(pnl, is_winner)
             logger.info(f"[TradingGUI._on_trade_closed] Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
+            # Post outcome to message feed — include direction from previous_position
+            if self.status_panel:
+                try:
+                    state = self.trading_app.state if self.trading_app else None
+                    direction = ""
+                    if state:
+                        prev = getattr(state, 'previous_position', None)
+                        if prev:
+                            direction = f" {prev}"
+                except Exception:
+                    direction = ""
+                icon = "✅" if is_winner else "❌"
+                level = 'success' if is_winner else 'error'
+                self.status_panel.post_message(
+                    f"{icon} Closed{direction}  P&L: ₹{pnl:+.2f}", level=level
+                )
         except Exception as e:
             logger.error(f"[TradingGUI._on_trade_closed] Failed: {e}", exc_info=True)
 
@@ -644,8 +660,6 @@ class TradingGUI(QMainWindow):
         except Exception as e:
             logger.error(f"[TradingGUI._schedule_button_update] {e}", exc_info=True)
             self._update_button_states()
-
-
 
     def _setup_log_handler(self):
         """Setup Qt log handler with buffering"""
@@ -1037,7 +1051,7 @@ class TradingGUI(QMainWindow):
             # Additional timers per audit requirements
             self._timer_db_flush = QTimer(self)
             self._timer_db_flush.timeout.connect(self._on_db_flush_tick)
-            self._timer_db_flush.start(60_000)   # every 60 s
+            self._timer_db_flush.start(60_000)  # every 60 s
 
             self._timer_candle_cleanup = QTimer(self)
             self._timer_candle_cleanup.timeout.connect(self._on_candle_cleanup_tick)
@@ -1078,8 +1092,6 @@ class TradingGUI(QMainWindow):
                 logger.info(f"[TradingGUI._on_candle_cleanup_tick] Released {released} unused CandleStores")
         except Exception as e:
             logger.error(f"[TradingGUI._on_candle_cleanup_tick] {e}", exc_info=True)
-
-
 
     @pyqtSlot()
     def _tick_fast(self):
@@ -1282,7 +1294,7 @@ class TradingGUI(QMainWindow):
                 logger.debug(
                     f"[TradingGUI._update_chart_if_needed] No data in CandleStore for {symbol}, scheduling fetch")
                 self._chart_update_pending = True
-                self._do_chart_update()          # non-blocking now
+                self._do_chart_update()  # non-blocking now
                 return
 
             bar_count = candle_store_manager.bar_count(symbol)
@@ -1293,7 +1305,7 @@ class TradingGUI(QMainWindow):
                     f"[TradingGUI._update_chart_if_needed] Fingerprint changed, scheduling update")
                 self._last_chart_fp = current_fp
                 self._chart_update_pending = True
-                self._do_chart_update()          # non-blocking
+                self._do_chart_update()  # non-blocking
 
         except Exception as e:
             logger.error(f"[TradingGUI._update_chart_if_needed] Failed: {e}", exc_info=True)
@@ -1376,8 +1388,8 @@ class TradingGUI(QMainWindow):
             # after TradingThread emits its initialized signal.
             if candle_store_manager.is_empty(symbol):
                 broker_ready = (
-                    safe_hasattr(candle_store_manager, '_broker') and
-                    candle_store_manager._broker is not None
+                        safe_hasattr(candle_store_manager, '_broker') and
+                        candle_store_manager._broker is not None
                 )
                 if not broker_ready:
                     logger.debug(
@@ -1414,14 +1426,14 @@ class TradingGUI(QMainWindow):
                 time_labels = [fmt_display(t, time_only=True) for t in time_col]
 
             chart_data = {
-                "open":        df["open"].tolist(),
-                "high":        df["high"].tolist(),
-                "low":         df["low"].tolist(),
-                "close":       df["close"].tolist(),
-                "volume":      df["volume"].tolist() if "volume" in df.columns else [],
-                "timestamps":  timestamps,    # epoch ints — _to_epoch parses these correctly
-                "time_labels": time_labels,   # HH:MM strings for display only
-                "datetime":    time_col.tolist(),
+                "open": df["open"].tolist(),
+                "high": df["high"].tolist(),
+                "low": df["low"].tolist(),
+                "close": df["close"].tolist(),
+                "volume": df["volume"].tolist() if "volume" in df.columns else [],
+                "timestamps": timestamps,  # epoch ints — _to_epoch parses these correctly
+                "time_labels": time_labels,  # HH:MM strings for display only
+                "datetime": time_col.tolist(),
             }
 
             # Marshal back to the main/GUI thread via signal — safe cross-thread call
@@ -1636,9 +1648,9 @@ class TradingGUI(QMainWindow):
                 QTimer.singleShot(500, lambda: self._open_login_for_token_expiry(str(e)))
             else:
                 self.error_occurred.emit(f"Failed to connect to broker: {e}")
-                QMessageBox.critical(self, "Init Error",
-                                     f"Could not connect to broker:\n{e}\n\n"
-                                     "Check credentials via Settings → Brokerage Settings.")
+                ThemedMessageBox.critical(self, "Init Error",
+                                          f"Could not connect to broker:\n{e}\n\n"
+                                          "Check credentials via Settings → Brokerage Settings.")
 
     @pyqtSlot()
     def _start_app(self):
@@ -1649,7 +1661,7 @@ class TradingGUI(QMainWindow):
 
             if self.trading_app is None:
                 logger.error("[TradingGUI._start_app] Start failed: Trading app not initialized")
-                QMessageBox.critical(self, "Error", "Trading app not initialised.")
+                ThemedMessageBox.critical(self, "Error", "Trading app not initialised.")
                 return
 
             is_backtest = False
@@ -1664,7 +1676,7 @@ class TradingGUI(QMainWindow):
                 return
 
             if not is_backtest and self._market_status != "OPEN":
-                reply = QMessageBox.question(
+                reply = ThemedMessageBox.question(
                     self, "Market Closed",
                     "The market is currently closed.\n\n"
                     "The trading engine can still start but will wait for market open.\n"
@@ -1675,7 +1687,7 @@ class TradingGUI(QMainWindow):
                     return
 
             if self._check_token_expired():
-                reply = QMessageBox.question(
+                reply = ThemedMessageBox.question(
                     self, "Token Expired",
                     "Your token appears to be expired. Would you like to login now?",
                     QMessageBox.Yes | QMessageBox.No
@@ -1715,6 +1727,7 @@ class TradingGUI(QMainWindow):
                 # Chain both: keep the existing trading-app callback and add
                 # the GUI P&L emission on top.
                 _existing_cb = executor.on_trade_closed_callback
+
                 def _chained_trade_closed(pnl, is_winner,
                                           _existing=_existing_cb):
                     if _existing:
@@ -1723,10 +1736,26 @@ class TradingGUI(QMainWindow):
                         except Exception as _cb_e:
                             logger.error(f"[on_trade_closed_callback] existing cb failed: {_cb_e}")
                     self.trade_closed.emit(float(pnl), bool(is_winner))
+
                 executor.on_trade_closed_callback = _chained_trade_closed
                 logger.info("[TradingGUI._start_app] on_trade_closed_callback chained (reentry + P&L widget)")
+
+                # Wire trade-OPEN callback so the message feed shows the entry
+                # instantly.  The callback fires on the trading thread, so we
+                # cannot touch Qt widgets directly — use QTimer.singleShot to
+                # push the call onto the GUI thread safely.
+                def _on_trade_opened(pos: str, price: float):
+                    QTimer.singleShot(0, lambda p=pos, pr=price: (
+                        self.status_panel.post_message(
+                            f"🟢 Entered {p} @ ₹{pr:.2f}", level='success'
+                        ) if self.status_panel and not self._closing else None
+                    ))
+
+                executor.on_trade_opened_callback = _on_trade_opened
+                logger.info("[TradingGUI._start_app] on_trade_opened_callback wired to sidebar feed")
             else:
-                logger.warning("[TradingGUI._start_app] executor not found — P&L widget won't auto-update on trade close")
+                logger.warning(
+                    "[TradingGUI._start_app] executor not found — P&L widget won't auto-update on trade close")
 
             self.app_running = True
             self.app_status_bar.update_status(
@@ -1777,6 +1806,8 @@ class TradingGUI(QMainWindow):
             self.status_updated.emit("Trading engine running")
             logger.info("[TradingGUI._on_thread_started] Trading thread started successfully")
             self.app_state_changed.emit(True, self.trading_mode)
+            if self.status_panel:
+                self.status_panel.post_message("🚀 Trading engine started", level='success')
         except Exception as e:
             logger.error(f"[TradingGUI._on_thread_started] Failed: {e}", exc_info=True)
 
@@ -1818,7 +1849,7 @@ class TradingGUI(QMainWindow):
             # At __init__ time this was None; now detector and signal_engine are live.
             try:
                 detector = getattr(self.trading_app, 'detector', None)
-                engine   = getattr(detector, 'signal_engine', None) if detector else None
+                engine = getattr(detector, 'signal_engine', None) if detector else None
                 self.chart_widget.set_config(self.config, engine)
                 # Keep symbol in sync with current settings
                 if self.daily_setting and safe_hasattr(self.chart_widget, 'set_symbol'):
@@ -1883,7 +1914,7 @@ class TradingGUI(QMainWindow):
             # in full initialize(), but the chart can render price data without it)
             try:
                 detector = getattr(self.trading_app, 'detector', None)
-                engine   = getattr(detector, 'signal_engine', None) if detector else None
+                engine = getattr(detector, 'signal_engine', None) if detector else None
                 self.chart_widget.set_config(self.config, engine)
                 # Ensure symbol is set (may have changed since _init_trading_app)
                 if self.daily_setting and safe_hasattr(self.chart_widget, 'set_symbol'):
@@ -1911,6 +1942,7 @@ class TradingGUI(QMainWindow):
                             logger.info(f"[CacheWarmup] Pre-built resample cache for {_symbol}: 5m, 15m, 1h")
                     except Exception as _wu_err:
                         logger.debug(f"[CacheWarmup] {_wu_err}")
+
                 threading.Thread(
                     target=_warmup_resample_cache,
                     daemon=True,
@@ -1999,6 +2031,8 @@ class TradingGUI(QMainWindow):
                     {'status': '⚠️ Token expired — please login', 'error': True},
                     self.trading_mode, False
                 )
+                if self.status_panel:
+                    self.status_panel.post_message("🔑 Token expired — please login", level='error')
                 # Force login.  On completion _reload_broker is called which
                 # re-creates broker and triggers chart load.
                 QTimer.singleShot(200, lambda: self._open_login_for_token_expiry(
@@ -2010,6 +2044,8 @@ class TradingGUI(QMainWindow):
                     {'status': f'⚠️ Broker error: {error_msg[:60]}', 'error': True},
                     self.trading_mode, False
                 )
+                if self.status_panel:
+                    self.status_panel.post_message(f"⚠ Broker error: {error_msg[:55]}", level='error')
 
         except Exception as e:
             logger.error(f"[TradingGUI._on_broker_failed] Failed: {e}", exc_info=True)
@@ -2186,6 +2222,8 @@ class TradingGUI(QMainWindow):
             self.status_updated.emit("Trading engine stopped")
             logger.info("[TradingGUI._on_engine_finished] Trading engine stopped")
             self.app_state_changed.emit(False, self.trading_mode)
+            if self.status_panel:
+                self.status_panel.post_message("⏹ Trading engine stopped", level='warning')
         except Exception as e:
             logger.error(f"[TradingGUI._on_engine_finished] Failed: {e}", exc_info=True)
 
@@ -2228,7 +2266,7 @@ class TradingGUI(QMainWindow):
                 self.trading_mode, False
             )
             self._update_button_states()
-            QMessageBox.critical(self, "Engine Error", f"Trading engine crashed:\n{message}")
+            ThemedMessageBox.critical(self, "Engine Error", f"Trading engine crashed:\n{message}")
             logger.error(f"[TradingGUI._on_engine_error] Engine error: {message}")
             self.error_occurred.emit(message)
         except Exception as e:
@@ -2250,6 +2288,9 @@ class TradingGUI(QMainWindow):
                 {'status': f'⚠️ Risk breach: {reason[:60]}', 'error': True},
                 self.trading_mode, self.app_running
             )
+            # Post to sidebar message feed so the user sees it immediately
+            if self.status_panel:
+                self.status_panel.post_message(reason, level='error')
         except Exception as e:
             logger.error(f"[TradingGUI._on_risk_breach] Failed: {e}", exc_info=True)
 
@@ -2259,12 +2300,12 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             if self.trading_mode != "manual":
-                QMessageBox.information(self, "Mode", "Switch to Manual mode first.")
+                ThemedMessageBox.information(self, "Mode", "Switch to Manual mode first.")
                 return
             if not self.trading_app:
                 return
             if self._market_status != "OPEN":
-                QMessageBox.warning(self, "Market Closed", "Cannot place manual orders when market is closed.")
+                ThemedMessageBox.warning(self, "Market Closed", "Cannot place manual orders when market is closed.")
                 return
             self.app_status_bar.update_status({'status': f'Placing {option_type} order...'}, self.trading_mode, True)
             threading.Thread(target=self._threaded_manual_buy, args=(option_type,), daemon=True).start()
@@ -2291,7 +2332,7 @@ class TradingGUI(QMainWindow):
             if not self.trading_app:
                 return
             if self._market_status != "OPEN":
-                QMessageBox.warning(self, "Market Closed", "Cannot exit positions when market is closed.")
+                ThemedMessageBox.warning(self, "Market Closed", "Cannot exit positions when market is closed.")
                 return
             self.app_status_bar.update_status({'status': 'Exiting position...'}, self.trading_mode, True)
             threading.Thread(target=self._threaded_manual_exit, daemon=True).start()
@@ -2322,7 +2363,7 @@ class TradingGUI(QMainWindow):
                 return
             if self._market_status != "OPEN":
                 from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "Market Closed", "Cannot exit positions when market is closed.")
+                ThemedMessageBox.warning(self, "Market Closed", "Cannot exit positions when market is closed.")
                 return
             dlg = ExitConfirmDialog(self)
             if dlg.exec_() == ExitConfirmDialog.Accepted:
@@ -2396,12 +2437,12 @@ class TradingGUI(QMainWindow):
             view_menu = menubar.addMenu("View")
 
             for label, slot, tip in [
-                ("📝 Show Logs",            self._show_log_popup,          "View application logs"),
-                ("📊 Show Trade History",   self._show_history_popup,      "View trade history"),
-                ("📈 Show Statistics",      self._show_stats_popup,        "View trading statistics"),
+                ("📝 Show Logs", self._show_log_popup, "View application logs"),
+                ("📊 Show Trade History", self._show_history_popup, "View trade history"),
+                ("📈 Show Statistics", self._show_stats_popup, "View trading statistics"),
                 ("🔬 Dynamic Signal Debug", self._show_signal_debug_popup, "Debug signal generation"),
-                ("🌐 Connection Monitor",   self._show_connection_monitor,  "Monitor broker connections"),
-                ("💻 System Monitor",       self._show_system_monitor,     "Monitor system performance"),
+                ("🌐 Connection Monitor", self._show_connection_monitor, "Monitor broker connections"),
+                ("💻 System Monitor", self._show_system_monitor, "Monitor system performance"),
             ]:
                 act = QAction(label, self)
                 act.triggered.connect(slot)
@@ -2450,13 +2491,13 @@ class TradingGUI(QMainWindow):
             settings_menu = menubar.addMenu("Settings")
 
             for label, slot in [
-                ("⚙️ Strategy Settings",       self._show_strategy_picker),
-                ("📅 Daily Trade Settings",     self._open_daily),
-                ("💰 Profit & Loss Settings",   self._open_pnl),
-                ("🔄 Re-Entry Guard Settings",  self._open_reentry),
-                ("🏦 Brokerage Settings",       self._open_brokerage),
-                ("🔑 Manual Broker Login",      self._open_login),
-                ("🎮 Trading Mode Settings",    self._open_trading_mode),
+                ("⚙️ Strategy Settings", self._show_strategy_picker),
+                ("📅 Daily Trade Settings", self._open_daily),
+                ("💰 Profit & Loss Settings", self._open_pnl),
+                ("🔄 Re-Entry Guard Settings", self._open_reentry),
+                ("🏦 Brokerage Settings", self._open_brokerage),
+                ("🔑 Manual Broker Login", self._open_login),
+                ("🎮 Trading Mode Settings", self._open_trading_mode),
             ]:
                 act = QAction(label, self)
                 act.triggered.connect(slot)
@@ -2554,9 +2595,16 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
-            if not self.history_popup:
+
+            # Always recreate if the previous instance was cleaned up (closed).
+            # cleanup() nulls all widget refs making the old object unusable.
+            if not self.history_popup or getattr(self.history_popup, '_cleanup_done', True):
                 self.history_popup = TradeHistoryPopup(self)
-            self.history_popup.load_trades()
+                # Wire TradingGUI.trade_closed so the popup refreshes immediately
+                # every time a trade closes, not just on the 30-second poll timer.
+                self.history_popup.register_trade_closed_callback(self.trade_closed)
+
+            self.history_popup.load_trades('today')
             self.history_popup.show()
             self.history_popup.raise_()
             self.history_popup.activateWindow()
@@ -2574,7 +2622,7 @@ class TradingGUI(QMainWindow):
                 self.stats_popup.raise_()
                 self.stats_popup.activateWindow()
             else:
-                QMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
+                ThemedMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
         except Exception as e:
             logger.error(f"[TradingGUI._show_stats_popup] Failed: {e}", exc_info=True)
 
@@ -2607,7 +2655,7 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             if not self.trading_app:
-                QMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
+                ThemedMessageBox.information(self, "Not Ready", "Trading app not initialized yet.")
                 return
             if self.signal_debug_popup is None:
                 self.signal_debug_popup = DynamicSignalDebugPopup(self.trading_app, self)
@@ -2657,7 +2705,8 @@ class TradingGUI(QMainWindow):
             mode = self.trading_mode_setting.mode.value if self.trading_mode_setting else "Algo"
             c = self._c
             ty = self._ty
-            color = c.RED_BRIGHT if (self.trading_mode_setting and self.trading_mode_setting.is_live()) else c.GREEN_BRIGHT
+            color = c.RED_BRIGHT if (
+                        self.trading_mode_setting and self.trading_mode_setting.is_live()) else c.GREEN_BRIGHT
             if safe_hasattr(self, 'mode_label') and self.mode_label is not None:
                 self.mode_label.setText(f"{mode}")
                 self.mode_label.setStyleSheet(f"""
@@ -2716,6 +2765,8 @@ class TradingGUI(QMainWindow):
         """
         try:
             logger.info("[TradingGUI._on_settings_saved] Settings saved — refreshing dashboard")
+            if self.status_panel:
+                self.status_panel.post_message("⚙ Settings saved & applied", level='success')
 
             # Reload daily_setting from DB so we have the latest values
             if self.daily_setting is not None:
@@ -2868,7 +2919,7 @@ class TradingGUI(QMainWindow):
 
         except Exception as e:
             logger.error(f"[TradingGUI._reload_broker] Failed: {e}", exc_info=True)
-            QMessageBox.critical(self, "Reload Error", str(e))
+            ThemedMessageBox.critical(self, "Reload Error", str(e))
 
     def _open_backtest(self):
         try:
@@ -2883,7 +2934,7 @@ class TradingGUI(QMainWindow):
             self._backtest_window.activateWindow()
         except Exception as e:
             logger.error(f"[TradingGUI._open_backtest] {e}", exc_info=True)
-            QMessageBox.critical(self, "Backtester Error", str(e))
+            ThemedMessageBox.critical(self, "Backtester Error", str(e))
 
     def _show_about(self):
         try:
@@ -2903,9 +2954,9 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
-            QMessageBox.information(self, "Documentation",
-                                    "Documentation would open here.\n\n"
-                                    "In a real application, this would open a PDF or web browser.")
+            ThemedMessageBox.information(self, "Documentation",
+                                         "Documentation would open here.\n\n"
+                                         "In a real application, this would open a PDF or web browser.")
         except Exception as e:
             logger.error(f"[TradingGUI._show_documentation] Failed: {e}", exc_info=True)
 
@@ -2913,8 +2964,8 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
-            QMessageBox.information(self, "Check Updates",
-                                    "This feature would check for updates.\n\nCurrently running version 2.0")
+            ThemedMessageBox.information(self, "Check Updates",
+                                         "This feature would check for updates.\n\nCurrently running version 2.0")
         except Exception as e:
             logger.error(f"[TradingGUI._check_updates] Failed: {e}", exc_info=True)
 
@@ -2922,9 +2973,9 @@ class TradingGUI(QMainWindow):
         try:
             if self._closing:
                 return
-            reply = QMessageBox.question(self, "Restart",
-                                         "Are you sure you want to restart the application?",
-                                         QMessageBox.Yes | QMessageBox.No)
+            reply = ThemedMessageBox.question(self, "Restart",
+                                              "Are you sure you want to restart the application?",
+                                              QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
                 self.close()
                 QTimer.singleShot(1000, lambda: os.execl(sys.executable, sys.executable, *sys.argv))
@@ -2941,17 +2992,19 @@ class TradingGUI(QMainWindow):
             timestamp = ist_now().strftime("%Y%m%d_%H%M%S")
             backup_file = f"{backup_dir}/config_backup_{timestamp}.json"
             config_data = {
-                'brokerage': self.brokerage_setting.to_dict() if safe_hasattr(self.brokerage_setting, 'to_dict') else {},
-                'daily':     self.daily_setting.to_dict() if safe_hasattr(self.daily_setting, 'to_dict') else {},
-                'pnl':       self.profit_loss_setting.to_dict() if safe_hasattr(self.profit_loss_setting, 'to_dict') else {},
-                'mode':      self.trading_mode_setting.to_dict() if safe_hasattr(self.trading_mode_setting, 'to_dict') else {}
+                'brokerage': self.brokerage_setting.to_dict() if safe_hasattr(self.brokerage_setting,
+                                                                              'to_dict') else {},
+                'daily': self.daily_setting.to_dict() if safe_hasattr(self.daily_setting, 'to_dict') else {},
+                'pnl': self.profit_loss_setting.to_dict() if safe_hasattr(self.profit_loss_setting, 'to_dict') else {},
+                'mode': self.trading_mode_setting.to_dict() if safe_hasattr(self.trading_mode_setting,
+                                                                            'to_dict') else {}
             }
             with open(backup_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
-            QMessageBox.information(self, "Backup Complete", f"Configuration backed up to:\n{backup_file}")
+            ThemedMessageBox.information(self, "Backup Complete", f"Configuration backed up to:\n{backup_file}")
         except Exception as e:
             logger.error(f"[TradingGUI._backup_config] Failed: {e}", exc_info=True)
-            QMessageBox.critical(self, "Backup Failed", str(e))
+            ThemedMessageBox.critical(self, "Backup Failed", str(e))
 
     def _restore_config(self):
         try:
@@ -2972,16 +3025,16 @@ class TradingGUI(QMainWindow):
                 if safe_hasattr(self.trading_mode_setting, 'from_dict'):
                     self.trading_mode_setting.from_dict(config_data.get('mode', {}))
                 self._reload_broker()
-                QMessageBox.information(self, "Restore Complete", "Configuration restored successfully.")
+                ThemedMessageBox.information(self, "Restore Complete", "Configuration restored successfully.")
         except Exception as e:
             logger.error(f"[TradingGUI._restore_config] Failed: {e}", exc_info=True)
-            QMessageBox.critical(self, "Restore Failed", str(e))
+            ThemedMessageBox.critical(self, "Restore Failed", str(e))
 
     def _clear_cache(self):
         try:
             if self._closing:
                 return
-            reply = QMessageBox.question(
+            reply = ThemedMessageBox.question(
                 self, "Clear Cache",
                 "Are you sure you want to clear the cache?\nThis may improve performance but some data will need to be reloaded.",
                 QMessageBox.Yes | QMessageBox.No
@@ -2994,7 +3047,7 @@ class TradingGUI(QMainWindow):
                 if self.daily_pnl_widget:
                     self.daily_pnl_widget.reset()
                 state_manager.reset_for_backtest()
-                QMessageBox.information(self, "Cache Cleared", "Cache has been cleared successfully.")
+                ThemedMessageBox.information(self, "Cache Cleared", "Cache has been cleared successfully.")
         except Exception as e:
             logger.error(f"[TradingGUI._clear_cache] Failed: {e}", exc_info=True)
 
@@ -3085,11 +3138,15 @@ class TradingGUI(QMainWindow):
                 )
                 if self.trading_app and safe_hasattr(self.trading_app, "reload_signal_engine"):
                     self.trading_app.reload_signal_engine()
+                if self.status_panel:
+                    self.status_panel.post_message(f"♻ Strategy '{slug}' reloaded", level='info')
             else:
                 logger.debug(
                     f"[TradingGUI._on_strategy_saved] Saved '{slug}' is not active "
                     f"(active='{active_slug}') — engine unchanged"
                 )
+                if self.status_panel:
+                    self.status_panel.post_message(f"💾 Strategy '{slug}' saved", level='info')
         except Exception as e:
             logger.error(f"[TradingGUI._on_strategy_saved] Failed: {e}", exc_info=True)
 
@@ -3099,6 +3156,8 @@ class TradingGUI(QMainWindow):
                 return
             QTimer.singleShot(100, self._apply_active_strategy_deferred)
             logger.info(f"[TradingGUI._on_strategy_changed] Strategy changed to: {slug}")
+            if self.status_panel:
+                self.status_panel.post_message(f"🔀 Strategy → {slug}", level='info')
         except Exception as e:
             logger.error(f"[TradingGUI._on_strategy_changed] Failed: {e}", exc_info=True)
 
