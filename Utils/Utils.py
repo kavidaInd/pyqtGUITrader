@@ -232,13 +232,15 @@ class Utils:
 
     @staticmethod
     def to_datetime(date_str: str, time_str: str = "00:00:00") -> datetime:
-        """Convert date string and optional time string to datetime."""
+        """Convert date string and optional time string to IST-aware datetime."""
         try:
             if not date_str:
                 logger.warning("to_datetime called with empty date_str")
                 return ist_now()
-
-            return datetime.strptime(f"{date_str} {time_str}", f"{Utils.DATE_FORMAT} {Utils.TIME_FORMAT}")
+            # TZ-FIX: strptime always returns naive datetime; localize to IST immediately.
+            naive = datetime.strptime(f"{date_str} {time_str}", f"{Utils.DATE_FORMAT} {Utils.TIME_FORMAT}")
+            from Utils.time_utils import ist_localize
+            return ist_localize(naive)
         except ValueError as e:
             logger.error(f"Invalid date/time format: date={date_str}, time={time_str}: {e}")
             return ist_now()
@@ -318,7 +320,7 @@ class Utils:
             LOG_DIR.mkdir(parents=True, exist_ok=True)
             today_folder = LOG_DIR / ist_now().strftime('%Y-%m-%d')
             today_folder.mkdir(parents=True, exist_ok=True)
-            log_file_name = f"{datetime.now().strftime('%H')}-{file_name}.log"
+            log_file_name = f"{ist_now().strftime('%H')}-{file_name}.log"
             return today_folder / log_file_name
         except PermissionError as e:
             logger.error(f"Permission denied creating log directory: {e}")
@@ -384,7 +386,8 @@ class Utils:
                 logger.warning("epoch_to_human_readable called with None epoch")
                 return ""
 
-            return datetime.fromtimestamp(epoch).strftime(str_format)
+            # TZ-FIX: fromtimestamp(tz=IST) returns IST-aware datetime.
+            return datetime.fromtimestamp(epoch, tz=IST).strftime(str_format)
         except ValueError as e:
             logger.error(f"Invalid epoch value {epoch}: {e}")
             return ""

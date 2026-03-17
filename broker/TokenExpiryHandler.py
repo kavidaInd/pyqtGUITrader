@@ -11,6 +11,8 @@ from typing import Optional, Callable, Any
 from datetime import datetime, timedelta
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from PyQt5.QtWidgets import QApplication
+# TZ-FIX: token expiry timestamps should be IST-consistent.
+from Utils.time_utils import ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +92,7 @@ class TokenExpiryHandler(QObject):
 
             logger.warning(f"Token expired detected by {source}: {error_msg}")
             self._is_expired = True
-            self._expiry_time = datetime.now()
+            self._expiry_time = ist_now()
 
             if recovery_callback:
                 self._recovery_callbacks.append(recovery_callback)
@@ -113,7 +115,7 @@ class TokenExpiryHandler(QObject):
             self._pending_operations.append({
                 'id': operation_id,
                 'context': context,
-                'timestamp': datetime.now()
+                'timestamp': ist_now()
             })
             logger.debug(f"Registered pending operation: {operation_id}")
 

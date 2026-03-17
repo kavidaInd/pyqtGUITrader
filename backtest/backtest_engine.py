@@ -350,8 +350,15 @@ class BacktestEngine:
         if not pd.api.types.is_datetime64_any_dtype(df["time"]):
             df["time"] = pd.to_datetime(df["time"])
         df = df[(df["time"].dt.date >= start) & (df["time"].dt.date <= end)].copy()
-        t_naive = df["time"].dt.tz_localize(None) if df["time"].dt.tz is not None else df["time"]
-        df = df[t_naive.dt.time.between(MARKET_OPEN, MARKET_CLOSE)].copy()
+        # TZ-FIX: extract .time() for market-hours filter via tz_convert to IST first,
+        # then use .tz_localize(None) only for the .dt.time accessor (pandas requirement).
+        # The actual "time" column values remain IST-aware in the returned df.
+        if df["time"].dt.tz is not None:
+            t_ist = df["time"].dt.tz_convert(IST)
+            t_naive_for_filter = t_ist.dt.tz_localize(None)
+        else:
+            t_naive_for_filter = df["time"]
+        df = df[t_naive_for_filter.dt.time.between(MARKET_OPEN, MARKET_CLOSE)].copy()
         return df.sort_values("time").reset_index(drop=True)
 
     def _fetch_spot(self) -> Optional[pd.DataFrame]:
@@ -465,8 +472,11 @@ class BacktestEngine:
             ts = row["time"]
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
             bar_time = ts if isinstance(ts, datetime) else pd.Timestamp(ts).to_pydatetime()
-            if safe_hasattr(bar_time, "tzinfo") and bar_time.tzinfo:
-                bar_time = bar_time.replace(tzinfo=None)
+            # TZ-FIX: normalize to IST-aware instead of stripping timezone.
+            if bar_time.tzinfo is None:
+                bar_time = IST.localize(bar_time)
+            else:
+                bar_time = bar_time.astimezone(IST)
 
             bar_date  = bar_time.date()
             is_new_day = _current_date is not None and bar_date != _current_date
@@ -700,8 +710,11 @@ class BacktestEngine:
             last     = spot_df.iloc[-1]
             last_ts  = (last["time"] if isinstance(last["time"], datetime)
                         else pd.Timestamp(last["time"]).to_pydatetime())
-            if safe_hasattr(last_ts, "tzinfo") and last_ts.tzinfo:
-                last_ts = last_ts.replace(tzinfo=None)
+            # TZ-FIX: normalize to IST-aware instead of stripping timezone.
+            if last_ts.tzinfo is None:
+                last_ts = IST.localize(last_ts)
+            else:
+                last_ts = last_ts.astimezone(IST)
             cr = self._close_trade(result, state, tracker, last_ts, last["close"],
                                    pricer, equity, trade_no, "MARKET_CLOSE")
             result, equity, trade_no = cr.result, cr.equity, cr.trade_no
@@ -913,7 +926,8 @@ class BacktestEngine:
                 for _, row in tf_df.iterrows():
                     ts = row["time"]
                     bt = ts if isinstance(ts, datetime) else pd.Timestamp(ts).to_pydatetime()
-                    if safe_hasattr(bt, "tzinfo") and bt.tzinfo: bt = bt.replace(tzinfo=None)
+                    # TZ-FIX: normalize to IST-aware instead of stripping timezone.
+                    bt = IST.localize(bt) if bt.tzinfo is None else bt.astimezone(IST)
                     history.append({"time": bt, "open": row["open"], "high": row["high"],
                                     "low": row["low"], "close": row["close"], "volume": 0})
                     if len(history) > HISTORY_BUFFER_MAX: del history[:-HISTORY_BUFFER_MAX]

@@ -246,12 +246,14 @@ class OptionSymbolBuilder:
 
     @classmethod
     def _last_weekday_of_month(cls, year: int, month: int, weekday: int) -> datetime:
-        """Return the last occurrence of *weekday* in the given month."""
+        """Return the last occurrence of *weekday* in the given month as IST-aware datetime."""
         last = calendar.monthrange(year, month)[1]
         dt = datetime(year, month, last)
         while dt.weekday() != weekday:
             dt -= timedelta(days=1)
-        return dt
+        # TZ-FIX: localize naive expiry date to IST so comparisons with ist_now() work.
+        from Utils.time_utils import ist_localize
+        return ist_localize(dt)
 
     @classmethod
     def _adjust_for_holiday(cls, dt: datetime) -> datetime:

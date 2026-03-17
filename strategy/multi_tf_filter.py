@@ -13,6 +13,8 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+# TZ-FIX: EMAData timestamps and bias snapshots must use IST.
+from Utils.time_utils import ist_now
 from enum import Enum
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Any
@@ -496,7 +498,7 @@ class MultiTimeframeFilter:
                 fast_ema=ef,
                 slow_ema=es,
                 close=lc,
-                timestamp=datetime.now(),
+                timestamp=ist_now(),
                 timeframe=tf,
                 data_points=len(df)
             )
@@ -816,7 +818,7 @@ class MultiTimeframeFilter:
             "overall_bias": overall_bias,
             "bias_strength": Utils.round_off(bias_strength),
             "alignment_score": round(max(bullish_count, bearish_count) / len(self.ALL_TIMEFRAMES) * 100, 2),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": ist_now().isoformat()
         }
 
     def invalidate_cache(self, symbol: Optional[str] = None):

@@ -498,17 +498,28 @@ class LicenseManager:
 
             if expires_raw:
                 try:
-                    if ist_now().replace(tzinfo=None) > datetime.fromisoformat(expires_raw).replace(tzinfo=None):
+                    # TZ-FIX: parse expiry string and normalize to IST-aware before comparing.
+                    expires_dt = datetime.fromisoformat(expires_raw)
+                    if expires_dt.tzinfo is None:
+                        expires_dt = IST.localize(expires_dt)
+                    else:
+                        expires_dt = expires_dt.astimezone(IST)
+                    if ist_now() > expires_dt:
                         return LicenseResult(ok=False, reason="expired")
                 except ValueError:
                     pass
 
             try:
                 last_dt = datetime.fromisoformat(last_ok_raw)
+                # TZ-FIX: normalize last_dt to IST-aware; grace_end inherits awareness.
+                if last_dt.tzinfo is None:
+                    last_dt = IST.localize(last_dt)
+                else:
+                    last_dt = last_dt.astimezone(IST)
                 grace_end = last_dt + timedelta(days=OFFLINE_GRACE_DAYS)
-                days_left = max(0, (grace_end - ist_now().replace(tzinfo=None)).days)
+                days_left = max(0, (grace_end - ist_now()).days)
 
-                if ist_now().replace(tzinfo=None) > grace_end:
+                if ist_now() > grace_end:
                     return LicenseResult(
                         ok=False,
                         reason=(

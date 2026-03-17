@@ -13,6 +13,8 @@ Uses the existing CandleStore implementation from candle_store.py.
 import logging
 import threading
 from datetime import datetime, timedelta
+# TZ-FIX: elapsed-time / cache comparisons must use ist_now() to match IST DB timestamps.
+from Utils.time_utils import ist_now
 from typing import Dict, Optional, List, Any
 
 import pandas as pd
@@ -151,7 +153,7 @@ class CandleStoreManager:
         try:
             with self._lock:
                 # Update last access time
-                self._last_access[symbol] = datetime.now()
+                self._last_access[symbol] = ist_now()
 
                 # Return existing store if available
                 if symbol in self._stores:
@@ -211,7 +213,7 @@ class CandleStoreManager:
 
                 # Store it
                 self._stores[symbol] = store
-                self._last_access[symbol] = datetime.now()
+                self._last_access[symbol] = ist_now()
 
                 logger.info(f"Created CandleStore for {symbol} from DataFrame with {len(df)} bars")
                 return store
@@ -457,7 +459,7 @@ class CandleStoreManager:
         """
         try:
             with self._lock:
-                cutoff = datetime.now() - timedelta(minutes=max_idle_minutes)
+                cutoff = ist_now() - timedelta(minutes=max_idle_minutes)
                 to_remove = []
 
                 for symbol, last_access in self._last_access.items():

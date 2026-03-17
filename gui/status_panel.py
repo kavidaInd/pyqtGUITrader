@@ -31,6 +31,9 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime
+# TZ-FIX: snapshot cache timestamp comparisons must use ist_now() so the
+# 0.1-second throttle is consistent with IST-stored DB timestamps.
+from Utils.time_utils import ist_now
 from Utils.time_utils import IST, ist_now, fmt_display, fmt_stamp
 from typing import Any, Dict, List, Optional, Set
 
@@ -1063,7 +1066,7 @@ class StatusPanel(QWidget):
     # ── snapshot cache ────────────────────────────────────────────────────────
 
     def _get_cached_snapshot(self) -> dict:
-        now = datetime.now()
+        now = ist_now()
         if (
                 self._snapshot_ts is None
                 or (now - self._snapshot_ts).total_seconds() > 0.1

@@ -13,6 +13,8 @@ from typing import Any, Dict, Optional
 from BaseEnums import *
 from Utils.Utils import Utils
 from Utils.safe_getattr import safe_getattr, safe_hasattr
+# TZ-FIX: throttle timestamps must be IST-consistent with DB order timestamps.
+from Utils.time_utils import ist_now
 
 from db.connector import get_db
 from db.crud import orders as orders_crud
@@ -448,11 +450,15 @@ class PositionMonitor:
                 logger.warning("Price data missing during trade confirmation.")
                 return
 
-            now = datetime.now()
+            now = ist_now()
 
-            # Throttle polling to once every 3 seconds
+            # Throttle polling to once every 3 seconds.
+            # TZ-FIX: sentinel must be IST-aware so subtraction with ist_now() doesn't
+            # raise "can't subtract offset-naive and offset-aware datetimes".
+            # We use IST.localize(datetime(2000,1,1)) as an "infinitely old" marker.
             if not safe_hasattr(state, "last_status_check") or state.last_status_check is None:
-                state.last_status_check = datetime.min
+                from Utils.time_utils import IST
+                state.last_status_check = IST.localize(datetime(2000, 1, 1))
             if (now - state.last_status_check).total_seconds() < 3:
                 return
             state.last_status_check = now

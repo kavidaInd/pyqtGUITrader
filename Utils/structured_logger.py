@@ -8,6 +8,8 @@ import json
 import threading
 from datetime import datetime
 from typing import Dict, Any, Optional
+# TZ-FIX: log record timestamps must reflect IST wall clock time.
+from Utils.time_utils import ist_now
 
 
 class StructuredLogger:
@@ -37,7 +39,7 @@ class StructuredLogger:
     def _format(self, level: str, msg: str, **kwargs) -> str:
         """Format log message with context."""
         record = {
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': ist_now().isoformat(),
             'level': level,
             'logger': self.logger.name,
             'thread': threading.current_thread().name,

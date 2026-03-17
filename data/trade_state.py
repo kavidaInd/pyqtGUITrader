@@ -63,6 +63,8 @@ import logging.handlers
 import threading
 import time
 from datetime import datetime
+# TZ-FIX: elapsed-time / cache comparisons must use ist_now() to match IST DB timestamps.
+from Utils.time_utils import ist_now, IST
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import pandas as pd
@@ -832,7 +834,8 @@ class TradeState:
         ts = self.last_index_updated
         if ts is None:
             return None
-        return datetime.fromtimestamp(ts)
+        # TZ-FIX: localize epoch to IST so returned datetime is timezone-aware.
+        return datetime.fromtimestamp(ts, tz=IST)
 
     @last_index_updated_dt.setter
     def last_index_updated_dt(self, value: Optional[datetime]) -> None:
@@ -2470,7 +2473,7 @@ class TradeState:
                     "position": self._current_position,
                     "symbol": self._current_trading_symbol,
                     "start_time": self._current_trade_started_time,
-                    "end_time": datetime.now(),
+                    "end_time": ist_now(),
                     "buy_price": self._current_buy_price,
                     "sell_price": self._current_price,
                     "highest_price": self._highest_current_price,

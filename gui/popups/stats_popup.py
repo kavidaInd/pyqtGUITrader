@@ -1416,7 +1416,7 @@ class StatsWidget(QWidget, ThemedMixin):
                     self._update_label("current_trade_started_time", str(start_time))
 
                 if pos_snap.get('current_price'):
-                    duration = ist_now().replace(tzinfo=None) - start_time.replace(tzinfo=None) if start_time.tzinfo else ist_now().replace(tzinfo=None) - start_time
+                    duration = (ist_now() - (start_time if start_time.tzinfo else IST.localize(start_time)))
                     hours = duration.seconds // 3600
                     minutes = (duration.seconds % 3600) // 60
 
@@ -1678,7 +1678,7 @@ class StatsWidget(QWidget, ThemedMixin):
             if start_time and isinstance(start_time, datetime):
                 self._update_label("adv_session_start", fmt_display(start_time, time_only=True))
 
-                duration = ist_now().replace(tzinfo=None) - start_time.replace(tzinfo=None) if start_time.tzinfo else ist_now().replace(tzinfo=None) - start_time
+                duration = (ist_now() - (start_time if start_time.tzinfo else IST.localize(start_time)))
                 hours = duration.seconds // 3600
                 minutes = (duration.seconds % 3600) // 60
                 self._update_label("adv_active_time", f"{hours}h {minutes}m")

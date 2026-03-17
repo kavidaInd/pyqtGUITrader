@@ -83,7 +83,7 @@ class UpgradePopup(QDialog):
                 if item.widget():
                     item.widget().deleteLater()
             try:
-                import sip;
+                import sip
                 sip.delete(old)
             except Exception:
                 pass

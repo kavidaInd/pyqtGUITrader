@@ -10,6 +10,7 @@ import sys
 import threading
 import traceback
 from datetime import datetime
+from Utils.time_utils import ist_now
 from typing import Optional
 
 import PyQt5.QtCore
@@ -312,7 +313,7 @@ def _init_app_session(splash=None) -> bool:
 
         # Generate application session ID
         app_session_id = generate_session_id()
-        session_start_time = datetime.now()
+        session_start_time = ist_now()
 
         # Get trade state and update session info
         state = state_manager.get_state()

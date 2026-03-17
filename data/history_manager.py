@@ -24,6 +24,8 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
+# TZ-FIX: elapsed-time / cache comparisons must use ist_now() to match IST DB timestamps.
+from Utils.time_utils import ist_now
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -161,10 +163,10 @@ class HistoryManager(QObject):
     ) -> bool:
         """Fetch history for a single symbol."""
         try:
-            last_fetch = self._last_fetch.get(symbol, datetime.now() - timedelta(seconds=10))
+            last_fetch = self._last_fetch.get(symbol, ist_now() - timedelta(seconds=10))
 
             # Throttle: skip if fetched recently
-            elapsed = (datetime.now() - last_fetch).total_seconds()
+            elapsed = (ist_now() - last_fetch).total_seconds()
             if elapsed < 10:
                 return False
 
@@ -203,7 +205,7 @@ class HistoryManager(QObject):
 
             resample_df(store, df)
 
-            self._last_fetch[symbol] = datetime.now()
+            self._last_fetch[symbol] = ist_now()
             self.history_updated.emit(symbol, df)
             logger.debug(f"Fetched {len(df)} bars for {symbol}")
             return True

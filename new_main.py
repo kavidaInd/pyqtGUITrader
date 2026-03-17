@@ -663,7 +663,7 @@ class TradingApp:
                 return
 
             # Calculate time until market opens
-            now = datetime.now()
+            now = ist_now()
             market_open = self.broker.get_market_start_time() if safe_hasattr(self.broker,
                                                                               'get_market_start_time') else None
 
@@ -964,7 +964,7 @@ class TradingApp:
                 self._last_tick_seq[symbol] = sequence
 
             # Stale data detection (more than 5 seconds old)
-            now = datetime.now()
+            now = ist_now()
             last_time = self._last_tick_time.get(symbol)
             if last_time and (now - last_time).total_seconds() > 5:
                 logger.warning(f"Large tick gap for {symbol}: {(now - last_time).total_seconds():.1f}s")
@@ -1146,7 +1146,7 @@ class TradingApp:
         """
         try:
             state = state_manager.get_state()
-            self._reentry_exit_time = datetime.now()
+            self._reentry_exit_time = ist_now()
             # BUG FIX (off-by-one): The bar-close event that triggers an SL/TP
             # exit also fires _on_bar_closed_reentry_tick on the same iteration,
             # incrementing the counter from 0 to 1 before a single full wait-bar
@@ -1594,6 +1594,29 @@ class TradingApp:
         """
         Tier 2: re-check only the rules that compare against a price column
         (type=='column', e.g. close) on every tick.
+
+        FIX — Timeframe-correct indicator evaluation
+        ─────────────────────────────────────────────
+        Previously this method called signal_engine.evaluate(df) which
+        recomputed ALL indicators from scratch on the partially-formed last
+        candle.  That meant:
+
+          • On a 5-min strategy the RSI was recalculated every 1-min tick
+            using a close value that may be mid-bar, producing RSI values
+            that never existed on a genuine 5-min chart.
+          • Any comparison like "close > RSI(14)" was therefore comparing the
+            live close against an artificially-updated RSI, not the completed
+            5-min RSI.
+
+        The fix uses signal_engine.evaluate_tick(current_close) instead.
+        That method re-uses the *frozen* indicator cache from the last Tier-1
+        bar-close computation and only injects the live close price for
+        column-type rule sides, so:
+
+          • Indicators (RSI, EMA, MACD …) remain anchored to the last
+            *completed* X-minute bar and do not move mid-bar.
+          • Column comparisons (e.g. "close > RSI") update on every tick.
+          • No pandas_ta work happens here — the tick gate is pure arithmetic.
         """
         try:
             if not state.dynamic_signals_active:
@@ -1614,35 +1637,36 @@ class TradingApp:
             if current_close is None:
                 return
 
-            # Get the cached resampled DF — no broker call, just from store
-            try:
-                # state.interval is stored as e.g. "2m" or "5m"; strip the
-                # trailing 'm' before converting to int.
-                _raw_interval = str(state.interval or "1").strip().rstrip("mM")
-                target_minutes = int(_raw_interval)
-            except (TypeError, ValueError):
-                target_minutes = 1
+            # Use evaluate_tick() — frozen indicators + live close price only.
+            # This is the correct Tier-2 path: indicators are X-min values
+            # computed during the last Tier-1 bar-close; only the close column
+            # is updated to reflect the current tick.
+            result = self.signal_engine.evaluate_tick(
+                current_close=current_close,
+                current_position=state.current_position,
+            )
 
-            df = store.resample(target_minutes)
-            if df is None or df.empty:
-                return
-
-            # Patch only the last row's close with the live tick close so
-            # column comparisons reflect the current price while completed-bar
-            # indicator columns stay exactly as computed during Tier 1.
-            df = df.copy()
-            df.loc[df.index[-1], "close"] = current_close
-
-            result = self.signal_engine.evaluate(df, state.current_position)
             if result and result.get("available"):
-                # Update state — the detector method handles all state fields
+                # Update state — the detector method handles all state fields.
+                # We deliberately do NOT overwrite indicator_values in state
+                # because evaluate_tick() returns an empty dict there; the
+                # authoritative indicator snapshot lives in the Tier-1 result.
                 if hasattr(self.detector, '_update_state_with_signal_result'):
                     self.detector._update_state_with_signal_result(result)
                 else:
                     state.option_signal_result = result
                 logger.debug(
                     f"[TickGate] signal={result.get('signal_value')} "
-                    f"close={current_close:.2f}"
+                    f"close={current_close:.2f} "
+                    f"(frozen indicators from last {state.interval or '1'} bar)"
+                )
+            elif result is None:
+                # evaluate_tick returned None — no frozen cache yet (startup)
+                # or invalid close.  Leave state unchanged; Tier-1 will update
+                # on the next completed bar.
+                logger.debug(
+                    "[TickGate] evaluate_tick returned None — "
+                    "awaiting first Tier-1 bar completion."
                 )
 
         except Exception as e:

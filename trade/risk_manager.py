@@ -15,6 +15,9 @@ from typing import Tuple, Dict, Any, Optional
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from Utils.safe_getattr import safe_getattr
+# TZ-FIX: cache timestamps must use ist_now() so elapsed-time comparisons are
+# consistent with DB timestamps stored in IST by crud._NOW().
+from Utils.time_utils import ist_now
 from db.crud import orders as orders_crud
 from db.config_crud import config_crud
 from data.trade_state_manager import state_manager
@@ -215,7 +218,7 @@ class RiskManager(QObject):
         Uses OrderCRUD for database access.
         """
         with self._lock:
-            now = datetime.now()
+            now = ist_now()
             if (self._cache_trades_timestamp is not None
                     and abs((now - self._cache_trades_timestamp).total_seconds())
                     < self._cache_ttl_seconds
@@ -241,7 +244,7 @@ class RiskManager(QObject):
         Uses OrderCRUD for database access.
         """
         with self._lock:
-            now = datetime.now()
+            now = ist_now()
             if (self._cache_pnl_timestamp is not None
                     and abs((now - self._cache_pnl_timestamp).total_seconds())
                     < self._cache_ttl_seconds

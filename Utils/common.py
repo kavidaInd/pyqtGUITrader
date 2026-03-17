@@ -7,6 +7,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union, List
 
+# TZ-FIX: import ist_now at module level so get_holidays() cache checks and
+# get_epoch() use IST-consistent time instead of naive system local time.
+from Utils.time_utils import ist_now
+
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,7 @@ def get_holidays() -> Optional[List[str]]:
 
     try:
         # Reload cache every hour
-        now = datetime.now()
+        now = ist_now()
         if _holidays_cache is None or _holidays_last_loaded is None or \
                 (now - _holidays_last_loaded).seconds > 3600:
 
@@ -147,7 +151,7 @@ def to_date_str(dt_obj: datetime) -> str:
 def get_epoch(dt_obj: Optional[datetime] = None) -> Optional[int]:
     """Convert datetime to epoch seconds."""
     try:
-        dt_obj = dt_obj or datetime.now()
+        dt_obj = dt_obj or ist_now()
         return int(dt_obj.timestamp())
     except Exception as e:
         logger.error(f"Error converting to epoch: {e}", exc_info=True)

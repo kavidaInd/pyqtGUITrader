@@ -559,16 +559,22 @@ class DailyPnLWidget(QWidget):
             logger.error(f"[DailyPnLWidget._save_last_reset_date] {e}")
 
     def _load_daily_data(self):
-        """BUG-G fix: Load today's PnL from DB first; fall back to daily_pnl table."""
+        """Load today's PnL directly from closed orders in DB.
+
+        FIX: Always query the orders table first — this survives restarts and
+        reflects the true realized P&L even when the daily_pnl summary row has
+        been zeroed out by a reset() or first-launch write.  The daily_pnl table
+        is only used as a last resort when no closed orders exist yet today.
+        """
         try:
-            # Primary: query today's closed orders directly to survive GUI restarts
             self._load_today_pnl_from_orders()
-            # If that returns nothing, try the daily_pnl summary table
+            # Only fall back to the summary table if zero orders found today.
+            # Do NOT use it otherwise — it may contain stale/zeroed data.
             if self._trades == 0:
                 from db.crud import daily_pnl as daily_pnl_crud
                 today_str = ist_now().date().isoformat()
                 row = daily_pnl_crud.get(today_str)
-                if row:
+                if row and int(row.get('trades_count', 0)) > 0:
                     self._realized = float(row['realized_pnl'])
                     self._unrealized = float(row['unrealized_pnl'])
                     self._trades = int(row['trades_count'])

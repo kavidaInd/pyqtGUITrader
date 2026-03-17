@@ -796,9 +796,10 @@ def _compute_indicator_normalised(
                     # The result is mapped back to the original RangeIndex so
                     # all downstream cache/reindex logic stays unchanged.
                     _time_col = pd.to_datetime(df["time"])
-                    # Strip timezone → tz-naive DatetimeIndex for to_period()
+                    # TZ-FIX: convert to IST first so the stripped naive times represent
+                    # IST wall-clock values, not UTC. to_period() needs naive index.
                     if _time_col.dt.tz is not None:
-                        _time_col = _time_col.dt.tz_localize(None)
+                        _time_col = _time_col.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
 
                     _df_dt = df.copy()
                     _df_dt.index = pd.DatetimeIndex(_time_col)
@@ -1968,6 +1969,183 @@ class DynamicSignalEngine:
         except Exception as e:
             logger.error(f"[evaluate] Failed: {e}", exc_info=True)
             return neutral
+
+
+    def evaluate_tick(
+        self,
+        current_close: float,
+        current_position: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Tier-2 / tick-level evaluation.
+
+        Re-runs every rule comparison using the *frozen* indicator series that
+        were computed during the last Tier-1 bar-close evaluation
+        (``_last_cache``).  Only the ``close`` column series is replaced with
+        the live tick price so that column-type rule sides (e.g. ``close >
+        RSI``) reflect the current market price while every indicator value
+        stays anchored to the last *completed* X-minute candle.
+
+        This is the correct behaviour for a strategy with a timeframe of X min:
+        - Indicators (RSI, EMA, MACD ...) are computed once per completed
+          X-minute bar -- they do NOT change mid-bar.
+        - A column comparison such as ``close > RSI`` is checked on every tick
+          so entries/exits fire as soon as price crosses the level.
+
+        Returns ``None`` (caller should keep the previous result) when:
+        - No frozen cache is available yet (Tier-1 has not run once).
+        - ``current_close`` is not a valid finite number.
+        - Any unexpected exception occurs (logged at DEBUG level).
+        """
+        try:
+            # Guard: need a frozen cache from Tier-1
+            frozen_cache = self._last_cache
+            if not frozen_cache:
+                logger.debug(
+                    "[evaluate_tick] No frozen cache yet -- Tier-1 has not run. "
+                    "Skipping tick evaluation."
+                )
+                return None
+
+            if not isinstance(current_close, (int, float)) or not np.isfinite(current_close):
+                logger.debug(
+                    f"[evaluate_tick] Invalid current_close={current_close!r}. "
+                    "Skipping tick evaluation."
+                )
+                return None
+
+            # Shallow-copy the frozen cache so we can safely inject the updated
+            # close series without mutating the Tier-1 result.
+            tick_cache: Dict[str, Any] = dict(frozen_cache)
+
+            # Patch every "close" series that lives in the cache.
+            # _resolve_side stores column series under the raw column name
+            # (e.g. "close") so we update that key directly.  We replace only
+            # the *last* value so shift-based comparisons are unaffected.
+            for cache_key, obj in list(frozen_cache.items()):
+                if isinstance(obj, pd.Series) and cache_key == "close":
+                    patched = obj.copy()
+                    if len(patched) > 0:
+                        patched.iloc[-1] = float(current_close)
+                    tick_cache["close"] = patched
+
+            # Normalise position context (same logic as evaluate())
+            pos = None
+            if current_position is not None:
+                pos = str(current_position).upper().strip()
+                if pos not in ("CALL", "PUT"):
+                    pos = None
+
+            if pos == "CALL":
+                skipped_groups = {OptionSignal.BUY_CALL, OptionSignal.EXIT_PUT}
+            elif pos == "PUT":
+                skipped_groups = {OptionSignal.BUY_PUT, OptionSignal.EXIT_CALL}
+            else:
+                skipped_groups = {OptionSignal.EXIT_CALL, OptionSignal.EXIT_PUT}
+
+            # Build a last-row proxy DataFrame so _resolve_side handles
+            # column-type rule sides (open, high, low, close, volume) correctly.
+            # We populate every OHLCV column from the last value of its cached
+            # series, then override "close" with the live tick price.
+            # Indicator sides are served entirely from tick_cache -- no
+            # pandas_ta work runs here.
+            try:
+                _ohlcv_cols = ("open", "high", "low", "close", "volume")
+                _proxy_row: Dict[str, float] = {}
+                _proxy_index = pd.RangeIndex(1)
+
+                for _col in _ohlcv_cols:
+                    _col_series = frozen_cache.get(_col)
+                    if (
+                        isinstance(_col_series, pd.Series)
+                        and not _col_series.empty
+                    ):
+                        _valid = _col_series.dropna()
+                        _proxy_row[_col] = float(_valid.iloc[-1]) if len(_valid) else 0.0
+                        if _col == "close":
+                            _proxy_index = _col_series.index[-1:]
+                    else:
+                        _proxy_row[_col] = 0.0
+
+                # Always override close with the live tick price
+                _proxy_row["close"] = float(current_close)
+
+                dummy_df = pd.DataFrame(
+                    {col: [val] for col, val in _proxy_row.items()},
+                    index=_proxy_index,
+                )
+            except Exception:
+                dummy_df = pd.DataFrame({"close": [float(current_close)]})
+
+            fired: Dict[str, bool] = {}
+            rule_results: Dict[str, list] = {}
+            confidences: Dict[str, float] = {}
+            has_any_rules = False
+
+            for sig in SIGNAL_GROUPS:
+                if sig in skipped_groups:
+                    fired[sig.value] = False
+                    rule_results[sig.value] = []
+                    confidences[sig.value] = 0.0
+                    continue
+
+                # _evaluate_group uses _resolve_side which checks tick_cache
+                # before computing anything from df.  Because all indicator
+                # series are already in tick_cache, no pandas_ta work happens.
+                gf, rd, conf, _ = self._evaluate_group(
+                    sig, dummy_df, tick_cache, df_index=None
+                )
+                fired[sig.value] = gf
+                rule_results[sig.value] = rd
+                confidences[sig.value] = conf
+                if rd:
+                    has_any_rules = True
+
+            if not has_any_rules:
+                return None
+
+            # Apply confidence threshold (identical to evaluate())
+            fired_after_threshold: Dict[str, bool] = {}
+            for sig in SIGNAL_GROUPS:
+                sig_val = sig.value
+                conf = confidences.get(sig_val, 0.0)
+                effective_threshold = (
+                    self.min_confidence * 0.8
+                    if "EXIT" in sig_val
+                    else self.min_confidence
+                )
+                fired_after_threshold[sig_val] = conf >= effective_threshold
+
+            resolved = self._resolve_with_position(fired_after_threshold, pos)
+            explanation = self._generate_explanation(fired_after_threshold, confidences, pos)
+
+            return {
+                "signal": resolved,
+                "signal_value": resolved.value if resolved else "WAIT",
+                "fired": fired_after_threshold,
+                "raw_fired": fired,
+                "rule_results": rule_results,
+                # Indicator values are intentionally omitted -- they are
+                # X-minute values anchored to the last completed bar and must
+                # not be updated mid-bar.  The debug popup reads them from the
+                # Tier-1 result stored in state.option_signal_result.
+                "indicator_values": {},
+                "conflict": (
+                    fired_after_threshold.get("BUY_CALL", False)
+                    and fired_after_threshold.get("BUY_PUT", False)
+                ),
+                "available": True,
+                "confidence": confidences,
+                "threshold": self.min_confidence,
+                "explanation": explanation,
+                "position_context": pos,
+                # Tag so callers / debug UI can distinguish tick vs bar evals.
+                "tick_eval": True,
+            }
+
+        except Exception as e:
+            logger.debug(f"[evaluate_tick] Failed: {e}", exc_info=True)
+            return None
 
     def _generate_explanation(self, fired: Dict[str, bool], confidences: Dict[str, float],
                               position: Optional[str] = None) -> str:

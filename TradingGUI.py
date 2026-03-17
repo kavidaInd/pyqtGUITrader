@@ -597,6 +597,16 @@ class TradingGUI(QMainWindow):
                 return
             if self.daily_pnl_widget:
                 self.daily_pnl_widget.on_trade_closed(pnl, is_winner)
+            # FIX: Immediately reload history popup on trade close instead of waiting
+            # for the chart-timer tick (which only fires when trading_app is running).
+            if self.history_popup is not None and self.history_popup.isVisible():
+                try:
+                    period = 'today'
+                    if hasattr(self.history_popup, '_period_combo') and self.history_popup._period_combo:
+                        period = self.history_popup._period_combo.currentData() or 'today'
+                    self.history_popup.load_trades(period)
+                except Exception as _he:
+                    logger.debug(f"[TradingGUI._on_trade_closed] history popup reload: {_he}")
             logger.info(f"[TradingGUI._on_trade_closed] Trade closed - P&L: ₹{pnl:.2f}, Winner: {is_winner}")
             # Post outcome to message feed — include direction from previous_position
             if self.status_panel:
@@ -691,7 +701,7 @@ class TradingGUI(QMainWindow):
             if self._closing:
                 return
             os.makedirs('logs', exist_ok=True)
-            log_file = f"logs/trading_{datetime.now().strftime('%Y%m%d')}.log"
+            log_file = f"logs/trading_{ist_now().strftime('%Y%m%d')}.log"
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
             file_handler.setFormatter(logging.Formatter(
                 "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s"
@@ -3052,27 +3062,39 @@ class TradingGUI(QMainWindow):
             logger.error(f"[TradingGUI._clear_cache] Failed: {e}", exc_info=True)
 
     def _update_trade_history(self):
-        """BUG-E fix: Refresh trade history popup based on DB order count, not CSV file mtime."""
+        """Refresh trade history popup when order state changes.
+
+        FIX: Previously counted by DATE(created_at) but get_by_period('today') filters
+        closed orders by DATE(exited_at) — these diverge for intraday trades. We now
+        count both OPEN orders (any) + CLOSED orders exited today so the counter
+        matches the popup's query exactly and always triggers a refresh when a trade
+        closes or a new one opens.
+        """
         try:
             if self._closing:
                 return
             from db.connector import get_db
             db = get_db()
             today = ist_now().strftime("%Y-%m-%d")
+            # Count open orders (all) + closed orders exited today — mirrors get_by_period
             row = db.fetchone(
-                "SELECT COUNT(*) as cnt FROM orders WHERE DATE(created_at)=?", (today,)
+                "SELECT "
+                "  (SELECT COUNT(*) FROM orders WHERE status='OPEN') + "
+                "  (SELECT COUNT(*) FROM orders WHERE status='CLOSED' AND DATE(exited_at)=?) "
+                "AS cnt",
+                (today,)
             )
             current_count = row["cnt"] if row else 0
             if current_count != self._last_trade_count:
                 self._last_trade_count = current_count
                 if self.history_popup is not None and self.history_popup.isVisible():
                     try:
-                        self.history_popup.load_trades()
-                    except Exception:
-                        try:
-                            self.history_popup.load_trades_for_date()
-                        except Exception:
-                            pass
+                        period = 'today'
+                        if hasattr(self.history_popup, '_period_combo') and self.history_popup._period_combo:
+                            period = self.history_popup._period_combo.currentData() or 'today'
+                        self.history_popup.load_trades(period)
+                    except Exception as e:
+                        logger.warning(f"[TradingGUI._update_trade_history] popup reload failed: {e}")
         except Exception as e:
             logger.error(f"[TradingGUI._update_trade_history] Failed: {e}", exc_info=True)
 

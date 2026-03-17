@@ -141,7 +141,14 @@ class BrokerageSetting:
                         datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
                         if isinstance(expires_at, str) else expires_at
                     )
-                    if ist_now().replace(tzinfo=None) > (expiry_time - timedelta(minutes=5)):
+                    # TZ-FIX: convert expiry_time to IST-aware for comparison with ist_now().
+                    # Never strip tzinfo — always bring the other side to IST instead.
+                    from Utils.time_utils import ist_localize
+                    if expiry_time.tzinfo is None:
+                        expiry_time = ist_localize(expiry_time)
+                    else:
+                        expiry_time = expiry_time.astimezone(IST)
+                    if ist_now() > (expiry_time - timedelta(minutes=5)):
                         return False
                 except Exception:
                     pass

@@ -8,19 +8,34 @@ Four tabs:
   ⏱️  Candles   — per-exit-reason candle wait counts with visual timeline
   💰  Price     — price-filter to avoid chasing entries
   ℹ️  Info      — explanation of every setting with scenario examples
+
+GUI FIX: Rebuilt to match the standard ThemedDialog / ModernCard / dialog_base
+pattern used by BrokerageSettingGUI, dynamic_signal_debug_popup, etc.
+  • Outer wrapper is ModernCard(elevated=True)  → YELLOW_BRIGHT top accent
+  • Title bar via build_title_bar()             → draggable, ghost close btn
+  • Tabs via apply_tab_style()                  → YELLOW_BRIGHT selected tab
+  • Buttons via create_modern_button()          → consistent hover/active
+  • Section headers via create_section_header() → dot + CAPS label
+  • Scroll areas styled with make_scrollbar_ss()→ slim 6-px scrollbar
+  • Inner cards use ModernCard(elevated=False)  → BG_PANEL + BORDER
+  • Checkbox/spin focus accent: YELLOW_BRIGHT   → matches theme
 """
 
 import logging
 from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from gui.dialog_base import ThemedDialog, ThemedMixin, ModernCard, make_separator, make_scrollbar_ss, create_section_header, create_modern_button, apply_tab_style, build_title_bar
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QLabel,
     QWidget, QTabWidget, QFrame, QScrollArea, QCheckBox,
-    QSpinBox, QDoubleSpinBox, QGroupBox, QSizePolicy, QGridLayout
+    QSpinBox, QDoubleSpinBox, QSizePolicy,
 )
 
+from gui.dialog_base import (
+    ThemedDialog, ModernCard,
+    make_scrollbar_ss, create_section_header, create_modern_button,
+    apply_tab_style, build_title_bar,
+)
 from gui.re_entry.ReEntrySetting import ReEntrySetting
 from gui.theme_manager import theme_manager
 
@@ -28,79 +43,39 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Theme shortcut mixin (same pattern as other dialogs)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _ThemeMixin:
-    @property
-    def _c(self):   return theme_manager.palette
-    @property
-    def _ty(self):  return theme_manager.typography
-    @property
-    def _sp(self):  return theme_manager.spacing
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Small helper widgets
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _SectionHeader(QLabel, _ThemeMixin):
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self._apply_style()
+class _HelpLabel(QLabel):
+    """Muted info-box with YELLOW_BRIGHT left accent — matches other popups."""
 
-    def _apply_style(self):
-        c, ty, sp = self._c, self._ty, self._sp
-        self.setStyleSheet(f"""
-            QLabel {{
-                color: {c.TEXT_MAIN};
-                font-size: {ty.SIZE_MD}pt;
-                font-weight: {ty.WEIGHT_BOLD};
-                padding-bottom: {sp.PAD_XS}px;
-                border-bottom: 2px solid {c.BLUE};
-            }}
-        """)
-
-
-class _HelpLabel(QLabel, _ThemeMixin):
     def __init__(self, text: str, parent=None):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self._apply_style()
+        theme_manager.theme_changed.connect(self._apply_style)
+        theme_manager.density_changed.connect(self._apply_style)
 
-    def _apply_style(self):
-        c, ty, sp = self._c, self._ty, self._sp
+    def _apply_style(self, _=None):
+        c  = theme_manager.palette
+        ty = theme_manager.typography
+        sp = theme_manager.spacing
         self.setStyleSheet(f"""
             QLabel {{
                 color: {c.TEXT_DIM};
                 font-size: {ty.SIZE_SM}pt;
                 background: {c.BG_HOVER};
+                border: 1px solid {c.BORDER};
+                border-left: 3px solid {c.YELLOW_BRIGHT};
                 border-radius: {sp.RADIUS_SM}px;
                 padding: {sp.PAD_SM}px {sp.PAD_MD}px;
             }}
         """)
 
 
-class _Card(QFrame, _ThemeMixin):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._apply_style()
-
-    def _apply_style(self):
-        c, sp = self._c, self._sp
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: {c.BG_PANEL};
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_LG}px;
-                padding: {sp.PAD_MD}px;
-            }}
-        """)
-
-
-class _CandleTimelineWidget(QWidget, _ThemeMixin):
+class _CandleTimelineWidget(QWidget):
     """
-    Visual strip: shows exit bar + N wait candles + re-entry bar.
+    Visual strip: EXIT bar → N wait candles → ENTRY bar.
     Updates dynamically as the spin-box value changes.
     """
 
@@ -109,18 +84,18 @@ class _CandleTimelineWidget(QWidget, _ThemeMixin):
         self._count = 3
         self._label = label
         self._build()
+        theme_manager.theme_changed.connect(self._refresh)
+        theme_manager.density_changed.connect(self._refresh)
 
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(4)
 
-        row = QHBoxLayout()
+        self._row_widget = QWidget()
+        row = QHBoxLayout(self._row_widget)
         row.setSpacing(3)
         row.setContentsMargins(0, 0, 0, 0)
-
-        self._row_widget = QWidget()
-        self._row_widget.setLayout(row)
         layout.addWidget(self._row_widget)
 
         self._legend = QLabel()
@@ -133,19 +108,17 @@ class _CandleTimelineWidget(QWidget, _ThemeMixin):
         self._count = max(0, n)
         self._refresh()
 
-    def _refresh(self):
+    def _refresh(self, _=None):
+        c = theme_manager.palette
         row = self._row_widget.layout()
-        # Clear existing items
         while row.count():
             item = row.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        c = self._c
-
-        def _box(text: str, color: str, tooltip: str) -> QLabel:
+        def _box(text, color, tooltip):
             lbl = QLabel(text)
-            lbl.setFixedSize(36, 28)
+            lbl.setFixedSize(38, 28)
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setToolTip(tooltip)
             lbl.setStyleSheet(f"""
@@ -159,36 +132,32 @@ class _CandleTimelineWidget(QWidget, _ThemeMixin):
             """)
             return lbl
 
-        def _arrow() -> QLabel:
+        def _arrow():
             lbl = QLabel("→")
-            lbl.setStyleSheet(f"color: {c.TEXT_DISABLED}; font-size: 10pt;")
+            lbl.setStyleSheet(
+                f"color: {c.TEXT_DISABLED}; font-size: 10pt; background: transparent;"
+            )
             lbl.setAlignment(Qt.AlignCenter)
             return lbl
 
-        # Exit bar
         row.addWidget(_box("EXIT", c.RED, "Position closed here"))
         row.addWidget(_arrow())
-
-        # Wait candles
         for i in range(self._count):
             row.addWidget(_box(f"W{i+1}", c.TEXT_DISABLED, f"Wait candle {i+1}"))
             if i < self._count - 1:
                 row.addWidget(_arrow())
-
         if self._count > 0:
             row.addWidget(_arrow())
-
-        # Re-entry bar
-        row.addWidget(_box("ENTRY", c.GREEN if self._count >= 0 else c.TEXT_DISABLED,
-                           "Re-entry allowed here"))
+        row.addWidget(_box("ENTRY", c.GREEN, "Re-entry allowed here"))
         row.addStretch()
 
-        wait_text = "immediately" if self._count == 0 else f"after {self._count} candle{'s' if self._count!=1 else ''}"
-        self._legend.setText(
-            f"  {self._label}: Re-entry allowed {wait_text} after exit"
+        wait_text = (
+            "immediately" if self._count == 0
+            else f"after {self._count} candle{'s' if self._count != 1 else ''}"
         )
+        self._legend.setText(f"  {self._label}: re-entry {wait_text} after exit")
         self._legend.setStyleSheet(
-            f"color: {self._c.TEXT_DIM}; font-size: 8pt; background: transparent; border: none;"
+            f"color: {c.TEXT_DIM}; font-size: 8pt; background: transparent; border: none;"
         )
 
 
@@ -203,7 +172,7 @@ class ReEntrySettingGUI(ThemedDialog):
     Usage:
         dlg = ReEntrySettingGUI(reentry_setting, parent=self)
         if dlg.exec_() == QDialog.Accepted:
-            # setting already saved; no further action needed
+            pass  # setting already saved
     """
 
     save_completed = pyqtSignal(bool)
@@ -211,9 +180,9 @@ class ReEntrySettingGUI(ThemedDialog):
     def __init__(self, setting: Optional[ReEntrySetting] = None, parent=None):
         self._safe_defaults()
         try:
-            super().__init__(parent, title="RE-ENTRY SETTINGS", icon="RE", size=(900, 700))
+            super().__init__(parent, title="RE-ENTRY SETTINGS", icon="RE", size=(900, 680))
             self.setting = setting or ReEntrySetting()
-            self.setMinimumSize(640, 580)
+            self.setMinimumSize(680, 580)
             self.setModal(True)
             self._build_ui()
             self._load_values()
@@ -224,57 +193,69 @@ class ReEntrySettingGUI(ThemedDialog):
             logger.critical(f"[ReEntrySettingGUI.__init__] {e}", exc_info=True)
 
     def _safe_defaults(self):
-        self._closing = False
-        self._outer = None          # outerFrame — provides the visible background
-        # widget refs
-        self._chk_allow = None
-        self._chk_same_dir = None
-        self._chk_new_signal = None
-        self._spin_sl = None
-        self._spin_tp = None
-        self._spin_sig = None
-        self._spin_default = None
-        self._tl_sl = None
-        self._tl_tp = None
-        self._tl_sig = None
-        self._tl_default = None
+        self._main_card        = None
+        self._tabs             = None
+        self._chk_allow        = None
+        self._chk_same_dir     = None
+        self._chk_new_signal   = None
+        self._spin_sl          = None
+        self._spin_tp          = None
+        self._spin_sig         = None
+        self._spin_default     = None
+        self._tl_sl            = None
+        self._tl_tp            = None
+        self._tl_sig           = None
+        self._tl_default       = None
         self._chk_price_filter = None
-        self._spin_price_pct = None
-        self._spin_max_day = None
-        self._status_lbl = None
-        self._save_btn = None
+        self._spin_price_pct   = None
+        self._spin_max_day     = None
+        self._status_lbl       = None
+        self._save_btn         = None
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # ThemedDialog sets WA_TranslucentBackground, making the QDialog itself
-        # fully transparent.  We need a QFrame wrapper (outerFrame) to provide
-        # a solid visible background — the same pattern used by all other popups.
+        # ThemedDialog sets WA_TranslucentBackground.
+        # ModernCard(elevated=True) is the solid visible container —
+        # exactly the same pattern as BrokerageSettingGUI.
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(0)
 
-        self._outer = QFrame()
-        self._outer.setObjectName("reEntryOuter")
-        ol = QVBoxLayout(self._outer)
-        ol.setContentsMargins(16, 16, 16, 16)
-        ol.setSpacing(12)
+        self._main_card = ModernCard(self, elevated=True)
+        card_lay = QVBoxLayout(self._main_card)
+        card_lay.setContentsMargins(0, 0, 0, 0)
+        card_lay.setSpacing(0)
 
-        # Title bar
-        ol.addWidget(self._make_title_bar())
+        # Title bar — draggable, monogram badge, ghost close button
+        card_lay.addWidget(build_title_bar(
+            self,
+            title="RE-ENTRY SETTINGS",
+            icon="RE",
+            on_close=self.reject,
+        ))
 
+        # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"background: {self._c.BORDER}; max-height: 1px;")
-        ol.addWidget(sep)
+        card_lay.addWidget(sep)
 
-        # Tabs
+        # Content area
+        content = QWidget()
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(
+            self._sp.PAD_XL, self._sp.PAD_LG,
+            self._sp.PAD_XL, self._sp.PAD_LG,
+        )
+        cl.setSpacing(self._sp.GAP_MD)
+
         self._tabs = self._make_tabs()
-        ol.addWidget(self._tabs)
+        cl.addWidget(self._tabs)
 
-        # Status + save row
+        # Status + button row
         bottom = QHBoxLayout()
-        bottom.setSpacing(8)
+        bottom.setSpacing(self._sp.GAP_SM)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -289,129 +270,94 @@ class ReEntrySettingGUI(ThemedDialog):
         """)
         bottom.addWidget(self._status_lbl, 1)
 
-        reset_btn = self._btn("\u21ba Defaults", primary=False)
+        reset_btn = create_modern_button("↺  Defaults", primary=False)
         reset_btn.setToolTip("Reset all re-entry settings to factory defaults")
         reset_btn.clicked.connect(self._on_reset)
         bottom.addWidget(reset_btn)
 
-        self._save_btn = self._btn("\U0001f4be Save", primary=True)
+        self._save_btn = create_modern_button("💾  Save", primary=True)
         self._save_btn.clicked.connect(self._on_save)
         bottom.addWidget(self._save_btn)
 
-        ol.addLayout(bottom)
+        cl.addLayout(bottom)
+        card_lay.addWidget(content)
+        root.addWidget(self._main_card)
 
-        root.addWidget(self._outer)
-        self._style_outer()
-
-    def _make_title_bar(self) -> QWidget:
-        """Build new-design title bar: monogram badge + CAPS title + ghost close button."""
-        return build_title_bar(
-            self,
-            title="RE-ENTRY SETTINGS",
-            icon="RE",
-            on_close=self.reject,
-        )
+    # ── Tab widget ────────────────────────────────────────────────────────────
 
     def _make_tabs(self) -> QTabWidget:
         tabs = QTabWidget()
-        c, ty, sp = self._c, self._ty, self._sp
-        tabs.setStyleSheet(f"""
-            QTabWidget::pane {{
-                border: 1px solid {c.BORDER};
-                border-radius: {sp.RADIUS_MD}px;
-                background: {c.BG_PANEL};
-                margin-top: {sp.PAD_SM}px;
-            }}
-            QTabBar::tab {{
-                background: {c.BG_HOVER}; color: {c.TEXT_DIM};
-                padding: {sp.PAD_SM}px {sp.PAD_XL}px;
-                min-width: 120px;
-                border: 1px solid {c.BORDER}; border-bottom: none;
-                border-radius: {sp.RADIUS_SM}px {sp.RADIUS_SM}px 0 0;
-                font-size: {ty.SIZE_BODY}pt;
-                margin-right: {sp.PAD_XS}px;
-            }}
-            QTabBar::tab:selected {{
-                background: {c.BG_PANEL}; color: {c.TEXT_MAIN};
-                border-bottom: 3px solid {c.BLUE};
-                font-weight: {ty.WEIGHT_BOLD};
-            }}
-            QTabBar::tab:hover:!selected {{
-                background: {c.BORDER}; color: {c.TEXT_MAIN};
-            }}
-        """)
+        apply_tab_style(tabs)           # YELLOW_BRIGHT selected underline
         tabs.addTab(self._build_general_tab(), "⚙️  General")
         tabs.addTab(self._build_candles_tab(), "⏱️  Candles")
-        tabs.addTab(self._build_price_tab(), "💰  Price Filter")
-        tabs.addTab(self._build_info_tab(), "ℹ️  Guide")
+        tabs.addTab(self._build_price_tab(),   "💰  Price Filter")
+        tabs.addTab(self._build_info_tab(),    "ℹ️  Guide")
         return tabs
 
     # ── Tab: General ─────────────────────────────────────────────────────────
 
     def _build_general_tab(self) -> QWidget:
-        page = self._scrollable()
-        lay = page.layout()
+        page, lay = self._scrollable()
 
-        # ── Master switch ────────────────────────────────────────────────────
-        card1 = _Card()
+        # Master switch
+        card1 = ModernCard()
         cl = QVBoxLayout(card1)
         cl.setSpacing(10)
-
-        cl.addWidget(_SectionHeader("Master Switch"))
+        cl.addWidget(create_section_header("MASTER SWITCH"))
         self._chk_allow = self._checkbox(
             "Allow Re-Entry",
             "When enabled, the engine may re-enter a trade after a position closes.\n"
-            "Disable this to trade each signal only once (no re-entries ever)."
+            "Disable to trade each signal only once (no re-entries ever).",
         )
         cl.addWidget(self._chk_allow)
         lay.addWidget(card1)
 
-        # ── Direction ────────────────────────────────────────────────────────
-        card2 = _Card()
+        # Direction
+        card2 = ModernCard()
         dl = QVBoxLayout(card2)
         dl.setSpacing(10)
-
-        dl.addWidget(_SectionHeader("Direction Control"))
+        dl.addWidget(create_section_header("DIRECTION CONTROL"))
         self._chk_same_dir = self._checkbox(
             "Block same-direction re-entry only",
-            "When ON:  after a CALL closes, only CALL re-entries are delayed;\n"
-            "          a PUT entry is still allowed immediately.\n"
-            "When OFF: both directions must wait (more conservative)."
+            "ON:  after a CALL closes, only another CALL re-entry is delayed;\n"
+            "     a PUT entry is still allowed immediately.\n"
+            "OFF: both directions must wait (more conservative).",
         )
         dl.addWidget(self._chk_same_dir)
         lay.addWidget(card2)
 
-        # ── Signal freshness ─────────────────────────────────────────────────
-        card3 = _Card()
+        # Signal freshness
+        card3 = ModernCard()
         sl = QVBoxLayout(card3)
         sl.setSpacing(10)
-
-        sl.addWidget(_SectionHeader("Signal Freshness"))
+        sl.addWidget(create_section_header("SIGNAL FRESHNESS"))
         self._chk_new_signal = self._checkbox(
             "Require a fresh signal after the wait period",
-            "When ON:  re-entry only triggers once the signal engine issues a NEW\n"
-            "          BUY_CALL / BUY_PUT — the old signal still being active is\n"
-            "          NOT enough.  Recommended for trailing-SL exits.\n"
-            "When OFF: if the original signal is still active after the candle\n"
-            "          wait, re-entry fires immediately."
+            "ON:  re-entry only fires when the signal engine issues a NEW\n"
+            "     BUY_CALL / BUY_PUT — the old signal still being active is\n"
+            "     not enough.  Recommended for trailing-SL exits.\n"
+            "OFF: if the original signal is still active after the candle wait,\n"
+            "     re-entry fires immediately.",
         )
         sl.addWidget(self._chk_new_signal)
         lay.addWidget(card3)
 
-        # ── Daily cap ────────────────────────────────────────────────────────
-        card4 = _Card()
+        # Daily cap
+        card4 = ModernCard()
         ml = QVBoxLayout(card4)
         ml.setSpacing(10)
-
-        ml.addWidget(_SectionHeader("Daily Re-Entry Cap"))
+        ml.addWidget(create_section_header("DAILY RE-ENTRY CAP"))
         row = QHBoxLayout()
         lbl = QLabel("Max re-entries per day")
-        lbl.setStyleSheet(f"color: {self._c.TEXT_MAIN}; font-size: {self._ty.SIZE_BODY}pt; background: transparent; border: none;")
+        lbl.setStyleSheet(
+            f"color: {self._c.TEXT_MAIN}; font-size: {self._ty.SIZE_BODY}pt; "
+            f"background: transparent; border: none;"
+        )
         self._spin_max_day = QSpinBox()
         self._spin_max_day.setRange(0, 50)
         self._spin_max_day.setSpecialValueText("Unlimited")
         self._spin_max_day.setToolTip(
-            "0 = unlimited re-entries.\n"
+            "0 = unlimited.\n"
             "Set e.g. 3 to allow at most 3 re-entries per session,\n"
             "regardless of how many SL/TP exits occur."
         )
@@ -421,7 +367,7 @@ class ReEntrySettingGUI(ThemedDialog):
         row.addWidget(self._spin_max_day)
         ml.addLayout(row)
         ml.addWidget(_HelpLabel(
-            "Counts only re-entries (the first entry of the day does not count). "
+            "Counts only re-entries — the first entry of the day does not count. "
             "Resets at midnight / app restart."
         ))
         lay.addWidget(card4)
@@ -432,10 +378,8 @@ class ReEntrySettingGUI(ThemedDialog):
     # ── Tab: Candles ─────────────────────────────────────────────────────────
 
     def _build_candles_tab(self) -> QWidget:
-        page = self._scrollable()
-        lay = page.layout()
+        page, lay = self._scrollable()
 
-        # Intro
         lay.addWidget(_HelpLabel(
             "These settings control how many CLOSED candles must pass after each "
             "type of exit before a new entry is permitted.  '0' means re-entry is "
@@ -443,25 +387,24 @@ class ReEntrySettingGUI(ThemedDialog):
         ))
 
         scenarios = [
-            ("sl",      "Stop-Loss Exit",       "min_candles_after_sl",
-             "Trailing SL got hit on a spike? Wait this many candles\n"
-             "for the market to settle before re-entering."),
-            ("tp",      "Take-Profit Exit",     "min_candles_after_tp",
-             "Price hit TP. Usually only 1 candle wait is enough;\n"
+            ("sl",      "Stop-Loss Exit",
+             "Trailing SL hit on a spike?  Wait this many candles for the market "
+             "to settle before re-entering."),
+            ("tp",      "Take-Profit Exit",
+             "Price hit TP.  Usually only 1 candle wait is enough;\n"
              "the trend may still be in your favour."),
-            ("signal",  "Signal-Based Exit",    "min_candles_after_signal",
-             "Exit triggered by an opposing signal (e.g. BUY_PUT flips\n"
-             "a CALL position). A brief cooldown avoids whipsawing."),
-            ("default", "Unknown / Other Exit", "min_candles_default",
+            ("signal",  "Signal-Based Exit",
+             "Exit triggered by an opposing signal (e.g. BUY_PUT flips a CALL "
+             "position).  A brief cooldown avoids whipsawing."),
+            ("default", "Unknown / Other Exit",
              "Fallback used when the exit reason cannot be determined."),
         ]
 
-        timelines = {}
-        for key, title, _field, tip in scenarios:
-            card = _Card()
+        for key, title, tip in scenarios:
+            card = ModernCard()
             cl = QVBoxLayout(card)
             cl.setSpacing(8)
-            cl.addWidget(_SectionHeader(title))
+            cl.addWidget(create_section_header(title.upper()))
             cl.addWidget(_HelpLabel(tip))
 
             row = QHBoxLayout()
@@ -475,33 +418,23 @@ class ReEntrySettingGUI(ThemedDialog):
             spin.setRange(0, 30)
             spin.setToolTip(f"0 = immediate re-entry after {title}")
             self._style_spin(spin)
-
             row.addWidget(lbl)
             row.addStretch()
             row.addWidget(spin)
             cl.addLayout(row)
 
-            # Timeline visualisation
             tl = _CandleTimelineWidget(title)
             cl.addWidget(tl)
-
             lay.addWidget(card)
 
-            # Store refs
             if key == "sl":
-                self._spin_sl = spin
-                self._tl_sl = tl
+                self._spin_sl,      self._tl_sl      = spin, tl
             elif key == "tp":
-                self._spin_tp = spin
-                self._tl_tp = tl
+                self._spin_tp,      self._tl_tp      = spin, tl
             elif key == "signal":
-                self._spin_sig = spin
-                self._tl_sig = tl
+                self._spin_sig,     self._tl_sig     = spin, tl
             elif key == "default":
-                self._spin_default = spin
-                self._tl_default = tl
-
-            timelines[key] = (spin, tl)
+                self._spin_default, self._tl_default = spin, tl
 
         lay.addStretch()
         return page
@@ -509,8 +442,7 @@ class ReEntrySettingGUI(ThemedDialog):
     # ── Tab: Price Filter ────────────────────────────────────────────────────
 
     def _build_price_tab(self) -> QWidget:
-        page = self._scrollable()
-        lay = page.layout()
+        page, lay = self._scrollable()
 
         lay.addWidget(_HelpLabel(
             "The price filter prevents the engine from chasing a re-entry at a "
@@ -520,16 +452,15 @@ class ReEntrySettingGUI(ThemedDialog):
             "filter threshold is 5%."
         ))
 
-        card = _Card()
+        card = ModernCard()
         cl = QVBoxLayout(card)
         cl.setSpacing(12)
-
-        cl.addWidget(_SectionHeader("Price-Chase Filter"))
+        cl.addWidget(create_section_header("PRICE-CHASE FILTER"))
 
         self._chk_price_filter = self._checkbox(
             "Enable price filter",
             "When ON: re-entry is blocked if the current option price is more\n"
-            "than the configured % ABOVE the original entry price."
+            "than the configured % ABOVE the original entry price.",
         )
         cl.addWidget(self._chk_price_filter)
 
@@ -545,8 +476,8 @@ class ReEntrySettingGUI(ThemedDialog):
         self._spin_price_pct.setSuffix(" %")
         self._spin_price_pct.setDecimals(1)
         self._spin_price_pct.setToolTip(
-            "If the current price is more than this % above the original\n"
-            "entry price, re-entry is blocked to avoid buying at a peak."
+            "If the current price is more than this % above the original entry "
+            "price, re-entry is blocked to avoid buying at a peak."
         )
         self._style_spin(self._spin_price_pct)
         pct_row.addWidget(pct_lbl)
@@ -554,37 +485,28 @@ class ReEntrySettingGUI(ThemedDialog):
         pct_row.addWidget(self._spin_price_pct)
         cl.addLayout(pct_row)
 
-        # Worked example
-        example_card = QFrame()
-        example_card.setStyleSheet(f"""
-            QFrame {{
-                background: {self._c.BG_HOVER};
-                border: 1px solid {self._c.BORDER};
-                border-left: 3px solid {self._c.BLUE};
-                border-radius: {self._sp.RADIUS_MD}px;
-                padding: 8px;
-            }}
-        """)
-        ex_lay = QVBoxLayout(example_card)
-        ex_lay.setContentsMargins(8, 8, 8, 8)
-        header = QLabel("📖 Example")
-        header.setStyleSheet(
-            f"color: {self._c.BLUE}; font-size: {self._ty.SIZE_SM}pt; "
-            f"font-weight: {self._ty.WEIGHT_BOLD}; background: transparent; border: none;"
+        # Worked example box — uses inner ModernCard
+        ex_card = ModernCard()
+        ex_lay = QVBoxLayout(ex_card)
+        ex_lay.setContentsMargins(10, 10, 10, 10)
+        ex_hdr = QLabel("📖  Example")
+        ex_hdr.setStyleSheet(
+            f"color: {self._c.YELLOW_BRIGHT}; font-size: {self._ty.SIZE_SM}pt; "
+            f"font-weight: bold; background: transparent; border: none;"
         )
-        body = QLabel(
+        ex_body = QLabel(
             "Entry price: ₹200.  Filter: 5%.\n"
-            "→ Re-entry is blocked if current price > ₹210 (₹200 × 1.05).\n"
-            "→ Re-entry is allowed if current price ≤ ₹210."
+            "→  Re-entry blocked if current price > ₹210  (₹200 × 1.05).\n"
+            "→  Re-entry allowed if current price ≤ ₹210."
         )
-        body.setWordWrap(True)
-        body.setStyleSheet(
+        ex_body.setWordWrap(True)
+        ex_body.setStyleSheet(
             f"color: {self._c.TEXT_DIM}; font-size: {self._ty.SIZE_SM}pt; "
             f"background: transparent; border: none;"
         )
-        ex_lay.addWidget(header)
-        ex_lay.addWidget(body)
-        cl.addWidget(example_card)
+        ex_lay.addWidget(ex_hdr)
+        ex_lay.addWidget(ex_body)
+        cl.addWidget(ex_card)
 
         lay.addWidget(card)
         lay.addStretch()
@@ -593,40 +515,37 @@ class ReEntrySettingGUI(ThemedDialog):
     # ── Tab: Info / Guide ────────────────────────────────────────────────────
 
     def _build_info_tab(self) -> QWidget:
-        page = self._scrollable()
-        lay = page.layout()
+        page, lay = self._scrollable()
 
         sections = [
-            ("🔄 What is Re-Entry?",
+            ("🔄  WHAT IS RE-ENTRY?",
              "After any position closes (stop-loss, take-profit, or signal), the engine "
              "is normally allowed to immediately enter a new trade if the signal is still "
              "active.  This can cause problems:\n\n"
              "• A trailing stop-loss is hit on a brief price spike.  The signal is still "
-             "  bullish.  A re-entry at the spike high locks in a loss immediately.\n"
+             "bullish.  A re-entry at the spike high locks in a loss immediately.\n"
              "• Multiple SL exits in quick succession drain capital on the same setup.\n\n"
-             "Re-Entry Guard adds a mandatory 'cooldown' between exit and the next entry."),
+             "Re-Entry Guard adds a mandatory cooldown between exit and the next entry."),
 
-            ("⏱️ Candle Wait — How It Works",
-             "When a position closes, the engine records:\n"
-             "  1. The exit time.\n"
-             "  2. The exit reason (SL / TP / Signal).\n\n"
-             "On every subsequent bar completion, it counts how many bars have closed "
-             "since the exit.  Entry is only allowed once that count reaches the "
-             "configured minimum.\n\n"
-             "Each exit reason has its own counter so that a tight trailing-SL exit "
-             "(which benefits from more cooling-off) is treated differently from a "
-             "clean TP hit (which may allow faster re-entry)."),
+            ("⏱️  CANDLE WAIT — HOW IT WORKS",
+             "When a position closes, the engine records the exit time and reason "
+             "(SL / TP / Signal).  On every subsequent bar completion it counts how many "
+             "bars have closed since the exit.  Entry is only allowed once that count "
+             "reaches the configured minimum.\n\n"
+             "Each exit reason has its own counter so a tight trailing-SL exit (which "
+             "benefits from more cooling-off) is treated differently from a clean TP hit "
+             "(which may allow faster re-entry)."),
 
-            ("🧭 Direction Control",
+            ("🧭  DIRECTION CONTROL",
              "'Block same-direction only' is OFF by default (more conservative).\n\n"
              "When ON:\n"
              "  After a CALL exits → only another CALL entry is delayed.\n"
-             "  A PUT entry (opposite direction reversal) is allowed immediately.\n\n"
+             "  A PUT entry (opposite direction) is allowed immediately.\n\n"
              "When OFF:\n"
              "  Both CALL and PUT entries are delayed for the full candle wait after "
              "either direction exits.  Use this in choppy markets."),
 
-            ("🔔 Fresh Signal Requirement",
+            ("🔔  FRESH SIGNAL REQUIREMENT",
              "'Require a fresh signal after the wait period' is ON by default.\n\n"
              "With this ON, simply waiting the minimum candles is not enough — the "
              "signal engine must produce a NEW BUY_CALL / BUY_PUT after the wait "
@@ -634,7 +553,7 @@ class ReEntrySettingGUI(ThemedDialog):
              "trigger re-entry.\n\n"
              "This prevents re-entering on stale momentum from before the SL was hit."),
 
-            ("💰 Price Filter",
+            ("💰  PRICE FILTER",
              "Even after the candle wait + fresh signal, the price filter adds a "
              "final sanity check: if the option price has risen more than X% above "
              "your last entry price, the re-entry is blocked.\n\n"
@@ -642,7 +561,7 @@ class ReEntrySettingGUI(ThemedDialog):
              "tight and the price bounced hard — by the time the wait period ends "
              "the option could already be much more expensive than your original entry."),
 
-            ("📊 Daily Re-Entry Cap",
+            ("📊  DAILY RE-ENTRY CAP",
              "Set to 0 for unlimited re-entries (default).\n"
              "Set to a positive integer to cap re-entries per session.\n\n"
              "The cap counts only re-entries — the first trade of the day always "
@@ -650,32 +569,18 @@ class ReEntrySettingGUI(ThemedDialog):
              "limit cumulative exposure from repeated SL hits."),
         ]
 
-        for title, body in sections:
-            card = _Card()
+        for title, body_text in sections:
+            card = ModernCard()
             cl = QVBoxLayout(card)
-            cl.setSpacing(6)
-
-            hdr = QLabel(title)
-            hdr.setStyleSheet(f"""
-                QLabel {{
-                    color: {self._c.TEXT_MAIN};
-                    font-size: {self._ty.SIZE_MD}pt;
-                    font-weight: {self._ty.WEIGHT_BOLD};
-                    background: transparent;
-                    border: none;
-                    padding-bottom: 4px;
-                    border-bottom: 1px solid {self._c.BORDER};
-                }}
-            """)
-            cl.addWidget(hdr)
-
-            body_lbl = QLabel(body)
+            cl.setSpacing(8)
+            cl.addWidget(create_section_header(title))
+            body_lbl = QLabel(body_text)
             body_lbl.setWordWrap(True)
+            body_lbl.setContentsMargins(14, 6, 14, 8)
             body_lbl.setStyleSheet(f"""
                 QLabel {{
                     color: {self._c.TEXT_DIM};
                     font-size: {self._ty.SIZE_SM}pt;
-                    line-height: 1.5;
                     background: transparent;
                     border: none;
                 }}
@@ -716,21 +621,17 @@ class ReEntrySettingGUI(ThemedDialog):
 
     def _connect_signals(self):
         try:
-            # Timeline updates
-            if self._spin_sl and self._tl_sl:
+            if self._spin_sl      and self._tl_sl:
                 self._spin_sl.valueChanged.connect(self._tl_sl.set_count)
-            if self._spin_tp and self._tl_tp:
+            if self._spin_tp      and self._tl_tp:
                 self._spin_tp.valueChanged.connect(self._tl_tp.set_count)
-            if self._spin_sig and self._tl_sig:
+            if self._spin_sig     and self._tl_sig:
                 self._spin_sig.valueChanged.connect(self._tl_sig.set_count)
             if self._spin_default and self._tl_default:
                 self._spin_default.valueChanged.connect(self._tl_default.set_count)
-
-            # Enable/disable related controls based on master switch
             if self._chk_allow:
                 self._chk_allow.toggled.connect(self._on_master_toggled)
                 self._on_master_toggled(self._chk_allow.isChecked())
-
             self.save_completed.connect(self._on_save_completed)
         except Exception as e:
             logger.error(f"[ReEntrySettingGUI._connect_signals] {e}", exc_info=True)
@@ -750,10 +651,10 @@ class ReEntrySettingGUI(ThemedDialog):
             self._save_btn.setEnabled(False)
             s = self.setting
 
-            s.allow_reentry = self._chk_allow.isChecked()          if self._chk_allow      else s.allow_reentry
-            s.same_direction_only = self._chk_same_dir.isChecked() if self._chk_same_dir   else s.same_direction_only
-            s.require_new_signal = self._chk_new_signal.isChecked() if self._chk_new_signal else s.require_new_signal
-            s.max_reentries_per_day = self._spin_max_day.value()   if self._spin_max_day   else s.max_reentries_per_day
+            s.allow_reentry         = self._chk_allow.isChecked()       if self._chk_allow        else s.allow_reentry
+            s.same_direction_only   = self._chk_same_dir.isChecked()    if self._chk_same_dir     else s.same_direction_only
+            s.require_new_signal    = self._chk_new_signal.isChecked()  if self._chk_new_signal   else s.require_new_signal
+            s.max_reentries_per_day = self._spin_max_day.value()        if self._spin_max_day     else s.max_reentries_per_day
 
             s.min_candles_after_sl     = self._spin_sl.value()      if self._spin_sl      else s.min_candles_after_sl
             s.min_candles_after_tp     = self._spin_tp.value()      if self._spin_tp      else s.min_candles_after_tp
@@ -772,22 +673,24 @@ class ReEntrySettingGUI(ThemedDialog):
             QTimer.singleShot(300, lambda: self._save_btn.setEnabled(True) if self._save_btn else None)
 
     def _on_save_completed(self, ok: bool):
-        if self._status_lbl:
-            if ok:
-                self._status_lbl.setText("✅ Settings saved successfully")
-                self._status_lbl.setStyleSheet(
-                    f"color: {self._c.GREEN}; font-size: {self._ty.SIZE_SM}pt; "
-                    f"padding: 6px 10px; background: {self._c.BG_HOVER}; "
-                    f"border-radius: {self._sp.RADIUS_MD}px;"
-                )
-                QTimer.singleShot(2000, lambda: self.accept())
-            else:
-                self._status_lbl.setText("❌ Save failed — check logs")
-                self._status_lbl.setStyleSheet(
-                    f"color: {self._c.RED}; font-size: {self._ty.SIZE_SM}pt; "
-                    f"padding: 6px 10px; background: {self._c.BG_HOVER}; "
-                    f"border-radius: {self._sp.RADIUS_MD}px;"
-                )
+        if not self._status_lbl:
+            return
+        c, ty, sp = self._c, self._ty, self._sp
+        if ok:
+            self._status_lbl.setText("✅  Settings saved successfully")
+            self._status_lbl.setStyleSheet(
+                f"color: {c.GREEN}; font-size: {ty.SIZE_SM}pt; "
+                f"padding: 6px 10px; background: {c.BG_HOVER}; "
+                f"border-radius: {sp.RADIUS_MD}px;"
+            )
+            QTimer.singleShot(2000, self.accept)
+        else:
+            self._status_lbl.setText("❌  Save failed — check logs")
+            self._status_lbl.setStyleSheet(
+                f"color: {c.RED}; font-size: {ty.SIZE_SM}pt; "
+                f"padding: 6px 10px; background: {c.BG_HOVER}; "
+                f"border-radius: {sp.RADIUS_MD}px;"
+            )
 
     def _on_reset(self):
         """Reset UI to factory defaults without saving."""
@@ -798,9 +701,9 @@ class ReEntrySettingGUI(ThemedDialog):
             self.setting = tmp
             self._load_values()
             if self._status_lbl:
-                self._status_lbl.setText("⚠️ Defaults loaded — click Save to apply")
+                self._status_lbl.setText("⚠️  Defaults loaded — click Save to apply")
                 self._status_lbl.setStyleSheet(
-                    f"color: {self._c.YELLOW}; font-size: {self._ty.SIZE_SM}pt; "
+                    f"color: {self._c.YELLOW_BRIGHT}; font-size: {self._ty.SIZE_SM}pt; "
                     f"padding: 6px 10px; background: {self._c.BG_HOVER}; "
                     f"border-radius: {self._sp.RADIUS_MD}px;"
                 )
@@ -809,81 +712,68 @@ class ReEntrySettingGUI(ThemedDialog):
 
     # ── Theme ─────────────────────────────────────────────────────────────────
 
-    def _style_outer(self):
-        """Style the outerFrame that provides the visible dialog background."""
-        try:
-            if not self._outer:
-                return
-            c = self._c
-            self._outer.setStyleSheet(f"""
-                QFrame#reEntryOuter {{
-                    background:    {c.BG_MAIN};
-                    border:        1px solid {c.BORDER_STRONG};
-                    border-top:    2px solid {c.YELLOW_BRIGHT};
-                    border-radius: 8px;
-                }}
-            """)
-        except Exception as e:
-            logger.debug(f"[ReEntrySettingGUI._style_outer] {e}")
-
     def apply_theme(self, _=None):
+        """Re-apply theme when palette or density changes."""
         try:
-            self._style_outer()
+            if self._main_card:
+                self._main_card._apply_style()
+            if self._tabs:
+                apply_tab_style(self._tabs)
         except Exception as e:
             logger.debug(f"[ReEntrySettingGUI.apply_theme] {e}")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _scrollable(self) -> QWidget:
-        """Return a page widget with a QVBoxLayout inside a scroll area."""
+    def _scrollable(self):
+        """Return (wrapper_widget, inner_QVBoxLayout) with slim scrollbar."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(make_scrollbar_ss())
 
         container = QWidget()
         lay = QVBoxLayout(container)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
-
         scroll.setWidget(container)
 
-        # Wrap in a plain widget so we can return a single widget
         wrapper = QWidget()
         wl = QVBoxLayout(wrapper)
         wl.setContentsMargins(0, 0, 0, 0)
         wl.addWidget(scroll)
 
-        # Attach layout reference for callers
-        wrapper.layout = lambda: lay  # type: ignore[assignment]
-        return wrapper
+        return wrapper, lay
 
     def _checkbox(self, text: str, tooltip: str = "") -> QCheckBox:
+        """Themed checkbox — checked colour matches YELLOW_BRIGHT accent."""
         cb = QCheckBox(text)
         cb.setToolTip(tooltip)
+        c, ty = self._c, self._ty
         cb.setStyleSheet(f"""
             QCheckBox {{
-                color: {self._c.TEXT_MAIN};
-                font-size: {self._ty.SIZE_BODY}pt;
+                color: {c.TEXT_MAIN};
+                font-size: {ty.SIZE_BODY}pt;
                 spacing: 8px;
                 background: transparent;
             }}
             QCheckBox::indicator {{
                 width: 18px; height: 18px;
-                border: 2px solid {self._c.BORDER};
+                border: 2px solid {c.BORDER};
                 border-radius: 4px;
-                background: {self._c.BG_MAIN};
+                background: {c.BG_MAIN};
             }}
             QCheckBox::indicator:checked {{
-                background: {self._c.BLUE};
-                border-color: {self._c.BLUE};
+                background: {c.YELLOW_BRIGHT};
+                border-color: {c.YELLOW_BRIGHT};
             }}
             QCheckBox::indicator:hover {{
-                border-color: {self._c.BLUE};
+                border-color: {c.YELLOW_BRIGHT};
             }}
         """)
         return cb
 
     def _style_spin(self, spin):
+        """Themed spin-box — focus border matches YELLOW_BRIGHT accent."""
         c, ty, sp = self._c, self._ty, self._sp
         spin.setFixedWidth(110)
         spin.setMinimumHeight(32)
@@ -897,7 +787,7 @@ class ReEntrySettingGUI(ThemedDialog):
                 font-size: {ty.SIZE_BODY}pt;
             }}
             QSpinBox:focus, QDoubleSpinBox:focus {{
-                border-color: {c.BLUE};
+                border-color: {c.YELLOW_BRIGHT};
             }}
             QSpinBox::up-button, QDoubleSpinBox::up-button {{
                 background: {c.BG_HOVER};
@@ -911,33 +801,3 @@ class ReEntrySettingGUI(ThemedDialog):
                 width: 18px;
             }}
         """)
-
-    def _btn(self, text: str, primary: bool = False) -> QPushButton:
-        btn = QPushButton(text)
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.setMinimumHeight(36)
-        c, ty, sp = self._c, self._ty, self._sp
-        if primary:
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BLUE}; color: white;
-                    border: none; border-radius: {sp.RADIUS_MD}px;
-                    padding: 8px 24px;
-                    font-size: {ty.SIZE_BODY}pt; font-weight: {ty.WEIGHT_BOLD};
-                    min-width: 120px;
-                }}
-                QPushButton:hover {{ background: {c.BLUE_DARK}; }}
-                QPushButton:disabled {{ background: {c.BG_HOVER}; color: {c.TEXT_DISABLED}; }}
-            """)
-        else:
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c.BG_HOVER}; color: {c.TEXT_MAIN};
-                    border: 1px solid {c.BORDER}; border-radius: {sp.RADIUS_MD}px;
-                    padding: 8px 20px;
-                    font-size: {ty.SIZE_BODY}pt;
-                    min-width: 100px;
-                }}
-                QPushButton:hover {{ background: {c.BORDER}; border-color: {c.BORDER_FOCUS}; }}
-            """)
-        return btn

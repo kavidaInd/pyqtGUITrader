@@ -116,7 +116,7 @@ def fmt_stamp(dt: Optional[datetime] = None) -> str:
         dt_ist = ist_localize(dt) if dt.tzinfo is None else dt.astimezone(IST)
         return dt_ist.strftime(_FMT_STAMP)
     except Exception:
-        return datetime.now().strftime(_FMT_STAMP)
+        return datetime.now(IST).strftime(_FMT_STAMP)  # last-resort fallback
 
 
 def parse_display(s: str) -> Optional[datetime]:

@@ -831,7 +831,8 @@ class ConnectionMonitorPopup(ThemedDialog):
                 # Last message time
                 if safe_hasattr(ws, '_last_message_time') and ws._last_message_time:
                     from datetime import datetime
-                    dt = datetime.fromtimestamp(ws._last_message_time)
+                    # TZ-FIX: fromtimestamp with IST tz returns IST-aware datetime.
+                    dt = datetime.fromtimestamp(ws._last_message_time, tz=IST)
                     self.ws_last_message.setText(fmt_display(dt, time_only=True))
 
                 # Connected since
@@ -891,7 +892,12 @@ class ConnectionMonitorPopup(ThemedDialog):
 
             # Calculate uptime
             if safe_hasattr(ws, '_connected_since') and ws._connected_since:
-                uptime = ist_now().replace(tzinfo=None) - ws._connected_since.replace(tzinfo=None) if hasattr(ws._connected_since, 'replace') else ist_now() - ws._connected_since
+                # TZ-FIX: ensure _connected_since is IST-aware; never strip tzinfo.
+                from Utils.time_utils import ist_localize
+                cs = ws._connected_since
+                if hasattr(cs, 'tzinfo'):
+                    cs = ist_localize(cs) if cs.tzinfo is None else cs.astimezone(IST)
+                uptime = ist_now() - cs
                 seconds = int(uptime.total_seconds())
                 hours = seconds // 3600
                 minutes = (seconds % 3600) // 60
@@ -903,7 +909,11 @@ class ConnectionMonitorPopup(ThemedDialog):
             # Message rate
             msg_count = stats.get('message_count', 0)
             if safe_hasattr(ws, '_connected_since') and ws._connected_since:
-                uptime_seconds = max(1, (ist_now().replace(tzinfo=None) - (ws._connected_since.replace(tzinfo=None) if ws._connected_since.tzinfo else ws._connected_since)).total_seconds())
+                from Utils.time_utils import ist_localize
+                cs = ws._connected_since
+                if hasattr(cs, 'tzinfo'):
+                    cs = ist_localize(cs) if cs.tzinfo is None else cs.astimezone(IST)
+                uptime_seconds = max(1, (ist_now() - cs).total_seconds())
                 rate = msg_count / uptime_seconds
                 self.msg_rate.setText(f"{rate:.1f}/s")
             else:

@@ -7,6 +7,9 @@ import uuid
 import socket
 import datetime
 import logging
+# TZ-FIX: session IDs embed a timestamp; use ist_now() so the embedded date
+# matches the IST trading day rather than the server's UTC wall clock.
+from Utils.time_utils import ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +24,8 @@ def generate_session_id() -> str:
         str: Unique session identifier
     """
     try:
-        # Get current timestamp
-        now = datetime.datetime.now()
+        # Get current IST timestamp
+        now = ist_now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
 
         # Get hostname (shortened if too long)

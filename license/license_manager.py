@@ -718,8 +718,10 @@ class LicenseManager:
             if expires_raw:
                 try:
                     expires_dt = datetime.fromisoformat(expires_raw)
+                    # TZ-FIX: use timezone.utc constructor, not .replace() which is
+                    # semantically wrong for non-fixed-offset tz objects.
                     if expires_dt.tzinfo is None:
-                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)  # safe: stdlib UTC is fixed-offset
                     if datetime.now(timezone.utc) > expires_dt:
                         return LicenseResult(ok=False, reason="expired")
                 except ValueError:
@@ -727,6 +729,7 @@ class LicenseManager:
 
             last_dt = datetime.fromisoformat(last_ok_raw)
             if last_dt.tzinfo is None:
+                # TZ-FIX: timezone.utc is a fixed-offset tzinfo so replace() is safe here.
                 last_dt = last_dt.replace(tzinfo=timezone.utc)
             grace_end = last_dt + timedelta(days=OFFLINE_GRACE_DAYS)
             days_left = max(0, (grace_end - datetime.now(timezone.utc)).days)

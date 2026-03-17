@@ -1137,11 +1137,12 @@ class SystemMonitorPopup(ThemedDialog):
             self.process_cpu.setText(f"{process.cpu_percent(interval=0.1):.1f}%")
 
             # Uptime
-            create_time = datetime.fromtimestamp(process.create_time())
-            uptime = ist_now().replace(tzinfo=None) - create_time
-            hours = uptime.seconds // 3600
-            minutes = (uptime.seconds % 3600) // 60
-            seconds = uptime.seconds % 60
+            # TZ-FIX: fromtimestamp(tz=IST) returns aware datetime; subtract directly from ist_now()
+            create_time = datetime.fromtimestamp(process.create_time(), tz=IST)
+            uptime = ist_now() - create_time
+            hours = int(uptime.total_seconds()) // 3600
+            minutes = (int(uptime.total_seconds()) % 3600) // 60
+            seconds = int(uptime.total_seconds()) % 60
             self.process_uptime.setText(f"{hours}h {minutes}m {seconds}s")
 
             # Open file descriptors
@@ -1237,7 +1238,8 @@ class SystemMonitorPopup(ThemedDialog):
                 # Last message time
                 if safe_hasattr(ws, '_last_message_time') and ws._last_message_time:
                     from datetime import datetime
-                    dt = datetime.fromtimestamp(ws._last_message_time)
+                    # TZ-FIX: fromtimestamp with IST tz returns IST-aware datetime.
+                    dt = datetime.fromtimestamp(ws._last_message_time, tz=IST)
                     self.ws_last_msg.setText(fmt_display(dt, time_only=True))
             else:
                 self.ws_status.setText("No WebSocket")

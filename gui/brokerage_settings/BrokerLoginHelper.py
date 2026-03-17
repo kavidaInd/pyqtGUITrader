@@ -213,12 +213,18 @@ class BrokerLoginHelper(ABC):
             exp = self.token_expires_at
             try:
                 if isinstance(exp, (int, float)):
-                    expiry_time = datetime.fromtimestamp(int(exp))
+                    # TZ-FIX: fromtimestamp() returns naive local time; use IST explicitly.
+                    expiry_time = datetime.fromtimestamp(int(exp), tz=IST)
                 else:
                     try:
                         expiry_time = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
                     except Exception:
-                        expiry_time = datetime.fromtimestamp(int(float(exp)))
+                        expiry_time = datetime.fromtimestamp(int(float(exp)), tz=IST)
+                # TZ-FIX: ensure expiry_time is always IST-aware before comparing with ist_now().
+                if expiry_time.tzinfo is None:
+                    expiry_time = IST.localize(expiry_time)
+                else:
+                    expiry_time = expiry_time.astimezone(IST)
             except Exception:
                 return {"is_valid": True, "expires_at": str(exp),
                         "expires_in_seconds": -1, "expires_in_hours": -1, "status": "unknown"}

@@ -18,6 +18,10 @@ import BaseEnums
 from Utils.OptionUtils import OptionUtils
 from Utils.Utils import Utils
 from Utils.safe_getattr import safe_getattr, safe_hasattr
+# TZ-FIX: use ist_now() everywhere instead of ist_now() so in-memory
+# trade objects (OrderRecord timestamps, current_trade_started_time) are
+# always in IST regardless of the server's system timezone.
+from Utils.time_utils import ist_now
 from db.connector import get_db
 from db.crud import orders as orders_crud
 
@@ -51,8 +55,8 @@ class Order:
         self.price = price
         self.stop_price = stop_price
         self.status = OrderStatus.PENDING
-        self.created_at = datetime.now()
-        self.updated_at = datetime.now()
+        self.created_at = ist_now()
+        self.updated_at = ist_now()
         self.broker_order_id: Optional[str] = None
         self.fills: list = []
         self.error: Optional[str] = None
@@ -64,7 +68,7 @@ class Order:
             return False
         self.status = OrderStatus.SUBMITTED
         self.broker_order_id = broker_order_id
-        self.updated_at = datetime.now()
+        self.updated_at = ist_now()
         return True
 
     def fill(self, quantity: int, price: float) -> bool:
@@ -77,7 +81,7 @@ class Order:
         self.fills.append({
             'quantity': quantity,
             'price': price,
-            'time': datetime.now()
+            'time': ist_now()
         })
 
         if self.filled_quantity >= self.quantity:
@@ -85,7 +89,7 @@ class Order:
         else:
             self.status = OrderStatus.PARTIAL
 
-        self.updated_at = datetime.now()
+        self.updated_at = ist_now()
         return True
 
     def cancel(self) -> bool:
@@ -94,7 +98,7 @@ class Order:
             logger.warning(f"Cannot cancel order {self.id} in state {self.status}")
             return False
         self.status = OrderStatus.CANCELLED
-        self.updated_at = datetime.now()
+        self.updated_at = ist_now()
         return True
 
     def reject(self, reason: str) -> bool:
@@ -104,7 +108,7 @@ class Order:
             return False
         self.status = OrderStatus.REJECTED
         self.error = reason
-        self.updated_at = datetime.now()
+        self.updated_at = ist_now()
         return True
 
     @property
@@ -815,7 +819,7 @@ class OrderExecutor:
             state.current_buy_price = price
             state.current_price = price
             state.highest_current_price = price
-            state.current_trade_started_time = datetime.now()
+            state.current_trade_started_time = ist_now()
             state.current_trade_confirmed = False
             state.positions_hold = shares
 

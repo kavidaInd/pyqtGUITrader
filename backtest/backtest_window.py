@@ -240,10 +240,12 @@ def _card(title: str, title_color_token: str = "BLUE") -> QGroupBox:
 
 
 def _qdate_to_datetime(qd: QDate, end_of_day: bool = False) -> datetime:
-    """Convert QDate → datetime."""
+    """Convert QDate → IST-aware datetime."""
+    # TZ-FIX: always return IST-aware so comparisons with ist_now() and broker
+    # timestamps don't raise offset-naive/aware TypeError.
     if end_of_day:
-        return datetime(qd.year(), qd.month(), qd.day(), 23, 59, 59)
-    return datetime(qd.year(), qd.month(), qd.day(), 0, 0, 0)
+        return IST.localize(datetime(qd.year(), qd.month(), qd.day(), 23, 59, 59))
+    return IST.localize(datetime(qd.year(), qd.month(), qd.day(), 0, 0, 0))
 
 
 # ── BarAnalysis ────────────────────────────────────────────────────────────────
@@ -584,7 +586,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
             return
         fname, _ = QFileDialog.getSaveFileName(
             self, f"Save {tf} Analysis",
-            f"analysis_{tf}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            f"analysis_{tf}_{ist_now().strftime('%Y%m%d_%H%M%S')}.csv",
             "CSV Files (*.csv)"
         )
         if fname:
@@ -601,7 +603,7 @@ class MultiTimeframeAnalysisTab(QWidget, ThemedMixin):
         n = 0
         for tf, data in self.analysis_data.items():
             if data:
-                fp = os.path.join(directory, f"analysis_{tf}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+                fp = os.path.join(directory, f"analysis_{tf}_{ist_now().strftime('%Y%m%d_%H%M%S')}.csv")
                 pd.DataFrame([b.to_dict() for b in data]).to_csv(fp, index=False)
                 n += 1
         QMessageBox.information(self, "Done", f"Exported {n} file(s) to:\n{directory}")
@@ -2371,7 +2373,8 @@ class BacktestWindow(QMainWindow, ThemedMixin):
                 continue
 
             try:
-                ts = datetime.strptime(c["time"], "%Y-%m-%d %H:%M:%S")
+                # TZ-FIX: strptime returns naive; localize to IST immediately.
+                ts = IST.localize(datetime.strptime(c["time"], "%Y-%m-%d %H:%M:%S"))
             except Exception:
                 continue
 
@@ -2504,7 +2507,7 @@ class BacktestWindow(QMainWindow, ThemedMixin):
             if data:
                 fp = os.path.join(
                     directory,
-                    f"{strategy_name}_{tf}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    f"{strategy_name}_{tf}_{ist_now().strftime('%Y%m%d_%H%M%S')}.csv"
                 )
                 try:
                     pd.DataFrame([b.to_dict() for b in data]).to_csv(fp, index=False)

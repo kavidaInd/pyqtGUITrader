@@ -36,10 +36,16 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from db.connector import DatabaseConnector, get_db
+# TZ-FIX: All DB timestamps must be written in IST.
+# datetime.now() returns system local time which may be UTC on cloud/server
+# deployments, producing timestamps like "2026-03-17T05:12" instead of the
+# correct IST "2026-03-17T10:42".  ist_now() always returns IST regardless of
+# the system timezone setting.
+from Utils.time_utils import ist_now
 
 logger = logging.getLogger(__name__)
 
-_NOW = lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+_NOW = lambda: ist_now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -725,6 +731,14 @@ class OrderCRUD:
         return [_row_to_dict(r) for r in rows]
 
     def get_by_period(self, period: str = "today", db: DatabaseConnector = None) -> List[Dict[str, Any]]:
+        """Return orders for the requested period.
+
+        Order of results: OPEN first, then CLOSED/CANCELLED sorted most-recent first.
+
+        FIX: Previously CANCELLED orders were never included in any period query,
+        so they were invisible in the trade history popup. They are now fetched using
+        the same date window as CLOSED orders so all intraday activity is visible.
+        """
         db = db or get_db()
         try:
             open_rows = db.fetchall(
@@ -733,20 +747,23 @@ class OrderCRUD:
 
             if period == "today":
                 closed_rows = db.fetchall(
-                    f"SELECT * FROM {self.TABLE} WHERE status='CLOSED' "
-                    "AND DATE(exited_at)=DATE('now','localtime') ORDER BY exited_at DESC"
+                    f"SELECT * FROM {self.TABLE} WHERE status IN ('CLOSED','CANCELLED') "
+                    "AND DATE(COALESCE(exited_at, created_at))=DATE('now','localtime') "
+                    "ORDER BY COALESCE(exited_at, created_at) DESC"
                 )
             elif period == "this_week":
                 closed_rows = db.fetchall(
-                    f"SELECT * FROM {self.TABLE} WHERE status='CLOSED' "
-                    "AND exited_at>=DATE('now','localtime','-7 days') ORDER BY exited_at DESC"
+                    f"SELECT * FROM {self.TABLE} WHERE status IN ('CLOSED','CANCELLED') "
+                    "AND COALESCE(exited_at, created_at)>=DATE('now','localtime','-7 days') "
+                    "ORDER BY COALESCE(exited_at, created_at) DESC"
                 )
             else:
                 closed_rows = db.fetchall(
-                    f"SELECT * FROM {self.TABLE} WHERE status='CLOSED' ORDER BY exited_at DESC"
+                    f"SELECT * FROM {self.TABLE} WHERE status IN ('CLOSED','CANCELLED') "
+                    "ORDER BY COALESCE(exited_at, created_at) DESC"
                 )
 
-            # OPEN orders first, then CLOSED (most recent first)
+            # OPEN orders first, then CLOSED/CANCELLED (most recent first)
             all_rows = list(open_rows) + list(closed_rows)
             return [_row_to_dict(r) for r in all_rows]
         except Exception as e:

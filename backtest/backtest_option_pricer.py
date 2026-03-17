@@ -1,3 +1,5 @@
+# TZ-FIX imports
+from Utils.time_utils import IST, ist_localize
 """
 backtest/backtest_option_pricer.py
 ===================================
@@ -180,10 +182,16 @@ def atm_strike(spot: float, derivative: str) -> float:
 
 def time_to_expiry_years(current_dt: datetime, expiry_dt: datetime) -> float:
     """Time to expiry in calendar-year fraction (252-day trading year basis)."""
-    if safe_hasattr(current_dt, "tzinfo") and current_dt.tzinfo is not None:
-        current_dt = current_dt.replace(tzinfo=None)
-    if safe_hasattr(expiry_dt, "tzinfo") and expiry_dt.tzinfo is not None:
-        expiry_dt = expiry_dt.replace(tzinfo=None)
+    # TZ-FIX: normalize both inputs to IST-aware so subtraction never raises
+    # "can't subtract offset-naive and offset-aware datetimes".
+    if current_dt.tzinfo is None:
+        current_dt = IST.localize(current_dt)
+    else:
+        current_dt = current_dt.astimezone(IST)
+    if expiry_dt.tzinfo is None:
+        expiry_dt = IST.localize(expiry_dt)
+    else:
+        expiry_dt = expiry_dt.astimezone(IST)
     delta = (expiry_dt - current_dt).total_seconds()
     if delta <= 0:
         return MIN_TIME_TO_EXPIRY
@@ -290,7 +298,8 @@ class VixCache:
                     if not pd.api.types.is_datetime64_any_dtype(df["time"]):
                         df["time"] = pd.to_datetime(df["time"])
                     if df["time"].dt.tz is not None:
-                        df["time"] = df["time"].dt.tz_localize(None)
+                        # TZ-FIX: convert to IST then strip for .dt.date access only
+                        df["time"] = df["time"].dt.tz_convert(IST).dt.tz_localize(None)
                     df = df[(df["time"].dt.date >= start) & (df["time"].dt.date <= end)].copy()
                     if used_interval == "1D":
                         s = pd.Series(df["close"].values, index=df["time"].dt.date.values)
@@ -382,7 +391,8 @@ def nearest_weekly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
     if days_ahead == 0 and dt.hour >= 15 and dt.minute >= 30:
         days_ahead = 7
     exp_date = _adjust_for_holiday(current + timedelta(days=days_ahead))
-    return datetime(exp_date.year, exp_date.month, exp_date.day, 15, 30)
+    # TZ-FIX: localize naive expiry datetime to IST.
+    return IST.localize(datetime(exp_date.year, exp_date.month, exp_date.day, 15, 30))
 
 
 def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
@@ -390,24 +400,24 @@ def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
     try:
         exchange_symbol = OptionUtils.get_exchange_symbol(derivative)
         expiry_dt = OptionUtils.get_monthly_expiry_date(dt.year, dt.month, derivative=exchange_symbol)
-        if isinstance(expiry_dt, datetime):
-            expiry_naive = expiry_dt.replace(tzinfo=None) if expiry_dt.tzinfo else expiry_dt
-        elif hasattr(expiry_dt, "to_pydatetime"):
-            expiry_naive = expiry_dt.to_pydatetime().replace(tzinfo=None)
-        else:
-            expiry_naive = datetime.fromisoformat(str(expiry_dt))
+        # TZ-FIX: normalize expiry to IST-aware; never strip tzinfo.
+        def _to_ist(d):
+            if hasattr(d, "to_pydatetime"):
+                d = d.to_pydatetime()
+            elif not isinstance(d, datetime):
+                d = datetime.fromisoformat(str(d))
+            return IST.localize(d) if d.tzinfo is None else d.astimezone(IST)
 
-        if expiry_naive <= dt:
-            nm = dt.month % 12 + 1
-            ny = dt.year + (1 if dt.month == 12 else 0)
+        expiry = _to_ist(expiry_dt)
+        # Also normalize dt for comparison
+        dt_aware = IST.localize(dt) if dt.tzinfo is None else dt.astimezone(IST)
+
+        if expiry <= dt_aware:
+            nm = dt_aware.month % 12 + 1
+            ny = dt_aware.year + (1 if dt_aware.month == 12 else 0)
             expiry_dt2 = OptionUtils.get_monthly_expiry_date(ny, nm, derivative=exchange_symbol)
-            if hasattr(expiry_dt2, "to_pydatetime"):
-                expiry_naive = expiry_dt2.to_pydatetime().replace(tzinfo=None)
-            elif isinstance(expiry_dt2, datetime):
-                expiry_naive = expiry_dt2.replace(tzinfo=None)
-            else:
-                expiry_naive = datetime.fromisoformat(str(expiry_dt2))
-        return expiry_naive
+            expiry = _to_ist(expiry_dt2)
+        return expiry
     except Exception as exc:
         logger.warning("[nearest_monthly_expiry] OptionUtils failed: %s — using fallback", exc)
 
@@ -420,15 +430,17 @@ def nearest_monthly_expiry(dt: datetime, derivative: str = "NIFTY") -> datetime:
         last_day = date(d.year, d.month + 1, 1) - timedelta(days=1)
     offset = (last_day.weekday() - target_wd) % 7
     exp_date = _adjust_for_holiday(last_day - timedelta(days=offset))
-    exp_dt = datetime(exp_date.year, exp_date.month, exp_date.day, 15, 30)
-    if exp_dt <= dt:
+    # TZ-FIX: localize naive expiry datetimes to IST.
+    exp_dt = IST.localize(datetime(exp_date.year, exp_date.month, exp_date.day, 15, 30))
+    dt_aware = IST.localize(dt) if dt.tzinfo is None else dt.astimezone(IST)
+    if exp_dt <= dt_aware:
         if d.month >= 11:
             last_day2 = date(d.year + 1, (d.month % 12) + 2, 1) - timedelta(days=1)
         else:
             last_day2 = date(d.year, d.month + 2, 1) - timedelta(days=1)
         offset2 = (last_day2.weekday() - target_wd) % 7
         exp_date2 = _adjust_for_holiday(last_day2 - timedelta(days=offset2))
-        exp_dt = datetime(exp_date2.year, exp_date2.month, exp_date2.day, 15, 30)
+        exp_dt = IST.localize(datetime(exp_date2.year, exp_date2.month, exp_date2.day, 15, 30))
     return exp_dt
 
 
@@ -530,8 +542,11 @@ class OptionPricer:
         real data is absent.  Pass *strike* to lock the pricing to the
         entry strike for open positions.
         """
-        if safe_hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
-            timestamp = timestamp.replace(tzinfo=None)
+        # TZ-FIX: normalize timestamp to IST-aware instead of stripping tzinfo.
+        if timestamp.tzinfo is None:
+            timestamp = IST.localize(timestamp)
+        else:
+            timestamp = timestamp.astimezone(IST)
 
         if strike is None:
             strike = atm_strike(spot_close, self.derivative)

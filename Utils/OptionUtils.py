@@ -8,6 +8,10 @@ from Utils.common import (
     is_holiday, is_market_closed_for_the_day, get_market_end_time,
     get_time_of_day
 )
+# TZ-FIX: All "current time" references in expiry calculations and market-close
+# comparisons must use IST so that weekly/monthly expiry selection and the
+# "has market closed?" checks are correct regardless of the server's system TZ.
+from Utils.time_utils import ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -613,10 +617,10 @@ class OptionUtils:
         try:
             if year < 2000 or year > 2100:
                 logger.warning(f"Year {year} out of reasonable range, using current year")
-                year = datetime.now().year
+                year = ist_now().year
             if month < 1 or month > 12:
                 logger.warning(f"Month {month} out of range, using current month")
-                month = datetime.now().month
+                month = ist_now().month
             if target_weekday < 0 or target_weekday > 4:
                 logger.warning(f"target_weekday {target_weekday} out of range, defaulting to Thursday")
                 target_weekday = 3
@@ -625,13 +629,15 @@ class OptionUtils:
             date = datetime(year, month, last_day)
             while date.weekday() != target_weekday:
                 date -= timedelta(days=1)
-            return date
+            # TZ-FIX: localize naive expiry date to IST before returning
+            from Utils.time_utils import ist_localize
+            return ist_localize(date)
         except ValueError as e:
             logger.error(f"Invalid date parameters: year={year}, month={month}: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
         except Exception as e:
             logger.error(f"[get_last_expiry_weekday_of_month] Failed: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @classmethod
     def get_last_thursday_of_month(cls, year: int, month: int) -> datetime:
@@ -640,7 +646,7 @@ class OptionUtils:
             return cls.get_last_expiry_weekday_of_month(year, month, target_weekday=3)
         except Exception as e:
             logger.error(f"[get_last_thursday_of_month] Failed: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @classmethod
     def get_monthly_expiry_date(cls, year: int, month: int, derivative: str = "NIFTY") -> datetime:
@@ -659,7 +665,7 @@ class OptionUtils:
             return get_time_of_day(0, 0, 0, expiry)
         except Exception as e:
             logger.error(f"[get_monthly_expiry_date] Failed for {derivative}: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @classmethod
     def get_current_weekly_expiry_date(cls, derivative: str = "NIFTY") -> datetime:
@@ -668,7 +674,7 @@ class OptionUtils:
             exchange_symbol = cls.get_exchange_symbol(derivative)
             target_weekday = cls.EXPIRY_WEEKDAY_MAP.get(exchange_symbol, 1)
 
-            today = datetime.now()
+            today = ist_now()
             days_to_add = (target_weekday - today.weekday() + 7) % 7
 
             if days_to_add == 0 and is_market_closed_for_the_day():
@@ -692,13 +698,13 @@ class OptionUtils:
             return get_time_of_day(0, 0, 0, expiry)
         except Exception as e:
             logger.error(f"[get_current_weekly_expiry_date] Failed for {derivative}: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @classmethod
     def is_monthly_expiry_week(cls, derivative: str = "NIFTY") -> bool:
         """Check if the current week contains the monthly expiry."""
         try:
-            today = datetime.now()
+            today = ist_now()
             exchange_symbol = cls.get_exchange_symbol(derivative)
 
             monthly_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
@@ -723,7 +729,7 @@ class OptionUtils:
     def is_monthly_expiry_today(cls, derivative: str = "NIFTY") -> bool:
         """Check if today is the monthly expiry day."""
         try:
-            today = datetime.now()
+            today = ist_now()
             exchange_symbol = cls.get_exchange_symbol(derivative)
             monthly_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
             return today.date() == monthly_expiry.date()
@@ -763,13 +769,13 @@ class OptionUtils:
                 logger.warning("prepare_monthly_expiry_symbol called with None strike")
                 return None
 
-            today = datetime.now()
+            today = ist_now()
             exchange_symbol = cls.get_exchange_symbol(input_symbol)
 
             current_month_expiry = cls.get_monthly_expiry_date(today.year, today.month, derivative=exchange_symbol)
             market_end_today = get_market_end_time(current_month_expiry)
 
-            if datetime.now() > market_end_today:
+            if ist_now() > market_end_today:
                 base_month = today.month + 1
                 base_year = today.year + (1 if base_month > 12 else 0)
                 base_month = ((base_month - 1) % 12) + 1
@@ -1068,7 +1074,7 @@ class OptionUtils:
             return cls.get_current_weekly_expiry_date(derivative)
         except Exception as e:
             logger.error(f"[get_weekly_expiry_day_date] Failed: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @classmethod
     def get_monthly_expiry_day_date(cls, datetime_obj: Optional[datetime] = None,
@@ -1076,12 +1082,12 @@ class OptionUtils:
         """Get the next upcoming monthly expiry date."""
         try:
             if datetime_obj is None:
-                datetime_obj = datetime.now()
+                datetime_obj = ist_now()
             exchange_symbol = cls.get_exchange_symbol(derivative)
 
             expiry = cls.get_monthly_expiry_date(datetime_obj.year, datetime_obj.month, derivative=exchange_symbol)
 
-            if datetime.now() > get_market_end_time(expiry):
+            if ist_now() > get_market_end_time(expiry):
                 next_month = datetime_obj.month + 1
                 next_year = datetime_obj.year + (1 if next_month > 12 else 0)
                 next_month = ((next_month - 1) % 12) + 1
@@ -1090,7 +1096,7 @@ class OptionUtils:
             return expiry
         except Exception as e:
             logger.error(f"[get_monthly_expiry_day_date] Failed: {e}", exc_info=True)
-            return datetime.now()
+            return ist_now()
 
     @classmethod
     def is_today_weekly_expiry_day(cls, derivative: str = "NIFTY50") -> bool:

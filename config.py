@@ -594,10 +594,11 @@ class Config:
             ...     logger.info("Market closed - order queued for next day")
         """
         try:
-            from datetime import datetime, time
+            from datetime import time
+            from Utils.time_utils import ist_now
 
             if current_time is None:
-                current_time = datetime.now()
+                current_time = ist_now()
 
             # Get market hours from config
             open_str = self.get('market_open_time', '09:15')

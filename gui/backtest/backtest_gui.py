@@ -335,7 +335,7 @@ class BacktestGUI(QDialog):
         date_layout = QFormLayout()
 
         # Default to last 30 days
-        today = datetime.now().date()
+        today = ist_now().date()
         self.start_date = QDateEdit()
         self.start_date.setDate(today - timedelta(days=30))
         self.start_date.setCalendarPopup(True)
@@ -655,7 +655,7 @@ class BacktestGUI(QDialog):
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Save Backtest Results",
-            f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            f"backtest_{ist_now().strftime('%Y%m%d_%H%M%S')}",
             "JSON Files (*.json)"
         )
 

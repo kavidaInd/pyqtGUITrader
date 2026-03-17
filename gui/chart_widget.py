@@ -21,6 +21,8 @@ import logging.handlers
 import numpy as np
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+# TZ-FIX: file/export naming timestamps should use IST date.
+from Utils.time_utils import ist_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 
@@ -261,7 +263,7 @@ class DrawingObject:
     style: str = "solid"  # 'solid', 'dash', 'dot'
     text: Optional[str] = None
     visible: bool = True
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=ist_now)
 
 
 @dataclass
@@ -876,7 +878,7 @@ class SpotChartWidget(QWebEngineView, ThemedMixin):
         try:
             if format == "png":
                 # Take screenshot
-                self.grab().save(f"chart_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                self.grab().save(f"chart_export_{ist_now().strftime('%Y%m%d_%H%M%S')}.png")
                 QMessageBox.information(self, "Export", "Chart exported as PNG")
         except Exception as e:
             logger.error(f"[SpotChartWidget.export_chart] Failed: {e}")
